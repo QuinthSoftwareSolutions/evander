@@ -153,26 +153,26 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   };
   const runSummary = {
     event_id: "evt-run-1",
-    run_state: "errored",
+    run_state: "error_routed",
     trace_id: "trace-1",
     source_node_id: "trigger-1",
     source_trigger_type: "trigger:manual",
-    delivery_state: "failed",
+    delivery_state: "delivered",
     occurred_at: "2026-05-16T12:00:00Z",
     latest_activity_at: "2026-05-16T12:00:03Z",
     active_nodes: [
       {
         node_id: "agent-1",
-        status: "failed",
+        status: "error_routed",
         count: 1,
-        error: "agent failed",
+        error: "prompt dispatch failed; routed to error edge",
       },
     ],
-    failed_node_id: "agent-1",
-    failed_node_status: "failed",
-    failed_at: "2026-05-16T12:00:03Z",
-    error: "agent failed",
-    resumable: true,
+    failed_node_id: null,
+    failed_node_status: null,
+    failed_at: null,
+    error: "prompt dispatch failed; routed to error edge",
+    resumable: false,
   };
   const runDetail = {
     ...runSummary,
@@ -182,7 +182,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     lookup_candidates: [{ event_id: "evt-run-1", trace_id: "trace-1", latest_activity_at: "2026-05-16T12:00:03Z", matched_by: ["event_id"] }],
     recovery: {
       clear: { eligible: true, event_id: "evt-run-1" },
-      resume: { eligible: true, event_id: "evt-run-1", target_node_id: "agent-1" },
+      resume: { eligible: false, event_id: "evt-run-1", target_node_id: null },
     },
     trigger_event: {
       event_id: "evt-run-1",
@@ -190,7 +190,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       trigger_type: "trigger:manual",
       trace_id: "trace-1",
       occurred_at: "2026-05-16T12:00:00Z",
-      delivery_state: "failed",
+      delivery_state: "delivered",
       payload: { command: "inspect" },
     },
     graph: {
@@ -248,7 +248,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         execution_id: "exec-1",
         event_id: "evt-run-1",
         trace_id: "trace-1",
-        status: "failed",
+        status: "error_routed",
         started_at: "2026-05-16T12:00:01Z",
         finished_at: "2026-05-16T12:00:03Z",
         duration_ms: 2000,
@@ -258,14 +258,24 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         binding_trace: { prompt: { source: "trigger-1.payload.command" } },
         binding_error: null,
         input_payload: { command: "inspect" },
-        outputs: {},
+        outputs: {
+          success: false,
+          dispatch_id: "dispatch-1",
+          session_id: "session-1",
+          vm_name: "vm-1",
+          error_message: "prompt dispatch failed",
+          error_class: "DispatchError",
+          failed_phase: "dispatch",
+          published_event_id: "evt-run-1-published",
+          completion_event_branch_port: "error",
+        },
         inputs_by_source: { "trigger-1": { command: "inspect" } },
-        error: "agent failed",
-        published_event_id: null,
-        completion_event_enqueued_at: null,
+        error: "prompt dispatch failed; routed to error edge",
+        published_event_id: "evt-run-1-published",
+        completion_event_enqueued_at: "2026-05-16T12:00:04Z",
         config_revision: "rev-1",
-        retry_resume_eligible: true,
-        retry_resume_reason: "failed effect can resume",
+        retry_resume_eligible: false,
+        retry_resume_reason: null,
         missing_fields: [],
         tool_call_links: [
           {
@@ -516,7 +526,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         worker_id: "trigger-orchestrator",
         generated_at: "2026-05-16T12:05:00Z",
         runs: [runSummary],
-        node_activity: { "agent-1": { failed: 1 } },
+        node_activity: { "agent-1": { error_routed: 1 } },
       }));
       return;
     }
@@ -607,6 +617,11 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   });
 
   await page.getByText("Current runs").click();
+  const currentRunCard = page.locator(".runtime-run-card").first();
+  await assert.doesNotReject(() => currentRunCard.getByText("error_routed", { exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await currentRunCard.getByRole("button", { name: "Resume from failure" }).count(), 0);
+  assert.equal(await currentRunCard.getByRole("button", { name: "Dismiss run" }).count(), 0);
+  await assert.doesNotReject(() => currentRunCard.getByRole("button", { name: "Clear run" }).waitFor({ state: "visible" }));
   await page.locator(".runtime-run-card").getByRole("button", { name: "Inspect" }).click();
 
   await assert.doesNotReject(() => page.getByText("Inspected run").waitFor({ state: "visible" }));
@@ -614,15 +629,35 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await assert.doesNotReject(() => page.getByRole("button", { name: "Exit inspect mode" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByText("Current runs").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save workflow" }).count(), 0);
-  await assert.doesNotReject(() => page.locator(".node-card.inspect-ghost", { hasText: "Notify operator" }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".node-card.inspect-ghost").count(), 0);
   assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated command" }).count(), 0);
   assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated effect" }).count(), 0);
+  assert.equal(await page.locator(".react-flow__node", { hasText: "Notify operator" }).count(), 0);
 
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   assert.equal(
     await page.locator(".inspect-node-panel .read-only-inspector-field", { hasText: "Prompt" }).locator("input").inputValue(),
     "Handle ticket",
   );
+  await assert.doesNotReject(() => page.locator(".inspected-run-panel .runtime-run-state").first().waitFor({ state: "visible" }));
+  assert.equal(
+    (await page.locator(".inspected-run-panel .runtime-run-state").first().textContent())?.trim(),
+    "error_routed",
+  );
+  assert.equal(
+    (await page.locator(".inspect-node-panel .runtime-run-state").first().textContent())?.trim(),
+    "error_routed",
+  );
+  const inspectedRunError = page.locator(".inspected-run-panel .runtime-run-error").first();
+  await assert.doesNotReject(() => inspectedRunError.waitFor({ state: "visible" }));
+  assert.match((await inspectedRunError.textContent()) ?? "", /prompt dispatch failed/);
+  const outputsJson = page.locator(".inspect-node-panel .run-detail-json").filter({ hasText: "Outputs" }).locator("pre");
+  const outputsJsonText = (await outputsJson.textContent()) ?? "";
+  assert.match(outputsJsonText, /error_message/);
+  assert.match(outputsJsonText, /error_class/);
+  assert.match(outputsJsonText, /failed_phase/);
+  assert.match(outputsJsonText, /published_event_id/);
+  assert.match(outputsJsonText, /completion_event_branch_port/);
   await assert.doesNotReject(() => page.getByText("Approval appr-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Boundary root").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Agent session-1").waitFor({ state: "visible" }));
@@ -640,15 +675,6 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await assert.doesNotReject(() => page.getByText(/Tool calls.*Missing legacy or unrecorded/).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText(/Communication artifacts.*Missing legacy or unrecorded/).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".run-detail-json > summary").getByText("Binding trace", { exact: true }).waitFor({ state: "visible" }));
-
-  await page.locator(".react-flow__node", { hasText: "Notify operator" }).click();
-  await assert.doesNotReject(() => page.getByText("Not visited in this run").waitFor({ state: "visible" }));
-
-  await page.locator(".react-flow__node", { hasText: "Legacy audit gap" }).click();
-  const inspectPanel = page.locator(".inspect-node-panel");
-  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Tool calls" }).getByText("No tool-call audit records").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Agents" }).getByText("No agent session records").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Communication artifacts" }).getByText("No communication artifact records").waitFor({ state: "visible" }));
 
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   await page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).click();

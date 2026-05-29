@@ -436,6 +436,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = [
   "failed",
+  "error_routed",
   "running",
   "waiting",
   "completion_pending",
@@ -2607,6 +2608,18 @@ function summarizeRunSearchStatuses(counts: Record<string, number>): string {
   return entries.map(([status, count]) => `${status} ${count}`).join(", ");
 }
 
+function workflowRunStateLabel(runState: string | null | undefined, fallbackState: string | null | undefined = null): string {
+  return runState ?? fallbackState ?? "active";
+}
+
+function workflowRunStateClassName(
+  runState: string | null | undefined,
+  fallbackState: string | null | undefined = null,
+): string {
+  const state = workflowRunStateLabel(runState, fallbackState);
+  return state === "errored" ? "failed" : state;
+}
+
 function workflowRunDetailGraphNodes(detail: WorkflowRunDetail): Array<WorkflowNodeConfig & { kind: WorkflowNodeKind }> {
   const snapshot = detail.graph.snapshot;
   const source = snapshot
@@ -2659,12 +2672,12 @@ function workflowRunDetailVisitedNodeIds(detail: WorkflowRunDetail): Set<string>
 }
 
 function workflowRunDetailIsFailed(detail: WorkflowRunDetail): boolean {
+  if (detail.run_state === "error_routed") return false;
   return Boolean(
     detail.run_state === "errored" ||
       detail.delivery_state === "failed" ||
       detail.failed_node_id ||
-      detail.failed_node_status ||
-      detail.error,
+      detail.failed_node_status === "failed",
   );
 }
 
@@ -8790,8 +8803,10 @@ export default function App() {
             <div className="section-label">Inspected run</div>
             <div className="runtime-run-event">{runDetail.event_id}</div>
           </div>
-          <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
-            {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
+          <span
+            className={`runtime-run-state state-${workflowRunStateClassName(runDetail.run_state, runDetail.delivery_state)}`}
+          >
+            {workflowRunStateLabel(runDetail.run_state, runDetail.delivery_state)}
           </span>
         </div>
         <div className="run-detail-meta-grid">
@@ -8952,7 +8967,7 @@ export default function App() {
   }
 
   function renderRunSearchResult(run: WorkflowRunSearchItem) {
-    const stateClass = run.run_state === "errored" ? "failed" : run.run_state || "active";
+    const stateClass = workflowRunStateClassName(run.run_state, run.delivery_state);
     const sessionLabel = run.has_agent_session
       ? `Session ${run.session_ids.slice(0, 2).join(", ")}${run.session_ids.length > 2 ? ` +${run.session_ids.length - 2}` : ""}`
       : "No agent session";
@@ -8960,7 +8975,7 @@ export default function App() {
       <div key={run.event_id} className="runtime-run-card run-search-card">
         <div className="runtime-run-header">
           <div className="runtime-run-event">{run.event_id}</div>
-          <div className={`runtime-run-state state-${stateClass}`}>{run.run_state}</div>
+          <div className={`runtime-run-state state-${stateClass}`}>{workflowRunStateLabel(run.run_state, run.delivery_state)}</div>
         </div>
         <div className="runtime-run-meta">
           Latest {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
@@ -9249,10 +9264,12 @@ export default function App() {
                 <div className="runtime-runs">
                   {visibleRuns.map((run: WorkflowRunSummary) => (
                     <div key={run.event_id} className="runtime-run-card">
-                      <div className="runtime-run-header">
-                        <div className="runtime-run-event">{run.event_id}</div>
-                        <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
-                          {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                <div className="runtime-run-header">
+                  <div className="runtime-run-event">{run.event_id}</div>
+                        <div
+                          className={`runtime-run-state state-${workflowRunStateClassName(run.run_state, run.delivery_state)}`}
+                        >
+                          {workflowRunStateLabel(run.run_state, run.delivery_state)}
                         </div>
                       </div>
                       <div className="runtime-run-meta">

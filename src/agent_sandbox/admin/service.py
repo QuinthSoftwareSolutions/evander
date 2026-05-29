@@ -13603,7 +13603,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     run["failed_at"] = latest_activity_at
                     run["error"] = error
                     run["resumable"] = resumable
-            elif run.get("run_state") != "errored":
+            elif status == "error_routed":
+                if run.get("run_state") != "errored":
+                    run["run_state"] = "error_routed"
+                if error is not None and not run.get("error"):
+                    run["error"] = error
+            elif run.get("run_state") not in {"errored", "error_routed"}:
                 run["run_state"] = "active"
             active_nodes = run.setdefault("active_nodes", [])
             assert isinstance(active_nodes, list)
@@ -13792,7 +13797,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status = str(raw_record.get("status") or "").strip()
             if raw_record.get("dismissed_at"):
                 continue
-            if status not in {"running", "waiting", "failed", "completion_pending"}:
+            if status not in {"running", "waiting", "failed", "completion_pending", "error_routed"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("effect_id") or "").strip()
@@ -14259,6 +14264,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status_counts = dict(sorted(group["status_counts"].items()))
             if status_counts.get("failed", 0) > 0:
                 run_state = "errored"
+            elif status_counts.get("error_routed", 0) > 0:
+                run_state = "error_routed"
             elif any(status_counts.get(status, 0) > 0 for status in active_statuses):
                 run_state = "active"
             else:
@@ -16884,6 +16891,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "event_id": selected_event_id,
                 "run_state": "errored"
                 if any(node.status == "failed" for node in node_details)
+                else "error_routed"
+                if any(node.status == "error_routed" for node in node_details)
                 else "active",
                 "trace_id": selected_trace_id,
                 "source_node_id": _coerce_optional_string(
