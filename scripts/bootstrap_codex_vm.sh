@@ -285,6 +285,7 @@ model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "high"
 personality = "pragmatic"
+web_search = "disabled"
 openai_base_url = "${CODEX_LLM_BASE_URL}"
 
 [mcp_servers.agent_sandbox]

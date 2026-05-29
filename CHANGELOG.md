@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Session Web Search Policy
+
+- Added a first-class `web_search_enabled` session flag for agent create and
+  policy update flows.
+- Made the OpenAI relay deny hosted Responses web search tool declarations
+  unless the session explicitly enables the flag.
+- Wrote Codex bootstrap, VM resume, and container prompt config with
+  `web_search` set from the session flag so agents default to disabled search.
+- Refreshed the built workflow editor bundle so the Current Runs / Latest Runs
+  checkboxes render on their own rows in the served Admin Web UI.
+
 ## 2026-05-29 - Agent Create Session Metadata
 
 - Added an optional `metadata` JSON patch to `effect:agent:create` so workflow

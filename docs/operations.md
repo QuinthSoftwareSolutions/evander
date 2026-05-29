@@ -498,6 +498,11 @@ Storage layout for directory config:
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
+- Hosted OpenAI web search is denied by default at the relay. Set the session
+  policy flag `web_search_enabled: true` only for agents that should be allowed
+  to declare Responses `web_search` tools.
+- Codex bootstrap and resume paths set `web_search` from that session policy,
+  defaulting to `disabled`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
 
 ### Relay streaming troubleshooting

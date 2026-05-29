@@ -165,6 +165,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     communication_file_send_enabled: ConfigValue | None = None
     communication_file_max_bytes: ConfigValue | None = None
     communication_file_require_approval_for_send: ConfigValue | None = None
+    web_search_enabled: ConfigValue | None = None
     dotnet: ConfigValue | None = None
     nuget: ConfigValue | None = None
     mssql: ConfigValue | None = None

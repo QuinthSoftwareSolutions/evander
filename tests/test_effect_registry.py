@@ -353,8 +353,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         is RuntimeDiagnosticsSnapshotEffectProvider
     )
     assert (
-        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"]
-        is AdoPipelineRunEffectProvider
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
     )
 
 
@@ -604,6 +603,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         communication_file_send_enabled=False,
         communication_file_max_bytes=4096,
         communication_file_require_approval_for_send=True,
+        web_search_enabled=True,
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -631,6 +631,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
 
 
 def test_agent_create_provider_passes_session_metadata() -> None:
@@ -1307,6 +1308,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
+    assert 'web_search="disabled"' in command
     assert "cd /home/agent" in command
 
 
@@ -1904,6 +1906,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             communication_file_send_enabled=True,
             communication_file_max_bytes=2048,
             communication_file_require_approval_for_send=True,
+            web_search_enabled=True,
             dotnet=True,
             nuget=True,
             playwright=True,
@@ -1954,6 +1957,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048
     assert manifest.communication_file_require_approval_for_send is True
+    assert manifest.web_search_enabled is True
     assert manifest.metadata["workflow"] == {"state": "active"}
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     assert create["execution_backend"] == "container_worker_vm"
@@ -2026,6 +2030,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert 'export DOTNET_CLI_HOME="$HOME"' in bootstrap_by_path["/home/agent/.profile"]["content"]
@@ -2086,6 +2091,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
+    assert 'web_search="live"' in str(backend.started_specs[-1].command)
 
 
 def test_agent_clone_container_skips_config_job_when_repo_already_prepared(

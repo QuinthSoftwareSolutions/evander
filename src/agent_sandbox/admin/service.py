@@ -2760,6 +2760,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Maximum size in bytes for a single communication file. Leave blank to inherit policy defaults.",
             ),
             _field(
+                "web_search_enabled",
+                "Web search",
+                "boolean",
+                bindable=True,
+                description="Allow the created session to use OpenAI-hosted web_search tools through the OpenAI relay.",
+            ),
+            _field(
                 "dotnet",
                 "Dotnet",
                 "boolean",
@@ -5616,6 +5623,7 @@ def _build_issue_session_manifest(
     communication_file_send_enabled: bool | None = None,
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
+    web_search_enabled: bool = False,
 ) -> SessionManifest:
     resolved_allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
     if discord_channels:
@@ -5710,6 +5718,7 @@ def _build_issue_session_manifest(
             if communication_file_require_approval_for_send is None
             else communication_file_require_approval_for_send
         ),
+        web_search_enabled=web_search_enabled,
         expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
         metadata=metadata,
     )
@@ -5814,6 +5823,8 @@ COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
     "communication_file_require_approval_for_send",
 )
 
+SESSION_BOOL_POLICY_FIELDS: tuple[str, ...] = ("web_search_enabled",)
+
 
 def _normalize_session_policy_bool(value: object, *, field_name: str) -> bool:
     if isinstance(value, bool):
@@ -5876,6 +5887,7 @@ def _session_policy_update_from_payload(
         "teams_chat_allowlist",
         "teams_user_allowlist",
         "metadata",
+        *SESSION_BOOL_POLICY_FIELDS,
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     }
     unsupported = sorted(set(payload) - allowed_fields)
@@ -5949,6 +5961,12 @@ def _session_policy_update_from_payload(
         )
 
     update.update(_communication_file_session_policy_update(payload))
+
+    for field_name in SESSION_BOOL_POLICY_FIELDS:
+        if field_name in payload:
+            update[field_name] = _normalize_session_policy_bool(
+                payload.get(field_name), field_name=field_name
+            )
 
     if "metadata" in payload:
         metadata = payload.get("metadata")
@@ -8514,6 +8532,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "communication_file_require_approval_for_send": (
                 session.communication_file_require_approval_for_send
             ),
+            "web_search_enabled": session.web_search_enabled,
             "metadata": dict(session.metadata),
             "labels": labels,
         }
@@ -9041,6 +9060,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if "communication_file_require_approval_for_send" in payload
                     else None
                 ),
+                web_search_enabled=(
+                    _normalize_session_policy_bool(
+                        payload.get("web_search_enabled"),
+                        field_name="web_search_enabled",
+                    )
+                    if "web_search_enabled" in payload
+                    else False
+                ),
                 dotnet=bool(payload.get("dotnet", False)),
                 nuget=bool(payload.get("nuget", False)),
                 mssql=bool(payload.get("mssql", False)),
@@ -9153,6 +9180,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if "communication_file_require_approval_for_send" in payload
                 else None
             ),
+            web_search_enabled=(
+                _normalize_session_policy_bool(
+                    payload.get("web_search_enabled"),
+                    field_name="web_search_enabled",
+                )
+                if "web_search_enabled" in payload
+                else False
+            ),
         ).model_copy(
             update={
                 "vm_id": None,
@@ -9183,6 +9218,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     config=backend.config,
                     session_id=session_id,
                     model=model,
+                    web_search_enabled=(
+                        _normalize_session_policy_bool(
+                            payload.get("web_search_enabled"),
+                            field_name="web_search_enabled",
+                        )
+                        if "web_search_enabled" in payload
+                        else False
+                    ),
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
@@ -9506,6 +9549,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "teams_chat_allowlist",
             "teams_user_allowlist",
             "metadata",
+            "web_search_enabled",
             "email_mailboxes",
             "email_folders",
             "labels",
@@ -9549,6 +9593,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "teams_chat_allowlist",
                 "teams_user_allowlist",
                 "metadata",
+                "web_search_enabled",
                 *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
             )
             if key in body
@@ -17459,6 +17504,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         communication_file_send_enabled: bool | None = None,
         communication_file_max_bytes: int | None = None,
         communication_file_require_approval_for_send: bool | None = None,
+        web_search_enabled: bool = False,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
@@ -17488,6 +17534,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["communication_file_require_approval_for_send"] = (
                 communication_file_require_approval_for_send
             )
+        payload["web_search_enabled"] = web_search_enabled
         if metadata is not None:
             payload["metadata"] = metadata
         return self.vm_agent_admin.create_vm(

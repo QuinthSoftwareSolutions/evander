@@ -57,6 +57,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "communication_file_require_approval_for_send": (
                 effect.communication_file_require_approval_for_send
             ),
+            "web_search_enabled": effect.web_search_enabled,
             "dotnet": effect.dotnet,
             "nuget": effect.nuget,
             "mssql": effect.mssql,
@@ -157,13 +158,15 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
+            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
             codex_skills=codex_skills,
-            directory_path=normalize_optional_string(payload.get("directory_path")) or directory_path,
+            directory_path=normalize_optional_string(payload.get("directory_path"))
+            or directory_path,
             metadata=_metadata_patch(payload.get("metadata")),
             allow_existing_session=existing_agent_behavior == "upsert",
         )
@@ -263,6 +266,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
+            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
             metadata=metadata,
         )
         session_record = backend.prepare_session(
@@ -281,6 +285,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     config=config,
                     session_id=session_id,
                     model=model,
+                    web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),

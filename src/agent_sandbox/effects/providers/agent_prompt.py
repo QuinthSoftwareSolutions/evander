@@ -239,6 +239,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 base_gateway_url=container_worker_guest_gateway_url(effective_config),
             ),
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         handle = backend.start(
             backend.prepare(
@@ -1214,6 +1215,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         resume_thread_id: str | None,
         resume_mode: str | None = None,
         mcp_gateway_url: str | None = None,
+        web_search_enabled: bool = False,
     ) -> str:
         return container_prompt_command(
             prompt=prompt,
@@ -1221,6 +1223,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
             mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=web_search_enabled,
         )
 
     @classmethod
