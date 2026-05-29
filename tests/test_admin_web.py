@@ -8090,6 +8090,36 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     ]
     assert list_vms_calls[0]["directory_path"] == "root/team-a"
     assert list_vms_calls[0]["direct_only"] is True
+    assert list_vms_calls[0]["omit_state"] is False
+    assert payload["summary_only"] is False
+    assert payload["reconcile_containers"] is True
+    assert payload["omit_vm_state"] is False
+
+    summary_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true"
+    )
+
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()
+    assert summary_payload["summary_only"] is True
+    assert summary_payload["reconcile_containers"] is False
+    assert summary_payload["omit_vm_state"] is True
+    assert list_vms_calls[1]["directory_path"] == "root/team-a"
+    assert list_vms_calls[1]["omit_state"] is True
+
+    override_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&reconcile_containers=true&omit_vm_state=false"
+    )
+
+    assert override_response.status_code == 200
+    override_payload = override_response.json()
+    assert override_payload["summary_only"] is True
+    assert override_payload["reconcile_containers"] is True
+    assert override_payload["omit_vm_state"] is False
+    assert list_vms_calls[2]["directory_path"] == "root/team-a"
+    assert list_vms_calls[2]["omit_state"] is False
 
     root_response = client.get(
         "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true"
@@ -8523,6 +8553,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "mssql": True,
         "mssql_init_root": "/tmp/init",
         "playwright": True,
+        "web_search_enabled": False,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
     }

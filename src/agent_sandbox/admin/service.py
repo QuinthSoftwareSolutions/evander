@@ -8906,6 +8906,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         direct_only: bool = False,
         include_inactive: bool = True,
         reconcile_containers: bool = True,
+        omit_vm_state: bool = False,
         backend: str | None = None,
         all_directories: bool = False,
     ) -> list[AgentRecord]:
@@ -8919,6 +8920,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             try:
                 vm_summaries = self.list_vms(
                     include_inactive=include_inactive,
+                    omit_state=omit_vm_state,
                     directory_path=None if all_directories else normalized_directory,
                     direct_only=False if all_directories else direct_only,
                 )

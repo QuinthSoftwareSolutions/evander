@@ -465,6 +465,91 @@ def test_list_agents_groups_container_executions_under_session(
     assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
 
 
+def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-current",
+            session_id="container-session",
+            worker_job_id="job-current",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="running",
+            metadata={"image": "runner:latest"},
+        )
+    )
+    list_vms_calls: list[dict[str, object]] = []
+
+    def list_vms(self: AdminService, **kwargs: object) -> list[object]:
+        list_vms_calls.append(kwargs)
+        return []
+
+    inspect_calls: list[str] = []
+
+    class FakeContainerWorkerBackend:
+        def inspect(self, execution_id: str) -> None:
+            inspect_calls.append(execution_id)
+
+    def fake_container_worker_backend(
+        self: AdminService, **_kwargs: object
+    ) -> FakeContainerWorkerBackend:
+        return FakeContainerWorkerBackend()
+
+    monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
+    monkeypatch.setattr(
+        service, "_container_worker_backend", MethodType(fake_container_worker_backend, service)
+    )
+
+    summary_agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+        omit_vm_state=True,
+        backend="all",
+    )
+
+    assert [(agent.agent_id, agent.backend, agent.status) for agent in summary_agents] == [
+        ("container-session", "container_worker_vm", "running")
+    ]
+    assert list_vms_calls[-1]["omit_state"] is True
+    assert inspect_calls == []
+
+    deep_agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=True,
+        omit_vm_state=False,
+        backend="all",
+    )
+
+    assert [(agent.agent_id, agent.backend, agent.status) for agent in deep_agents] == [
+        ("container-session", "container_worker_vm", "running")
+    ]
+    assert list_vms_calls[-1]["omit_state"] is False
+    assert inspect_calls == ["exec-current"]
+
+
 def test_list_agents_ignores_execution_cleanup_success_for_session_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
