@@ -88,9 +88,12 @@ def test_session_renew_if_expired_extends_expired_session(tmp_path: Path) -> Non
     assert renewed is not None
     assert output["success"] is True
     assert output["extended"] is True
+    assert output["renewed"] is True
     assert output["was_expired"] is True
+    assert output["renewal_reason"] == "expired"
     assert output["status"] == "extended"
     assert output["extend_by"] == 21600
+    assert output["renew_if_expires_within"] is None
     assert before + timedelta(hours=6) <= renewed.expires_at <= after + timedelta(hours=6)
     assert output["expires_at"] == renewed.expires_at.isoformat()
 
@@ -116,8 +119,11 @@ def test_session_renew_if_expired_leaves_active_session_unchanged(tmp_path: Path
     assert unchanged.expires_at == active_expires_at
     assert output["success"] is True
     assert output["extended"] is False
+    assert output["renewed"] is False
     assert output["was_expired"] is False
+    assert output["renewal_reason"] == "outside_window"
     assert output["status"] == "active"
+    assert output["renew_if_expires_within"] is None
     assert output["expires_at"] == active_expires_at.isoformat()
 
 
@@ -142,6 +148,72 @@ def test_session_renew_if_expired_can_resolve_vm_name(tmp_path: Path) -> None:
     assert output["session_id"] == "session-1"
     assert output["vm_name"] == "vm-1"
     assert output["extend_by"] == 1800
+
+
+def test_session_renew_if_expired_renews_active_session_within_window(
+    tmp_path: Path,
+) -> None:
+    provider, repository = _build_provider(
+        tmp_path,
+        SessionRenewIfExpiredEffectDefinition(
+            id="renew-expired",
+            display_name="Renew expired",
+            type="effect:session:renew-if-expired",
+            session_id="session-1",
+            extend_by="6h",
+            renew_if_expires_within="30m",
+        ),
+    )
+    active_expires_at = datetime.now(UTC) + timedelta(minutes=10)
+    repository.upsert_session(_manifest(expires_at=active_expires_at))
+    before = datetime.now(UTC)
+
+    output = provider.execute()
+
+    after = datetime.now(UTC)
+    renewed = repository.get_session("session-1")
+    assert renewed is not None
+    assert output["success"] is True
+    assert output["extended"] is True
+    assert output["renewed"] is True
+    assert output["was_expired"] is False
+    assert output["renewal_reason"] == "within_window"
+    assert output["status"] == "extended"
+    assert output["renew_if_expires_within"] == 1800
+    assert before + timedelta(hours=6) <= renewed.expires_at <= after + timedelta(hours=6)
+    assert output["expires_at"] == renewed.expires_at.isoformat()
+
+
+def test_session_renew_if_expired_leaves_active_session_outside_window(
+    tmp_path: Path,
+) -> None:
+    provider, repository = _build_provider(
+        tmp_path,
+        SessionRenewIfExpiredEffectDefinition(
+            id="renew-expired",
+            display_name="Renew expired",
+            type="effect:session:renew-if-expired",
+            session_id="session-1",
+            extend_by="6h",
+            renew_if_expires_within="30m",
+        ),
+    )
+    active_expires_at = datetime.now(UTC) + timedelta(hours=2)
+    repository.upsert_session(_manifest(expires_at=active_expires_at))
+
+    output = provider.execute()
+
+    unchanged = repository.get_session("session-1")
+    assert unchanged is not None
+    assert unchanged.expires_at == active_expires_at
+    assert output["success"] is True
+    assert output["extended"] is False
+    assert output["renewed"] is False
+    assert output["was_expired"] is False
+    assert output["renewal_reason"] == "outside_window"
+    assert output["status"] == "active"
+    assert output["renew_if_expires_within"] == 1800
+    assert output["expires_at"] == active_expires_at.isoformat()
 
 
 def test_session_renew_if_expired_rejects_unknown_target(tmp_path: Path) -> None:

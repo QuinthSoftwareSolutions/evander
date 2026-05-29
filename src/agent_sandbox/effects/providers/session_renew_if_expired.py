@@ -48,9 +48,28 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
         now = datetime.now(UTC)
         previous_expires_at = _ensure_utc(session.expires_at)
         duration = parse_session_extend_by(payload.get("extend_by"))
-        parse_session_renew_if_expires_within(payload.get("renew_if_expires_within"))
+        renew_if_expires_within = parse_session_renew_if_expires_within(
+            payload.get("renew_if_expires_within")
+        )
+        renew_if_expires_within_seconds = (
+            _duration_to_seconds(renew_if_expires_within)
+            if renew_if_expires_within is not None
+            else None
+        )
         new_expires_at = previous_expires_at
-        extended = previous_expires_at <= now
+        was_expired = previous_expires_at <= now
+        renewal_reason = "outside_window"
+        extended = False
+        if was_expired:
+            extended = True
+            renewal_reason = "expired"
+        elif (
+            renew_if_expires_within is not None
+            and previous_expires_at <= now + renew_if_expires_within
+        ):
+            extended = True
+            renewal_reason = "within_window"
+
         if extended:
             new_expires_at = now + duration
             session.expires_at = new_expires_at
@@ -62,12 +81,15 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
             "action": "renew_if_expired",
             "status": "extended" if extended else "active",
             "extended": extended,
-            "was_expired": extended,
+            "renewed": extended,
+            "was_expired": was_expired,
+            "renewal_reason": renewal_reason,
             "target": target,
             "session_id": session.session_id,
             "vm_name": vm_name,
             "directory_path": session.directory_path,
             "extend_by": _duration_to_seconds(duration),
+            "renew_if_expires_within": renew_if_expires_within_seconds,
             "previous_expires_at": previous_expires_at.isoformat(),
             "new_expires_at": new_expires_at.isoformat(),
             "expires_at": new_expires_at.isoformat(),
