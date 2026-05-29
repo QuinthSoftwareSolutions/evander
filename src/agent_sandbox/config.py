@@ -47,6 +47,12 @@ from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _contains_url_control_character(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 bootstrap_default_node_schemas()
 
 
@@ -333,6 +339,10 @@ class GatewayConfig(BaseModel):
     def normalize_http_url_fields(cls, value: object, info) -> object:
         if not isinstance(value, str):
             return value
+        if _contains_url_control_character(value):
+            raise ValueError(
+                f"{info.field_name} must be a valid http(s) URL, got {value!r}"
+            )
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError(f"{info.field_name} cannot be empty")

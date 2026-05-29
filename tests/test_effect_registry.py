@@ -2109,7 +2109,18 @@ def test_agent_create_container_can_override_npm_registry_url(
     assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
 
 
-def test_agent_create_effect_definition_rejects_invalid_npm_registry_url() -> None:
+@pytest.mark.parametrize(
+    "npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
+def test_agent_create_effect_definition_rejects_invalid_npm_registry_url(
+    npm_registry_url: str,
+) -> None:
     with pytest.raises(ValidationError, match="npm_registry_url"):
         AgentCreateEffectDefinition(
             id="agent-create",
@@ -2117,13 +2128,23 @@ def test_agent_create_effect_definition_rejects_invalid_npm_registry_url() -> No
             type="effect:agent:create",
             execution_backend="container_worker_vm",
             session_id="session-invalid",
-            npm_registry_url="ftp://nexus.test/repository/npm-all/",
+            npm_registry_url=npm_registry_url,
         )
 
 
+@pytest.mark.parametrize(
+    "resolved_npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
 def test_agent_create_container_rejects_invalid_npm_registry_url_before_bootstrap(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    resolved_npm_registry_url: str,
 ) -> None:
     config = GatewayConfig(
         runtime_dir=tmp_path,
@@ -2165,7 +2186,7 @@ def test_agent_create_container_rejects_invalid_npm_registry_url_before_bootstra
     )
 
     with pytest.raises(ValueError, match="npm_registry_url"):
-        provider.execute(resolved_config={"npm_registry_url": "ftp://nexus.test/repository/npm-all/"})
+        provider.execute(resolved_config={"npm_registry_url": resolved_npm_registry_url})
 
     assert backend.prepared_sessions == []
     assert backend.written_files == []

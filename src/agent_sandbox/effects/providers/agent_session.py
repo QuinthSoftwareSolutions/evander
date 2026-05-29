@@ -46,6 +46,10 @@ _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
 )
 
 
+def _contains_url_control_character(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 def normalize_optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -56,8 +60,11 @@ def normalize_optional_string(value: Any) -> str | None:
 def normalize_optional_http_url(value: Any, *, field_name: str) -> str | None:
     if value is None:
         return None
-    text = normalize_optional_string(value)
-    if text is None:
+    raw_text = str(value)
+    if _contains_url_control_character(raw_text):
+        raise ValueError(f"{field_name} must be a valid http(s) URL, got {value!r}")
+    text = raw_text.strip()
+    if not text:
         raise ValueError(f"{field_name} must be a valid http(s) URL, got {value!r}")
     parts = urlsplit(text)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
@@ -521,9 +528,12 @@ def container_worker_guest_pypi_index_url(config: GatewayConfig) -> str:
 
 
 def container_worker_guest_npm_registry_url(config: GatewayConfig) -> str:
-    configured = normalize_optional_string(config.container_worker_guest_npm_registry_url)
+    configured = normalize_optional_http_url(
+        config.container_worker_guest_npm_registry_url,
+        field_name="container_worker_guest_npm_registry_url",
+    )
     if configured:
-        return _ensure_trailing_slash(configured)
+        return configured
     return _service_url_from_gateway_url(
         config.gateway_url,
         port=NEXUS_PACKAGE_CACHE_PORT,

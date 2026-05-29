@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Container NPM Registry URL Validation
+
+- Rejected control characters in container npm registry URLs before generating
+  session `.npmrc` content.
+
 ## 2026-05-29 - npm Audit Facade Deployment Wiring
 
 - Added the host-side npm audit facade to the persistent systemd install flow and start list.

@@ -383,6 +383,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_nuget_relay_base_url", ""),
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
+        ("container_worker_guest_npm_registry_url", "http://facade.test\nfetch-retries=0"),
         ("openai_api_base_url", "not-a-url"),
         ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
