@@ -20,6 +20,7 @@ from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSu
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository, normalize_skill_names
+from agent_sandbox.session_expiry import ensure_session_not_expired
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import ExecutionBackendKind
 from agent_sandbox.vm.provider import VmProviderRegistry
@@ -1578,6 +1579,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         effective_resume_thread_id: str | None = None
         try:
             session_id, manifest = self._resolve_session_target(target)
+            ensure_session_not_expired(manifest)
             resolved_model = str(model or "").strip() or self._deps.resolve_agent_model_for_session(
                 manifest
             )
