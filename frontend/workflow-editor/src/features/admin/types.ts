@@ -95,6 +95,7 @@ export type AgentCreateRequest = {
   model?: string | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
+  web_search_enabled?: boolean;
   allowed_tools?: string[];
   allowed_script_names?: string[];
   discord_channels?: string[];
@@ -116,6 +117,7 @@ export type AgentPolicyUpdateRequest = {
   model?: string | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
+  web_search_enabled?: boolean;
   allowed_tools?: string[];
   approval_required_tools?: string[];
   allowed_script_names?: string[];
@@ -141,6 +143,7 @@ export type AgentSessionPolicy = {
   email_mailboxes: string[];
   email_folders: string[];
   labels: Record<string, string>;
+  web_search_enabled: boolean;
 };
 
 export type AgentListResponse = {

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -40,6 +42,18 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 
+HOSTED_WEB_SEARCH_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+}
+
+
+@dataclass(frozen=True)
+class RelayRequestContext:
+    session_id: str
+    config: GatewayConfig
+    web_search_enabled: bool
+
 
 class OpenAIRelay:
     def __init__(
@@ -71,26 +85,44 @@ class OpenAIRelay:
 
         async def proxy(request: Request) -> Response:
             try:
-                resolved_config = relay._resolve_request_config(request)
+                request_context = relay._resolve_request_context(request)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-            api_key = os.environ.get(resolved_config.openai_api_key_env)
+            api_key = os.environ.get(request_context.config.openai_api_key_env)
             if not api_key:
                 return JSONResponse(
                     {
-                        "error": f"Host environment variable {resolved_config.openai_api_key_env} is not set."
+                        "error": f"Host environment variable {request_context.config.openai_api_key_env} is not set."
                     },
                     status_code=503,
                 )
 
             upstream_path = request.path_params["path"]
             upstream_url = relay._upstream_http_url(
-                base_url=resolved_config.openai_api_base_url,
+                base_url=request_context.config.openai_api_base_url,
                 upstream_path=upstream_path,
                 query_items=request.query_params.multi_items(),
             )
             request_body = await request.body()
+            if (
+                not request_context.web_search_enabled
+                and relay._request_body_declares_hosted_web_search(request_body)
+            ):
+                relay._log_hosted_web_search_denied(
+                    session_id=request_context.session_id,
+                    request_kind="http",
+                    path=request.url.path,
+                )
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Hosted web search is disabled for this session. "
+                            "Set session.web_search_enabled=true to allow Responses web_search tools."
+                        )
+                    },
+                    status_code=403,
+                )
 
             headers = {
                 key: value
@@ -106,11 +138,11 @@ class OpenAIRelay:
                     upstream_url=upstream_url,
                     headers=headers,
                     request_body=request_body,
-                    timeout_seconds=resolved_config.openai_relay_timeout_seconds,
+                    timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                 )
 
             async with httpx.AsyncClient(
-                timeout=resolved_config.openai_relay_timeout_seconds,
+                timeout=request_context.config.openai_relay_timeout_seconds,
                 transport=relay.transport,
             ) as client:
                 upstream_response = await client.request(
@@ -128,19 +160,19 @@ class OpenAIRelay:
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
-                resolved_config = relay._resolve_websocket_config(websocket)
+                request_context = relay._resolve_websocket_context(websocket)
             except ValueError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
 
-            api_key = os.environ.get(resolved_config.openai_api_key_env)
+            api_key = os.environ.get(request_context.config.openai_api_key_env)
             if not api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")
                 return
 
             upstream_path = websocket.path_params["path"]
             upstream_url = relay._upstream_websocket_url(
-                base_url=resolved_config.openai_api_base_url,
+                base_url=request_context.config.openai_api_base_url,
                 upstream_path=upstream_path,
                 query_items=websocket.query_params.multi_items(),
             )
@@ -155,10 +187,16 @@ class OpenAIRelay:
             async with relay._connect_upstream_websocket(
                 upstream_url,
                 headers=headers,
-                timeout_seconds=resolved_config.openai_relay_timeout_seconds,
+                timeout_seconds=request_context.config.openai_relay_timeout_seconds,
             ) as upstream:
                 await websocket.accept()
-                await relay._proxy_websocket_traffic(websocket, upstream)
+                await relay._proxy_websocket_traffic(
+                    websocket,
+                    upstream,
+                    session_id=request_context.session_id,
+                    path=websocket.url.path,
+                    web_search_enabled=request_context.web_search_enabled,
+                )
 
         return Starlette(
             debug=False,
@@ -269,7 +307,7 @@ class OpenAIRelay:
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
 
-    def _resolve_request_config(self, request: Request) -> GatewayConfig:
+    def _resolve_request_context(self, request: Request) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
             request.path_params
         ) or self._require_session_id(request.query_params.multi_items())
@@ -280,9 +318,13 @@ class OpenAIRelay:
             path=request.url.path,
             api_key_env=resolved_config.openai_api_key_env,
         )
-        return resolved_config
+        return RelayRequestContext(
+            session_id=session_id,
+            config=resolved_config,
+            web_search_enabled=self._session_web_search_enabled(session_id),
+        )
 
-    def _resolve_websocket_config(self, websocket: WebSocket) -> GatewayConfig:
+    def _resolve_websocket_context(self, websocket: WebSocket) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
             websocket.path_params
         ) or self._require_session_id(websocket.query_params.multi_items())
@@ -293,7 +335,28 @@ class OpenAIRelay:
             path=websocket.url.path,
             api_key_env=resolved_config.openai_api_key_env,
         )
-        return resolved_config
+        return RelayRequestContext(
+            session_id=session_id,
+            config=resolved_config,
+            web_search_enabled=self._session_web_search_enabled(session_id),
+        )
+
+    def _session_web_search_enabled(self, session_id: str) -> bool:
+        try:
+            session = self.provider_config_resolver.get_session_manifest(session_id)
+        except ValueError:
+            return False
+        return bool(getattr(session, "web_search_enabled", False))
+
+    @staticmethod
+    def _request_body_declares_hosted_web_search(request_body: bytes) -> bool:
+        if not request_body:
+            return False
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return _payload_declares_hosted_web_search(payload)
 
     @staticmethod
     def _log_resolved_api_key_env(
@@ -305,6 +368,15 @@ class OpenAIRelay:
             request_kind,
             path,
             api_key_env,
+        )
+
+    @staticmethod
+    def _log_hosted_web_search_denied(*, session_id: str, request_kind: str, path: str) -> None:
+        logger.warning(
+            "relay_denied_hosted_web_search session_id=%s request_kind=%s path=%s",
+            session_id,
+            request_kind,
+            path,
         )
 
     @staticmethod
@@ -376,7 +448,15 @@ class OpenAIRelay:
         ) as upstream:
             yield upstream
 
-    async def _proxy_websocket_traffic(self, websocket: WebSocket, upstream: Any) -> None:
+    async def _proxy_websocket_traffic(
+        self,
+        websocket: WebSocket,
+        upstream: Any,
+        *,
+        session_id: str | None = None,
+        path: str = "",
+        web_search_enabled: bool = True,
+    ) -> None:
         try:
             from websockets.exceptions import ConnectionClosedOK
         except ModuleNotFoundError:  # pragma: no cover - guarded earlier
@@ -404,9 +484,39 @@ class OpenAIRelay:
                 if message_type != "websocket.receive":
                     continue
                 if message.get("text") is not None:
+                    text = message["text"]
+                    if not web_search_enabled and _websocket_message_declares_hosted_web_search(
+                        text
+                    ):
+                        self._log_hosted_web_search_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="hosted web search is disabled for this session",
+                        )
+                        return
                     await upstream.send(message["text"])
                     continue
                 if message.get("bytes") is not None:
+                    payload = message["bytes"]
+                    if not web_search_enabled and _websocket_message_declares_hosted_web_search(
+                        payload
+                    ):
+                        self._log_hosted_web_search_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="hosted web search is disabled for this session",
+                        )
+                        return
                     await upstream.send(message["bytes"])
 
         async def upstream_to_client() -> None:
@@ -447,6 +557,52 @@ def create_app(
         transport=transport,
         provider_config_resolver=ProviderConfigResolver(config),
     ).create_app()
+
+
+def _websocket_message_declares_hosted_web_search(message: str | bytes) -> bool:
+    try:
+        if isinstance(message, bytes):
+            payload = json.loads(message.decode("utf-8"))
+        else:
+            payload = json.loads(message)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False
+    return _payload_declares_hosted_web_search(payload)
+
+
+def _payload_declares_hosted_web_search(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return any(_payload_declares_hosted_web_search(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+
+    tools = payload.get("tools")
+    if _tools_declare_hosted_web_search(tools):
+        return True
+    for value in payload.values():
+        if isinstance(value, (dict, list)) and _payload_declares_hosted_web_search(value):
+            return True
+    return False
+
+
+def _tools_declare_hosted_web_search(tools: Any) -> bool:
+    if isinstance(tools, list):
+        return any(_tool_declares_hosted_web_search(tool) for tool in tools)
+    if isinstance(tools, dict):
+        return _tool_declares_hosted_web_search(tools)
+    return False
+
+
+def _tool_declares_hosted_web_search(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    raw_type = str(tool.get("type") or "").strip()
+    if raw_type in HOSTED_WEB_SEARCH_TOOL_TYPES or (
+        raw_type.startswith("web_search_") and raw_type != "web_search_call"
+    ):
+        return True
+    nested_tools = tool.get("tools")
+    return _tools_declare_hosted_web_search(nested_tools)
 
 
 def _project_root() -> Path:
