@@ -5963,6 +5963,42 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     assert payload["recent_node_activity"][0]["source"] == "gate_execution"
 
 
+def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "json-runtime"
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin,
+        "_workflow_run_store_bundle",
+        lambda _: pytest.fail("JSON snapshot read constructed workflow stores"),
+    )
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    snapshot = service.read_workflow_run_snapshot()
+
+    assert snapshot.runs == []
+    assert snapshot.node_activity == {}
+    assert snapshot.recent_node_activity == []
+    assert not runtime_dir.exists()
+
+
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_sqlite_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Workflow Run Snapshot I/O Fix
+
+- Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web
+  reads do not initialize runtime store or journal files.
+- Added SQLite activity timestamp indexes for recent workflow run snapshots.
+
 ## 2026-05-29 - Session Web Search Policy
 
 - Added a first-class `web_search_enabled` session flag for agent create and

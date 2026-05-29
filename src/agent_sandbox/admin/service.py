@@ -13699,8 +13699,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     else None,
                 )
 
-        queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
         if self._workflow_uses_sqlite_store(stores):
+            queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
             queue_payload = {
                 record.event_id: record.model_dump(mode="json")
                 for record in queue_store.list_active_records()
