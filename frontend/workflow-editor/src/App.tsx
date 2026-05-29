@@ -51,6 +51,7 @@ import {
   type WorkflowRunSearchItem,
   type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
+  type WorkflowRunRecentNodeActivity,
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
@@ -151,6 +152,7 @@ type GraphNodeData = {
   hasUnsavedChanges: boolean;
   isDisabled: boolean;
   isInspectGhost?: boolean;
+  runtimePulse: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
   tutorialBlocked?: boolean;
@@ -295,8 +297,17 @@ type WorkflowValidationCacheEntry = {
   diagnostics: WorkflowValidationDiagnostic[];
 };
 
+type RuntimePulseContext = {
+  isInspectMode: boolean;
+  isTutorialMode: boolean;
+  workflowGeneratorOpen: boolean;
+  visibleGraphNodeIds: ReadonlySet<string>;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
+const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
+const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
 const SESSION_LIST_METADATA_FIELD_KEYS = [
@@ -542,7 +553,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasErrorDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${nodeData.runtimePulse ? " runtime-pulse" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -851,6 +862,11 @@ function nodeStatusBadges(activity: WorkflowNodeActivityCounts | undefined): Gra
   });
 }
 
+function trimNonEmpty(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized ? normalized : null;
+}
+
 function buildNodes(
   config: WorkflowConfig,
   layout: WorkflowLayout,
@@ -861,6 +877,7 @@ function buildNodes(
   selectedNodeIds: string[] = [],
   dirtyNodeIds: ReadonlySet<string> = new Set<string>(),
   ghostNodeIds: ReadonlySet<string> = new Set<string>(),
+  runtimePulseNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -904,6 +921,7 @@ function buildNodes(
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
+        runtimePulse: runtimePulseNodeIds.has(node.id),
       },
     };
   });
@@ -3521,6 +3539,16 @@ export default function App() {
   const workflowGeneratorRequestIdRef = useRef(0);
   const validationCacheRef = useRef<Map<string, WorkflowValidationCacheEntry>>(new Map());
   const validationRunIdRef = useRef(0);
+  const runtimePulseContextRef = useRef<RuntimePulseContext>({
+    isInspectMode: false,
+    isTutorialMode: false,
+    workflowGeneratorOpen: false,
+    visibleGraphNodeIds: new Set<string>(),
+  });
+  const runtimePulseNodeIdsRef = useRef<Set<string>>(new Set<string>());
+  const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
+  const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
+  const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -3532,6 +3560,7 @@ export default function App() {
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
   const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
     () => ({ completedTutorialIds: [], skippedTutorialIds: [] }),
@@ -3608,6 +3637,9 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  useEffect(() => {
+    runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
+  }, [runtimePulseNodeIds]);
   const workflowTutorialProgressSets = useMemo(() => ({
     completed: new Set(workflowTutorialProgress.completedTutorialIds),
     skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
@@ -3628,6 +3660,14 @@ export default function App() {
   );
   const visibleGraphNodeIds = new Set(visibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
   const visibleGraphNodeIdKey = workflowGraphKey([...visibleGraphNodeIds]);
+  useEffect(() => {
+    runtimePulseContextRef.current = {
+      isInspectMode,
+      isTutorialMode,
+      workflowGeneratorOpen,
+      visibleGraphNodeIds: new Set(visibleGraphNodeIds),
+    };
+  }, [isInspectMode, isTutorialMode, visibleGraphNodeIdKey, workflowGeneratorOpen]);
   const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
@@ -3653,6 +3693,7 @@ export default function App() {
         selectedNodeId ? [selectedNodeId] : [],
         new Set<string>(),
         inspectGhostNodeIds,
+        new Set<string>(),
       )
     : [];
   const inspectFlowEdges = inspectConfig
@@ -3682,6 +3723,7 @@ export default function App() {
           [],
           {},
           selectedNodeIds,
+          new Set<string>(),
           new Set<string>(),
           new Set<string>(),
         ),
@@ -4066,7 +4108,7 @@ export default function App() {
           initialGraphDirectoryPathRef.current,
         );
         validationCacheRef.current.clear();
-        setRunSnapshot(runSnapshotPayload);
+        applyWorkflowRunSnapshot(runSnapshotPayload);
         const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
           graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
         );
@@ -4089,6 +4131,76 @@ export default function App() {
     };
   }, []);
 
+  function rememberRuntimePulseSeenActivityKey(activityKey: string) {
+    const seenKeys = runtimePulseSeenActivityKeysRef.current;
+    if (seenKeys.has(activityKey)) {
+      return;
+    }
+    seenKeys.add(activityKey);
+    const keyOrder = runtimePulseSeenActivityKeyOrderRef.current;
+    keyOrder.push(activityKey);
+    while (keyOrder.length > RUNTIME_NODE_PULSE_SEEN_KEY_CAP) {
+      const removedKey = keyOrder.shift();
+      if (removedKey !== undefined) {
+        seenKeys.delete(removedKey);
+      }
+    }
+  }
+
+  function scheduleRuntimePulse(nodeId: string) {
+    const existingTimeout = runtimePulseTimeoutsRef.current.get(nodeId);
+    if (existingTimeout !== undefined) {
+      clearTimeout(existingTimeout);
+    }
+    setRuntimePulseNodeIds((current) => {
+      if (current.has(nodeId)) return current;
+      const next = new Set(current);
+      next.add(nodeId);
+      return next;
+    });
+    const timeout = setTimeout(() => {
+      if (runtimePulseTimeoutsRef.current.get(nodeId) !== timeout) {
+        return;
+      }
+      runtimePulseTimeoutsRef.current.delete(nodeId);
+      setRuntimePulseNodeIds((current) => {
+        if (!current.has(nodeId)) return current;
+        const next = new Set(current);
+        next.delete(nodeId);
+        return next;
+      });
+    }, RUNTIME_NODE_PULSE_DURATION_MS);
+    runtimePulseTimeoutsRef.current.set(nodeId, timeout);
+  }
+
+  function applyWorkflowRunSnapshot(payload: WorkflowRunSnapshot) {
+    setRunSnapshot(payload);
+    const recentNodeActivity = payload.recent_node_activity ?? [];
+    if (recentNodeActivity.length === 0) {
+      return;
+    }
+    const context = runtimePulseContextRef.current;
+    const latestUnseenNodeActivity = new Map<string, WorkflowRunRecentNodeActivity>();
+    for (const activity of recentNodeActivity) {
+      const activityKey = trimNonEmpty(activity.activity_key);
+      if (!activityKey) continue;
+      const wasSeen = runtimePulseSeenActivityKeysRef.current.has(activityKey);
+      rememberRuntimePulseSeenActivityKey(activityKey);
+      const nodeId = trimNonEmpty(activity.node_id);
+      const activityAt = trimNonEmpty(activity.activity_at);
+      if (!nodeId || !activityAt) continue;
+      if (wasSeen || latestUnseenNodeActivity.has(nodeId)) continue;
+      latestUnseenNodeActivity.set(nodeId, activity);
+    }
+    if (context.isInspectMode || context.isTutorialMode || context.workflowGeneratorOpen) {
+      return;
+    }
+    for (const [nodeId] of latestUnseenNodeActivity) {
+      if (!context.visibleGraphNodeIds.has(nodeId)) continue;
+      scheduleRuntimePulse(nodeId);
+    }
+  }
+
   const documentLoaded = document !== null;
 
   useEffect(() => {
@@ -4099,6 +4211,7 @@ export default function App() {
         if (cancelled) return;
         setCatalog(catalogPayload);
         setError(null);
+        const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIdsRef.current;
         setFlowNodes((currentNodes) =>
           buildNodes(
             document.config,
@@ -4109,6 +4222,8 @@ export default function App() {
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
             dirtyNodeIdSet,
+            new Set<string>(),
+            pulseNodeIds,
           ),
         );
         setFlowEdges(buildEdges(document.config, catalogPayload));
@@ -4188,7 +4303,7 @@ export default function App() {
       if (!(event instanceof MessageEvent)) return;
       try {
         const payload = JSON.parse(event.data) as WorkflowRunSnapshot;
-        setRunSnapshot(payload);
+        applyWorkflowRunSnapshot(payload);
       } catch {
         // Ignore malformed event payloads and keep last known snapshot.
       }
@@ -4198,7 +4313,13 @@ export default function App() {
       // Keep the last snapshot visible when the stream reports an error.
     });
 
-    return () => stream.close();
+    return () => {
+      stream.close();
+      for (const timeout of runtimePulseTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      runtimePulseTimeoutsRef.current.clear();
+    };
   }, []);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
@@ -4245,7 +4366,7 @@ export default function App() {
         method: "DELETE",
       });
       const nextSnapshot = await fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs");
-      setRunSnapshot(nextSnapshot);
+      applyWorkflowRunSnapshot(nextSnapshot);
       setNodeConnectionMenu(null);
       setPendingConnection(null);
       setError(null);
@@ -4616,6 +4737,8 @@ export default function App() {
           currentPositionsFromNodes(currentNodes),
           restoredSelectedNodeIds,
           new Set(restoredDirtyNodeIds),
+          new Set<string>(),
+          workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
         ),
       );
       setFlowEdges(buildEdges(document.config, catalog));
@@ -4860,6 +4983,7 @@ export default function App() {
   useEffect(() => {
     if (!document) return;
     setFlowNodes((currentNodes) => {
+      const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds;
       return buildNodes(
         document.config,
         document.layout,
@@ -4869,10 +4993,12 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
         dirtyNodeIdSet,
+        new Set<string>(),
+        pulseNodeIds,
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics, workflowGeneratorOpen]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, runtimePulseNodeIds, validationDiagnostics, workflowGeneratorOpen]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -5135,6 +5261,8 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         nextSelectedNodeIds,
         new Set(nextDirtyNodeIds),
+        new Set<string>(),
+        workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
       ),
     );
     setFlowEdges(buildEdges(normalizedDocument.config, catalog));
