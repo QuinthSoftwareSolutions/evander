@@ -4086,6 +4086,145 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
 
 
+def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="session-1",
+            vm_name="vm-1",
+            session_id="session-1",
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=["session-1"],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+        ),
+        execution_store=JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json"),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: None,
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    caplog.set_level(logging.WARNING, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    assert queue_store.get("vm-1") is not None
+    assert "queue_key=vm-1" in caplog.text
+    assert "session_id=session-1" in caplog.text
+    assert "expires_at=" in caplog.text
+
+
+def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="session-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    backend_calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend_calls.append((config, admin_service))
+        or _ContainerDispatchBackendStub(),
+    )
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        execution_store=JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json"),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        provider_config_resolver=SimpleNamespace(
+            resolve_for_session_id=lambda session_id: config,
+            resolve_for_directory=lambda directory_path: config,
+        ),
+    )
+
+    caplog.set_level(logging.WARNING, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert backend_calls == []
+    assert queue_store.get("session-1") is not None
+    assert "queue_key=session-1" in caplog.text
+    assert "session_id=session-1" in caplog.text
+    assert "expires_at=" in caplog.text
+
+
 def test_agent_enqueue_prompt_dispatch_preserves_mcp_lease_for_queued_libvirt_prompt(
     tmp_path: Path,
 ) -> None:
@@ -4173,7 +4312,7 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
             session_id="session-1",
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             metadata={
                 "agent_thread_ids": {
                     "teams:chat-1:agent_thread_id": "thread-existing"
@@ -4260,7 +4399,7 @@ def test_agent_enqueue_prompt_dispatch_does_not_fallback_to_default_thread_for_n
             session_id="session-1",
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             metadata={
                 "agent_thread_id": "thread-default",
                 "agent_thread_ids": {
@@ -4342,7 +4481,7 @@ def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_s
             session_id="session-1",
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             metadata={
                 "agent_thread_ids": {
                     "teams:chat-1:agent_thread_id": "thread-existing"
@@ -4645,7 +4784,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             session_id="session-1",
             vm_id=None,
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
             vm_provider_id="truman",
             model="gpt-5.4-mini",
@@ -4773,7 +4912,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             session_id="session-1",
             vm_id=None,
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
             vm_provider_id="truman",
             model="gpt-5.4-mini",
