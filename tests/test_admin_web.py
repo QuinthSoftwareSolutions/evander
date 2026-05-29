@@ -1204,10 +1204,14 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
+        "metadata",
     }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["metadata"]["kind"] == "json"
+    assert agent_create_fields["metadata"]["json_value_type"] == "object"
+    assert agent_create_fields["metadata"]["description"]
     assert agent_create_fields["directory_path"]["description"]
     assert agent_create_fields["allowed_tools"]["options"]
     assert {

@@ -8678,6 +8678,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         vm_name="lab-vm",
         session_id="lab-session",
         labels={"workflow": "issue-worker", "agent_role": "issue"},
+        metadata={"workflow": {"state": "active"}, "labels": {"priority": "high"}},
         dotnet=True,
         nuget=True,
         playwright=True,
@@ -8711,7 +8712,14 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
-    assert manifest.metadata == {"labels": {"workflow": "issue-worker", "agent_role": "issue"}}
+    assert manifest.metadata == {
+        "workflow": {"state": "active"},
+        "labels": {
+            "workflow": "issue-worker",
+            "agent_role": "issue",
+            "priority": "high",
+        },
+    }
     assert result.message == "ok:setup_vm.sh"
 
 

@@ -64,6 +64,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
             "directory_path": effect.directory_path,
+            "metadata": effect.metadata,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -163,6 +164,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             playwright=bool(payload.get("playwright", False)),
             codex_skills=codex_skills,
             directory_path=normalize_optional_string(payload.get("directory_path")) or directory_path,
+            metadata=_metadata_patch(payload.get("metadata")),
             allow_existing_session=existing_agent_behavior == "upsert",
         )
         return {
@@ -233,6 +235,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         if worker_url:
             metadata["worker_url"] = worker_url
+        metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -308,6 +311,25 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("AgentCreateEffectProvider has no runtime context")
         return self.runtime_context
+
+
+def _metadata_patch(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("effect:agent:create metadata must resolve to a JSON object")
+    return dict(value)
+
+
+def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge_metadata(existing, value)
+            continue
+        merged[key] = value
+    return merged
 
 
 def _existing_session_for_create(

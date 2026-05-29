@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Agent Create Session Metadata
+
+- Added an optional `metadata` JSON patch to `effect:agent:create` so workflow
+  authors can initialize session metadata without a separate
+  `effect:session:update-metadata` node.
+- Wired the metadata patch through libvirt and container-worker agent creation
+  and exposed it in the workflow editor catalog.
+
 ## 2026-05-28 - Workflow Editor Bindable Selectors
 
 - Kept bindable enum workflow fields, including `query:session:list` State,

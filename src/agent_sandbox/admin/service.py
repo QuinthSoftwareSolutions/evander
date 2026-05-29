@@ -2807,6 +2807,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description="Directory scope that owns the created session and resolves inherited configuration.",
             ),
+            _field(
+                "metadata",
+                "Metadata",
+                "json",
+                bindable=True,
+                description="Session metadata patch to merge into the created agent session.",
+                json_value_type="object",
+                default_value={},
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -17457,6 +17466,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         playwright: bool = False,
         codex_skills: list[str] | None = None,
         directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
         allow_existing_session: bool = False,
     ) -> VmActionResult:
         payload: dict[str, Any] = {}
@@ -17478,6 +17488,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["communication_file_require_approval_for_send"] = (
                 communication_file_require_approval_for_send
             )
+        if metadata is not None:
+            payload["metadata"] = metadata
         return self.vm_agent_admin.create_vm(
             vm_name=vm_name,
             session_id=session_id,

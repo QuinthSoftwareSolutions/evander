@@ -633,6 +633,36 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
 
 
+def test_agent_create_provider_passes_session_metadata() -> None:
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        metadata={"workflow": {"state": "active"}, "owns_pr": True},
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect, directory_path="root/team-a").execute()
+
+    assert output["session_id"] == "lab-session"
+    assert admin_service.create_vm_calls[0]["metadata"] == {
+        "workflow": {"state": "active"},
+        "owns_pr": True,
+    }
+
+
 def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
     effect = AgentCreateEffectDefinition(
         id="effect-agent",
@@ -1877,6 +1907,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             dotnet=True,
             nuget=True,
             playwright=True,
+            metadata={
+                "workflow": {"state": "active"},
+                "labels": {"agent_role": "reviewer"},
+            },
         )
     ).execute()
     clone = factory.build(
@@ -1920,6 +1954,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048
     assert manifest.communication_file_require_approval_for_send is True
+    assert manifest.metadata["workflow"] == {"state": "active"}
+    assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     assert create["execution_backend"] == "container_worker_vm"
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"

@@ -837,6 +837,7 @@ def _libvirt_create_vm(
     playwright: bool = False,
     codex_skills: list[str] | None = None,
     directory_path: str = "root",
+    metadata: Mapping[str, Any] | None = None,
     provider: str | None = None,
     allow_existing_session: bool = False,
 ) -> VmActionResult:
@@ -927,6 +928,11 @@ def _libvirt_create_vm(
     if normalized_labels:
         manifest.metadata = dict(manifest.metadata)
         manifest.metadata["labels"] = normalized_labels
+    if metadata:
+        manifest.metadata = admin_service_module._deep_merge_mapping(
+            manifest.metadata,
+            metadata,
+        )
     manifest.vm_provider = provider or "libvirt"
     manifest.vm_provider_id = resolved_vm_name
     normalized_model = (model or "").strip() or None

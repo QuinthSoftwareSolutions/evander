@@ -172,6 +172,14 @@ class AgentCreateEffectDefinition(EffectDefinition):
     playwright: ConfigValue | None = None
     codex_skills: ConfigValue | None = None
     directory_path: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is not None and not isinstance(value, (Mapping, str)):
+            raise ValueError("effect:agent:create metadata must be a JSON object")
+        return value
 
 
 class AgentDestroyEffectDefinition(EffectDefinition):
