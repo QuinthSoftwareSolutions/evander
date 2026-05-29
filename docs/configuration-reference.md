@@ -432,7 +432,7 @@ Type-specific keys:
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
-| `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
+| `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
 `effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
@@ -501,10 +501,16 @@ ticket in `runtime/local-issues.json`, writes YAML under
 `runtime/ado-work-items/work-item-*.yaml` by default, and returns `ticket` for a
 single item or `tickets` plus created/updated/skipped counts for batches.
 
-`effect:session:renew-if-expired` resolves a host-side session by `target`,
-`session_id`, or `vm_name`. If the session has already expired, it sets
-`expires_at` to now plus `extend_by` (for example `8h`, `2d`, or `PT8H`);
-active sessions are left unchanged.
+`effect:session:renew-if-expired` resolves a host-side session by exactly one
+of `target`, `session_id`, or `vm_name`, plus optional `directory_path`. If the
+session has already expired, it sets `expires_at` to now plus `extend_by` (for
+example `8h`, `2d`, or `PT8H`). If `renew_if_expires_within` is configured and
+the active session expires within that pre-expiry window, it also renews to now
+plus `extend_by`; otherwise active sessions are left unchanged. For example,
+`extend_by: 2d` with `renew_if_expires_within: 4h` renews active sessions that
+expire in the next four hours. This node is the explicit renewal mechanism
+before `effect:agent:prompt` or `effect:agent:enqueue-prompt`; those nodes do
+not renew sessions on their own.
 
 `effect:session:approve-mcp-tools-for-run` writes a workflow-run-scoped MCP
 tool approval lease for the selected session. The approval is not persisted in
