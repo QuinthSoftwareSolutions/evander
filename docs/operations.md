@@ -131,6 +131,10 @@ Troubleshooting checklist:
   graph selection and labels. `user_ids` are owner/audit metadata only; workflow graphs are visible
   to control-plane operators. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
+- For the live Weekly APP Audit graph, use Admin Web or the workflow API to edit the audit
+  `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
+  `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
+  on Nexus-backed registry defaults so only audit sessions opt into the facade.
 - In the Workflow editor, node inspector edits are staged into the local workflow document as soon
   as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
