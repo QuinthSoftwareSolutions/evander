@@ -490,6 +490,9 @@ the `error` branch for notification, retry, or cleanup paths that should see a
 redacted failure payload. When no `error` edge exists, the prompt node remains
 failed as before, and successful `started` / `completed` paths do not populate
 error fields.
+For `effect:agent:enqueue-prompt`, routed dispatch failures include the queued
+retry context (`queued`, `queue_key`, and `coalesced_count`) when the prompt was
+written to the durable retry queue before dispatch failed.
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.

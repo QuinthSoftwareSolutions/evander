@@ -20,7 +20,7 @@ from agent_sandbox.workflow.migrations import (
 from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.validation import NodeCapability
 
-from .agent_prompt import AgentPromptEffectProvider
+from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
 from .agent_session import (
     container_backend,
     container_prompt_command,
@@ -31,7 +31,7 @@ from .agent_session import (
     safe_effect_execution_id,
     selected_execution_backend_for_target,
 )
-from .base import EffectProviderBase
+from .base import EffectProviderBase, EffectProviderExecutionError
 from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
@@ -235,15 +235,41 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
-            raise RuntimeError(
+            error_message = (
                 "effect:agent:enqueue-prompt resume_agent failed; queued prompt for retry "
                 f"(vm_name={vm_name}, session_id={session_id or '<none>'}, queue_key={record.queue_key}, "
                 f"coalesced_count={record.coalesced_count}, message={message})"
             )
+            raise EffectProviderExecutionError(
+                error_message,
+                outputs=_prompt_error_outputs(
+                    error_message,
+                    error_class="RuntimeError",
+                    failed_phase="dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=vm_name,
+                    queue_key=record.queue_key,
+                    queued=True,
+                    coalesced_count=record.coalesced_count,
+                ),
+            )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            raise RuntimeError(
+            message = (
                 "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
+            )
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class="RuntimeError",
+                    failed_phase="response_validation",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=vm_name,
+                    queued=False,
+                ),
             )
         self._persist_chat_assistant_thread_id(
             session_id=session_id,
@@ -390,10 +416,25 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
-            raise RuntimeError(
+            error_message = (
                 "effect:agent:enqueue-prompt container dispatch failed; queued prompt for retry "
                 f"(target={target}, session_id={session_id}, queue_key={record.queue_key}, "
                 f"coalesced_count={record.coalesced_count}, message={message})"
+            )
+            raise EffectProviderExecutionError(
+                error_message,
+                outputs=_prompt_error_outputs(
+                    error_message,
+                    error_class=type(exc).__name__,
+                    failed_phase="container_dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=target_name,
+                    queue_key=record.queue_key,
+                    queued=True,
+                    coalesced_count=record.coalesced_count,
+                    execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                ),
             ) from exc
         return {
             "dispatch_id": dispatch_id,

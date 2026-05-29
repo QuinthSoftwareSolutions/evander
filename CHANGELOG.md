@@ -20,6 +20,8 @@ material. Newer entries are added incrementally as changes land.
   with an outbound error edge, while successful `started` and `completed`
   paths stay error-free and unrouted failures still surface as normal prompt
   failures.
+- Preserved enqueue retry context (`queued`, `queue_key`, and
+  `coalesced_count`) in routed prompt error payloads.
 
 ## 2026-05-29 - Live Workflow Node Pulse
 

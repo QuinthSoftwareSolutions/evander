@@ -5258,10 +5258,125 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "queued prompt for retry" in only["error"]
+    assert only["outputs"]["success"] is False
+    assert only["outputs"]["queued"] is True
+    assert only["outputs"]["queue_key"] == "vm-1"
+    assert only["outputs"]["vm_name"] == "vm-1"
+    assert only["outputs"]["coalesced_count"] == 1
+    assert only["outputs"]["error_class"] == "RuntimeError"
+    assert only["outputs"]["failed_phase"] == "dispatch"
+    assert "queued prompt for retry" in only["outputs"]["error_message"]
     queued_payload = json.loads(
         (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
     )
     assert queued_payload["vm-1"]["prompt"] == "hello"
+
+
+def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                },
+                {
+                    "id": "effect-error",
+                    "display_name": "Publish retry context",
+                    "type": "effect:event:emit",
+                    "event_type": "prompt.error",
+                    "payload": {
+                        "queue_key": "${{effect-1.queue_key}}",
+                        "coalesced_count": "${{effect-1.coalesced_count}}",
+                        "queued": "${{effect-1.queued}}",
+                    },
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-error", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda include_inactive=True, vm_user="agent": [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="shut off",
+                agent_state="stopped",
+                session_ids=[],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {"success": False, "thread_id": "thread-old", "message": "vm-start-failed"},
+        )(),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-error-route-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 7, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-error-route-1",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    enqueue_record = by_effect["effect-1"]
+    downstream_record = by_effect["effect-error"]
+
+    assert enqueue_record["status"] == "error_routed"
+    assert enqueue_record["completion_event_branch_port"] == "error"
+    assert enqueue_record["outputs"]["success"] is False
+    assert enqueue_record["outputs"]["queued"] is True
+    assert enqueue_record["outputs"]["queue_key"] == "vm-1"
+    assert enqueue_record["outputs"]["coalesced_count"] == 1
+    assert enqueue_record["outputs"]["vm_name"] == "vm-1"
+    assert enqueue_record["outputs"]["error_class"] == "RuntimeError"
+    assert enqueue_record["outputs"]["failed_phase"] == "dispatch"
+    assert "queued prompt for retry" in enqueue_record["outputs"]["error_message"]
+
+    assert downstream_record["status"] == "succeeded"
+    assert downstream_record["resolved_config"]["payload"] == {
+        "queue_key": "vm-1",
+        "coalesced_count": 1,
+        "queued": True,
+    }
 
 
 def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absent(
@@ -5389,6 +5504,12 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "resume_agent failed" in only["error"]
+    assert only["outputs"]["success"] is False
+    assert only["outputs"]["dispatch_id"].startswith("dispatch-effect-1-")
+    assert only["outputs"]["vm_name"] == "vm-1"
+    assert only["outputs"]["error_class"] == "RuntimeError"
+    assert only["outputs"]["failed_phase"] == "dispatch"
+    assert "resume_agent failed" in only["outputs"]["error_message"]
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
