@@ -11,6 +11,18 @@ material. Newer entries are added incrementally as changes land.
   reads do not initialize runtime store or journal files.
 - Added SQLite activity timestamp indexes for recent workflow run snapshots.
 
+## 2026-05-29 - Prompt Error Route Docs
+
+- Documented the third `error` lifecycle port for `effect:agent:prompt` and
+  `effect:agent:enqueue-prompt` in the configuration reference, operations
+  guide, and README workflow shape notes.
+- Clarified that the `error` route is for supported prompt dispatch failures
+  with an outbound error edge, while successful `started` and `completed`
+  paths stay error-free and unrouted failures still surface as normal prompt
+  failures.
+- Preserved enqueue retry context (`queued`, `queue_key`, and
+  `coalesced_count`) in routed prompt error payloads.
+
 ## 2026-05-29 - Live Workflow Node Pulse
 
 - Added `recent_node_activity` to workflow run snapshots so Admin Web can

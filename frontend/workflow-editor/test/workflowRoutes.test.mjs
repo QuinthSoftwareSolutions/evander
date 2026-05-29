@@ -94,6 +94,36 @@ test("route options use named ports when present and default otherwise", () => {
   ]);
 });
 
+test("error route options render with the error route class", () => {
+  assert.deepEqual(
+    workflowConnectionRouteOptions([
+      { key: "started", label: "Started" },
+      { key: "completed", label: "Completed" },
+      { key: "error", label: "Error" },
+    ]),
+    [
+      {
+        sourcePort: "started",
+        label: "Started",
+        description: undefined,
+        routeClass: "started",
+      },
+      {
+        sourcePort: "completed",
+        label: "Completed",
+        description: undefined,
+        routeClass: "completed",
+      },
+      {
+        sourcePort: "error",
+        label: "Error",
+        description: undefined,
+        routeClass: "error",
+      },
+    ],
+  );
+});
+
 test("route classes group known route semantics", () => {
   assert.equal(normalizeWorkflowSourcePort(" completed "), "completed");
   assert.equal(workflowRouteClass(null), "default");

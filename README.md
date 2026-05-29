@@ -1158,6 +1158,17 @@ posted text.
 7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
 
+Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to
+`gate:await-agent` through the prompt's `started` source port. Use the
+prompt's `completed` source port for downstream work that should wait for the
+agent run itself to finish. Use the prompt's `error` source port for
+notification, retry, or cleanup branches that should only fire when a
+supported prompt dispatch failure is routed. If no error edge is wired, the
+prompt still fails normally.
+For `effect:agent:enqueue-prompt`, routed dispatch failures preserve retry
+context such as `queued`, `queue_key`, and `coalesced_count` when the prompt was
+queued before dispatch failed.
+
 ### Review repo prep helper
 
 Guests can prepare a deterministic review checkout with:

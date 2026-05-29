@@ -685,6 +685,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "label": "Completed",
             "description": "Emits after the agent run has completed.",
         },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+        },
     ]
     agent_enqueue_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
@@ -712,6 +717,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "key": "completed",
             "label": "Completed",
             "description": "Emits after the dispatched agent run has completed.",
+        },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
         },
     ]
     tool_approval = next(
@@ -3115,6 +3125,74 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {"type": "string"}
 
 
+def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effects(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+                {
+                    "id": "effect-enqueue-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "effect-prompt-1"},
+                {
+                    "source_id": "effect-prompt-1",
+                    "target_id": "effect-enqueue-1",
+                    "source_port": "started",
+                },
+            ],
+        }
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["effect-prompt-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queued"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queue_key"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["coalesced_count"] == {"type": "integer"}
+
+
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
     tmp_path: Path,
 ) -> None:
@@ -3576,6 +3654,126 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     assert queue_payload[resume_event_id]["payload"]["__resume_target_node_id"] == "effect-prompt"
     assert queue_payload[resume_event_id]["payload"]["__resume_source_event_id"] == "evt-failed"
     assert queue_payload[resume_event_id]["payload"]["issue_number"] == "77"
+
+
+def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
+    tmp_path: Path,
+) -> None:
+    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    trigger_events_path = runtime_dir / "trigger-orchestrator-events.json"
+    effect_executions_path = runtime_dir / "effect-orchestrator-executions.json"
+
+    trigger_events = json.loads(trigger_events_path.read_text(encoding="utf-8"))
+    trigger_events["evt-routed"] = {
+        "event_id": "evt-routed",
+        "trigger_id": "trigger-ticket",
+        "trigger_type": "trigger:ticket:created",
+        "trace_id": "trace-routed",
+        "occurred_at": "2026-05-01T11:00:00Z",
+        "payload": {"issue_number": "101"},
+        "delivery_state": "delivered",
+        "inflight_at": "2026-05-01T11:00:05Z",
+        "delivered_at": "2026-05-01T11:00:06Z",
+        "idempotency_key": None,
+    }
+    _write_json_payload(trigger_events_path, trigger_events)
+
+    effect_executions = json.loads(effect_executions_path.read_text(encoding="utf-8"))
+    effect_executions["exec-routed"] = {
+        "execution_id": "exec-routed",
+        "idempotency_key": "evt-routed::effect-prompt",
+        "event_id": "evt-routed",
+        "trace_id": "trace-routed",
+        "source_node_id": "trigger-ticket",
+        "source_trigger_type": "trigger:ticket:created",
+        "effect_id": "effect-prompt",
+        "effect_type": "effect:agent:prompt",
+        "status": "error_routed",
+        "started_at": "2026-05-01T11:00:10Z",
+        "finished_at": "2026-05-01T11:00:11Z",
+        "resolved_config_hash": "hash-routed",
+        "resolved_config": {
+            "session_id": fixture["session_id"],
+            "vm_name": "vm-detail",
+            "prompt": "Investigate the issue",
+            "dispatch_id": "dispatch-routed",
+            "thread_id": "thread-routed",
+            "execution_id": "execution-routed",
+            "artifact_ids": [],
+            "request_id": "approval-rich",
+        },
+        "input_payload": {
+            "issue_number": "101",
+            "session_id": fixture["session_id"],
+            "request_id": "approval-rich",
+        },
+        "outputs": {
+            "success": False,
+            "dispatch_id": "dispatch-routed",
+            "session_id": fixture["session_id"],
+            "vm_name": "vm-detail",
+            "error_message": "prompt dispatch failed",
+            "error_class": "DispatchError",
+            "failed_phase": "dispatch",
+            "published_event_id": "evt-routed-published",
+            "completion_event_branch_port": "error",
+        },
+        "binding_trace": {
+            "consumed_output_keys": ["trigger-ticket.issue_number"],
+            "entries": [
+                {
+                    "config_path": "$.prompt",
+                    "expression": "${{trigger-ticket.issue_number}}",
+                    "reference": "trigger-ticket.issue_number",
+                    "source_node_id": "trigger-ticket",
+                    "output_path": "issue_number",
+                    "fallback_used": False,
+                    "status": "resolved",
+                    "resolved_value_preview": '"101"',
+                    "value_type": "str",
+                    "error": None,
+                }
+            ],
+        },
+        "binding_error": None,
+        "published_event_id": "evt-routed-published",
+        "completion_event_enqueued_at": "2026-05-01T11:00:12Z",
+        "config_revision": fixture["rich_revision"],
+        "error": "prompt dispatch failed",
+    }
+    _write_json_payload(effect_executions_path, effect_executions)
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    runs_response = client.get("/api/workflow-editor/runs")
+    detail_response = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-routed"})
+
+    assert runs_response.status_code == 200
+    runs_payload = runs_response.json()
+    routed_run = next(run for run in runs_payload["runs"] if run["event_id"] == "evt-routed")
+    assert routed_run["run_state"] == "error_routed"
+    assert routed_run["failed_node_id"] is None
+    assert routed_run["failed_node_status"] is None
+    assert routed_run["error"] == "prompt dispatch failed"
+    assert routed_run["resumable"] is False
+    assert runs_payload["node_activity"]["effect-prompt"]["error_routed"] == 1
+
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["event_id"] == "evt-routed"
+    assert detail_payload["run_state"] == "error_routed"
+    assert detail_payload["failed_node_id"] is None
+    assert detail_payload["failed_node_status"] is None
+    assert detail_payload["error"] == "prompt dispatch failed"
+    assert detail_payload["resumable"] is False
+    routed_node = next(node for node in detail_payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert routed_node["status"] == "error_routed"
+    assert routed_node["outputs"]["error_message"] == "prompt dispatch failed"
+    assert routed_node["outputs"]["error_class"] == "DispatchError"
+    assert routed_node["outputs"]["failed_phase"] == "dispatch"
+    assert routed_node["outputs"]["published_event_id"] == "evt-routed-published"
+    assert routed_node["outputs"]["completion_event_branch_port"] == "error"
 
 
 def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:

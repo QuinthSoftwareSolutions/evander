@@ -404,3 +404,117 @@ test("state node output schemas expose graph-local bindings", () => {
   );
   assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.version}}"));
 });
+
+test("prompt effects expose backend error outputs for binding", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-1",
+        display_name: "Prompt trigger",
+        type: "trigger:manual",
+      },
+    ],
+    gates: [],
+    effects: [
+      {
+        id: "effect-prompt",
+        display_name: "Prompt agent",
+        type: "effect:agent:prompt",
+        prompt: "Describe the next action.",
+      },
+      {
+        id: "effect-prompt-next",
+        display_name: "After prompt",
+        type: "effect:agent:create",
+      },
+      {
+        id: "effect-enqueue",
+        display_name: "Queue prompt",
+        type: "effect:agent:enqueue-prompt",
+        prompt: "Describe the next action.",
+        queue_key: "ticket:${{trigger-1.status}}",
+      },
+      {
+        id: "effect-enqueue-next",
+        display_name: "After queue",
+        type: "effect:agent:create",
+      },
+    ],
+    queries: [],
+    edges: [
+      { source_id: "trigger-1", target_id: "effect-prompt" },
+      { source_id: "effect-prompt", target_id: "effect-prompt-next" },
+      { source_id: "trigger-1", target_id: "effect-enqueue" },
+      { source_id: "effect-enqueue", target_id: "effect-enqueue-next" },
+    ],
+  };
+  const backendOutputSchemas = {
+    "effect-prompt": {
+      dispatch_id: { type: "string" },
+      thread_id: { type: "string" },
+      success: { type: "boolean" },
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      error_message: { type: "string" },
+      error_class: { type: "string" },
+      failed_phase: { type: "string" },
+    },
+    "effect-enqueue": {
+      dispatch_id: { type: "string" },
+      thread_id: { type: "string" },
+      success: { type: "boolean" },
+      queued: { type: "boolean" },
+      queue_key: { type: "string" },
+      vm_name: { type: "string" },
+      session_id: { type: "string" },
+      coalesced_count: { type: "integer" },
+      error_message: { type: "string" },
+      error_class: { type: "string" },
+      failed_phase: { type: "string" },
+    },
+  };
+  const outputSchemas = deriveWorkflowOutputSchemas(config, backendOutputSchemas);
+
+  const promptContract = selectedNodeOutputContract(config, "effect-prompt", outputSchemas);
+  assert.equal(promptContract.state, "declared");
+  assert.deepEqual(promptContract.rows.map((row) => row.path), [
+    "dispatch_id",
+    "thread_id",
+    "success",
+    "session_id",
+    "vm_name",
+    "error_message",
+    "error_class",
+    "failed_phase",
+  ]);
+  assert.equal(promptContract.rows.find((row) => row.path === "error_message")?.bindingExpression, "${{effect-prompt.error_message}}");
+  assert.equal(promptContract.rows.find((row) => row.path === "failed_phase")?.typeLabel, "string");
+
+  const promptBindingOptions = upstreamBindingOptions(config, "effect-prompt-next", outputSchemas);
+  assert.ok(promptBindingOptions.some((option) => option.value === "${{effect-prompt.error_message}}"));
+  assert.ok(promptBindingOptions.some((option) => option.value === "${{effect-prompt.error_class}}"));
+  assert.ok(promptBindingOptions.some((option) => option.value === "${{effect-prompt.failed_phase}}"));
+
+  const enqueueContract = selectedNodeOutputContract(config, "effect-enqueue", outputSchemas);
+  assert.equal(enqueueContract.state, "declared");
+  assert.deepEqual(enqueueContract.rows.map((row) => row.path), [
+    "dispatch_id",
+    "thread_id",
+    "success",
+    "queued",
+    "queue_key",
+    "vm_name",
+    "session_id",
+    "coalesced_count",
+    "error_message",
+    "error_class",
+    "failed_phase",
+  ]);
+  assert.equal(enqueueContract.rows.find((row) => row.path === "queue_key")?.bindingExpression, "${{effect-enqueue.queue_key}}");
+  assert.equal(enqueueContract.rows.find((row) => row.path === "coalesced_count")?.typeLabel, "integer");
+
+  const enqueueBindingOptions = upstreamBindingOptions(config, "effect-enqueue-next", outputSchemas);
+  assert.ok(enqueueBindingOptions.some((option) => option.value === "${{effect-enqueue.queue_key}}"));
+  assert.ok(enqueueBindingOptions.some((option) => option.value === "${{effect-enqueue.queued}}"));
+  assert.ok(enqueueBindingOptions.some((option) => option.value === "${{effect-enqueue.coalesced_count}}"));
+});

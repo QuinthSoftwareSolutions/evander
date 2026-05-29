@@ -1097,3 +1097,60 @@ def test_pull_request_get_outputs_are_bindable() -> None:
     assert output_schemas["query-pr-get-1"]["commits"] == {"type": "array"}
     assert output_schemas["query-pr-get-1"]["raw"] == {"type": "object"}
     assert diagnostics == []
+
+
+def test_agent_prompt_outputs_include_error_bindings() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect",
+            },
+            {
+                "id": "enqueue-agent",
+                "display_name": "Enqueue agent",
+                "type": "effect:agent:enqueue-prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect",
+            },
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "prompt-agent"},
+            {"source_id": "prompt-agent", "target_id": "enqueue-agent", "source_port": "started"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["prompt-agent"]["dispatch_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["thread_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["success"] == {"type": "boolean"}
+    assert output_schemas["prompt-agent"]["error_message"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["error_class"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["failed_phase"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["session_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["vm_name"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["dispatch_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["thread_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["success"] == {"type": "boolean"}
+    assert output_schemas["enqueue-agent"]["error_message"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["error_class"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["failed_phase"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["queued"] == {"type": "boolean"}
+    assert output_schemas["enqueue-agent"]["queue_key"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["session_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["vm_name"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["coalesced_count"] == {"type": "integer"}
+    assert diagnostics == []

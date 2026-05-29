@@ -230,6 +230,17 @@ class _FailingWithOutputsFactory:
         return _FailingWithOutputsProvider({})
 
 
+class _PromptErrorRoutingFactory:
+    def __init__(self, outputs_by_effect_id: dict[str, dict[str, object]]) -> None:
+        self.outputs_by_effect_id = outputs_by_effect_id
+
+    def build(self, effect, **kwargs):
+        del kwargs
+        if effect.type == "effect:agent:prompt":
+            return _FailingWithOutputsProvider({})
+        return _Provider(self.outputs_by_effect_id.get(effect.id, {}))
+
+
 class _StaticReloader:
     def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
         self._config = config
@@ -5247,10 +5258,125 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "queued prompt for retry" in only["error"]
+    assert only["outputs"]["success"] is False
+    assert only["outputs"]["queued"] is True
+    assert only["outputs"]["queue_key"] == "vm-1"
+    assert only["outputs"]["vm_name"] == "vm-1"
+    assert only["outputs"]["coalesced_count"] == 1
+    assert only["outputs"]["error_class"] == "RuntimeError"
+    assert only["outputs"]["failed_phase"] == "dispatch"
+    assert "queued prompt for retry" in only["outputs"]["error_message"]
     queued_payload = json.loads(
         (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
     )
     assert queued_payload["vm-1"]["prompt"] == "hello"
+
+
+def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                },
+                {
+                    "id": "effect-error",
+                    "display_name": "Publish retry context",
+                    "type": "effect:event:emit",
+                    "event_type": "prompt.error",
+                    "payload": {
+                        "queue_key": "${{effect-1.queue_key}}",
+                        "coalesced_count": "${{effect-1.coalesced_count}}",
+                        "queued": "${{effect-1.queued}}",
+                    },
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-error", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda include_inactive=True, vm_user="agent": [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="shut off",
+                agent_state="stopped",
+                session_ids=[],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {"success": False, "thread_id": "thread-old", "message": "vm-start-failed"},
+        )(),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-error-route-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 7, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-error-route-1",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    enqueue_record = by_effect["effect-1"]
+    downstream_record = by_effect["effect-error"]
+
+    assert enqueue_record["status"] == "error_routed"
+    assert enqueue_record["completion_event_branch_port"] == "error"
+    assert enqueue_record["outputs"]["success"] is False
+    assert enqueue_record["outputs"]["queued"] is True
+    assert enqueue_record["outputs"]["queue_key"] == "vm-1"
+    assert enqueue_record["outputs"]["coalesced_count"] == 1
+    assert enqueue_record["outputs"]["vm_name"] == "vm-1"
+    assert enqueue_record["outputs"]["error_class"] == "RuntimeError"
+    assert enqueue_record["outputs"]["failed_phase"] == "dispatch"
+    assert "queued prompt for retry" in enqueue_record["outputs"]["error_message"]
+
+    assert downstream_record["status"] == "succeeded"
+    assert downstream_record["resolved_config"]["payload"] == {
+        "queue_key": "vm-1",
+        "coalesced_count": 1,
+        "queued": True,
+    }
 
 
 def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absent(
@@ -5378,6 +5504,194 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "resume_agent failed" in only["error"]
+    assert only["outputs"]["success"] is False
+    assert only["outputs"]["dispatch_id"].startswith("dispatch-effect-1-")
+    assert only["outputs"]["vm_name"] == "vm-1"
+    assert only["outputs"]["error_class"] == "RuntimeError"
+    assert only["outputs"]["failed_phase"] == "dispatch"
+    assert "resume_agent failed" in only["outputs"]["error_message"]
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
+
+
+def test_agent_prompt_routes_failed_outputs_to_error_branch(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                },
+                {
+                    "id": "effect-error",
+                    "display_name": "Error route",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-1",
+                    "metadata": {"handled": True},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-prompt"),
+                _edge("effect-prompt", "effect-error", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _PromptErrorRoutingFactory(
+        {"effect-error": {"success": True, "handled": True}}
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-prompt-error-route-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 10, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-prompt-error-route-1",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in execution_payload.values()}
+
+    prompt_record = by_effect["effect-prompt"]
+    downstream_record = by_effect["effect-error"]
+
+    assert prompt_record["status"] == "error_routed"
+    assert prompt_record["completion_event_branch_port"] == "error"
+    assert prompt_record["published_event_id"] is not None
+    assert prompt_record["completion_event_enqueued_at"] is not None
+    assert prompt_record["error"] == "checked provider boom"
+    assert prompt_record["outputs"]["success"] is False
+    assert prompt_record["outputs"]["status_code"] == 502
+    assert prompt_record["outputs"]["body_text"] == "bad gateway"
+    assert prompt_record["outputs"]["error_message"] == "checked provider boom"
+    assert prompt_record["outputs"]["error_class"] == "EffectProviderExecutionError"
+    assert prompt_record["outputs"]["failed_phase"] == "dispatch"
+
+    assert downstream_record["status"] == "succeeded"
+    assert downstream_record["outputs"]["success"] is True
+    assert downstream_record["outputs"]["handled"] is True
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    error_branch_events = [
+        item for item in queue_payload.values() if item["trigger_id"] == "effect-prompt"
+    ]
+    assert len(error_branch_events) == 1
+    assert error_branch_events[0]["payload"]["__branch_port"] == "error"
+
+
+def test_agent_prompt_error_branch_publish_failure_fails_loudly(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                },
+                {
+                    "id": "effect-error",
+                    "display_name": "Error route",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-1",
+                    "metadata": {"handled": True},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-prompt"),
+                _edge("effect-prompt", "effect-error", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _PromptErrorRoutingFactory(
+        {"effect-error": {"success": True, "handled": True}}
+    )
+    original_publish = worker.event_queue.publish
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        if event.trigger_id == "effect-prompt":
+            raise RuntimeError("error branch publish boom")
+        return original_publish(event, idempotency_key=idempotency_key)
+
+    worker.event_queue.publish = publish  # type: ignore[assignment]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-prompt-error-publish-failure-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 15, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-prompt-error-publish-failure-1",
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    prompt_record = next(
+        record for record in execution_payload.values() if record["effect_id"] == "effect-prompt"
+    )
+
+    assert prompt_record["status"] == "failed"
+    assert prompt_record["completion_pending_status"] is None
+    assert prompt_record["completion_event_branch_port"] is None
+    assert prompt_record["published_event_id"] is None
+    assert prompt_record["completion_event_enqueued_at"] is None
+    assert prompt_record["error"] == "error branch publish boom"
+    assert prompt_record["outputs"]["success"] is False
+    assert prompt_record["outputs"]["error_message"] == "checked provider boom"
+    assert prompt_record["outputs"]["error_class"] == "EffectProviderExecutionError"
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert all(item["trigger_id"] != "effect-prompt" for item in queue_payload.values())
 
 
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:

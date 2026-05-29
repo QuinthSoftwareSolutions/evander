@@ -566,6 +566,11 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "dispatch_id": {"type": "string"},
         "thread_id": {"type": "string"},
         "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "error_message": {"type": "string"},
+        "error_class": {"type": "string"},
+        "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
         "dispatch_id": {"type": "string"},
@@ -576,6 +581,9 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "vm_name": {"type": "string"},
         "session_id": {"type": "string"},
         "coalesced_count": {"type": "integer"},
+        "error_message": {"type": "string"},
+        "error_class": {"type": "string"},
+        "failed_phase": {"type": "string"},
     },
     "effect:chat-assistant:ensure-session": {
         "success": {"type": "boolean"},
