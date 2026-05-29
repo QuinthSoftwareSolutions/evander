@@ -46,6 +46,30 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
     assert effective.guest_nuget_relay_base_url() == "http://10.0.0.1:13000"
 
 
+def test_vm_defaults_resolver_propagates_npm_audit_facade_bind_settings(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    store.ensure_root()
+    service = DirectoryService(store)
+    config = GatewayConfig.model_validate({"runtime_dir": str(runtime_dir)})
+    resolver = VmDefaultsConfigResolver(config, directory_store=store)
+
+    team = service.create(parent="root", name="team")
+    resolver.config_store.write(
+        team.path,
+        domain="vm-defaults",
+        payload={
+            "npm_audit_facade_host": "127.0.0.1",
+            "npm_audit_facade_port": 18181,
+        },
+    )
+
+    effective = resolver.resolve_for_directory(team.path)
+
+    assert effective.npm_audit_facade_host == "127.0.0.1"
+    assert effective.npm_audit_facade_port == 18181
+
+
 def test_vm_defaults_resolver_uses_root_for_empty_directory_and_rejects_missing_paths(
     tmp_path: Path,
 ) -> None:

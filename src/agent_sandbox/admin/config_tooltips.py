@@ -240,6 +240,16 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "nuget_public_feed_base_url": ("Base URL for the public NuGet feed proxied by the host relay."),
     "nuget_relay_timeout_seconds": ("Upstream request timeout in seconds for the NuGet relay."),
+    "npm_audit_facade_audit_registry_url": (
+        "Base URL for the public npm registry used by the npm audit facade's audit endpoints."
+    ),
+    "npm_audit_facade_package_registry_url": (
+        "Optional package registry URL used by the npm audit facade for package metadata and tarballs. "
+        "Leave unset to derive the Nexus npm group URL from the gateway host."
+    ),
+    "npm_audit_facade_timeout_seconds": (
+        "Upstream request timeout in seconds for the npm audit facade."
+    ),
     "openai_api_base_url": ("Upstream OpenAI-compatible API base URL used by the host relay."),
     "openai_api_key_env": (
         "Name of the host environment variable that holds the upstream OpenAI API key."
@@ -382,6 +392,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "http_target_relay_port": ("Port the generic HTTP target relay listens on."),
     "nuget_relay_host": ("Host address the NuGet relay listens on."),
     "nuget_relay_port": ("Port the NuGet relay listens on."),
+    "npm_audit_facade_host": ("Host address the npm audit facade listens on."),
+    "npm_audit_facade_port": ("Port the npm audit facade listens on."),
     "openai_relay_host": ("Host address the OpenAI relay listens on."),
     "openai_relay_port": ("Port the OpenAI relay listens on."),
     "approved_issue_cap": (

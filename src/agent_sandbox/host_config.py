@@ -22,6 +22,8 @@ class HostConfig(BaseModel):
     http_target_relay_port: int = 11777
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
+    npm_audit_facade_host: str = "0.0.0.0"
+    npm_audit_facade_port: int = 11881
     audit_log_path: Path = Path("/var/log/agent-sandbox/audit.jsonl")
     session_store_path: Path = Path("/var/lib/agent-sandbox/sessions.json")
     approval_store_path: Path = Path("/var/lib/agent-sandbox/approvals.json")
@@ -77,6 +79,8 @@ class HostConfig(BaseModel):
                 "http_target_relay_port": config.http_target_relay_port,
                 "nuget_relay_host": config.nuget_relay_host,
                 "nuget_relay_port": config.nuget_relay_port,
+                "npm_audit_facade_host": config.npm_audit_facade_host,
+                "npm_audit_facade_port": config.npm_audit_facade_port,
                 "audit_log_path": config.audit_log_path,
                 "session_store_path": config.session_store_path,
                 "approval_store_path": config.approval_store_path,
@@ -149,6 +153,8 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "http_target_relay_port": host_config.http_target_relay_port,
             "nuget_relay_host": host_config.nuget_relay_host,
             "nuget_relay_port": host_config.nuget_relay_port,
+            "npm_audit_facade_host": host_config.npm_audit_facade_host,
+            "npm_audit_facade_port": host_config.npm_audit_facade_port,
             "audit_log_path": host_config.audit_log_path,
             "session_store_path": host_config.session_store_path,
             "approval_store_path": host_config.approval_store_path,

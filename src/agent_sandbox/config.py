@@ -215,6 +215,11 @@ class GatewayConfig(BaseModel):
     )
     nuget_azure_pat_env: str = "AZURE_ARTIFACTS_PAT"
     nuget_relay_timeout_seconds: float = 300.0
+    npm_audit_facade_host: str = "0.0.0.0"
+    npm_audit_facade_port: int = 11881
+    npm_audit_facade_timeout_seconds: float = 300.0
+    npm_audit_facade_audit_registry_url: str = "https://registry.npmjs.org"
+    npm_audit_facade_package_registry_url: str | None = None
     default_session_ttl_seconds: int = 28800
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -319,6 +324,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
         mode="before",
     )
@@ -370,6 +377,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
     )
     @classmethod
