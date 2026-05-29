@@ -27,6 +27,7 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "extend_by": effect.extend_by,
+            "renew_if_expires_within": effect.renew_if_expires_within,
             "directory_path": effect.directory_path,
         }
         if resolved_config:
@@ -47,6 +48,7 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
         now = datetime.now(UTC)
         previous_expires_at = _ensure_utc(session.expires_at)
         duration = parse_session_extend_by(payload.get("extend_by"))
+        parse_session_renew_if_expires_within(payload.get("renew_if_expires_within"))
         new_expires_at = previous_expires_at
         extended = previous_expires_at <= now
         if extended:
@@ -72,11 +74,16 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
         }
 
     def _target_from_payload(self, payload: Mapping[str, Any]) -> str:
-        for field_name in ("target", "session_id", "vm_name"):
-            value = normalize_optional_string(payload.get(field_name))
-            if value:
-                return value
-        raise ValueError("effect:session:renew-if-expired requires target, session_id, or vm_name")
+        selectors = {
+            field_name: normalize_optional_string(payload.get(field_name))
+            for field_name in ("target", "session_id", "vm_name")
+        }
+        chosen = [value for value in selectors.values() if value is not None]
+        if len(chosen) != 1:
+            raise ValueError(
+                "effect:session:renew-if-expired requires exactly one of target, session_id, or vm_name"
+            )
+        return chosen[0]
 
     def _effect(self) -> SessionRenewIfExpiredEffectDefinition:
         if not isinstance(self.effect_definition, SessionRenewIfExpiredEffectDefinition):
@@ -92,11 +99,41 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
 
 
 def parse_session_extend_by(value: Any) -> timedelta:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(
-            "effect:session:renew-if-expired extend_by must be a duration string such as 8h, 2d, or PT8H"
-        )
+    return _parse_session_duration(
+        value,
+        field_name="extend_by",
+        allow_blank=False,
+    )
+
+
+def parse_session_renew_if_expires_within(value: Any) -> timedelta | None:
+    return _parse_session_duration(
+        value,
+        field_name="renew_if_expires_within",
+        allow_blank=True,
+    )
+
+
+def _parse_session_duration(
+    value: Any,
+    *,
+    field_name: str,
+    allow_blank: bool,
+) -> timedelta | None:
+    duration_type_error = (
+        f"effect:session:renew-if-expired {field_name} must be a duration string such as 8h, 2d, or PT8H"
+    )
+    if value is None:
+        if allow_blank:
+            return None
+        raise ValueError(duration_type_error)
+    if not isinstance(value, str):
+        raise ValueError(duration_type_error)
     normalized = value.strip()
+    if not normalized:
+        if allow_blank:
+            return None
+        raise ValueError(duration_type_error)
     simple_match = _SIMPLE_DURATION_PATTERN.fullmatch(normalized.lower())
     if simple_match is not None:
         amount = float(simple_match.group("amount"))
@@ -110,17 +147,24 @@ def parse_session_extend_by(value: Any) -> timedelta:
         }
         seconds = amount * seconds_by_unit[unit]
         if seconds <= 0:
-            raise ValueError("effect:session:renew-if-expired extend_by must be greater than zero")
+            raise ValueError(
+                f"effect:session:renew-if-expired {field_name} must be greater than zero"
+            )
         return timedelta(seconds=seconds)
 
     try:
-        return parse_iso8601_duration(
+        duration = parse_iso8601_duration(
             normalized.upper(),
-            field_name="extend_by",
+            field_name=field_name,
             gate_type="effect:session:renew-if-expired",
         )
     except GateRuntimeError as exc:
         raise ValueError(str(exc)) from exc
+    if duration.total_seconds() <= 0:
+        raise ValueError(
+            f"effect:session:renew-if-expired {field_name} must be greater than zero"
+        )
+    return duration
 
 
 def _ensure_utc(value: datetime) -> datetime:

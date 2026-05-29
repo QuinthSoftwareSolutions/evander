@@ -11,6 +11,7 @@ from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
     parse_session_extend_by,
+    parse_session_renew_if_expires_within,
 )
 from agent_sandbox.events.provider_models import SessionRenewIfExpiredEffectDefinition
 from agent_sandbox.models import SessionManifest, ToolName
@@ -158,6 +159,31 @@ def test_session_renew_if_expired_rejects_unknown_target(tmp_path: Path) -> None
         provider.execute()
 
 
+def test_session_renew_if_expired_rejects_ambiguous_runtime_selector(tmp_path: Path) -> None:
+    provider, _repository = _build_provider(
+        tmp_path,
+        SessionRenewIfExpiredEffectDefinition(
+            id="renew-expired",
+            display_name="Renew expired",
+            type="effect:session:renew-if-expired",
+            session_id="session-1",
+            extend_by="6h",
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires exactly one of target, session_id, or vm_name",
+    ):
+        provider.execute(resolved_config={"vm_name": "vm-1"})
+
+
 def test_parse_session_extend_by_rejects_invalid_duration() -> None:
     with pytest.raises(ValueError, match="duration string"):
         parse_session_extend_by("soon")
+
+
+@pytest.mark.parametrize("value", ["soon", "0m", "PT0S"])
+def test_parse_session_renew_if_expires_within_rejects_invalid_duration(value: str) -> None:
+    with pytest.raises(ValueError, match="renew_if_expires_within"):
+        parse_session_renew_if_expires_within(value)
