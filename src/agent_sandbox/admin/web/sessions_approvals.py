@@ -60,6 +60,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
 
 
 _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
+    "web_search_enabled": "bool",
     "communication_file_receive_enabled": "bool",
     "communication_file_send_enabled": "bool",
     "communication_file_max_bytes": "int_or_null",
@@ -74,19 +75,30 @@ _SESSION_POLICY_FIELD_LABELS: dict[str, str] = {
     field_name: field_name.removeprefix("communication_file_").replace("_", " ")
     for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 }
+_SESSION_POLICY_FIELD_LABELS["web_search_enabled"] = "web search"
 _SESSION_POLICY_FIELD_LABELS["tool_argument_policies"] = "tool argument policy"
 
 
 def _session_policy_field_catalog() -> list[dict[str, str]]:
     catalog = [
         {
-            "field_name": field_name,
-            "label": _SESSION_POLICY_FIELD_LABELS[field_name],
-            "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
-            "section": "Communication files",
-        }
-        for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+            "field_name": "web_search_enabled",
+            "label": _SESSION_POLICY_FIELD_LABELS["web_search_enabled"],
+            "kind": _SESSION_POLICY_FIELD_KINDS["web_search_enabled"],
+            "section": "Hosted tools",
+        },
     ]
+    catalog.extend(
+        [
+            {
+                "field_name": field_name,
+                "label": _SESSION_POLICY_FIELD_LABELS[field_name],
+                "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
+                "section": "Communication files",
+            }
+            for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+        ]
+    )
     catalog.append(
         {
             "field_name": "tool_argument_policies",

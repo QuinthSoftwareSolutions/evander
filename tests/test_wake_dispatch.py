@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionStatusKind
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.messaging.wake_dispatch import HostWakeDispatcher
+from agent_sandbox.messaging.wake_dispatch import HostWakeDispatcher, SessionWakeBinding
 from agent_sandbox.messaging.wake_store import WakeRequestStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
@@ -84,6 +85,7 @@ def _upsert_container_session(
     session_id: str,
     metadata: dict[str, object] | None = None,
     vm_provider_id: str | None = None,
+    web_search_enabled: bool = False,
 ) -> SessionManifest:
     session = SessionManifest(
         session_id=session_id,
@@ -93,6 +95,7 @@ def _upsert_container_session(
         directory_path="root/team-a",
         model="gpt-5.4-mini",
         allowed_tools=[ToolName.SCHEDULE_RESUME],
+        web_search_enabled=web_search_enabled,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata=metadata or {},
     )
@@ -130,6 +133,49 @@ def test_container_target_name_prefers_metadata_then_provider_then_session_id() 
     )
 
 
+def test_resume_binding_passes_session_web_search_mode_to_resume_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    del wake_store
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            web_search_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(update={"host_resume_script_path": resume_script})
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=worker_config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-1",
+    )
+
+    assert result is not None
+    assert result.status == "dispatched"
+    assert captured["env"]["AGENT_MODEL"] == "gpt-5.4-mini"
+    assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
+
+
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -139,6 +185,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         session_repository,
         session_id="session-1",
         vm_provider_id="provider-target",
+        web_search_enabled=True,
     )
     backend = _ContainerBackendStub(active=False)
     captured: dict[str, object] = {}
@@ -173,6 +220,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert spec.target_name.startswith("agent-session-1-")
     assert "codex exec resume --last" in str(spec.command)
     assert "--model gpt-5.4-mini" in str(spec.command)
+    assert 'web_search="live"' in str(spec.command)
     assert "agent_sandbox_codex_json_to_log" in str(spec.command)
     assert spec.metadata["source"] == "scheduled_once"
     assert spec.metadata["resume_mode"] == "same_context"

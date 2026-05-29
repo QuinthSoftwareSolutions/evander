@@ -2812,28 +2812,37 @@ select {
   border-top: 1px solid rgba(91, 67, 37, 0.14);
 }
 
-.run-search-header,
-.run-search-form {
+.run-search-header {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  justify-content: space-between;
   flex-wrap: wrap;
 }
 
-.run-search-header {
-  justify-content: space-between;
+.run-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .current-runs-section .run-search-form select {
-  flex: 1 1 14rem;
-  width: auto;
+  grid-column: 1;
+  width: 100%;
   max-width: 100%;
 }
 
 .run-search-checkbox {
-  flex: 0 0 auto;
+  grid-column: 1 / -1;
+  width: 100%;
   margin: 0;
   min-height: var(--workflow-run-control-height);
+}
+
+.current-runs-section .run-search-form .subtle-button {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .run-search-results {

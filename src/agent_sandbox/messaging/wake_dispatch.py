@@ -173,8 +173,10 @@ class HostWakeDispatcher:
             "timeout": worker_config.wake_resume_timeout_seconds,
         }
         agent_model = self._resolve_agent_model_for_binding(binding)
+        agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
         if agent_model:
-            run_kwargs["env"] = os.environ | {"AGENT_MODEL": agent_model}
+            agent_env["AGENT_MODEL"] = agent_model
+        run_kwargs["env"] = os.environ | agent_env
         try:
             completed = subprocess.run(cmd, **run_kwargs)
         except OSError:
@@ -406,6 +408,7 @@ class HostWakeDispatcher:
                 container_worker_guest_gateway_url(base_config),
                 session_id=session_id,
             ),
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
             handle = backend.start(
@@ -487,6 +490,12 @@ class HostWakeDispatcher:
             if session_model:
                 return session_model
             return os.environ.get("AGENT_MODEL") or None
+
+    def _web_search_mode_for_session(self, session_id: str) -> str:
+        session = self.runtime.session_repository.get_session(session_id)
+        if session is None:
+            return "disabled"
+        return "live" if bool(getattr(session, "web_search_enabled", False)) else "disabled"
 
     def _build_container_dispatch_record(
         self,
