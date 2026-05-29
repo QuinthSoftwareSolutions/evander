@@ -880,6 +880,17 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "tools": {"type": "array"},
         "expires_at": {"type": "string"},
     },
+    "effect:session:revoke-mcp-tool-approval-lease": {
+        "success": {"type": "boolean"},
+        "lease_id": {"type": "string"},
+        "mcp_tool_approval_lease_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "workflow_run_id": {"type": "string"},
+        "tools": {"type": "array"},
+        "revoked": {"type": "boolean"},
+        "already_revoked": {"type": "boolean"},
+        "revoked_at": {"type": "string"},
+    },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},

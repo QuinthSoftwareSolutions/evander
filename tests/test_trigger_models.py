@@ -34,6 +34,7 @@ from agent_sandbox.events.provider_models import (
     SessionContextQueryDefinition,
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
+    SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     WebhookTriggerDefinition,
 )
@@ -1185,6 +1186,56 @@ def test_session_approve_mcp_tools_for_run_effect_validates_target_selector() ->
                 "display_name": "Approve tools",
                 "type": "effect:session:approve-mcp-tools-for-run",
                 "tools": ["run_script"],
+            }
+        )
+
+
+def test_session_revoke_mcp_tool_approval_lease_effect_validates_lease_aliases() -> None:
+    effect = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "mcp_tool_approval_lease_id": "lease-1",
+            "session_id": "session-1",
+            "workflow_run_id": "workflow-run-1",
+        }
+    )
+    alias_effect = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "lease_id": "lease-2",
+            "session_id": "session-1",
+        }
+    )
+    both_aliases = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "mcp_tool_approval_lease_id": "lease-3",
+            "lease_id": "lease-4",
+            "session_id": "session-1",
+        }
+    )
+
+    assert effect.mcp_tool_approval_lease_id == "lease-1"
+    assert effect.lease_id is None
+    assert effect.session_id == "session-1"
+    assert effect.workflow_run_id == "workflow-run-1"
+    assert alias_effect.lease_id == "lease-2"
+    assert both_aliases.mcp_tool_approval_lease_id == "lease-3"
+    assert both_aliases.lease_id == "lease-4"
+
+    with pytest.raises(ValueError, match="mcp_tool_approval_lease_id or lease_id"):
+        SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+            {
+                "id": "effect-session-revoke-lease",
+                "display_name": "Revoke tool lease",
+                "type": "effect:session:revoke-mcp-tool-approval-lease",
+                "session_id": "session-1",
             }
         )
 

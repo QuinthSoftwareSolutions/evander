@@ -1,11 +1,19 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+)
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.events.provider_models import (
+    SessionRevokeMcpToolApprovalLeaseEffectDefinition,
+)
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -198,6 +206,39 @@ def make_ado_tool_policy_engine(tmp_path: Path) -> tuple[PolicyEngine, SessionMa
     return engine, session
 
 
+def _revoke_lease_with_provider(
+    tmp_path: Path,
+    *,
+    lease_id: str,
+    session_id: str,
+    workflow_run_id: str,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    provider = SessionRevokeMcpToolApprovalLeaseEffectProvider()
+    provider.initialize(
+        effect_definition=SessionRevokeMcpToolApprovalLeaseEffectDefinition(
+            id="revoke-lease",
+            display_name="Revoke lease",
+            type="effect:session:revoke-mcp-tool-approval-lease",
+            mcp_tool_approval_lease_id=lease_id,
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+        ),
+        runtime_context=EffectRuntimeContext(
+            resolved_config=config,
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    tool_approval_leases=repository,
+                    config=config,
+                )
+            ),
+            env={},
+        ),
+    )
+    provider.execute()
+
+
 def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     manifest = SessionManifest(
@@ -323,6 +364,77 @@ def test_run_scoped_tool_approval_lease_can_be_limited_by_use_count(
     assert engine.tool_approval_leases.get_lease(lease.lease_id).used_counts[
         ToolName.RUN_SCRIPT.value
     ] == 1
+    with pytest.raises(PolicyError, match="not usable"):
+        engine.consume_tool_approval_lease_use(
+            session_id="s1",
+            tool_name=ToolName.RUN_SCRIPT,
+            workflow_run_id="run-1",
+            mcp_tool_approval_lease_id=lease.lease_id,
+        )
+
+
+def test_require_tool_rejects_revoked_run_scoped_tool_approval_lease(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    _revoke_lease_with_provider(
+        tmp_path,
+        lease_id=lease.lease_id,
+        session_id="s1",
+        workflow_run_id="run-1",
+    )
+
+    with pytest.raises(PolicyError, match="not allowed"):
+        engine.require_tool(
+            "s1",
+            ToolName.RUN_SCRIPT,
+            workflow_run_id="run-1",
+            mcp_tool_approval_lease_id=lease.lease_id,
+        )
+
+
+def test_consume_tool_approval_lease_use_rejects_revoked_limited_use_lease(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_settings={
+            ToolName.RUN_SCRIPT.value: ApprovalGrantSettings(max_uses=1, payload_mode="any")
+        },
+    )
+    _revoke_lease_with_provider(
+        tmp_path,
+        lease_id=lease.lease_id,
+        session_id="s1",
+        workflow_run_id="run-1",
+    )
+
     with pytest.raises(PolicyError, match="not usable"):
         engine.consume_tool_approval_lease_use(
             session_id="s1",

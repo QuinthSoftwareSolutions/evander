@@ -422,6 +422,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:session:approve-mcp-tools-for-run": (
             provider_models.SessionApproveMcpToolsForRunEffectDefinition
         ),
+        "effect:session:revoke-mcp-tool-approval-lease": (
+            provider_models.SessionRevokeMcpToolApprovalLeaseEffectDefinition
+        ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
         "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,

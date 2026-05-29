@@ -26,6 +26,9 @@ from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvid
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -342,6 +345,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:notification:send",
         "effect:session:update-metadata",
         "effect:session:approve-mcp-tools-for-run",
+        "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
@@ -354,6 +358,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
+        is SessionRevokeMcpToolApprovalLeaseEffectProvider
     )
 
 

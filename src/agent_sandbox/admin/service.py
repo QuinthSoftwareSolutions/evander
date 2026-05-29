@@ -1748,6 +1748,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:session:approve-mcp-tools-for-run": (
         "Approve MCP tools for one agent session during the current workflow run."
     ),
+    "effect:session:revoke-mcp-tool-approval-lease": (
+        "Revoke a workflow-run-scoped MCP tool approval lease for one agent session."
+    ),
     "effect:session:renew-if-expired": (
         "Renew an expired or soon-expiring session."
     ),
@@ -3804,6 +3807,44 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Optional lease lifetime. Defaults to 24 hours and never extends "
                     "past the session expiry."
                 ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:revoke-mcp-tool-approval-lease",
+        label="Revoke MCP tool approval lease",
+        fields=[
+            _field(
+                "mcp_tool_approval_lease_id",
+                "MCP tool approval lease ID",
+                "string",
+                required=True,
+                bindable=True,
+                description=(
+                    "Preferred lease ID from Approve MCP tools for run. Revokes that lease."
+                ),
+            ),
+            _field(
+                "lease_id",
+                "Lease ID",
+                "string",
+                bindable=True,
+                description="Alias for MCP tool approval lease ID.",
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Optional guard that must match the stored lease.",
+            ),
+            _field(
+                "workflow_run_id",
+                "Workflow run ID",
+                "string",
+                bindable=True,
+                description="Optional guard that must match the stored lease.",
             ),
         ],
     ),
