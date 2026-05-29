@@ -5823,6 +5823,81 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert detail.data_availability.communication_artifacts == "available"
 
 
+def test_admin_service_read_workflow_run_detail_preserves_approval_trigger_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    db_path = runtime_dir / "orchestration.db"
+    approval_request = ApprovalRequest(
+        request_id="approval-pending",
+        session_id="session-approval",
+        action_type="email_send_approved",
+        tool_name="email_send_approved",
+        payload_digest="digest-approval",
+        human_summary="approve the pending email",
+        payload={"body": "sqlite approval run detail"},
+        directory_path="root",
+        status=ApprovalStatus.PENDING,
+        created_at=datetime(2026, 5, 18, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 5, 19, 12, 0, tzinfo=UTC),
+    )
+    service.runtime.approvals.put(approval_request.request_id, approval_request)
+    request_payload = approval_request.model_dump(mode="json")
+    queue_store = SqliteTriggerEventQueue(db_path)
+    queue_store.publish(
+        TriggerEvent(
+            event_id="evt-approval",
+            trigger_id="approval-trigger",
+            trigger_type="trigger:approval:pending-created",
+            occurred_at=approval_request.created_at,
+            payload={
+                "approval_request_id": request_payload["request_id"],
+                "session_id": request_payload["session_id"],
+                "directory_path": request_payload["directory_path"],
+                "action_type": request_payload["action_type"],
+                "tool_name": request_payload["tool_name"],
+                "human_summary": request_payload["human_summary"],
+                "payload_digest": request_payload["payload_digest"],
+                "payload": request_payload["payload"],
+                "created_at": request_payload["created_at"],
+                "expires_at": request_payload["expires_at"],
+                "approval_request": request_payload,
+            },
+            trace_id="trace-approval",
+        )
+    )
+
+    monkeypatch.setattr(
+        SqliteTriggerEventQueue,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every trigger event"),
+    )
+    monkeypatch.setattr(
+        SqliteExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every effect execution"),
+    )
+    monkeypatch.setattr(
+        SqliteGateExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every gate execution"),
+    )
+
+    detail = service.read_workflow_run_detail(event_id="evt-approval")
+
+    assert detail.event_id == "evt-approval"
+    assert detail.trace_id == "trace-approval"
+    assert detail.trigger_event is not None
+    assert detail.trigger_event.trigger_type == "trigger:approval:pending-created"
+    assert detail.trigger_event.payload["approval_request_id"] == "approval-pending"
+    assert detail.trigger_event.payload["approval_request"]["request_id"] == "approval-pending"
+    assert detail.trigger_event.payload["approval_request"]["human_summary"] == (
+        "approve the pending email"
+    )
+
+
 def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_clearable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
