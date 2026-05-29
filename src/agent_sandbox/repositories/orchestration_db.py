@@ -86,6 +86,8 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON trigger_events(trigger_id, trigger_type, occurred_at, event_id);
             CREATE INDEX IF NOT EXISTS idx_trigger_events_occurred
                 ON trigger_events(occurred_at, event_id);
+            CREATE INDEX IF NOT EXISTS idx_trigger_events_activity
+                ON trigger_events(COALESCE(delivered_at, inflight_at, occurred_at), event_id);
             CREATE INDEX IF NOT EXISTS idx_trigger_events_trace
                 ON trigger_events(trace_id, occurred_at);
             CREATE INDEX IF NOT EXISTS idx_trigger_events_idempotency
@@ -124,6 +126,8 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON effect_executions(started_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_finished
                 ON effect_executions(finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_activity
+                ON effect_executions(COALESCE(finished_at, started_at), execution_id);
 
             CREATE TABLE IF NOT EXISTS gate_executions (
                 execution_id TEXT PRIMARY KEY,
@@ -158,6 +162,8 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON gate_executions(started_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_gate_executions_finished
                 ON gate_executions(finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_gate_executions_activity
+                ON gate_executions(COALESCE(finished_at, started_at), execution_id);
 
             CREATE TABLE IF NOT EXISTS workflow_events (
                 row_id INTEGER PRIMARY KEY AUTOINCREMENT,

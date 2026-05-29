@@ -5,6 +5,23 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Workflow Run Snapshot I/O Fix
+
+- Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web
+  reads do not initialize runtime store or journal files.
+- Added SQLite activity timestamp indexes for recent workflow run snapshots.
+
+## 2026-05-29 - Live Workflow Node Pulse
+
+- Added `recent_node_activity` to workflow run snapshots so Admin Web can
+  surface recent trigger, effect, and gate activity without changing existing
+  active run cards or node activity counts.
+- Made the workflow editor show a short live-only pulse on visible nodes for
+  newly streamed backend activity keys, while keeping inspect/tutorial views
+  and duplicate keys from replaying.
+- Kept the pulse one-shot and motion-safe, with bounded timers and reduced
+  motion behavior for users who prefer less animation.
+
 ## 2026-05-29 - Container NPM Registry URL Validation
 
 - Rejected control characters in container npm registry URLs before generating

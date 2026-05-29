@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
+import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
@@ -29,6 +30,8 @@ from agent_sandbox.admin.service import (
     CapacitySessionSummaryPayload,
     CapacityWorkerTelemetryEntryPayload,
     CapacityWorkerTelemetrySummaryPayload,
+    WorkflowRunRecentNodeActivityPayload,
+    WorkflowRunSnapshotPayload,
 )
 from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
@@ -48,6 +51,8 @@ from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalC
 from agent_sandbox.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
+    JsonExecutionStore,
+    JsonGateExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
@@ -80,9 +85,11 @@ from agent_sandbox.models import (
     WorkerSummary,
 )
 from agent_sandbox.events.internal import InternalEventBus
+from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
 from agent_sandbox.repositories.orchestration_db import connect_orchestration_db
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from agent_sandbox.triggers.queue import TriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
 
@@ -2259,6 +2266,294 @@ def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
             await stream.aclose()
 
     assert asyncio.run(read_first_event()).startswith("event: snapshot\n")
+
+
+def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    trigger_queue = TriggerEventQueue(stores["event_queue_store_path"])
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-recent",
+            trigger_id="trigger-recent",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "json"},
+            trace_id="trace-trigger-recent",
+        )
+    )
+    trigger_queue.mark_delivered("evt-trigger-recent", delivered_at=now - timedelta(seconds=1))
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-old",
+            trigger_id="trigger-old",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=30),
+            payload={"kind": "json"},
+            trace_id="trace-trigger-old",
+        )
+    )
+    trigger_queue.mark_delivered("evt-trigger-old", delivered_at=now - timedelta(seconds=20))
+
+    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-recent",
+            idempotency_key="evt-gate-recent::gate-recent",
+            event_id="evt-gate-recent",
+            gate_id="gate-recent",
+            status="succeeded",
+            started_at=now - timedelta(seconds=5),
+            finished_at=now - timedelta(seconds=2),
+        )
+    )
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-old",
+            idempotency_key="evt-effect-old::effect-old",
+            event_id="evt-effect-old",
+            effect_id="effect-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=40),
+            finished_at=now - timedelta(seconds=35),
+        )
+    )
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-old",
+            idempotency_key="evt-gate-old::gate-old",
+            event_id="evt-gate-old",
+            gate_id="gate-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=40),
+            finished_at=now - timedelta(seconds=35),
+        )
+    )
+
+    for index in range(201):
+        effect_store.record_execution(
+            _effect_execution_record(
+                execution_id=f"exec-effect-{index}",
+                idempotency_key=f"evt-effect-{index}::effect-{index}",
+                event_id=f"evt-effect-{index}",
+                effect_id=f"effect-{index}",
+                status="succeeded",
+                started_at=now - timedelta(seconds=4, microseconds=index),
+                finished_at=now - timedelta(seconds=3, microseconds=index),
+            )
+        )
+
+    client = TestClient(create_app(service))
+    response = client.get("/api/workflow-editor/runs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert len(payload["recent_node_activity"]) == 200
+    assert [item["node_id"] for item in payload["recent_node_activity"][:3]] == [
+        "trigger-recent",
+        "gate-recent",
+        "effect-0",
+    ]
+    assert payload["recent_node_activity"][0]["source"] == "trigger_event"
+    assert payload["recent_node_activity"][0]["status"] == "delivered"
+    assert payload["recent_node_activity"][0]["activity_at"] == "2026-05-21T11:59:59Z"
+    assert payload["recent_node_activity"][-1]["node_id"] == "effect-197"
+    assert payload["recent_node_activity"][-1]["source"] == "effect_execution"
+
+
+def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write_trigger_orchestrator_sqlite_config(tmp_path)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "sqlite",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 365,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    trigger_queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-sqlite",
+            trigger_id="trigger-sqlite",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "sqlite"},
+            trace_id="trace-trigger-sqlite",
+        )
+    )
+    trigger_queue.mark_delivered(
+        "evt-trigger-sqlite", delivered_at=now - timedelta(seconds=3)
+    )
+
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-sqlite",
+            idempotency_key="evt-effect-sqlite::effect-sqlite",
+            event_id="evt-effect-sqlite",
+            effect_id="effect-sqlite",
+            status="succeeded",
+            started_at=now - timedelta(seconds=4),
+            finished_at=now - timedelta(seconds=2),
+        )
+    )
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-sqlite-old",
+            idempotency_key="evt-effect-sqlite-old::effect-old",
+            event_id="evt-effect-sqlite-old",
+            effect_id="effect-sqlite-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=25),
+        )
+    )
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-sqlite",
+            idempotency_key="evt-gate-sqlite::gate-sqlite",
+            event_id="evt-gate-sqlite",
+            gate_id="gate-sqlite",
+            status="succeeded",
+            started_at=now - timedelta(seconds=2),
+            finished_at=now - timedelta(seconds=1),
+        )
+    )
+
+    client = TestClient(create_app(service))
+    response = client.get("/api/workflow-editor/runs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert [item["node_id"] for item in payload["recent_node_activity"]] == [
+        "gate-sqlite",
+        "effect-sqlite",
+        "trigger-sqlite",
+    ]
+    assert payload["recent_node_activity"][2]["source"] == "trigger_event"
+    assert payload["recent_node_activity"][2]["activity_at"] == "2026-05-21T11:59:57Z"
+    assert payload["recent_node_activity"][2]["status"] == "delivered"
+
+
+def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    snapshots = iter(
+        [
+            WorkflowRunSnapshotPayload(
+                generated_at=now,
+                runs=[],
+                node_activity={},
+                recent_node_activity=[
+                    WorkflowRunRecentNodeActivityPayload(
+                        activity_key="trigger_event:evt-1:trigger-a:delivered:2026-05-21T11:59:59Z",
+                        event_id="evt-1",
+                        node_id="trigger-a",
+                        status="delivered",
+                        source="trigger_event",
+                        activity_at=now - timedelta(seconds=1),
+                    )
+                ],
+            ),
+            WorkflowRunSnapshotPayload(
+                generated_at=now,
+                runs=[],
+                node_activity={},
+                recent_node_activity=[
+                    WorkflowRunRecentNodeActivityPayload(
+                        activity_key="trigger_event:evt-2:trigger-a:delivered:2026-05-21T11:59:58Z",
+                        event_id="evt-2",
+                        node_id="trigger-a",
+                        status="delivered",
+                        source="trigger_event",
+                        activity_at=now - timedelta(seconds=2),
+                    )
+                ],
+            ),
+        ]
+    )
+
+    class FakeJournal:
+        def cursor(self) -> object:
+            return object()
+
+        async def wait_after(self, cursor: object, timeout_seconds: float) -> tuple[list[str], object]:
+            return (["workflow.run.snapshot"], object())
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    monkeypatch.setattr(service, "workflow_event_journal", lambda: FakeJournal())
+    monkeypatch.setattr(service, "read_workflow_run_snapshot", lambda: next(snapshots))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event.startswith("event: snapshot\n")
+    assert '"event_id": "evt-1"' in first_event
+    assert '"event_id": "evt-2"' in second_event
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
