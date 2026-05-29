@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, EffectDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
+from agent_sandbox.effects.providers.agent_session import normalize_optional_http_url
 
 
 class EventEmitEffectDefinition(EffectDefinition):
@@ -171,7 +172,19 @@ class AgentCreateEffectDefinition(EffectDefinition):
     mssql_init_root: ConfigValue | None = None
     playwright: ConfigValue | None = None
     codex_skills: ConfigValue | None = None
+    npm_registry_url: ConfigValue | None = None
     directory_path: ConfigValue | None = None
+
+    @field_validator("npm_registry_url", mode="before")
+    @classmethod
+    def validate_npm_registry_url(
+        cls, value: ConfigValue | None
+    ) -> ConfigValue | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and "${{" in value:
+            return value
+        return normalize_optional_http_url(value, field_name="npm_registry_url")
 
 
 class AgentDestroyEffectDefinition(EffectDefinition):

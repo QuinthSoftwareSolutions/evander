@@ -1203,12 +1203,14 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "mssql_init_root",
         "playwright",
         "codex_skills",
+        "npm_registry_url",
         "directory_path",
     }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
     assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["npm_registry_url"]["bindable"]
     assert agent_create_fields["allowed_tools"]["options"]
     assert {
         "value": ToolName.RUN_SCRIPT.value,
