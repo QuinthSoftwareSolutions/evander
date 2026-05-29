@@ -176,6 +176,7 @@ Type-specific keys:
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
+| `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
 | `trigger:git:push` | `path_to_repo` | — |
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
@@ -247,7 +248,8 @@ Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream 
 reshape or suppress webhook deliveries after the trigger fires.
 
 The current trigger set also includes `trigger:teams:new-message`,
-`trigger:teams:direct-message`, `trigger:review:new-request`, and `trigger:script-run-request`.
+`trigger:teams:direct-message`, `trigger:review:new-request`,
+`trigger:approval:pending-created`, and `trigger:script-run-request`.
 Teams is fed by a host-side ingest worker that reads the same delegated Teams auth settings
 described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
@@ -257,6 +259,12 @@ script name. The checked-in global workflow currently filters that trigger down 
 `provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
 maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
 session after `effect:session:update-metadata` stores that metadata.
+
+`trigger:approval:pending-created` watches the durable approval store for pending requests,
+scopes by `directory_path` with descendant matching, and accepts optional `action_types` and
+`tool_names` filters. Pending approval instances remain eligible until the queued trigger event
+is acknowledged, so a publish retry can replay the same approval without creating a duplicate
+source item.
 
 `trigger:communication:new-message` is a provider-neutral chat trigger over declared
 directory-scoped communication targets. Its `communication_target_ids` list is required and must
