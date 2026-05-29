@@ -814,6 +814,22 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request"
     )
     assert review_request["fields"] == []
+    approval_request = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:approval:pending-created"
+    )
+    assert approval_request["label"] == "Pending approval"
+    assert approval_request["description"] == "Start when a pending approval request is created."
+    assert [field["key"] for field in approval_request["fields"]] == [
+        "directory_path",
+        "action_types",
+        "tool_names",
+    ]
+    approval_request_fields = {field["key"]: field for field in approval_request["fields"]}
+    assert approval_request_fields["directory_path"]["default_value"] == "root"
+    assert approval_request_fields["action_types"]["default_value"] == []
+    assert approval_request_fields["tool_names"]["default_value"] == []
     script_run_request = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request"
     )

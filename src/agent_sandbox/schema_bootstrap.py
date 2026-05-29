@@ -70,6 +70,93 @@ _ISSUE_LIST_ITEM_OUTPUT_SCHEMA = {
     "can_create_vm": {"type": "boolean"},
 }
 
+_APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "target_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempted_at": {"type": "string"},
+        "provider": {"type": ["string", "null"]},
+        "message_id": {"type": ["string", "null"]},
+        "result_summary": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+}
+
+_APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ttl_seconds": {"type": "integer"},
+        "max_uses": {"type": ["integer", "null"]},
+        "payload_mode": {"type": "string"},
+    },
+}
+
+_APPROVAL_REQUEST_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "request_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "action_type": {"type": "string"},
+        "payload_digest": {"type": "string"},
+        "human_summary": {"type": "string"},
+        "payload": {"type": "object"},
+        "directory_path": {"type": "string"},
+        "vm_id": {"type": ["string", "null"]},
+        "tool_name": {"type": ["string", "null"]},
+        "intended_effect": {"type": ["string", "null"]},
+        "status": {"type": "string"},
+        "approval_settings": {
+            "type": ["object", "null"],
+            "properties": _APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA["properties"],
+        },
+        "used_count": {"type": "integer"},
+        "last_used_at": {"type": ["string", "null"]},
+        "notification_status": {"type": "string"},
+        "notification_target_ids": {"type": "array", "items": {"type": "string"}},
+        "notification_attempted_at": {"type": ["string", "null"]},
+        "notification_error": {"type": ["string", "null"]},
+        "notification_deliveries": {
+            "type": "array",
+            "items": _APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA,
+        },
+        "created_at": {"type": "string"},
+        "expires_at": {"type": "string"},
+        "approver": {"type": ["string", "null"]},
+        "decision_at": {"type": ["string", "null"]},
+        "decision_reason": {"type": ["string", "null"]},
+        "decision_history": {"type": "array"},
+    },
+}
+
+_APPROVAL_PENDING_CREATED_OUTPUT_SCHEMA = {
+    "approval_request_id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "directory_path": {"type": "string"},
+    "action_type": {"type": "string"},
+    "tool_name": {"type": ["string", "null"]},
+    "human_summary": {"type": "string"},
+    "payload_digest": {"type": "string"},
+    "payload": {"type": "object"},
+    "vm_id": {"type": ["string", "null"]},
+    "intended_effect": {"type": ["string", "null"]},
+    "approval_settings": {
+        "type": ["object", "null"],
+        "properties": _APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA["properties"],
+    },
+    "notification_status": {"type": "string"},
+    "notification_target_ids": {"type": "array", "items": {"type": "string"}},
+    "notification_attempted_at": {"type": ["string", "null"]},
+    "notification_error": {"type": ["string", "null"]},
+    "notification_deliveries": {
+        "type": "array",
+        "items": _APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA,
+    },
+    "created_at": {"type": "string"},
+    "expires_at": {"type": "string"},
+    "approval_request": _APPROVAL_REQUEST_OUTPUT_SCHEMA,
+}
+
 _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:event": {
         "event_id": {"type": "string"},
@@ -80,6 +167,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "source": {"type": ["object", "null"]},
         "idempotency_key": {"type": ["string", "null"]},
     },
+    "trigger:approval:pending-created": _APPROVAL_PENDING_CREATED_OUTPUT_SCHEMA,
     "trigger:http:webhook": {
         "slug": {"type": "string"},
         "headers": {"type": "object"},

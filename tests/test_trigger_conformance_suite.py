@@ -276,6 +276,18 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "approval-pending",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+                "directory_path": " root/team-a ",
+                "action_types": [" approve ", "deny"],
+                "tool_names": [" email_send_approved "],
+            },
+            "trigger:approval:pending-created",
+            "directory_path",
+        ),
+        (
+            {
                 "id": "git",
                 "display_name": "Git",
                 "type": "trigger:git:push",
@@ -309,6 +321,10 @@ def test_conformance_schema_accepts_required_trigger_shapes(
         assert trigger.provider == "github_actions"
         assert trigger.branches == ["main"]
         assert trigger.conclusions == ["success", "cancelled", "timed_out"]
+    if expected_type == "trigger:approval:pending-created":
+        assert trigger.directory_path == "root/team-a"
+        assert trigger.action_types == ["approve", "deny"]
+        assert trigger.tool_names == ["email_send_approved"]
     _record_result(
         report_collector,
         requirement_id=f"schema:{expected_type}",
@@ -2045,6 +2061,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:pull-request:completed",
             "schema:trigger:ci:run:completed",
             "schema:trigger:review:new-request",
+            "schema:trigger:approval:pending-created",
             "schema:trigger:git:push",
             "schema:duplicate-ids",
         ],

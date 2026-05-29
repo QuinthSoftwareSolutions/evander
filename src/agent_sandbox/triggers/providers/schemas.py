@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, TriggerDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
+from agent_sandbox.models import DirectoryPath
 from agent_sandbox.events.provider_types import (
     EmailProvider,
     PrFeedbackProvider,
@@ -567,6 +568,28 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
 
 class ReviewNewRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:review:new-request"]
+
+
+class ApprovalPendingCreatedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:approval:pending-created"]
+    directory_path: str | None = "root"
+    action_types: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def normalize_directory_path(cls, value: object) -> object:
+        if value is None:
+            return "root"
+        text = str(value).strip()
+        if not text:
+            return "root"
+        return DirectoryPath(segments=text).as_posix()
+
+    @field_validator("action_types", "tool_names", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> object:
+        return normalize_string_list(value)
 
 
 class GitPushTriggerDefinition(TriggerDefinition):

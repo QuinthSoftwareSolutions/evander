@@ -1678,6 +1678,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start when a CI run completes on GitHub Actions or Azure DevOps."
     ),
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
+    "trigger:approval:pending-created": "Start when a pending approval request is created.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
     "gate:filter": "Allow only matching events to continue downstream.",
@@ -2174,6 +2175,38 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:review:new-request",
         label="Review request",
         fields=[],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:approval:pending-created",
+        label="Pending approval",
+        fields=[
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                placeholder="root",
+                default_value="root",
+            ),
+            _field(
+                "action_types",
+                "Action types",
+                "string_list",
+                default_value=[],
+                description=(
+                    "Optional action type filter. Leave blank to include all pending approvals."
+                ),
+            ),
+            _field(
+                "tool_names",
+                "Tool names",
+                "string_list",
+                default_value=[],
+                description=(
+                    "Optional tool name filter. Leave blank to include all pending approvals."
+                ),
+            ),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",

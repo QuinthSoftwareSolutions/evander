@@ -356,6 +356,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:pull-request:new-feedback": provider_models.PullRequestNewFeedbackTriggerDefinition,
         "trigger:pull-request:completed": provider_models.PullRequestCompletedTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
+        "trigger:approval:pending-created": provider_models.ApprovalPendingCreatedTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
         "trigger:ci:run:completed": provider_models.CiRunCompletedTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
