@@ -34,6 +34,9 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   const page = await context.newPage();
 
   const requestedEndpoints = [];
+  const agentListRequests = [];
+  let manualRefreshRequested = false;
+  let manualRefreshRequest = null;
   const agentsResponse = {
     items: [
       {
@@ -197,19 +200,28 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     }
 
     if (pathname === "/api/admin/agents") {
+      const requestIndex = agentListRequests.length;
+      agentListRequests.push(`${pathname}${url.search}`);
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
-      if (url.searchParams.get("summary_only") === "true") {
+      if (requestIndex === 0) {
+        assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "false");
         assert.equal(url.searchParams.get("omit_vm_state"), "true");
         assert.equal(url.searchParams.get("_dashboard"), "1");
-      } else {
+      } else if (manualRefreshRequested && manualRefreshRequest == null) {
         assert.equal(url.searchParams.get("summary_only"), "false");
         assert.equal(url.searchParams.get("reconcile_containers"), "true");
         assert.equal(url.searchParams.get("omit_vm_state"), "false");
         assert.equal(url.searchParams.get("_dashboard"), null);
+        manualRefreshRequest = `${pathname}${url.search}`;
+      } else {
+        assert.equal(url.searchParams.get("summary_only"), "true");
+        assert.equal(url.searchParams.get("reconcile_containers"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("_dashboard"), "1");
       }
       await route.fulfill(jsonResponse(agentsResponse));
       return;
@@ -241,6 +253,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  manualRefreshRequested = true;
   await Promise.all([
     page.waitForRequest((request) => {
       if (!request.url().includes("/api/admin/agents?")) return false;
@@ -258,6 +271,16 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/agents?")));
+  assert.ok(agentListRequests.length >= 1);
+  assert.match(agentListRequests[0], /summary_only=true/);
+  assert.match(agentListRequests[0], /reconcile_containers=false/);
+  assert.match(agentListRequests[0], /omit_vm_state=true/);
+  assert.match(agentListRequests[0], /_dashboard=1/);
+  assert.ok(manualRefreshRequest);
+  assert.match(manualRefreshRequest, /summary_only=false/);
+  assert.match(manualRefreshRequest, /reconcile_containers=true/);
+  assert.match(manualRefreshRequest, /omit_vm_state=false/);
+  assert.equal(new URL(`http://localhost${manualRefreshRequest}`).searchParams.get("_dashboard"), null);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });
