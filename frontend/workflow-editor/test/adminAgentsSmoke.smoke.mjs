@@ -34,6 +34,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   const page = await context.newPage();
 
   const requestedEndpoints = [];
+  const agentListRequests = [];
+  let manualRefreshRequested = false;
+  let manualRefreshRequest = null;
+  let manualSummaryRefreshRequest = null;
   const agentsResponse = {
     items: [
       {
@@ -197,10 +201,45 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     }
 
     if (pathname === "/api/admin/agents") {
+      const requestIndex = agentListRequests.length;
+      agentListRequests.push(`${pathname}${url.search}`);
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
+      if (requestIndex === 0) {
+        assert.equal(url.searchParams.get("summary_only"), "true");
+        assert.equal(url.searchParams.get("reconcile_containers"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("_dashboard"), "1");
+      } else if (
+        manualRefreshRequested &&
+        manualRefreshRequest == null &&
+        url.searchParams.get("summary_only") === "false"
+      ) {
+        assert.equal(url.searchParams.get("summary_only"), "false");
+        assert.equal(url.searchParams.get("reconcile_containers"), "true");
+        assert.equal(url.searchParams.get("omit_vm_state"), "false");
+        assert.equal(url.searchParams.get("_dashboard"), null);
+        manualRefreshRequest = `${pathname}${url.search}`;
+      } else if (
+        manualRefreshRequested &&
+        manualSummaryRefreshRequest == null &&
+        url.searchParams.get("_dashboard_refresh") === "1"
+      ) {
+        assert.equal(url.searchParams.get("summary_only"), "true");
+        assert.equal(url.searchParams.get("reconcile_containers"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("_dashboard"), "1");
+        assert.equal(url.searchParams.get("_dashboard_refresh"), "1");
+        manualSummaryRefreshRequest = `${pathname}${url.search}`;
+      } else {
+        assert.equal(url.searchParams.get("summary_only"), "true");
+        assert.equal(url.searchParams.get("reconcile_containers"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("_dashboard"), "1");
+        assert.equal(url.searchParams.get("_dashboard_refresh"), null);
+      }
       await route.fulfill(jsonResponse(agentsResponse));
       return;
     }
@@ -231,10 +270,53 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  manualRefreshRequested = true;
+  const liveRefreshRequest = page.waitForRequest((request) => {
+    if (!request.url().includes("/api/admin/agents?")) return false;
+    const url = new URL(request.url());
+    return (
+      url.searchParams.get("summary_only") === "false" &&
+      url.searchParams.get("reconcile_containers") === "true" &&
+      url.searchParams.get("omit_vm_state") === "false" &&
+      url.searchParams.get("_dashboard") === null
+    );
+  });
+  const summaryRefreshRequest = page.waitForRequest((request) => {
+    if (!request.url().includes("/api/admin/agents?")) return false;
+    const url = new URL(request.url());
+    return (
+      url.searchParams.get("summary_only") === "true" &&
+      url.searchParams.get("reconcile_containers") === "false" &&
+      url.searchParams.get("omit_vm_state") === "true" &&
+      url.searchParams.get("_dashboard") === "1" &&
+      url.searchParams.get("_dashboard_refresh") === "1"
+    );
+  });
+  await Promise.all([
+    liveRefreshRequest,
+    summaryRefreshRequest,
+    page.getByRole("button", { name: "Refresh" }).click(),
+  ]);
   assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/agents?")));
+  assert.ok(agentListRequests.length >= 1);
+  assert.match(agentListRequests[0], /summary_only=true/);
+  assert.match(agentListRequests[0], /reconcile_containers=false/);
+  assert.match(agentListRequests[0], /omit_vm_state=true/);
+  assert.match(agentListRequests[0], /_dashboard=1/);
+  assert.ok(manualRefreshRequest);
+  assert.match(manualRefreshRequest, /summary_only=false/);
+  assert.match(manualRefreshRequest, /reconcile_containers=true/);
+  assert.match(manualRefreshRequest, /omit_vm_state=false/);
+  assert.equal(new URL(`http://localhost${manualRefreshRequest}`).searchParams.get("_dashboard"), null);
+  assert.ok(manualSummaryRefreshRequest);
+  assert.match(manualSummaryRefreshRequest, /summary_only=true/);
+  assert.match(manualSummaryRefreshRequest, /reconcile_containers=false/);
+  assert.match(manualSummaryRefreshRequest, /omit_vm_state=true/);
+  assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard"), "1");
+  assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard_refresh"), "1");
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

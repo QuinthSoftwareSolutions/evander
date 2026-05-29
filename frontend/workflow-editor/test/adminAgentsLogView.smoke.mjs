@@ -239,6 +239,10 @@ test("admin shell agents page forwards the selected log view through executions,
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
+      assert.equal(url.searchParams.get("summary_only"), "true");
+      assert.equal(url.searchParams.get("reconcile_containers"), "false");
+      assert.equal(url.searchParams.get("omit_vm_state"), "true");
+      assert.equal(url.searchParams.get("_dashboard"), "1");
       await route.fulfill(jsonResponse(agentsResponse));
       return;
     }
@@ -351,7 +355,7 @@ test("admin shell agents page forwards the selected log view through executions,
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".feature-toolbar h2").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByRole("button", { name: "Threads" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("tab", { name: "Threads" }).waitFor({ state: "visible" }));
 
   await assert.doesNotReject(() => page.getByText("execution default").waitFor({ state: "visible" }));
   assert.ok(
@@ -360,7 +364,7 @@ test("admin shell agents page forwards the selected log view through executions,
     ),
   );
 
-  await page.getByRole("button", { name: "Threads" }).click();
+  await page.getByRole("tab", { name: "Threads" }).click();
   await assert.doesNotReject(() => page.getByText("thread grouped").waitFor({ state: "visible" }));
   assert.ok(
     logRequests.some(
@@ -377,19 +381,9 @@ test("admin shell agents page forwards the selected log view through executions,
     ),
   );
 
-  assert.equal(await page.getByRole("button", { name: "Load older" }).isEnabled(), true);
-  await Promise.all([
-    page.waitForRequest((request) => {
-      if (!request.url().includes("/api/admin/agents/session-1/log?")) return false;
-      const url = new URL(request.url());
-      return (
-        url.searchParams.get("view") === "threads" &&
-        url.searchParams.get("query") === "thread" &&
-        url.searchParams.get("offset") !== "0"
-      );
-    }),
-    page.getByRole("button", { name: "Load older" }).click(),
-  ]);
+  assert.equal(await page.getByRole("button", { name: "Load more" }).isEnabled(), true);
+  await page.getByRole("button", { name: "Load more" }).click();
+  await page.waitForTimeout(1000);
   assert.ok(
     logRequests.some(
       (request) => request.view === "threads" && request.limit === "300" && request.offset !== "0" && request.query === "thread",

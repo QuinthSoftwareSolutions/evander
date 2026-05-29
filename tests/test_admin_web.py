@@ -8090,6 +8090,36 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     ]
     assert list_vms_calls[0]["directory_path"] == "root/team-a"
     assert list_vms_calls[0]["direct_only"] is True
+    assert list_vms_calls[0]["omit_state"] is False
+    assert payload["summary_only"] is False
+    assert payload["reconcile_containers"] is True
+    assert payload["omit_vm_state"] is False
+
+    summary_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true"
+    )
+
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()
+    assert summary_payload["summary_only"] is True
+    assert summary_payload["reconcile_containers"] is False
+    assert summary_payload["omit_vm_state"] is True
+    assert list_vms_calls[1]["directory_path"] == "root/team-a"
+    assert list_vms_calls[1]["omit_state"] is True
+
+    override_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&reconcile_containers=true&omit_vm_state=false"
+    )
+
+    assert override_response.status_code == 200
+    override_payload = override_response.json()
+    assert override_payload["summary_only"] is True
+    assert override_payload["reconcile_containers"] is True
+    assert override_payload["omit_vm_state"] is False
+    assert list_vms_calls[2]["directory_path"] == "root/team-a"
+    assert list_vms_calls[2]["omit_state"] is False
 
     root_response = client.get(
         "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true"
@@ -8097,6 +8127,111 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
 
     assert root_response.status_code == 200
     assert root_response.json()["items"] == []
+
+
+def test_admin_web_agents_summary_reads_use_dashboard_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session-a",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-a",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a-1",
+            session_id="container-session-a",
+            worker_job_id="job-a-1",
+            worker_url="http://worker.test",
+            target_name="target-a",
+            last_status="running",
+            directory_path="root/team-a",
+        )
+    )
+    original_list_agents = service.list_agents
+    list_agents_calls: list[dict[str, object]] = []
+
+    def list_agents(self, **kwargs):
+        list_agents_calls.append(kwargs)
+        return original_list_agents(**kwargs)
+
+    monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
+    client = TestClient(create_app(service))
+
+    summary_url = (
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&_dashboard=1"
+    )
+    deep_url = (
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=false&reconcile_containers=true&omit_vm_state=false"
+    )
+    refresh_url = f"{deep_url}&_dashboard=1&_dashboard_refresh=1"
+
+    first = client.get(summary_url)
+    second = client.get(summary_url)
+    live = client.get(deep_url)
+    refreshed = client.get(refresh_url)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert live.status_code == 200
+    assert refreshed.status_code == 200
+    assert first.headers["x-admin-web-cache"] == "miss"
+    assert second.headers["x-admin-web-cache"] == "hit"
+    assert "x-admin-web-cache" not in live.headers
+    assert refreshed.headers["x-admin-web-cache"] == "refresh"
+    assert first.json()["summary_only"] is True
+    assert first.json()["reconcile_containers"] is False
+    assert first.json()["omit_vm_state"] is True
+    assert second.json() == first.json()
+    assert live.json()["summary_only"] is False
+    assert live.json()["reconcile_containers"] is True
+    assert live.json()["omit_vm_state"] is False
+    assert refreshed.json()["summary_only"] is False
+    assert refreshed.json()["reconcile_containers"] is True
+    assert refreshed.json()["omit_vm_state"] is False
+    assert list_agents_calls == [
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": False,
+            "omit_vm_state": True,
+            "backend": "all",
+        },
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": True,
+            "omit_vm_state": False,
+            "backend": "all",
+        },
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": True,
+            "omit_vm_state": False,
+            "backend": "all",
+        },
+    ]
 
 
 def test_admin_web_agents_backend_filter_controls_vm_inventory_failures(
@@ -8523,6 +8658,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "mssql": True,
         "mssql_init_root": "/tmp/init",
         "playwright": True,
+        "web_search_enabled": False,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
     }
