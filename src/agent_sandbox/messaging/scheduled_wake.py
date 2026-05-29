@@ -157,8 +157,6 @@ class ScheduledWakeWorker:
     ) -> bool:
         wake_store = self.runtime.wake_store
         source = "scheduled_cron" if (request.schedule.cron or "").strip() else "scheduled_once"
-        if session.expires_at <= now_utc:
-            return False
         binding = SessionWakeBinding(
             session_id=session.session_id,
             vm_id=session.vm_id,

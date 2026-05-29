@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - Session Expiry Execution Gates
+
+- Added a shared UTC-normalizing expiry guard so expired sessions cannot start
+  or continue agent execution through admin resume, workflow prompt effects,
+  queued prompt replay, wake dispatch, or the OpenAI relay.
+- Wake dispatches for expired sessions now record failed dispatch history instead
+  of silently starting work; scheduled requests remain retryable until the
+  session is renewed.
+- Kept host-local Git SSH pull/push access available for expired sessions so
+  recovery work can continue without re-enabling agent execution.
+
 ## 2026-05-29 - Session Web Search Policy
 
 - Added a first-class `web_search_enabled` session flag for agent create and

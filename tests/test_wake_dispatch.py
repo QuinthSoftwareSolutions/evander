@@ -86,6 +86,7 @@ def _upsert_container_session(
     metadata: dict[str, object] | None = None,
     vm_provider_id: str | None = None,
     web_search_enabled: bool = False,
+    expires_at: datetime | None = None,
 ) -> SessionManifest:
     session = SessionManifest(
         session_id=session_id,
@@ -96,7 +97,7 @@ def _upsert_container_session(
         model="gpt-5.4-mini",
         allowed_tools=[ToolName.SCHEDULE_RESUME],
         web_search_enabled=web_search_enabled,
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
         metadata=metadata or {},
     )
     session_repository.upsert_session(session)
@@ -176,6 +177,46 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
 
 
+def test_resume_binding_records_failed_dispatch_for_expired_session_before_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, _config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume script must not run for expired wake sessions")
+        ),
+    )
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=GatewayConfig(runtime_dir=tmp_path),
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-expired",
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "session expired: session_id=session-1 expires_at=" in result.error
+    assert result.metadata["vm_id"] == "vm-a"
+    latest = wake_store.latest_dispatch_by_request_id()["wake-expired"]
+    assert latest.status == "failed"
+    assert latest.error == result.error
+
+
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,6 +274,52 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert latest.metadata["target_name"].startswith("agent-session-1-")
     assert latest.metadata["source"] == "scheduled_once"
     assert latest.metadata["execution_id"].startswith("execution:agent-session-1-")
+
+
+def test_resume_container_binding_records_failed_dispatch_for_expired_session_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository,
+        session_id="session-1",
+        vm_provider_id="provider-target",
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("container backend must not be built for expired wake sessions")
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.enqueue_agent_prompt",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("expired wake sessions must not be queued")
+        ),
+    )
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        resume_mode="same_context",
+        dispatch_source="scheduled_once",
+        request_id="wake-container-expired",
+        scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        wake_metadata={"schedule_cron": ""},
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "session expired: session_id=session-1 expires_at=" in result.error
+    assert not (tmp_path / "queued-agent-prompts.json").exists()
+    latest = wake_store.latest_dispatch_by_request_id()["wake-container-expired"]
+    assert latest.status == "failed"
+    assert latest.error == result.error
+    assert latest.metadata["backend"] == "container_worker_vm"
 
 
 def test_resume_container_binding_queues_busy_session_and_records_queue_metadata(

@@ -500,6 +500,12 @@ single item or `tickets` plus created/updated/skipped counts for batches.
 `expires_at` to now plus `extend_by` (for example `8h`, `2d`, or `PT8H`);
 active sessions are left unchanged.
 
+Expired sessions are execution-gated until renewed. Admin resume, workflow
+agent prompt effects, queued prompt replay, wake dispatch, and OpenAI relay
+model calls fail with a session-expired message that includes `session_id` and
+`expires_at`. Host-local Git SSH pull/push access is intentionally not gated so
+operators can recover code or push work before renewing the session.
+
 `effect:session:approve-mcp-tools-for-run` writes a workflow-run-scoped MCP
 tool approval lease for the selected session. The approval is not persisted in
 the session manifest, and `effect:agent:prompt` / `effect:agent:enqueue-prompt`
