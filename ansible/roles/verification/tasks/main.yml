@@ -15,6 +15,8 @@
         unit: agent-sandbox-openai-relay.service
       - key: nuget_relay
         unit: agent-sandbox-nuget-relay.service
+      - key: npm_audit_facade
+        unit: agent-sandbox-npm-audit-facade.service
       - key: package_cache
         unit: agent-sandbox-nexus.service
       - key: semantic_store
@@ -120,6 +122,8 @@
       port: 11434
     - key: nuget_relay
       port: 11666
+    - key: npm_audit_facade
+      port: "{{ agent_sandbox_npm_audit_facade_port }}"
     - key: package_cache
       port: "{{ agent_sandbox_nexus_port }}"
     - key: semantic_store
@@ -144,6 +148,8 @@
       url: "http://127.0.0.1:11434/healthz"
     - key: nuget_relay
       url: "http://127.0.0.1:11666/healthz"
+    - key: npm_audit_facade
+      url: "http://127.0.0.1:{{ agent_sandbox_npm_audit_facade_port }}/healthz"
     - key: package_cache
       url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
     - key: semantic_store

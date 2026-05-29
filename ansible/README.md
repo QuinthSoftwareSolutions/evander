@@ -78,8 +78,9 @@ Core defaults:
   `control_plane_only`
 - `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, plus `8081`
   when `agent_sandbox_services.package_cache` is enabled and `3142` when
-  `agent_sandbox_services.apt_cache` is enabled. The optional Qdrant semantic store binds to
-  localhost and is not added to guest firewall allowances.
+  `agent_sandbox_services.apt_cache` is enabled, and `11881` when
+  `agent_sandbox_services.npm_audit_facade` is enabled. The optional Qdrant semantic store binds
+  to localhost and is not added to guest firewall allowances.
 
 Service profiles:
 
@@ -99,6 +100,7 @@ Service toggles:
 - `agent_sandbox_services.firewall`
 - `agent_sandbox_services.openai_relay`
 - `agent_sandbox_services.nuget_relay`
+- `agent_sandbox_services.npm_audit_facade`
 - `agent_sandbox_services.package_cache`
 - `agent_sandbox_services.apt_cache`
 - `agent_sandbox_services.semantic_store`
@@ -152,6 +154,7 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/gateway.env`
 - `config/openai-relay.env`
 - `config/nuget-relay.env`
+- `config/npm-audit-facade.env`
 - `config/http-target-relay.env`
 - `config/ado-worker.env`
 - `config/ado-worker/config.json`
@@ -180,6 +183,11 @@ The apt cache relay uses the Ubuntu `apt-cacher-ng` package and does not share N
 Worker VM apt provisioning points at
 `http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}` before
 the worker playbook's first `apt update`.
+
+The npm audit facade uses `agent-sandbox-npm-audit-facade.service`, listens on
+`agent_sandbox_npm_audit_facade_port` (`11881` by default), exposes `/healthz`, sends npm audit
+POSTs to `https://registry.npmjs.org`, and keeps package metadata and tarballs on the control-plane
+Nexus npm group. Keep any optional local overrides in `config/npm-audit-facade.env`.
 
 The optional semantic store uses `agent-sandbox-qdrant.service`, a systemd-managed Docker container
 running `agent_sandbox_qdrant_image` (`qdrant/qdrant:v1.18.0` by default). It persists data under
@@ -456,6 +464,7 @@ Those default endpoints are:
 - control-plane OpenAI relay on `11434`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
+- control-plane npm audit facade on `11881`
 - control-plane Nexus package cache on `8081`
 - control-plane apt-cacher-ng on `3142`
 
@@ -478,7 +487,7 @@ agent-sandbox-cli execution smoke-container-worker --json
 Do not grant worker hosts or runner containers direct GitHub/Azure DevOps egress for this mode; the
 control plane owns upstream credentials and mirror refresh. Worker host apt provisioning uses
 apt-cacher-ng on `3142`; npm and pip package access uses the separate Nexus registry proxies on
-`8081`.
+`8081`, while npm audit POSTs can go through the host-side facade on `11881`.
 
 Configure the control plane to point at the worker's private address:
 

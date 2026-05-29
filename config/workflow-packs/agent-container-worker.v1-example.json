@@ -1682,6 +1682,7 @@
           "mssql": false,
           "nuget": true,
           "playwright": true,
+          "npm_registry_url": "http://10.0.0.4:11881/",
           "session_id": "review-${{trigger-review-new-request-1.review_request.pr_id}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
           "ttl_hours": 24,
           "vm_name": "vm-review-${{trigger-review-new-request-1.review_request.pr_id}}",

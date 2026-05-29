@@ -9,6 +9,8 @@ def test_operations_doc_mentions_firewall_service() -> None:
     assert "agent-sandbox-admin-web" in text
     assert "config/firewall.env" in text
     assert "config/admin-web.env" in text
+    assert "agent-sandbox-npm-audit-facade.service" in text
+    assert "config/npm-audit-facade.env" in text
     assert "agent-sandbox-http-target-relay.service" in text
     assert "HTTP target relay" in text
     assert "systemctl show -p User agent-sandbox-discord-wake.service" in text
