@@ -843,6 +843,8 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
     ) -> ConfigValue | None:
         if value is None:
             return None
+        if isinstance(value, str) and "${{" in value:
+            return normalize_optional_string(value)
         from agent_sandbox.effects.providers.session_renew_if_expired import (
             parse_session_renew_if_expires_within,
         )

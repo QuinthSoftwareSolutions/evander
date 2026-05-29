@@ -1205,6 +1205,18 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
     assert effect.extend_by == "8h"
     assert effect.renew_if_expires_within == "30m"
 
+    bound_threshold = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "session_id": "session-1",
+            "renew_if_expires_within": "${{query-session-context.renewal_window}}",
+        }
+    )
+
+    assert bound_threshold.renew_if_expires_within == "${{query-session-context.renewal_window}}"
+
     effect_with_blank_selectors = SessionRenewIfExpiredEffectDefinition.model_validate(
         {
             "id": "effect-session-renew",

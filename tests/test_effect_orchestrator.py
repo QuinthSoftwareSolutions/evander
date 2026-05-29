@@ -4405,7 +4405,19 @@ def test_agent_enqueue_prompt_dispatch_does_not_fallback_to_default_thread_for_n
     }
 
 
-def test_session_renew_if_expired_runs_before_prompting(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("expires_delta", "renew_if_expires_within", "renewal_reason"),
+    [
+        (timedelta(minutes=-5), None, "expired"),
+        (timedelta(minutes=10), "30m", "within_window"),
+    ],
+)
+def test_session_renew_if_expired_runs_before_prompting(
+    tmp_path: Path,
+    expires_delta: timedelta,
+    renew_if_expires_within: str | None,
+    renewal_reason: str,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     session_repository = JsonSessionManifestRepository(config.session_store_path)
@@ -4414,9 +4426,18 @@ def test_session_renew_if_expired_runs_before_prompting(tmp_path: Path) -> None:
             session_id="session-1",
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(timezone.utc) + expires_delta,
         )
     )
+    renew_effect = {
+        "id": "effect-renew",
+        "display_name": "Renew session",
+        "type": "effect:session:renew-if-expired",
+        "session_id": "session-1",
+        "extend_by": "6h",
+    }
+    if renew_if_expires_within is not None:
+        renew_effect["renew_if_expires_within"] = renew_if_expires_within
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": runtime_dir,
@@ -4431,14 +4452,7 @@ def test_session_renew_if_expired_runs_before_prompting(tmp_path: Path) -> None:
                 }
             ],
             "effects": [
-                {
-                    "id": "effect-renew",
-                    "display_name": "Renew session",
-                    "type": "effect:session:renew-if-expired",
-                    "session_id": "session-1",
-                    "extend_by": "6h",
-                    "renew_if_expires_within": "30m",
-                },
+                renew_effect,
                 {
                     "id": "effect-prompt",
                     "display_name": "Prompt",
@@ -4483,7 +4497,7 @@ def test_session_renew_if_expired_runs_before_prompting(tmp_path: Path) -> None:
     records_by_effect = {record["effect_id"]: record for record in execution_payload.values()}
     assert set(records_by_effect) == {"effect-renew", "effect-prompt"}
     assert records_by_effect["effect-renew"]["status"] == "succeeded"
-    assert records_by_effect["effect-renew"]["outputs"]["renewal_reason"] == "within_window"
+    assert records_by_effect["effect-renew"]["outputs"]["renewal_reason"] == renewal_reason
     assert records_by_effect["effect-renew"]["outputs"]["renewed"] is True
     assert records_by_effect["effect-prompt"]["status"] == "succeeded"
     assert prompt_calls == [
