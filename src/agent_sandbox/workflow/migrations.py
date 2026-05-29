@@ -6,6 +6,7 @@ from typing import Any
 AGENT_PROMPT_COMPLETED_PORT = "completed"
 AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
 AGENT_PROMPT_EFFECT_TYPE = "effect:agent:prompt"
+AGENT_PROMPT_ERROR_PORT = "error"
 AGENT_PROMPT_STARTED_PORT = "started"
 
 _LEGACY_AGENT_PROMPT_OUTPUT_MODE = "output_mode"

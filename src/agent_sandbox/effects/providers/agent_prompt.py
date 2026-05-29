@@ -20,6 +20,7 @@ from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_
 from agent_sandbox.workflow.migrations import (
     AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
 from agent_sandbox.workflow.validation import NodeCapability
@@ -73,6 +74,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         max_inbound=1,
         allowed_source_ports=frozenset(
             {
+                AGENT_PROMPT_ERROR_PORT,
                 AGENT_PROMPT_STARTED_PORT,
                 AGENT_PROMPT_COMPLETED_PORT,
             }

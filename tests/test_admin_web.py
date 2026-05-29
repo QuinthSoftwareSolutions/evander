@@ -685,6 +685,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "label": "Completed",
             "description": "Emits after the agent run has completed.",
         },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+        },
     ]
     agent_enqueue_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
@@ -712,6 +717,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "key": "completed",
             "label": "Completed",
             "description": "Emits after the dispatched agent run has completed.",
+        },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
         },
     ]
     tool_approval = next(
@@ -3113,6 +3123,74 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     assert body["validation_diagnostics"] == []
     assert body["output_schemas"]["effect-agent-create-1"]["session_id"] == {"type": "string"}
     assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {"type": "string"}
+
+
+def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effects(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+                {
+                    "id": "effect-enqueue-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "effect-prompt-1"},
+                {
+                    "source_id": "effect-prompt-1",
+                    "target_id": "effect-enqueue-1",
+                    "source_port": "started",
+                },
+            ],
+        }
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["effect-prompt-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queued"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queue_key"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["coalesced_count"] == {"type": "integer"}
 
 
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(

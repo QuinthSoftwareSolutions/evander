@@ -137,6 +137,7 @@ from agent_sandbox.workflow.events import (
 )
 from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
     migrate_agent_prompt_lifecycle_ports,
 )
@@ -3144,6 +3145,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Completed",
                 description="Emits after the agent run has completed.",
             ),
+            _port(
+                AGENT_PROMPT_ERROR_PORT,
+                "Error",
+                description=(
+                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3193,6 +3201,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_COMPLETED_PORT,
                 "Completed",
                 description="Emits after the dispatched agent run has completed.",
+            ),
+            _port(
+                AGENT_PROMPT_ERROR_PORT,
+                "Error",
+                description=(
+                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                ),
             ),
         ],
     ),

@@ -14,6 +14,7 @@ from agent_sandbox.orchestration.effect_extensions import (
 )
 from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
 from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
@@ -71,6 +72,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         max_inbound=1,
         allowed_source_ports=frozenset(
             {
+                AGENT_PROMPT_ERROR_PORT,
                 AGENT_PROMPT_STARTED_PORT,
                 AGENT_PROMPT_COMPLETED_PORT,
             }
