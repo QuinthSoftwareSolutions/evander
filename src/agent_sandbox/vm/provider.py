@@ -830,7 +830,7 @@ def _libvirt_create_vm(
     communication_file_send_enabled: bool | None = None,
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
-    web_search_enabled: bool = False,
+    web_search_enabled: bool | None = None,
     dotnet: bool = False,
     nuget: bool = False,
     mssql: bool = False,
@@ -892,13 +892,14 @@ def _libvirt_create_vm(
                     tool_argument_policies,
                 )
             )
+        if web_search_enabled is not None:
+            policy_update["web_search_enabled"] = web_search_enabled
         manifest = existing_session.model_copy(
             update={
                 "vm_id": resolved_vm_name,
                 "vm_provider": provider or "libvirt",
                 "vm_provider_id": resolved_vm_name,
                 "directory_path": normalized_directory_path,
-                "web_search_enabled": web_search_enabled,
                 **policy_update,
             }
         )
@@ -925,7 +926,7 @@ def _libvirt_create_vm(
             communication_file_require_approval_for_send=(
                 communication_file_require_approval_for_send
             ),
-            web_search_enabled=web_search_enabled,
+            web_search_enabled=bool(web_search_enabled),
         )
     normalized_labels = admin_service_module._normalize_session_labels(labels or {})
     if normalized_labels:

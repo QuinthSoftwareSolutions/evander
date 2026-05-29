@@ -798,6 +798,23 @@ def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
     assert output["success"] is True
     assert output["skipped"] is False
     assert admin_service.create_vm_calls[0]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is None
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent-disable-search",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm-2",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            web_search_enabled=False,
+        )
+    ).execute()
+
+    assert admin_service.create_vm_calls[1]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[1]["web_search_enabled"] is False
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
@@ -2231,6 +2248,7 @@ def test_agent_create_container_upserts_when_session_exists(
             vm_provider="container_worker_vm",
             model="gpt-5.4",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"existing": "replace"},
         )
@@ -2272,8 +2290,15 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
+    assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["model"] == "gpt-5.5"
+    bootstrap_by_path = {
+        entry["destination_path"]: entry for entry in backend.written_files[0]["files"]
+    }
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
+        "content"
+    ]
 
 
 def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(

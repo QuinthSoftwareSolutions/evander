@@ -17504,7 +17504,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         communication_file_send_enabled: bool | None = None,
         communication_file_max_bytes: int | None = None,
         communication_file_require_approval_for_send: bool | None = None,
-        web_search_enabled: bool = False,
+        web_search_enabled: bool | None = None,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
@@ -17534,7 +17534,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["communication_file_require_approval_for_send"] = (
                 communication_file_require_approval_for_send
             )
-        payload["web_search_enabled"] = web_search_enabled
+        if web_search_enabled is not None:
+            payload["web_search_enabled"] = web_search_enabled
         if metadata is not None:
             payload["metadata"] = metadata
         return self.vm_agent_admin.create_vm(

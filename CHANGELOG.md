@@ -13,8 +13,8 @@ material. Newer entries are added incrementally as changes land.
   unless the session explicitly enables the flag.
 - Wrote Codex bootstrap, VM resume, and container prompt config with
   `web_search` set from the session flag so agents default to disabled search.
-- Refreshed the built workflow editor bundle so the Current Runs / Latest Runs
-  checkboxes render on their own rows in the served Admin Web UI.
+- Fixed agent-create upserts so omitting `web_search_enabled` preserves the
+  existing session policy while explicitly setting `false` disables it.
 
 ## 2026-05-29 - Agent Create Session Metadata
 

@@ -9297,6 +9297,56 @@ def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
     assert rule.constraints[0].path == "project"
 
 
+def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is True
+
+    result = service.create_vm(
+        vm_name="lab-vm-2",
+        session_id="lab-session",
+        allow_existing_session=True,
+        web_search_enabled=False,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is False
+
+
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

@@ -158,7 +158,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
-            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
+            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
@@ -194,10 +194,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")
         )
-        if (
-            existing_agent_behavior == "noop"
-            and session_repository.get_session(session_id) is not None
-        ):
+        existing_session = session_repository.get_session(session_id)
+        if existing_agent_behavior == "noop" and existing_session is not None:
             return _existing_agent_noop_result(
                 session_id=session_id,
                 execution_backend="container_worker_vm",
@@ -239,6 +237,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
+        requested_web_search_enabled = as_bool_or_none(payload.get("web_search_enabled"))
+        effective_web_search_enabled = (
+            requested_web_search_enabled
+            if requested_web_search_enabled is not None
+            else bool(getattr(existing_session, "web_search_enabled", False))
+        )
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -266,7 +270,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
-            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
+            web_search_enabled=effective_web_search_enabled,
             metadata=metadata,
         )
         session_record = backend.prepare_session(
@@ -285,7 +289,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     config=config,
                     session_id=session_id,
                     model=model,
-                    web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")) or False,
+                    web_search_enabled=effective_web_search_enabled,
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
