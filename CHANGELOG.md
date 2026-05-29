@@ -10,6 +10,25 @@ material. Newer entries are added incrementally as changes land.
 - Rejected control characters in container npm registry URLs before generating
   session `.npmrc` content.
 
+## 2026-05-29 - Session Web Search Policy
+
+- Added a first-class `web_search_enabled` session flag for agent create and
+  policy update flows.
+- Made the OpenAI relay deny hosted Responses web search tool declarations
+  unless the session explicitly enables the flag.
+- Wrote Codex bootstrap, VM resume, and container prompt config with
+  `web_search` set from the session flag so agents default to disabled search.
+- Fixed agent-create upserts so omitting `web_search_enabled` preserves the
+  existing session policy while explicitly setting `false` disables it.
+
+## 2026-05-29 - Agent Create Session Metadata
+
+- Added an optional `metadata` JSON patch to `effect:agent:create` so workflow
+  authors can initialize session metadata without a separate
+  `effect:session:update-metadata` node.
+- Wired the metadata patch through libvirt and container-worker agent creation
+  and exposed it in the workflow editor catalog.
+
 ## 2026-05-29 - npm Audit Facade Deployment Wiring
 
 - Added the host-side npm audit facade to the persistent systemd install flow and start list.

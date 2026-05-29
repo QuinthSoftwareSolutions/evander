@@ -166,6 +166,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     communication_file_send_enabled: ConfigValue | None = None
     communication_file_max_bytes: ConfigValue | None = None
     communication_file_require_approval_for_send: ConfigValue | None = None
+    web_search_enabled: ConfigValue | None = None
     dotnet: ConfigValue | None = None
     nuget: ConfigValue | None = None
     mssql: ConfigValue | None = None
@@ -174,6 +175,14 @@ class AgentCreateEffectDefinition(EffectDefinition):
     codex_skills: ConfigValue | None = None
     npm_registry_url: ConfigValue | None = None
     directory_path: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is not None and not isinstance(value, (Mapping, str)):
+            raise ValueError("effect:agent:create metadata must be a JSON object")
+        return value
 
     @field_validator("npm_registry_url", mode="before")
     @classmethod

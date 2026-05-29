@@ -1197,6 +1197,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "communication_file_send_enabled",
         "communication_file_require_approval_for_send",
         "communication_file_max_bytes",
+        "web_search_enabled",
         "dotnet",
         "nuget",
         "mssql",
@@ -1205,12 +1206,19 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "npm_registry_url",
         "directory_path",
+        "metadata",
     }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["metadata"]["kind"] == "json"
+    assert agent_create_fields["metadata"]["json_value_type"] == "object"
+    assert agent_create_fields["metadata"]["description"]
     assert agent_create_fields["directory_path"]["description"]
     assert agent_create_fields["npm_registry_url"]["bindable"]
+    assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
+    assert agent_create_fields["web_search_enabled"]["bindable"] is True
+    assert "web_search" in agent_create_fields["web_search_enabled"]["description"]
     assert agent_create_fields["allowed_tools"]["options"]
     assert {
         "value": ToolName.RUN_SCRIPT.value,

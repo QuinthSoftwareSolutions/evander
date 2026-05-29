@@ -115,6 +115,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "communication_file_max_bytes": 4096,
             "communication_file_require_approval_for_send": True,
             "npm_registry_url": "http://facade.test:11881/",
+            "metadata": {"workflow": {"state": "active"}},
         }
     )
     agent_create_chat_only = adapter.validate_python(
@@ -356,6 +357,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_create.communication_file_send_enabled is True
     assert agent_create.communication_file_max_bytes == 4096
     assert agent_create.communication_file_require_approval_for_send is True
+    assert agent_create.metadata == {"workflow": {"state": "active"}}
     assert agent_destroy.type == "effect:agent:destroy"
     assert agent_clone.type == "effect:agent:clone-repo"
     assert agent_frontend.type == "effect:agent:bootstrap-frontend"

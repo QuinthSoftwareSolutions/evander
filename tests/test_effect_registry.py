@@ -353,8 +353,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         is RuntimeDiagnosticsSnapshotEffectProvider
     )
     assert (
-        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"]
-        is AdoPipelineRunEffectProvider
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
     )
 
 
@@ -604,6 +603,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         communication_file_send_enabled=False,
         communication_file_max_bytes=4096,
         communication_file_require_approval_for_send=True,
+        web_search_enabled=True,
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -631,6 +631,37 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+
+
+def test_agent_create_provider_passes_session_metadata() -> None:
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        metadata={"workflow": {"state": "active"}, "owns_pr": True},
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect, directory_path="root/team-a").execute()
+
+    assert output["session_id"] == "lab-session"
+    assert admin_service.create_vm_calls[0]["metadata"] == {
+        "workflow": {"state": "active"},
+        "owns_pr": True,
+    }
 
 
 def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
@@ -767,6 +798,23 @@ def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
     assert output["success"] is True
     assert output["skipped"] is False
     assert admin_service.create_vm_calls[0]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is None
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent-disable-search",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm-2",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            web_search_enabled=False,
+        )
+    ).execute()
+
+    assert admin_service.create_vm_calls[1]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[1]["web_search_enabled"] is False
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
@@ -1277,6 +1325,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
+    assert 'web_search="disabled"' in command
     assert "cd /home/agent" in command
 
 
@@ -1874,9 +1923,14 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             communication_file_send_enabled=True,
             communication_file_max_bytes=2048,
             communication_file_require_approval_for_send=True,
+            web_search_enabled=True,
             dotnet=True,
             nuget=True,
             playwright=True,
+            metadata={
+                "workflow": {"state": "active"},
+                "labels": {"agent_role": "reviewer"},
+            },
         )
     ).execute()
     clone = factory.build(
@@ -1920,6 +1974,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048
     assert manifest.communication_file_require_approval_for_send is True
+    assert manifest.web_search_enabled is True
+    assert manifest.metadata["workflow"] == {"state": "active"}
+    assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     assert create["execution_backend"] == "container_worker_vm"
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"
@@ -1991,6 +2048,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert 'export DOTNET_CLI_HOME="$HOME"' in bootstrap_by_path["/home/agent/.profile"]["content"]
@@ -2051,6 +2109,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
+    assert 'web_search="live"' in str(backend.started_specs[-1].command)
 
 
 def test_agent_create_container_can_override_npm_registry_url(
@@ -2329,6 +2388,7 @@ def test_agent_create_container_upserts_when_session_exists(
             vm_provider="container_worker_vm",
             model="gpt-5.4",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"existing": "replace"},
         )
@@ -2370,8 +2430,15 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
+    assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["model"] == "gpt-5.5"
+    bootstrap_by_path = {
+        entry["destination_path"]: entry for entry in backend.written_files[0]["files"]
+    }
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
+        "content"
+    ]
 
 
 def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(
