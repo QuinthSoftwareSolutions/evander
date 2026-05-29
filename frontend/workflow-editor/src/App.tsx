@@ -390,6 +390,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
   "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
+  "effect:session:revoke-mcp-tool-approval-lease": "Revoke an MCP tool approval lease for one agent session.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
@@ -1869,6 +1870,14 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       session_id: "session-id",
       extend_by: "1d",
       renew_if_expires_within: "2h",
+    };
+  }
+  if (kind === "effect" && type === "effect:session:revoke-mcp-tool-approval-lease") {
+    return {
+      id,
+      display_name: "Revoke MCP tool approval lease",
+      type,
+      mcp_tool_approval_lease_id: "mcp-tool-approval-lease-id",
     };
   }
   if (kind === "effect" && type === "effect:artifact:stage") {

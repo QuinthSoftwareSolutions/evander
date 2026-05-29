@@ -314,6 +314,16 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "tools": ["run_script"],
         }
     )
+    session_revoke_lease = adapter.validate_python(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "lease_id": "lease-1",
+            "session_id": "session-1",
+            "workflow_run_id": "workflow-run-1",
+        }
+    )
     artifact_stage = adapter.validate_python(
         {
             "id": "effect-artifact-stage",
@@ -379,6 +389,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert notification.type == "effect:notification:send"
     assert session_renew.type == "effect:session:renew-if-expired"
     assert session_approve_tools.type == "effect:session:approve-mcp-tools-for-run"
+    assert session_revoke_lease.type == "effect:session:revoke-mcp-tool-approval-lease"
     assert artifact_stage.type == "effect:artifact:stage"
     assert artifact_publish.type == "effect:artifact:publish-artifacts"
     assert artifact_import.type == "effect:artifact:import-published"

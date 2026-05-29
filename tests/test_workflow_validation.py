@@ -203,6 +203,62 @@ def test_session_renew_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_session_revoke_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "session-approve-1",
+                "display_name": "Approve tools",
+                "type": "effect:session:approve-mcp-tools-for-run",
+                "session_id": "session-1",
+                "tools": ["run_script"],
+            },
+            {
+                "id": "session-revoke-1",
+                "display_name": "Revoke lease",
+                "type": "effect:session:revoke-mcp-tool-approval-lease",
+                "mcp_tool_approval_lease_id": "${{session-approve-1.mcp_tool_approval_lease_id}}",
+                "session_id": "${{session-approve-1.session_id}}",
+                "workflow_run_id": "${{session-approve-1.workflow_run_id}}",
+            },
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Revoked ${{session-revoke-1.revoked}} lease "
+                    "${{session-revoke-1.lease_id}} at ${{session-revoke-1.revoked_at}} "
+                    "for ${{session-revoke-1.tools}}"
+                ),
+            },
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "session-approve-1"},
+            {"source_id": "session-approve-1", "target_id": "session-revoke-1"},
+            {"source_id": "session-revoke-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["session-revoke-1"]["lease_id"] == {"type": "string"}
+    assert output_schemas["session-revoke-1"]["revoked"] == {"type": "boolean"}
+    assert output_schemas["session-revoke-1"]["already_revoked"] == {"type": "boolean"}
+    assert output_schemas["session-revoke-1"]["revoked_at"] == {"type": "string"}
+    assert diagnostics == []
+
+
 def test_schedule_event_outputs_are_bindable() -> None:
     config = {
         "triggers": [

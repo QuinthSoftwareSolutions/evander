@@ -432,6 +432,7 @@ Type-specific keys:
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
+| `effect:session:revoke-mcp-tool-approval-lease` | one of `mcp_tool_approval_lease_id` (preferred), `lease_id`; optional `session_id`, `workflow_run_id` | `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
@@ -517,6 +518,14 @@ tool approval lease for the selected session. The approval is not persisted in
 the session manifest, and `effect:agent:prompt` / `effect:agent:enqueue-prompt`
 carry the lease into the agent invocation through `mcp_tool_approval_lease_id`.
 Direct upstream approval outputs are detected automatically.
+
+`effect:session:revoke-mcp-tool-approval-lease` revokes a previously created
+workflow-run-scoped MCP tool approval lease. Use `mcp_tool_approval_lease_id`
+in workflow bindings when possible; `lease_id` is accepted as an alias. The
+revoke effect is idempotent, preserves the lease record for audit history via
+`revoked_at`, and prevents future tool invocations under that lease without
+undoing any work already performed. Optional `session_id` and
+`workflow_run_id` guards must match the stored lease when supplied.
 
 `effect:artifact:stage` copies a file or directory that resolves under
 `/home/agent` into the session `/artifacts` folder. `destination_path`, when

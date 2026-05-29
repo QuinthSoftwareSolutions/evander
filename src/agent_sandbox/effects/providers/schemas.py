@@ -827,6 +827,31 @@ class SessionApproveMcpToolsForRunEffectDefinition(EffectDefinition):
         return self
 
 
+class SessionRevokeMcpToolApprovalLeaseEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:revoke-mcp-tool-approval-lease"]
+    mcp_tool_approval_lease_id: ConfigValue | None = None
+    lease_id: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    workflow_run_id: ConfigValue | None = None
+
+    @field_validator("mcp_tool_approval_lease_id", "lease_id", mode="before")
+    @classmethod
+    def normalize_lease_id(cls, value: object) -> ConfigValue | None:
+        return normalize_optional_string(value)
+
+    @model_validator(mode="after")
+    def validate_lease_selector(self) -> "SessionRevokeMcpToolApprovalLeaseEffectDefinition":
+        lease_ids = [
+            normalize_optional_string(self.mcp_tool_approval_lease_id),
+            normalize_optional_string(self.lease_id),
+        ]
+        if not any(value is not None for value in lease_ids):
+            raise ValueError(
+                "effect:session:revoke-mcp-tool-approval-lease requires mcp_tool_approval_lease_id or lease_id"
+            )
+        return self
+
+
 class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
     type: Literal["effect:session:renew-if-expired"]
     target: ConfigValue | None = None
