@@ -124,6 +124,9 @@ class FakeManifest:
     directory_path: str
     issue_id: str = "local-1"
     issue_number: str = "1"
+    expires_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc) + timedelta(days=30)
+    )
     metadata: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
     yaml_path: str = "/tmp/local-issue.yaml"
@@ -134,6 +137,7 @@ class FakeManifest:
             "directory_path": self.directory_path,
             "issue_id": self.issue_id,
             "issue_number": self.issue_number,
+            "expires_at": self.expires_at,
             "metadata": dict(self.metadata),
             "model": self.model,
             "yaml_path": self.yaml_path,

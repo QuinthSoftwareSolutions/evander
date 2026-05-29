@@ -8221,6 +8221,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "communication_file_send_enabled": True,
         "communication_file_max_bytes": 4096,
         "communication_file_require_approval_for_send": True,
+        "web_search_enabled": False,
         "dotnet": True,
         "nuget": True,
         "mssql": True,

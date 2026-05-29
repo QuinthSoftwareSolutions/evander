@@ -73,6 +73,10 @@ UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _active_expires_at() -> datetime:
+    return datetime.now(UTC) + timedelta(days=30)
+
+
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
@@ -2490,7 +2494,7 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
@@ -2568,7 +2572,7 @@ def test_resume_agent_watcher_uses_configured_effect_lock_path(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
@@ -2606,7 +2610,7 @@ def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> Non
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
@@ -2647,7 +2651,7 @@ def test_resume_agent_does_not_reuse_stored_session_thread_id(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
             metadata={"agent_thread_id": "thread-stored-1"},
@@ -2677,7 +2681,7 @@ def test_resume_agent_ignores_synthetic_chat_thread_id(tmp_path: Path, monkeypat
         SessionManifest(
             session_id="assistant-session",
             vm_id="assistant-shared",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
             metadata={"agent_thread_id": "chat-thread-alice"},
@@ -2711,7 +2715,7 @@ def test_resume_agent_persists_returned_thread_id_to_session_metadata(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
@@ -2739,7 +2743,7 @@ def test_resume_agent_supports_same_context_mode(tmp_path: Path, monkeypatch) ->
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
@@ -2770,7 +2774,7 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.2-codex",
             web_search_enabled=True,
@@ -2806,7 +2810,7 @@ def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
-            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            expires_at=_active_expires_at(),
             allowed_tools=[],
             model="gpt-5.4",
         ),
