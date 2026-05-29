@@ -216,6 +216,10 @@ type AgentListLoadOptions = {
   omitVmState?: boolean;
 };
 
+type AgentListRefreshBehavior = {
+  applyItems?: boolean;
+};
+
 function buildAgentListQuery(
   directoryPath: string,
   directOnly: boolean,
@@ -233,6 +237,7 @@ function buildAgentListQuery(
     omit_vm_state: String(options.omitVmState ?? summaryOnly),
   });
   if (options.dashboardRefresh) {
+    query.set("_dashboard", "1");
     query.set("_dashboard_refresh", "1");
   } else if (options.dashboardCache) {
     query.set("_dashboard", "1");
@@ -804,9 +809,14 @@ export function AgentsPage() {
     setAgentPromptResumeThreadId((current) => (current === nextThreadId ? current : nextThreadId));
   }, [selectedAgent, showPromptForm]);
 
-  const refreshAgents = useCallback(async (options: AgentListLoadOptions = {}) => {
+  const refreshAgents = useCallback(async (
+    options: AgentListLoadOptions = {},
+    behavior: AgentListRefreshBehavior = {},
+  ) => {
     const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter, options);
-    setItems(payload.items);
+    if (behavior.applyItems ?? true) {
+      setItems(payload.items);
+    }
     return payload;
   }, [backendFilter, selectedDirectoryPath]);
 
@@ -814,9 +824,23 @@ export function AgentsPage() {
     await refreshAgents({ summaryOnly: true, dashboardCache: true });
   }, [refreshAgents]);
 
-  const refreshLiveAgents = useCallback(async () => {
-    await refreshAgents({ summaryOnly: false, reconcileContainers: true, omitVmState: false });
+  const refreshSummaryCache = useCallback(async () => {
+    try {
+      await refreshAgents({ summaryOnly: true, dashboardRefresh: true }, { applyItems: false });
+    } catch {
+      // Summary cache refresh is best-effort; the live read has already updated the page.
+    }
   }, [refreshAgents]);
+
+  const refreshLiveAgents = useCallback(async () => {
+    const payload = await refreshAgents({
+      summaryOnly: false,
+      reconcileContainers: true,
+      omitVmState: false,
+    });
+    await refreshSummaryCache();
+    return payload;
+  }, [refreshAgents, refreshSummaryCache]);
 
   useEffect(() => {
     let cancelled = false;
