@@ -2674,6 +2674,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Model name the agent should use. Leave blank to inherit the directory default.",
             ),
             _field(
+                "npm_registry_url",
+                "NPM registry URL",
+                "string",
+                bindable=True,
+                description="Optional npm registry override for container-backed agent sessions.",
+            ),
+            _field(
                 "vm_user",
                 "VM user",
                 "string",

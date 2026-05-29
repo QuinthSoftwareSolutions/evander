@@ -11,6 +11,22 @@ material. Newer entries are added incrementally as changes land.
   reads do not initialize runtime store or journal files.
 - Added SQLite activity timestamp indexes for recent workflow run snapshots.
 
+## 2026-05-29 - Live Workflow Node Pulse
+
+- Added `recent_node_activity` to workflow run snapshots so Admin Web can
+  surface recent trigger, effect, and gate activity without changing existing
+  active run cards or node activity counts.
+- Made the workflow editor show a short live-only pulse on visible nodes for
+  newly streamed backend activity keys, while keeping inspect/tutorial views
+  and duplicate keys from replaying.
+- Kept the pulse one-shot and motion-safe, with bounded timers and reduced
+  motion behavior for users who prefer less animation.
+
+## 2026-05-29 - Container NPM Registry URL Validation
+
+- Rejected control characters in container npm registry URLs before generating
+  session `.npmrc` content.
+
 ## 2026-05-29 - Session Web Search Policy
 
 - Added a first-class `web_search_enabled` session flag for agent create and
@@ -29,6 +45,14 @@ material. Newer entries are added incrementally as changes land.
   `effect:session:update-metadata` node.
 - Wired the metadata patch through libvirt and container-worker agent creation
   and exposed it in the workflow editor catalog.
+
+## 2026-05-29 - npm Audit Facade Deployment Wiring
+
+- Added the host-side npm audit facade to the persistent systemd install flow and start list.
+- Rendered the facade's optional env file through Ansible, enabled it in the managed service map,
+  and included its `11881` listener in the control-plane firewall and worker egress allowlists.
+- Documented the facade's health endpoint, upstream routing, and manual smoke checks in the
+  operator guides.
 
 ## 2026-05-28 - Workflow Editor Bindable Selectors
 

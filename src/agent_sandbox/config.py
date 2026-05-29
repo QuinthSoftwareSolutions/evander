@@ -47,6 +47,12 @@ from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _contains_url_control_character(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 bootstrap_default_node_schemas()
 
 
@@ -215,6 +221,11 @@ class GatewayConfig(BaseModel):
     )
     nuget_azure_pat_env: str = "AZURE_ARTIFACTS_PAT"
     nuget_relay_timeout_seconds: float = 300.0
+    npm_audit_facade_host: str = "0.0.0.0"
+    npm_audit_facade_port: int = 11881
+    npm_audit_facade_timeout_seconds: float = 300.0
+    npm_audit_facade_audit_registry_url: str = "https://registry.npmjs.org"
+    npm_audit_facade_package_registry_url: str | None = None
     default_session_ttl_seconds: int = 28800
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -319,6 +330,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
         mode="before",
     )
@@ -326,6 +339,10 @@ class GatewayConfig(BaseModel):
     def normalize_http_url_fields(cls, value: object, info) -> object:
         if not isinstance(value, str):
             return value
+        if _contains_url_control_character(value):
+            raise ValueError(
+                f"{info.field_name} must be a valid http(s) URL, got {value!r}"
+            )
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError(f"{info.field_name} cannot be empty")
@@ -370,6 +387,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
     )
     @classmethod
