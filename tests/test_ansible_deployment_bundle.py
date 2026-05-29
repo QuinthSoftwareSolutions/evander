@@ -386,6 +386,38 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "User={{ agent_sandbox_nexus_user }}" in unit
 
 
+def test_ansible_npm_audit_facade_defaults_and_role_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "npm_audit_facade: true" in defaults
+    assert "agent_sandbox_npm_audit_facade_port: 11881" in defaults
+    assert "agent_sandbox_npm_audit_facade_env" in defaults
+    assert "agent_sandbox_npm_audit_facade_allowed_tcp_ports" in defaults
+    assert "[agent_sandbox_npm_audit_facade_port]" in defaults
+    assert "name: control-plane npm audit facade" in defaults
+    assert 'port: "{{ agent_sandbox_npm_audit_facade_port }}"' in defaults
+
+    assert 'path: "config/npm-audit-facade.env"' in service_config
+    assert "agent_sandbox_npm_audit_facade_env" in service_config
+    assert "key: npm_audit_facade" in service_runtime
+    assert "unit: agent-sandbox-npm-audit-facade.service" in service_runtime
+    assert "key: npm_audit_facade" in verification
+    assert "unit: agent-sandbox-npm-audit-facade.service" in verification
+    assert "http://127.0.0.1:{{ agent_sandbox_npm_audit_facade_port }}/healthz" in verification
+
+
 def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
@@ -527,6 +559,7 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert "name: control-plane openai relay" in defaults
     assert "name: control-plane nuget relay" in defaults
     assert "name: control-plane http target relay" in defaults
+    assert "name: control-plane npm audit facade" in defaults
     assert "name: control-plane nexus package cache" in defaults
     assert "name: control-plane apt-cacher-ng" in defaults
     assert "port: 22" in defaults
@@ -534,6 +567,7 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert "port: 11434" in defaults
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
+    assert "port: 11881" in defaults
     assert 'port: "{{ agent_sandbox_nexus_port }}"' in defaults
     assert 'port: "{{ agent_sandbox_apt_cache_port }}"' in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
@@ -608,6 +642,7 @@ def test_worker_global_live_configs_are_operator_local() -> None:
         "config/ado-worker/config.json",
         "config/discord-ingest/config.json",
         "config/discord-wake/config.json",
+        "config/npm-audit-facade.env",
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
         "config/teams-meeting-ingest/config.json",

@@ -74,6 +74,9 @@ container_worker_mssql_port: 1433
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
 `host_prereqs` runs; Nexus remains only the PyPI/npm path.
+The control plane also exposes `agent-sandbox-npm-audit-facade` on `11881` for npm audit POSTs;
+it is separate from the worker registry setting and routes package metadata/tarballs through
+Nexus while sending audit requests to public npm.
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services.
 

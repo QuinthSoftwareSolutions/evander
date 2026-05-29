@@ -7,6 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
+- A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message`
@@ -219,6 +220,7 @@ sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-npm-audit-facade.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl start agent-sandbox-discord-wake.service
@@ -984,9 +986,12 @@ Response:
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
+- `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
+  bind and upstream settings from runtime config.
 - Keep these values in host-only shell environment or systemd env files such as:
   - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
   - `config/nuget-relay.env`
+  - `config/npm-audit-facade.env`
 - Directory-specific OpenAI model key env vars named by `openai_api_key_env` should be
   available to the relay.
 - Do not place these values in guest images, cloud-init, session manifests, or guest shell

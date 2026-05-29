@@ -1211,6 +1211,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "mssql_init_root",
         "playwright",
         "codex_skills",
+        "npm_registry_url",
         "directory_path",
         "metadata",
     }
@@ -1221,6 +1222,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["metadata"]["json_value_type"] == "object"
     assert agent_create_fields["metadata"]["description"]
     assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["npm_registry_url"]["bindable"]
     assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
     assert agent_create_fields["web_search_enabled"]["bindable"] is True
     assert "web_search" in agent_create_fields["web_search_enabled"]["description"]

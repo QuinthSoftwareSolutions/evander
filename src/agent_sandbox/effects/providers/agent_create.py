@@ -17,6 +17,7 @@ from .agent_session import (
     container_backend,
     effective_config_for_directory,
     normalize_existing_agent_behavior,
+    normalize_optional_http_url,
     normalize_optional_string,
     runtime_session_repository,
     selected_execution_backend,
@@ -64,6 +65,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "mssql_init_root": effect.mssql_init_root,
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
+            "npm_registry_url": effect.npm_registry_url,
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
         }
@@ -214,6 +216,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         labels = as_string_mapping(payload.get("labels")) or {}
         model = normalize_optional_string(payload.get("model"))
+        npm_registry_url = normalize_optional_http_url(
+            payload.get("npm_registry_url"), field_name="npm_registry_url"
+        )
         metadata = {
             "execution_backend": "container_worker_vm",
             "labels": labels,
@@ -293,6 +298,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
+                    npm_registry_url=npm_registry_url,
                 ),
                 *codex_skill_files,
             ],
