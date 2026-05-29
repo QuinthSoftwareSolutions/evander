@@ -102,6 +102,9 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
+from agent_sandbox.triggers.providers.approval_pending_created import (
+    ApprovalPendingCreatedTriggerProvider,
+)
 from agent_sandbox.triggers.providers.communication_new_message import (
     CommunicationNewMessageTriggerProvider,
 )
@@ -152,6 +155,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
             "trigger:pull-request:completed": PullRequestCompletedTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
+            "trigger:approval:pending-created": ApprovalPendingCreatedTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
             "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
