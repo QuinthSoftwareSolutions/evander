@@ -411,7 +411,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
-  "effect:session:renew-if-expired": "Extend an expired session from the host.",
+  "effect:session:renew-if-expired": "Renew an expired or soon-expiring session.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
   "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
@@ -1864,10 +1864,11 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:session:renew-if-expired") {
     return {
       id,
-      display_name: "Renew expired session",
+      display_name: "Renew expired or soon-expiring session",
       type,
       session_id: "session-id",
       extend_by: "1d",
+      renew_if_expires_within: "2h",
     };
   }
   if (kind === "effect" && type === "effect:artifact:stage") {

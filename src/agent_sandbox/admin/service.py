@@ -1749,7 +1749,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Approve MCP tools for one agent session during the current workflow run."
     ),
     "effect:session:renew-if-expired": (
-        "Extend a host-side session only when its expiry has already passed."
+        "Renew an expired or soon-expiring session."
     ),
     "effect:artifact:stage": "Copy a file or directory from /home/agent into the session artifacts folder.",
     "effect:artifact:publish-artifacts": (
@@ -3820,7 +3820,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Extend by",
                 "string",
                 bindable=True,
-                description="Duration from now for renewed expired sessions, such as 8h, 2d, or PT8H.",
+                description="Duration from now for the renewed session, such as 8h, 2d, or PT8H.",
+            ),
+            _field(
+                "renew_if_expires_within",
+                "Renew if expires within",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional pre-expiry window. Renew active sessions that expire within "
+                    "this duration, such as 30m, 4h, or PT30M."
+                ),
             ),
             _field("directory_path", "Directory path", "string", bindable=True),
         ],
