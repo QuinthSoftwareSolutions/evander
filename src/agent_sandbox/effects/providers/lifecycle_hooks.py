@@ -294,6 +294,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             resume_thread_id=effective_resume_thread_id,
                             resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,
+                            web_search_enabled=bool(
+                                getattr(session, "web_search_enabled", False)
+                            ),
                         ),
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",

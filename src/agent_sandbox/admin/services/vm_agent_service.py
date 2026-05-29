@@ -1577,6 +1577,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         directory_path: str | None = None
         manifest: Any | None = None
         effective_resume_thread_id: str | None = None
+        web_search_mode = "disabled"
         try:
             session_id, manifest = self._resolve_session_target(target)
             ensure_session_not_expired(manifest)
@@ -1584,6 +1585,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 manifest
             )
             directory_path = manifest.directory_path
+            web_search_mode = (
+                "live" if bool(getattr(manifest, "web_search_enabled", False)) else "disabled"
+            )
             effective_resume_thread_id = str(resume_thread_id or "").strip() or None
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
@@ -1633,7 +1637,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 args,
                 capture_output=True,
                 text=True,
-                env=os.environ | {"AGENT_MODEL": resolved_model},
+                env=os.environ
+                | {"AGENT_MODEL": resolved_model, "AGENT_WEB_SEARCH_MODE": web_search_mode},
                 timeout=resume_timeout_seconds,
             )
         except subprocess.TimeoutExpired:
