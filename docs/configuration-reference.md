@@ -482,9 +482,14 @@ keeps retries from mutating the first submission. The trigger orchestrator
 publishes due scheduled events during its normal cycle, so delivery latency is
 bounded by its `poll_interval_seconds`.
 
-`effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
-ports: `started` emits after the prompt is dispatched, and `completed` emits
-after the agent run completes.
+`effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
+outgoing ports: `started` emits after the prompt is dispatched, `completed`
+emits after the agent run completes, and `error` emits only for supported
+prompt dispatch failures when the workflow wires an outbound error edge. Use
+the `error` branch for notification, retry, or cleanup paths that should see a
+redacted failure payload. When no `error` edge exists, the prompt node remains
+failed as before, and successful `started` / `completed` paths do not populate
+error fields.
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.
