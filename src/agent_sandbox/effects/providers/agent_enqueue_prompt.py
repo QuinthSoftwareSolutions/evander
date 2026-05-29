@@ -361,6 +361,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                     effective_config
                                 ),
                             ),
+                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
                         metadata={
                             "effect_type": self.node_type(),

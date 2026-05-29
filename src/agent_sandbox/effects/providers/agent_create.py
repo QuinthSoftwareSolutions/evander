@@ -57,6 +57,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "communication_file_require_approval_for_send": (
                 effect.communication_file_require_approval_for_send
             ),
+            "web_search_enabled": effect.web_search_enabled,
             "dotnet": effect.dotnet,
             "nuget": effect.nuget,
             "mssql": effect.mssql,
@@ -64,6 +65,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
             "directory_path": effect.directory_path,
+            "metadata": effect.metadata,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -156,13 +158,16 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
+            web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
             codex_skills=codex_skills,
-            directory_path=normalize_optional_string(payload.get("directory_path")) or directory_path,
+            directory_path=normalize_optional_string(payload.get("directory_path"))
+            or directory_path,
+            metadata=_metadata_patch(payload.get("metadata")),
             allow_existing_session=existing_agent_behavior == "upsert",
         )
         return {
@@ -189,10 +194,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")
         )
-        if (
-            existing_agent_behavior == "noop"
-            and session_repository.get_session(session_id) is not None
-        ):
+        existing_session = session_repository.get_session(session_id)
+        if existing_agent_behavior == "noop" and existing_session is not None:
             return _existing_agent_noop_result(
                 session_id=session_id,
                 execution_backend="container_worker_vm",
@@ -233,6 +236,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         if worker_url:
             metadata["worker_url"] = worker_url
+        metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
+        requested_web_search_enabled = as_bool_or_none(payload.get("web_search_enabled"))
+        effective_web_search_enabled = (
+            requested_web_search_enabled
+            if requested_web_search_enabled is not None
+            else bool(getattr(existing_session, "web_search_enabled", False))
+        )
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -260,6 +270,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             communication_file_require_approval_for_send=as_bool_or_none(
                 payload.get("communication_file_require_approval_for_send")
             ),
+            web_search_enabled=effective_web_search_enabled,
             metadata=metadata,
         )
         session_record = backend.prepare_session(
@@ -278,6 +289,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     config=config,
                     session_id=session_id,
                     model=model,
+                    web_search_enabled=effective_web_search_enabled,
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
@@ -308,6 +320,25 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("AgentCreateEffectProvider has no runtime context")
         return self.runtime_context
+
+
+def _metadata_patch(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("effect:agent:create metadata must resolve to a JSON object")
+    return dict(value)
+
+
+def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge_metadata(existing, value)
+            continue
+        merged[key] = value
+    return merged
 
 
 def _existing_session_for_create(

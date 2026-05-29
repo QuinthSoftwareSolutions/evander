@@ -346,6 +346,7 @@ def build_container_session_manifest(
     communication_file_send_enabled: bool | None = None,
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
+    web_search_enabled: bool = False,
     metadata: dict[str, Any],
 ) -> SessionManifest:
     expires_delta = (
@@ -439,6 +440,7 @@ def build_container_session_manifest(
             if communication_file_require_approval_for_send is None
             else communication_file_require_approval_for_send
         ),
+        web_search_enabled=web_search_enabled,
         expires_at=datetime.now(UTC) + expires_delta,
         metadata=metadata,
     )
@@ -552,6 +554,7 @@ def build_container_session_files(
     config: GatewayConfig,
     session_id: str,
     model: str | None,
+    web_search_enabled: bool = False,
     dotnet: bool,
     nuget: bool,
     playwright: bool,
@@ -625,6 +628,7 @@ def build_container_session_files(
                 model=resolved_model,
                 openai_base_url=session_openai_base_url,
                 gateway_url=session_gateway_url,
+                web_search_enabled=web_search_enabled,
             ),
         },
         {
@@ -634,6 +638,7 @@ def build_container_session_files(
                 model=resolved_model,
                 openai_base_url=session_openai_base_url,
                 gateway_url=session_gateway_url,
+                web_search_enabled=web_search_enabled,
             ),
         },
     ]
@@ -731,6 +736,7 @@ def container_prompt_command(
     resume_thread_id: str | None,
     resume_mode: str | None = None,
     mcp_gateway_url: str | None = None,
+    web_search_enabled: bool = False,
 ) -> str:
     effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
     effective_resume_mode = normalize_optional_string(resume_mode)
@@ -740,6 +746,8 @@ def container_prompt_command(
         "--skip-git-repo-check",
         "--model",
         model,
+        "-c",
+        f"web_search={_toml_string('live' if web_search_enabled else 'disabled')}",
     ]
     if mcp_gateway_url:
         common_args.extend(
@@ -1017,12 +1025,19 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _codex_config_content(*, model: str, openai_base_url: str, gateway_url: str) -> str:
+def _codex_config_content(
+    *,
+    model: str,
+    openai_base_url: str,
+    gateway_url: str,
+    web_search_enabled: bool = False,
+) -> str:
     return (
         f"model = {_toml_string(model)}\n"
         'model_provider = "openai"\n'
         'model_reasoning_effort = "high"\n'
         'personality = "pragmatic"\n'
+        f"web_search = {_toml_string('live' if web_search_enabled else 'disabled')}\n"
         f"openai_base_url = {_toml_string(openai_base_url)}\n"
         "\n"
         "[mcp_servers.agent_sandbox]\n"

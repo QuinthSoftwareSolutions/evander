@@ -50,6 +50,7 @@ type SessionRecord = {
   communication_file_allowed_extensions: string[];
   communication_file_blocked_extensions: string[];
   communication_file_require_approval_for_send: boolean;
+  web_search_enabled: boolean;
   expires_at: string;
   created_at: string;
   metadata: Record<string, unknown>;
@@ -138,6 +139,7 @@ type SessionPolicyDraft = {
   communicationFileAllowedExtensions: string;
   communicationFileBlockedExtensions: string;
   communicationFileRequireApprovalForSend: boolean;
+  webSearchEnabled: boolean;
   metadataJson: string;
 };
 
@@ -282,6 +284,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     communicationFileAllowedExtensions: formatList(session.communication_file_allowed_extensions),
     communicationFileBlockedExtensions: formatList(session.communication_file_blocked_extensions),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
+    webSearchEnabled: Boolean(session.web_search_enabled),
     metadataJson: JSON.stringify(session.metadata ?? {}, null, 2),
   };
 }
@@ -803,6 +806,7 @@ export function SessionsScreen() {
     communicationFileAllowedExtensions: "",
     communicationFileBlockedExtensions: "",
     communicationFileRequireApprovalForSend: false,
+    webSearchEnabled: false,
     metadataJson: "{}",
   });
   const [policyDirty, setPolicyDirty] = useState(false);
@@ -1316,6 +1320,7 @@ export function SessionsScreen() {
               communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
               communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
+              web_search_enabled: policyDraft.webSearchEnabled,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
               metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
@@ -1733,6 +1738,15 @@ export function SessionsScreen() {
                       placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
                       disabled={mutationLocked}
                     />
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={policyDraft.webSearchEnabled}
+                      onChange={(event) => updatePolicyDraft({ webSearchEnabled: event.target.checked })}
+                      disabled={mutationLocked}
+                    />
+                    <span>Web search</span>
                   </label>
                   <div className="field-stack session-communication-files">
                     <span>Communication files</span>

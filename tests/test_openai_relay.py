@@ -8,7 +8,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
@@ -47,6 +49,7 @@ def write_session(
     *,
     session_id: str,
     directory_path: str = "root",
+    web_search_enabled: bool = False,
 ) -> None:
     store = JsonSessionManifestRepository(config.session_store_path)
     store.upsert_session(
@@ -54,6 +57,7 @@ def write_session(
             session_id=session_id,
             directory_path=directory_path,
             allowed_tools=[],
+            web_search_enabled=web_search_enabled,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -109,6 +113,66 @@ def test_relay_injects_authorization_header(tmp_path: Path) -> None:
     assert captured["authorization"] == "Bearer test-key"
     assert captured["accept-encoding"] == "identity"
     assert captured["path"] == "/v1/responses"
+
+
+def test_relay_rejects_hosted_web_search_for_session_without_flag(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.2-codex",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Hosted web search is disabled" in response.text
+    assert called is False
+
+
+def test_relay_allows_hosted_web_search_for_session_with_flag(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.2-codex",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"] == {
+        "model": "gpt-5.2-codex",
+        "input": "hello",
+        "tools": [{"type": "web_search_preview"}],
+    }
 
 
 def test_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
@@ -441,6 +505,70 @@ def test_relay_proxies_websocket_messages_and_injects_auth(tmp_path: Path) -> No
     assert isinstance(headers, dict)
     assert headers["authorization"] == "Bearer test-key"
     assert all(not key.lower().startswith("sec-websocket-") for key in headers)
+
+
+def test_relay_rejects_websocket_hosted_web_search_without_session_flag(
+    tmp_path: Path,
+) -> None:
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"tools": [{"type": "web_search_preview"}]},
+                }
+            )
+        )
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert upstream.sent_messages == []
+    assert upstream.closed is True
+
+
+def test_relay_allows_websocket_hosted_web_search_with_session_flag(tmp_path: Path) -> None:
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    message = json.dumps(
+        {"type": "session.update", "session": {"tools": [{"type": "web_search_preview"}]}}
+    )
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text(message)
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != [message]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == [message]
+
+    assert upstream.closed
 
 
 def test_relay_treats_clean_upstream_websocket_close_as_normal(tmp_path: Path) -> None:

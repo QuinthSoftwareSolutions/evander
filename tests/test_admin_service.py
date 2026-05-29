@@ -2479,6 +2479,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
         "new_context",
     ]
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+    assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "disabled"
     assert captured["timeout"] == 120.0
     assert watcher == {}
 
@@ -2772,6 +2773,7 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
             expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
             allowed_tools=[],
             model="gpt-5.2-codex",
+            web_search_enabled=True,
         ),
     )
 
@@ -2795,6 +2797,7 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
     assert result.success is True
     assert result.thread_id == "thread-model-1"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+    assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
 
 
 def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
@@ -7854,6 +7857,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "communication_file_allowed_extensions": [".txt", " txt ", ".png"],
             "communication_file_blocked_extensions": [".exe", " exe "],
             "communication_file_require_approval_for_send": True,
+            "web_search_enabled": True,
             "metadata": {"keep": "new-value"},
         },
     )
@@ -7878,6 +7882,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_allowed_extensions == [".txt", "txt", ".png"]
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
+    assert updated.web_search_enabled is True
     assert updated.metadata == {"keep": "new-value"}
 
 
@@ -8914,6 +8919,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         vm_name="lab-vm",
         session_id="lab-session",
         labels={"workflow": "issue-worker", "agent_role": "issue"},
+        metadata={"workflow": {"state": "active"}, "labels": {"priority": "high"}},
         dotnet=True,
         nuget=True,
         playwright=True,
@@ -8947,7 +8953,14 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
-    assert manifest.metadata == {"labels": {"workflow": "issue-worker", "agent_role": "issue"}}
+    assert manifest.metadata == {
+        "workflow": {"state": "active"},
+        "labels": {
+            "workflow": "issue-worker",
+            "agent_role": "issue",
+            "priority": "high",
+        },
+    }
     assert result.message == "ok:setup_vm.sh"
 
 
@@ -9518,6 +9531,56 @@ def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
     rule = manifest.tool_argument_policies["create_ado_backlog_item"][0]
     assert rule.id == "upsert-policy"
     assert rule.constraints[0].path == "project"
+
+
+def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is True
+
+    result = service.create_vm(
+        vm_name="lab-vm-2",
+        session_id="lab-session",
+        allow_existing_session=True,
+        web_search_enabled=False,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is False
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(

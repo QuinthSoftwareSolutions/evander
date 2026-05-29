@@ -38,6 +38,7 @@ type AgentCreateFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -57,6 +58,7 @@ type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -118,6 +120,7 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -139,6 +142,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -398,6 +402,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    web_search_enabled: Boolean(rawPolicy.web_search_enabled),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -421,6 +426,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     model: policy?.model ?? "",
     ttlHours: "",
     labels: formatLabels(labels),
+    webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
@@ -439,6 +445,7 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     model: optionalText(form.model),
     ttl_hours: optionalNumber(form.ttlHours),
     labels,
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -469,6 +476,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
     labels: parseLabels(form.labels),
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -1614,6 +1622,14 @@ export function AgentsPage() {
                       onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
                   </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={createForm.webSearchEnabled}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
+                  </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>
                     <textarea
@@ -1764,6 +1780,14 @@ export function AgentsPage() {
                       value={editForm.allowedTools}
                       onChange={(event) => setEditForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
+                  </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={editForm.webSearchEnabled}
+                      onChange={(event) => setEditForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
                   </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>
