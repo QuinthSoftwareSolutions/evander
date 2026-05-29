@@ -1053,6 +1053,83 @@ def test_vm_agent_admin_service_list_vms_falls_back_when_provider_listing_fails(
     ]
 
 
+def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox.vm.provider import LibvirtVmProvider, VmProviderContext
+
+    session_store = FakeSessionsStore()
+    session_store.upsert_session(
+        SessionManifest(
+            session_id="vm-libvirt-1",
+            vm_id="vm-libvirt-1",
+            allowed_tools=[],
+            directory_path="root",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    provider = LibvirtVmProvider(
+        VmProviderContext(
+            dependencies=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_store),
+                normalize_directory_path=lambda directory_path: directory_path or "root",
+                direct_owned_entity_ids=lambda directory_path, kind="vm": {"vm-libvirt-1"},
+                agent_control_store=SimpleNamespace(
+                    status_for_vm=lambda vm_name: "enabled"
+                ),
+            )
+        )
+    )
+
+    monkeypatch.setattr(admin_service_module, "_virsh_lines", lambda args: ["vm-libvirt-1"])
+    monkeypatch.setattr(
+        admin_service_module,
+        "_dominfo_field",
+        lambda vm_name, field_name: "running",
+    )
+    monkeypatch.setattr(
+        admin_service_module, "_resolve_vm_ip", lambda vm_name: "10.0.0.5"
+    )
+
+    def fail_probe(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        del args, kwargs
+        raise AssertionError("_probe_agent_state should not be called when omit_state is true")
+
+    monkeypatch.setattr(admin_service_module, "_probe_agent_state", fail_probe)
+
+    summaries = provider.list_vms(directory_path="root", direct_only=True, omit_state=True)
+
+    assert len(summaries) == 1
+    assert summaries[0].vm_name == "vm-libvirt-1"
+    assert summaries[0].agent_state == "omitted"
+    assert summaries[0].agent_pid is None
+    assert summaries[0].dispatch_id is None
+
+    probe_calls: list[tuple[str, str, str]] = []
+
+    def record_probe(
+        vm_name: str, ip_address: str, vm_user: str
+    ) -> tuple[str, list[str], object, str, int]:
+        probe_calls.append((vm_name, ip_address, vm_user))
+        return (
+            "running",
+            ["repo-a"],
+            datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc),
+            "dispatch-1",
+            4321,
+        )
+
+    monkeypatch.setattr(admin_service_module, "_probe_agent_state", record_probe)
+
+    deep_summaries = provider.list_vms(directory_path="root", direct_only=True, omit_state=False)
+
+    assert probe_calls == [("vm-libvirt-1", "10.0.0.5", "agent")]
+    assert len(deep_summaries) == 1
+    assert deep_summaries[0].agent_state == "running"
+    assert deep_summaries[0].agent_pid == 4321
+    assert deep_summaries[0].dispatch_id == "dispatch-1"
+
+
 def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
