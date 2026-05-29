@@ -7,7 +7,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, EffectDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
-from agent_sandbox.effects.providers.agent_session import normalize_optional_http_url
+from agent_sandbox.effects.providers.agent_session import (
+    normalize_optional_http_url,
+    normalize_optional_string,
+)
 
 
 class EventEmitEffectDefinition(EffectDefinition):
@@ -830,14 +833,35 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     extend_by: ConfigValue = "1d"
+    renew_if_expires_within: ConfigValue | None = None
     directory_path: ConfigValue | None = None
+
+    @field_validator("renew_if_expires_within")
+    @classmethod
+    def validate_renew_if_expires_within(
+        cls, value: ConfigValue | None
+    ) -> ConfigValue | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and "${{" in value:
+            return normalize_optional_string(value)
+        from agent_sandbox.effects.providers.session_renew_if_expired import (
+            parse_session_renew_if_expires_within,
+        )
+
+        parse_session_renew_if_expires_within(value)
+        return normalize_optional_string(value)
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "SessionRenewIfExpiredEffectDefinition":
-        selectors = [self.target, self.session_id, self.vm_name]
-        if not any(value is not None for value in selectors):
+        selectors = [
+            normalize_optional_string(self.target),
+            normalize_optional_string(self.session_id),
+            normalize_optional_string(self.vm_name),
+        ]
+        if sum(value is not None for value in selectors) != 1:
             raise ValueError(
-                "effect:session:renew-if-expired requires target, session_id, or vm_name"
+                "effect:session:renew-if-expired requires exactly one of target, session_id, or vm_name"
             )
         return self
 

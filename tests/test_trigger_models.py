@@ -1197,11 +1197,39 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
             "type": "effect:session:renew-if-expired",
             "session_id": "session-1",
             "extend_by": "8h",
+            "renew_if_expires_within": "30m",
         }
     )
 
     assert effect.session_id == "session-1"
     assert effect.extend_by == "8h"
+    assert effect.renew_if_expires_within == "30m"
+
+    bound_threshold = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "session_id": "session-1",
+            "renew_if_expires_within": "${{query-session-context.renewal_window}}",
+        }
+    )
+
+    assert bound_threshold.renew_if_expires_within == "${{query-session-context.renewal_window}}"
+
+    effect_with_blank_selectors = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "target": "",
+            "session_id": "session-2",
+            "vm_name": "",
+        }
+    )
+
+    assert effect_with_blank_selectors.session_id == "session-2"
+    assert effect_with_blank_selectors.target == ""
 
     with pytest.raises(ValueError, match="target, session_id, or vm_name"):
         SessionRenewIfExpiredEffectDefinition.model_validate(
@@ -1209,6 +1237,31 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
                 "id": "effect-session-renew",
                 "display_name": "Renew expired session",
                 "type": "effect:session:renew-if-expired",
+            }
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="requires exactly one of target, session_id, or vm_name",
+    ):
+        SessionRenewIfExpiredEffectDefinition.model_validate(
+            {
+                "id": "effect-session-renew",
+                "display_name": "Renew expired session",
+                "type": "effect:session:renew-if-expired",
+                "target": "session-1",
+                "session_id": "session-2",
+            }
+        )
+
+    with pytest.raises(ValueError, match="renew_if_expires_within"):
+        SessionRenewIfExpiredEffectDefinition.model_validate(
+            {
+                "id": "effect-session-renew",
+                "display_name": "Renew expired session",
+                "type": "effect:session:renew-if-expired",
+                "session_id": "session-1",
+                "renew_if_expires_within": "soon",
             }
         )
 

@@ -22,6 +22,9 @@ from agent_sandbox.effects.providers.base import (
     EffectProviderExecutionError,
     EffectRuntimeContext,
 )
+from agent_sandbox.effects.providers.session_renew_if_expired import (
+    SessionRenewIfExpiredEffectProvider,
+)
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.daemons.effect_orchestrator import (
     AwaitAgentPendingRecord,
@@ -134,6 +137,77 @@ class _CountingFactory:
             self.outputs_by_effect_id.get(effect.id, {}),
             self.execute_calls,
         )
+
+
+class _ProviderConfigResolver:
+    def __init__(self, config: GatewayConfig) -> None:
+        self.config = config
+
+    def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
+        del directory_path
+        return self.config
+
+
+class _SessionExpiryGuardProvider:
+    def __init__(
+        self,
+        session_repository: JsonSessionManifestRepository,
+        prompt_calls: list[dict[str, object]],
+    ) -> None:
+        self.session_repository = session_repository
+        self.prompt_calls = prompt_calls
+
+    def execute(self, *, resolved_config=None):
+        payload = dict(resolved_config or {})
+        session_id = str(payload["session_id"])
+        session = self.session_repository.get_session(session_id)
+        if session is None:
+            raise RuntimeError(f"prompt guard could not find session {session_id}")
+        if session.expires_at <= datetime.now(timezone.utc):
+            raise RuntimeError(f"prompt guard saw expired session {session_id}")
+        self.prompt_calls.append(
+            {
+                "session_id": session_id,
+                "prompt": payload.get("prompt"),
+                "expires_at": session.expires_at,
+            }
+        )
+        return {"success": True, "thread_id": "thread-guarded"}
+
+
+class _RenewThenPromptFactory:
+    def __init__(
+        self,
+        *,
+        config: GatewayConfig,
+        session_repository: JsonSessionManifestRepository,
+        prompt_calls: list[dict[str, object]],
+    ) -> None:
+        self.config = config
+        self.session_repository = session_repository
+        self.prompt_calls = prompt_calls
+
+    def build(self, effect, **kwargs):
+        del kwargs
+        if effect.type == "effect:session:renew-if-expired":
+            provider = SessionRenewIfExpiredEffectProvider()
+            provider.initialize(
+                effect_definition=effect,
+                runtime_context=EffectRuntimeContext(
+                    resolved_config=self.config,
+                    admin_service=SimpleNamespace(
+                        runtime=SimpleNamespace(
+                            session_repository=self.session_repository,
+                            provider_config=_ProviderConfigResolver(self.config),
+                        )
+                    ),
+                    env={},
+                ),
+            )
+            return provider
+        if effect.type == "effect:agent:prompt":
+            return _SessionExpiryGuardProvider(self.session_repository, self.prompt_calls)
+        raise KeyError(effect.type)
 
 
 class _ImmediateExecutor:
@@ -4329,6 +4403,182 @@ def test_agent_enqueue_prompt_dispatch_does_not_fallback_to_default_thread_for_n
         "teams:chat-1:agent_thread_id": "thread-existing",
         "teams:chat-2:agent_thread_id": "thread-new-key",
     }
+
+
+@pytest.mark.parametrize(
+    ("expires_delta", "renew_if_expires_within", "renewal_reason"),
+    [
+        (timedelta(minutes=-5), None, "expired"),
+        (timedelta(minutes=10), "30m", "within_window"),
+    ],
+)
+def test_session_renew_if_expired_runs_before_prompting(
+    tmp_path: Path,
+    expires_delta: timedelta,
+    renew_if_expires_within: str | None,
+    renewal_reason: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(timezone.utc) + expires_delta,
+        )
+    )
+    renew_effect = {
+        "id": "effect-renew",
+        "display_name": "Renew session",
+        "type": "effect:session:renew-if-expired",
+        "session_id": "session-1",
+        "extend_by": "6h",
+    }
+    if renew_if_expires_within is not None:
+        renew_effect["renew_if_expires_within"] = renew_if_expires_within
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                renew_effect,
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-renew.session_id}}",
+                    "prompt": "Continue ${{effect-renew.session_id}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-renew"),
+                _edge("effect-renew", "effect-prompt"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    prompt_calls: list[dict[str, object]] = []
+    worker.provider_factory = _RenewThenPromptFactory(
+        config=config,
+        session_repository=session_repository,
+        prompt_calls=prompt_calls,
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-renew-before-prompt",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    renewed_session = session_repository.get_session("session-1")
+    assert renewed_session is not None
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    records_by_effect = {record["effect_id"]: record for record in execution_payload.values()}
+    assert set(records_by_effect) == {"effect-renew", "effect-prompt"}
+    assert records_by_effect["effect-renew"]["status"] == "succeeded"
+    assert records_by_effect["effect-renew"]["outputs"]["renewal_reason"] == renewal_reason
+    assert records_by_effect["effect-renew"]["outputs"]["renewed"] is True
+    assert records_by_effect["effect-prompt"]["status"] == "succeeded"
+    assert prompt_calls == [
+        {
+            "session_id": "session-1",
+            "prompt": "Continue session-1",
+            "expires_at": renewed_session.expires_at,
+        }
+    ]
+
+
+def test_session_prompt_without_renewal_still_fails_for_expired_session(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue session-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-prompt")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    prompt_calls: list[dict[str, object]] = []
+    worker.provider_factory = _RenewThenPromptFactory(
+        config=config,
+        session_repository=session_repository,
+        prompt_calls=prompt_calls,
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-prompt-only-expired",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "failed"
+    assert "prompt guard saw expired session session-1" in record["error"]
+    assert prompt_calls == []
+    unchanged = session_repository.get_session("session-1")
+    assert unchanged is not None
+    assert unchanged.expires_at <= datetime.now(timezone.utc)
 
 
 def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_session(

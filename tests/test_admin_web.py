@@ -1277,8 +1277,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "extend_by",
+        "renew_if_expires_within",
         "directory_path",
     ]
+    session_renew_fields = {field["key"]: field for field in session_renew["fields"]}
+    assert "from now" in session_renew_fields["extend_by"]["description"]
+    assert "8h" in session_renew_fields["extend_by"]["description"]
+    assert "PT8H" in session_renew_fields["extend_by"]["description"]
+    assert "pre-expiry window" in session_renew_fields["renew_if_expires_within"]["description"]
+    assert "30m" in session_renew_fields["renew_if_expires_within"]["description"]
+    assert "4h" in session_renew_fields["renew_if_expires_within"]["description"]
     artifact_stage = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:artifact:stage"
     )

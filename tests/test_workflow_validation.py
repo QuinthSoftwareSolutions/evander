@@ -166,6 +166,43 @@ def test_issue_list_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_session_renew_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "session-renew-1",
+                "display_name": "Renew session",
+                "type": "effect:session:renew-if-expired",
+                "session_id": "session-1",
+                "extend_by": "6h",
+                "renew_if_expires_within": "30m",
+            }
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "session-renew-1"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["session-renew-1"]["renewed"] == {"type": "boolean"}
+    assert output_schemas["session-renew-1"]["renewal_reason"] == {"type": "string"}
+    assert output_schemas["session-renew-1"]["renew_if_expires_within"] == {
+        "type": ["integer", "null"]
+    }
+    assert diagnostics == []
+
+
 def test_schedule_event_outputs_are_bindable() -> None:
     config = {
         "triggers": [
