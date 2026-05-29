@@ -8,6 +8,7 @@ from agent_sandbox.triggers.providers.schemas import (
     AdoWorkItemMatchingTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ApprovalPendingCreatedTriggerDefinition,
     CiRunCompletedTriggerDefinition,
     CronTriggerDefinition,
     EventTriggerDefinition,
@@ -52,6 +53,7 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:ci:run:completed": CiRunCompletedTriggerDefinition,
     "trigger:agent:run:completed": AgentRunCompletedTriggerDefinition,
     "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
+    "trigger:approval:pending-created": ApprovalPendingCreatedTriggerDefinition,
 }
 
 

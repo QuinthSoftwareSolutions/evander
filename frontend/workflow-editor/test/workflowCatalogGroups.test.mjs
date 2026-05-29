@@ -107,6 +107,7 @@ test("groups trigger node types into domain families", () => {
     catalogNode("trigger", "trigger:teams:direct-message", "Teams direct message"),
     catalogNode("trigger", "trigger:email:new-message", "Email message"),
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
+    catalogNode("trigger", "trigger:approval:pending-created", "Pending approval"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
     catalogNode("trigger", "trigger:ci:run:completed", "CI run completed"),
@@ -130,7 +131,7 @@ test("groups trigger node types into domain families", () => {
       },
       {
         label: "Tickets & reviews",
-        types: ["trigger:ticket:created"],
+        types: ["trigger:approval:pending-created", "trigger:ticket:created"],
       },
       {
         label: "Communications",

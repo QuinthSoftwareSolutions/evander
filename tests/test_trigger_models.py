@@ -15,6 +15,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ApprovalPendingCreatedTriggerDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
@@ -686,6 +687,42 @@ def test_review_request_trigger_validates() -> None:
     assert trigger.type == "trigger:review:new-request"
 
 
+def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    default_trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "approval-1",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+            }
+        )
+    )
+    assert isinstance(default_trigger, ApprovalPendingCreatedTriggerDefinition)
+    assert default_trigger.directory_path == "root"
+    assert default_trigger.action_types == []
+    assert default_trigger.tool_names == []
+
+    normalized_trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "approval-2",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+                "directory_path": " root/team-a ",
+                "action_types": [" grant ", "", "approve"],
+                "tool_names": " approval_submit ",
+            }
+        )
+    )
+
+    assert isinstance(normalized_trigger, ApprovalPendingCreatedTriggerDefinition)
+    assert normalized_trigger.directory_path == "root/team-a"
+    assert normalized_trigger.action_types == ["grant", "approve"]
+    assert normalized_trigger.tool_names == ["approval_submit"]
+
+
 def test_script_run_request_trigger_validates() -> None:
     trigger = ScriptRunRequestTriggerDefinition.model_validate(
         {
@@ -728,6 +765,28 @@ def test_communication_trigger_output_schema_exposes_normalized_payload_fields()
     assert schema["message"]["properties"]["message_id"] == {"type": "string"}
     assert schema["message"]["properties"]["target"] == {"type": "string"}
     assert schema["message"]["properties"]["metadata"] == {"type": "object"}
+
+
+def test_approval_pending_created_trigger_output_schema_exposes_approval_payload_fields() -> None:
+    schema = effective_node_output_schema({"type": "trigger:approval:pending-created"})
+
+    assert schema["approval_request_id"] == {"type": "string"}
+    assert schema["session_id"] == {"type": "string"}
+    assert schema["directory_path"] == {"type": "string"}
+    assert schema["action_type"] == {"type": "string"}
+    assert schema["tool_name"] == {"type": ["string", "null"]}
+    assert schema["human_summary"] == {"type": "string"}
+    assert schema["payload_digest"] == {"type": "string"}
+    assert schema["payload"] == {"type": "object"}
+    assert schema["notification_status"] == {"type": "string"}
+    assert schema["notification_target_ids"] == {"type": "array", "items": {"type": "string"}}
+    assert schema["notification_deliveries"]["items"]["properties"]["target_id"] == {
+        "type": "string"
+    }
+    assert schema["approval_request"]["properties"]["request_id"] == {"type": "string"}
+    assert schema["approval_request"]["properties"]["notification_status"] == {
+        "type": "string"
+    }
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
