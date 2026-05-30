@@ -87,7 +87,7 @@ Run:
 
 ```bash
 cd frontend/workflow-editor
-npm test -- test/adminRouting.test.mjs
+node --test --experimental-strip-types test/adminRouting.test.mjs
 ```
 
 Expected: FAIL because `usersModeFromHash` and `usersModeHash` are not exported, and `tabFromHash("#users/groups")` does not yet resolve to `users`.
@@ -146,7 +146,7 @@ Run:
 
 ```bash
 cd frontend/workflow-editor
-npm test -- test/adminRouting.test.mjs
+node --test --experimental-strip-types test/adminRouting.test.mjs
 ```
 
 Expected: PASS for all `adminRouting.test.mjs` tests.
@@ -211,7 +211,7 @@ Run:
 
 ```bash
 cd frontend/workflow-editor
-npm test -- test/adminUsersPermissionHelp.test.mjs
+node --test --experimental-strip-types test/adminUsersPermissionHelp.test.mjs
 ```
 
 Expected: FAIL because `UsersPage.tsx` does not yet import mode helpers, define `activeMode`, or render mode tabs.
@@ -539,7 +539,7 @@ Run:
 
 ```bash
 cd frontend/workflow-editor
-npm test -- test/adminUsersPermissionHelp.test.mjs
+node --test --experimental-strip-types test/adminUsersPermissionHelp.test.mjs
 ```
 
 Expected: PASS for permission help and mode split tests.
@@ -648,7 +648,7 @@ Run:
 
 ```bash
 cd frontend/workflow-editor
-npm test -- test/adminRouting.test.mjs test/adminUsersPermissionHelp.test.mjs
+node --test --experimental-strip-types test/adminRouting.test.mjs test/adminUsersPermissionHelp.test.mjs
 ```
 
 Expected: PASS for both focused tests.
