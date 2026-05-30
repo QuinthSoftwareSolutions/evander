@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { Tooltip } from "../admin/Tooltip";
 import type {
   AdminContactSummary,
   AdminGroupMutationResponse,
@@ -59,6 +60,15 @@ const EMPTY_GROUP_FORM: GroupFormState = {
 };
 
 const DIRECT_WORKFLOW_PERMISSIONS = ["workflows.read", "workflows.write"] as const;
+const PERMISSION_HELP: Record<string, string> = {
+  "admin.owner": "Full Admin Web ownership. Grants every catalog permission in every directory scope.",
+  "groups.manage": "Create, edit, and delete reusable permission groups and the permissions assigned to them.",
+  "users.manage": "Create and edit user records, directory-scoped group assignments, and direct workflow grants.",
+  "workflow_runs.control": "Resume, dismiss, or clear workflow runs. Pair with workflow_runs.read when the user also needs run details.",
+  "workflow_runs.read": "Inspect workflow run snapshots, run details, trigger/gate/effect activity, and runtime graph status.",
+  "workflows.read": "Open and inspect workflow definitions, graph metadata, layouts, and workflow catalog details.",
+  "workflows.write": "Save workflow definition and layout changes. Add workflows.read too when the group should open workflow documents.",
+};
 
 function userLabel(user: AdminWebUserRecord): string {
   return user.display_name?.trim() || user.login;
@@ -84,6 +94,22 @@ function workflowGrantFormState(
 
 function groupLabel(group: AdminWebGroupRecord | undefined, groupId: string): string {
   return group?.display_name?.trim() || groupId;
+}
+
+function permissionHelp(permission: string): string {
+  return PERMISSION_HELP[permission] ?? `Permission: ${permission}`;
+}
+
+function PermissionTooltip({ permission, focusable = false }: { permission: string; focusable?: boolean }) {
+  return (
+    <Tooltip
+      content={permissionHelp(permission)}
+      focusable={focusable}
+      ariaLabel={`Permission help for ${permission}`}
+    >
+      <span className="permission-label">{permission}</span>
+    </Tooltip>
+  );
 }
 
 export function UsersPage() {
@@ -698,9 +724,20 @@ export function UsersPage() {
             </div>
           </div>
           {selectedUser ? (
-            <p className="muted-text">
-              Effective here: {(selectedUser.effective_permissions ?? []).join(", ") || "none"}
-            </p>
+            <div className="users-effective-permissions">
+              <span className="muted-text">Effective here:</span>
+              <div className="permission-chip-list" aria-label="Effective permissions in this directory">
+                {(selectedUser.effective_permissions ?? []).length > 0 ? (
+                  [...selectedUser.effective_permissions].sort().map((permission) => (
+                    <span className="permission-chip" key={permission}>
+                      <PermissionTooltip permission={permission} focusable />
+                    </span>
+                  ))
+                ) : (
+                  <span className="muted-text">none</span>
+                )}
+              </div>
+            </div>
           ) : null}
         </article>
 
@@ -754,7 +791,7 @@ export function UsersPage() {
                   }
                   disabled={actionDisabled}
                 />
-                <span>{permission}</span>
+                <PermissionTooltip permission={permission} />
               </label>
             ))}
           </div>

@@ -4051,6 +4051,37 @@ select {
   min-width: min(14rem, 100%);
 }
 
+.users-effective-permissions {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+}
+
+.permission-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.permission-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid rgba(71, 100, 112, 0.16);
+  border-radius: 999px;
+  background: rgba(236, 243, 243, 0.76);
+  color: #425a62;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.permission-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .vm-list-item {
   padding: 0.65rem 0.8rem;
   border-radius: 0;
@@ -8013,6 +8044,12 @@ select {
 :root[data-theme="dark"] .raw-json-panel summary,
 :root[data-theme="dark"] .runtime-run-node {
   color: #b8a386;
+}
+
+:root[data-theme="dark"] .permission-chip {
+  border-color: rgba(125, 170, 190, 0.2);
+  background: rgba(18, 37, 47, 0.82);
+  color: #b7d6e6;
 }
 
 :root[data-theme="dark"] .output-contract-panel {
