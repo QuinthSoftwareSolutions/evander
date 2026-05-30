@@ -184,6 +184,59 @@ def test_provider_config_resolver_rejects_stale_provider_session_store_directory
         resolver.resolve_contacts_for_session_id("session-fallback")
 
 
+def test_provider_config_resolver_resolves_azure_openai_mode_from_child_session_overlay(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directories = DirectoryService(directory_store)
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    team = directories.create(parent="root", name="team")
+    session_store = JsonSessionManifestRepository(config.session_store_path)
+    session_store.upsert_session(
+        SessionManifest(
+            session_id="session-azure",
+            allowed_tools=[],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-root",
+                "gpt-4.1-mini": "deployment-root-mini",
+            },
+        },
+    )
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"openai_provider_mode": "azure_openai"},
+    )
+
+    resolver = ProviderConfigResolver(
+        config,
+        directory_store=directory_store,
+        session_store=session_store,
+    )
+
+    resolved = resolver.resolve_for_session_id("session-azure")
+
+    assert resolved.openai_provider_mode == "azure_openai"
+    assert resolved.azure_openai_endpoint == "https://example-resource.openai.azure.com"
+    assert resolved.azure_openai_api_key_env == "AZURE_OPENAI_API_KEY"
+    assert resolved.azure_openai_model_deployments == {
+        "gpt-5.4": "deployment-root",
+        "gpt-4.1-mini": "deployment-root-mini",
+    }
+
+
 def test_policy_config_resolver_resolves_root_for_none_empty_and_rejects_missing_paths(
     tmp_path: Path,
 ) -> None:

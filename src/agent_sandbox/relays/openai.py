@@ -100,21 +100,7 @@ class OpenAIRelay:
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-            api_key = os.environ.get(request_context.config.openai_api_key_env)
-            if not api_key:
-                return JSONResponse(
-                    {
-                        "error": f"Host environment variable {request_context.config.openai_api_key_env} is not set."
-                    },
-                    status_code=503,
-                )
-
             upstream_path = request.path_params["path"]
-            upstream_url = relay._upstream_http_url(
-                base_url=request_context.config.openai_api_base_url,
-                upstream_path=upstream_path,
-                query_items=request.query_params.multi_items(),
-            )
             request_body = await request.body()
             if (
                 not request_context.web_search_enabled
@@ -135,6 +121,91 @@ class OpenAIRelay:
                     status_code=403,
                 )
 
+            if request_context.config.openai_provider_mode == "azure_openai":
+                if request.method != "POST" or upstream_path != "responses":
+                    return JSONResponse(
+                        {
+                            "error": (
+                                "Azure OpenAI relay currently supports only POST /v1/responses"
+                            )
+                        },
+                        status_code=501,
+                    )
+
+                api_key_env = request_context.config.azure_openai_api_key_env
+                api_key = os.environ.get(api_key_env) if api_key_env else None
+                if not api_key:
+                    return JSONResponse(
+                        {
+                            "error": (
+                                f"Host environment variable {api_key_env} is not set."
+                            )
+                        },
+                        status_code=503,
+                    )
+
+                try:
+                    request_body = relay._rewrite_azure_openai_request_body(
+                        request_body,
+                        model_deployments=request_context.config.azure_openai_model_deployments,
+                    )
+                except ValueError as exc:
+                    return JSONResponse({"error": str(exc)}, status_code=400)
+
+                upstream_url = relay._azure_upstream_http_url(
+                    endpoint=request_context.config.azure_openai_endpoint or "",
+                    upstream_path=upstream_path,
+                    query_items=request.query_params.multi_items(),
+                    api_version=request_context.config.azure_openai_api_version,
+                )
+                headers = {
+                    key: value
+                    for key, value in request.headers.items()
+                    if key.lower() not in HOP_BY_HOP_HEADERS
+                }
+                headers["accept-encoding"] = "identity"
+                headers["api-key"] = api_key
+
+                if "text/event-stream" in request.headers.get("accept", ""):
+                    return await relay._stream_response(
+                        request=request,
+                        upstream_url=upstream_url,
+                        headers=headers,
+                        request_body=request_body,
+                        timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                    )
+
+                async with httpx.AsyncClient(
+                    timeout=request_context.config.openai_relay_timeout_seconds,
+                    transport=relay.transport,
+                ) as client:
+                    upstream_response = await client.request(
+                        method=request.method,
+                        url=upstream_url,
+                        headers=headers,
+                        content=request_body,
+                    )
+                    return Response(
+                        content=upstream_response.content,
+                        status_code=upstream_response.status_code,
+                        headers=relay._response_headers(upstream_response),
+                        media_type=upstream_response.headers.get("content-type"),
+                    )
+
+            api_key = os.environ.get(request_context.config.openai_api_key_env)
+            if not api_key:
+                return JSONResponse(
+                    {
+                        "error": f"Host environment variable {request_context.config.openai_api_key_env} is not set."
+                    },
+                    status_code=503,
+                )
+
+            upstream_url = relay._upstream_http_url(
+                base_url=request_context.config.openai_api_base_url,
+                upstream_path=upstream_path,
+                query_items=request.query_params.multi_items(),
+            )
             headers = {
                 key: value
                 for key, value in request.headers.items()
@@ -184,6 +255,19 @@ class OpenAIRelay:
                 request_context = relay._resolve_websocket_context(websocket)
             except ValueError as exc:
                 await websocket.close(code=1008, reason=str(exc))
+                return
+
+            if request_context.config.openai_provider_mode == "azure_openai":
+                reason = (
+                    "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
+                )
+                logger.warning(
+                    "relay_rejected_azure_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
                 return
 
             api_key = os.environ.get(request_context.config.openai_api_key_env)
@@ -529,7 +613,7 @@ class OpenAIRelay:
             session_id=session_id,
             request_kind="http",
             path=request.url.path,
-            api_key_env=resolved_config.openai_api_key_env,
+            api_key_env=self._resolved_api_key_env(resolved_config),
         )
         return RelayRequestContext(
             session_id=session_id,
@@ -546,7 +630,7 @@ class OpenAIRelay:
             session_id=session_id,
             request_kind="websocket",
             path=websocket.url.path,
-            api_key_env=resolved_config.openai_api_key_env,
+            api_key_env=self._resolved_api_key_env(resolved_config),
         )
         return RelayRequestContext(
             session_id=session_id,
@@ -582,6 +666,12 @@ class OpenAIRelay:
             path,
             api_key_env,
         )
+
+    @staticmethod
+    def _resolved_api_key_env(config: GatewayConfig) -> str:
+        if config.openai_provider_mode == "azure_openai":
+            return config.azure_openai_api_key_env or config.openai_api_key_env
+        return config.openai_api_key_env
 
     @staticmethod
     def _log_hosted_web_search_denied(*, session_id: str, request_kind: str, path: str) -> None:
@@ -630,6 +720,58 @@ class OpenAIRelay:
         if filtered_query:
             upstream_url = f"{upstream_url}?{filtered_query}"
         return upstream_url
+
+    @classmethod
+    def _azure_upstream_http_url(
+        cls,
+        *,
+        endpoint: str,
+        upstream_path: str,
+        query_items: list[tuple[str, str]],
+        api_version: str,
+    ) -> str:
+        filtered_query_items = [
+            (key, value)
+            for key, value in query_items
+            if key not in {"session_id", "api-version"}
+        ]
+        filtered_query_items.append(("api-version", api_version))
+        upstream_url = f"{endpoint.rstrip('/')}/openai/v1/{upstream_path}"
+        filtered_query = urlencode(filtered_query_items, doseq=True)
+        if filtered_query:
+            upstream_url = f"{upstream_url}?{filtered_query}"
+        return upstream_url
+
+    @staticmethod
+    def _rewrite_azure_openai_request_body(
+        request_body: bytes, *, model_deployments: dict[str, str]
+    ) -> bytes:
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Azure OpenAI responses requests must contain valid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Azure OpenAI responses requests must be a JSON object")
+
+        model = payload.get("model")
+        if not isinstance(model, str):
+            raise ValueError("Azure OpenAI responses requests require a top-level string model")
+        logical_model = model.strip()
+        if not logical_model:
+            raise ValueError("Azure OpenAI responses requests require a non-empty model")
+
+        deployment_name = model_deployments.get(logical_model)
+        if deployment_name is None:
+            raise ValueError(
+                f"Azure OpenAI model {logical_model!r} is not configured in "
+                "azure_openai_model_deployments"
+            )
+
+        rewritten_payload = dict(payload)
+        rewritten_payload["model"] = deployment_name
+        return json.dumps(rewritten_payload).encode("utf-8")
 
     @classmethod
     def _upstream_websocket_url(

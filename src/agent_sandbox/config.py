@@ -212,8 +212,14 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
+    openai_provider_mode: Literal["openai_public", "azure_openai"] = "openai_public"
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    azure_openai_endpoint: str | None = None
+    azure_openai_auth_mode: Literal["api_key"] = "api_key"
+    azure_openai_api_key_env: str | None = None
+    azure_openai_api_version: str = "preview"
+    azure_openai_model_deployments: dict[str, str] = Field(default_factory=dict)
     openai_relay_timeout_seconds: float = 300.0
     semantic_store_provider: Literal["qdrant"] = "qdrant"
     qdrant_base_url: str = "http://127.0.0.1:6333"
@@ -338,6 +344,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
+        "azure_openai_endpoint",
         "openai_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -398,6 +405,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
+        "azure_openai_endpoint",
         "openai_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
@@ -454,6 +462,68 @@ class GatewayConfig(BaseModel):
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("openai_provider_mode", mode="before")
+    @classmethod
+    def normalize_openai_provider_mode(cls, value: object) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("azure_openai_auth_mode", mode="before")
+    @classmethod
+    def validate_azure_openai_auth_mode(cls, value: object) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if text != "api_key":
+            raise ValueError(
+                "azure_openai_auth_mode currently supports only 'api_key'"
+            )
+        return text
+
+    @field_validator("azure_openai_api_key_env", mode="before")
+    @classmethod
+    def normalize_azure_openai_api_key_env(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("azure_openai_api_version", mode="before")
+    @classmethod
+    def normalize_azure_openai_api_version(cls, value: object) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            raise ValueError("azure_openai_api_version cannot be empty")
+        return text
+
+    @field_validator("azure_openai_model_deployments", mode="before")
+    @classmethod
+    def normalize_azure_openai_model_deployments(cls, value: object) -> dict[str, str]:
+        if value is None:
+            raise ValueError("azure_openai_model_deployments must be a JSON object")
+        if not isinstance(value, dict):
+            raise ValueError("azure_openai_model_deployments must be a JSON object")
+        normalized: dict[str, str] = {}
+        for raw_model_name, raw_deployment_name in value.items():
+            model_name = str(raw_model_name or "").strip()
+            deployment_name = str(raw_deployment_name or "").strip()
+            if not model_name:
+                raise ValueError("azure_openai_model_deployments keys cannot be empty")
+            if not deployment_name:
+                raise ValueError(
+                    f"azure_openai_model_deployments[{model_name!r}] cannot be empty"
+                )
+            if model_name in normalized:
+                raise ValueError(
+                    f"duplicate azure_openai_model_deployments key: {model_name!r}"
+                )
+            normalized[model_name] = deployment_name
+        return normalized
 
     @field_validator(
         "retell_from_number",
@@ -598,6 +668,32 @@ class GatewayConfig(BaseModel):
                 "teams_backend 'delegated_graph_api' requires teams_delegated_client_id"
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_azure_openai_provider_config(self, info) -> GatewayConfig:
+        context = getattr(info, "context", None) or {}
+        if context.get("directory_config_domain") == "providers" and context.get(
+            "validation_scope"
+        ) == "overlay":
+            return self
+        if self.openai_provider_mode != "azure_openai":
+            return self
+
+        missing_fields: list[str] = []
+        if not self.azure_openai_endpoint:
+            missing_fields.append("azure_openai_endpoint")
+        if not self.azure_openai_api_key_env:
+            missing_fields.append("azure_openai_api_key_env")
+        if not self.azure_openai_model_deployments:
+            missing_fields.append("azure_openai_model_deployments")
+
+        if missing_fields:
+            raise ValueError(
+                "openai_provider_mode='azure_openai' requires "
+                + ", ".join(missing_fields)
+                + " to be configured"
+            )
         return self
 
 

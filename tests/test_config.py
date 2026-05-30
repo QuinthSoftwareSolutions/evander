@@ -326,6 +326,17 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
     ]
 
 
+def test_openai_provider_defaults_remain_public_mode() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.openai_provider_mode == "openai_public"
+    assert config.azure_openai_endpoint is None
+    assert config.azure_openai_auth_mode == "api_key"
+    assert config.azure_openai_api_key_env is None
+    assert config.azure_openai_api_version == "preview"
+    assert config.azure_openai_model_deployments == {}
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -347,6 +358,7 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
             "container_worker_guest_npm_registry_url",
             " http://nexus.test:8081/repository/npm-all/ ",
         ),
+        ("azure_openai_endpoint", " https://example-resource.openai.azure.com/v1/ "),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
         ("qdrant_base_url", " http://127.0.0.1:6333/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
@@ -384,6 +396,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
         ("container_worker_guest_npm_registry_url", "http://facade.test\nfetch-retries=0"),
+        ("azure_openai_endpoint", "not-a-url"),
         ("openai_api_base_url", "not-a-url"),
         ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
@@ -408,6 +421,97 @@ def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None
 
     assert config.npm_audit_facade_host == "127.0.0.1"
     assert config.npm_audit_facade_port == 18181
+
+
+def test_azure_openai_provider_config_validates_and_normalizes_full_configuration() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": " https://example-resource.openai.azure.com/ ",
+            "azure_openai_api_key_env": " AZURE_OPENAI_API_KEY ",
+            "azure_openai_api_version": " 2024-10-21-preview ",
+            "azure_openai_model_deployments": {
+                " gpt-5.4 ": " deployment-gpt-5-4 ",
+                " gpt-4.1-mini ": " deployment-gpt-4-1-mini ",
+            },
+        }
+    )
+
+    assert config.openai_provider_mode == "azure_openai"
+    assert config.azure_openai_endpoint == "https://example-resource.openai.azure.com"
+    assert config.azure_openai_api_key_env == "AZURE_OPENAI_API_KEY"
+    assert config.azure_openai_api_version == "2024-10-21-preview"
+    assert config.azure_openai_model_deployments == {
+        "gpt-5.4": "deployment-gpt-5-4",
+        "gpt-4.1-mini": "deployment-gpt-4-1-mini",
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {
+                "openai_provider_mode": "azure_openai",
+                "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+                "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
+            },
+            "azure_openai_endpoint",
+        ),
+        (
+            {
+                "openai_provider_mode": "azure_openai",
+                "azure_openai_endpoint": "https://example-resource.openai.azure.com",
+                "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
+            },
+            "azure_openai_api_key_env",
+        ),
+        (
+            {
+                "openai_provider_mode": "azure_openai",
+                "azure_openai_endpoint": "https://example-resource.openai.azure.com",
+                "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            },
+            "azure_openai_model_deployments",
+        ),
+        (
+            {
+                "openai_provider_mode": "azure_openai",
+                "azure_openai_endpoint": "https://example-resource.openai.azure.com",
+                "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+                "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
+                "azure_openai_auth_mode": "managed_identity",
+            },
+            "azure_openai_auth_mode currently supports only 'api_key'",
+        ),
+    ],
+)
+def test_azure_openai_provider_config_rejects_missing_fields_and_unsupported_auth_modes(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        GatewayConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"azure_openai_model_deployments": []},
+        {"azure_openai_model_deployments": None},
+        {"openai_provider_mode": "azure_openai", "azure_openai_model_deployments": {"": "x"}},
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "   "},
+        },
+    ],
+)
+def test_azure_openai_model_deployments_reject_invalid_payloads(
+    payload: dict[str, object]
+) -> None:
+    with pytest.raises(ValueError, match="azure_openai_model_deployments"):
+        GatewayConfig.model_validate(payload)
 
 
 def test_legacy_gateway_config_import_preserves_npm_audit_facade_bind_settings() -> None:

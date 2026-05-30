@@ -523,6 +523,24 @@ Storage layout for directory config:
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
+- The guest still talks to the relay URL and keeps the placeholder `OPENAI_API_KEY`; only host-side provider settings decide whether the relay forwards to public OpenAI or Azure OpenAI.
+- For Azure OpenAI Codex routing, set `openai_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
+- Example directory-scoped `providers.json` overlay:
+
+  ```json
+  {
+    "openai_provider_mode": "azure_openai",
+    "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+    "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+    "azure_openai_api_version": "2024-10-21-preview",
+    "azure_openai_model_deployments": {
+      "gpt-5.4": "codex-gpt-5-4"
+    }
+  }
+  ```
+- Public OpenAI remains the default when `openai_provider_mode` is omitted.
+- This first slice covers normal HTTP Responses API Codex requests only; WebSocket/realtime and
+  managed identity are not included.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
   to declare Responses `web_search` tools.
@@ -1886,13 +1904,13 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    automation settings.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and DIDWW SIP bridge when using
-   default OpenAI Realtime settings, and `AZURE_ARTIFACTS_PAT` when the NuGet relay needs private
-   Azure Artifacts access. The npm audit facade does not require a host secret by default, but you
-   can keep optional local overrides in `config/npm-audit-facade.env`. Additional
-   directory-specific key env vars
-   should be supplied through `config/admin-web.env`, `secrets.env`, or the service manager
-   environment. The HTTP
+4. Ensure the host environment exposes the secret env vars referenced by `openai_api_key_env`
+   or `azure_openai_api_key_env` for the OpenAI relay, `OPENAI_API_KEY` for the DIDWW SIP bridge
+   when using default OpenAI Realtime settings, and `AZURE_ARTIFACTS_PAT` when the NuGet relay
+   needs private Azure Artifacts access. The npm audit facade does not require a host secret by
+   default, but you can keep optional local overrides in `config/npm-audit-facade.env`.
+   Additional directory-specific key env vars should be supplied through `config/admin-web.env`,
+   `secrets.env`, or the service manager environment. The HTTP
    target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
    endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
    guest-managed bearer tokens/cookies through that relay path.
