@@ -485,3 +485,64 @@ def test_asterisk_hangup_event_completes_call(tmp_path: Path) -> None:
     assert latest is not None
     assert latest.status == "ended"
     assert latest.summary == "Call ended: normal clearing"
+
+
+def test_asterisk_hangup_failure_causes_mark_call_failed(tmp_path: Path) -> None:
+    cases: list[dict[str, object]] = [
+        {"cause_txt": "No Answer"},
+        {"cause_txt": "User busy"},
+        {"cause": 17},
+        {"cause": "19"},
+    ]
+
+    for index, cause_fields in enumerate(cases):
+        store = DidwwBridgeStore(tmp_path / f"bridge-{index}.json")
+        payload = _phone_payload()
+        payload["voice_session_id"] = f"voice-{index}"
+        payload["request_id"] = f"request-{index}"
+        record, _ = store.create_call(PhoneCallStartRequest.model_validate(payload))
+        store.attach_asterisk(
+            record.voice_session_id,
+            ari_channel_id=f"call-didww-test-{index}",
+            ari_bridge_id=f"bridge-didww-test-{index}",
+            ari_external_media_channel_id=f"media-didww-test-{index}",
+            rtp_port=49000 + index,
+        )
+
+        class FakeWebSocket:
+            async def recv(self) -> str:
+                return json.dumps(
+                    {
+                        "type": "ChannelHangupRequest",
+                        "channel": {"id": f"call-didww-test-{index}"},
+                        **cause_fields,
+                    }
+                )
+
+        class FakeAriClient:
+            @asynccontextmanager
+            async def event_stream(self) -> Any:
+                yield FakeWebSocket()
+
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+
+        asyncio.run(
+            service._wait_for_asterisk_end(  # type: ignore[attr-defined]
+                record.voice_session_id,
+                AsteriskCallHandles(
+                    call_channel_id=f"call-didww-test-{index}",
+                    bridge_id=f"bridge-didww-test-{index}",
+                    external_media_channel_id=f"media-didww-test-{index}",
+                ),
+                asyncio.Event(),
+            )
+        )
+
+        latest = store.get(record.voice_session_id)
+        assert latest is not None
+        assert latest.status == "failed"

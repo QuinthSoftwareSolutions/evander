@@ -11,6 +11,8 @@ material. Newer entries are added incrementally as changes land.
   accepting per-call or per-meeting payload overrides.
 - Updated Teams OpenAI Realtime speech responses to request audio with the current
   `output_modalities` response shape.
+- Cleared stale voice-call failure fields when retrying a failed request and classified common
+  ARI busy/no-answer hangup causes as failed calls.
 
 ## 2026-05-29 - Workflow Run Snapshot I/O Fix
 

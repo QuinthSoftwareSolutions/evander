@@ -127,6 +127,47 @@ def test_voice_query_delegator_schedules_origin_agent_wake_and_completes(
     assert payload["citations"] == ["migrations/voice.sql"]
 
 
+def test_voice_session_retry_clears_terminal_failure_fields(tmp_path: Path) -> None:
+    store = VoiceSessionStore(tmp_path / "voice-sessions.json")
+    record, created = store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root/team-a",
+        channel="phone",
+        request_id="call-1",
+        prompt_metadata={"sha256": "same-prompt"},
+        projection={"task": "call"},
+    )
+    assert created is True
+    failed = store.complete_session(
+        record.voice_session_id,
+        status="failed",
+        error="bridge unavailable",
+    )
+    assert failed.error == "bridge unavailable"
+    assert failed.ended_at is not None
+
+    retry_record, retry_created = store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root/team-a",
+        channel="phone",
+        request_id="call-1",
+        prompt_metadata={"sha256": "same-prompt"},
+        projection={"task": "call"},
+    )
+    assert retry_created is False
+
+    retried = store.attach_bridge_session(
+        retry_record.voice_session_id,
+        bridge_session_id="bridge-call-2",
+        status="active",
+        bridge_metadata={"call_id": "bridge-call-2", "status": "active"},
+    )
+
+    assert retried.status == "active"
+    assert retried.error is None
+    assert retried.ended_at is None
+
+
 def test_openai_realtime_phone_backend_starts_bridge_and_reconciles(
     tmp_path: Path,
 ) -> None:

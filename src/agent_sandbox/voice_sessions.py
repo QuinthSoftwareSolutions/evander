@@ -269,7 +269,14 @@ class VoiceSessionStore:
             record.bridge_session_id = _optional_text(bridge_session_id) or record.bridge_session_id
             if meeting_id:
                 record.meeting_id = _optional_text(meeting_id)
+            previous_status = record.status
             record.status = normalize_voice_session_status(status, default=record.status)
+            if previous_status in {"ended", "failed"} and record.status not in {
+                "ended",
+                "failed",
+            }:
+                record.error = None
+                record.ended_at = None
             record.bridge_metadata = sanitize_voice_metadata(
                 {**record.bridge_metadata, **dict(bridge_metadata or {})}
             )

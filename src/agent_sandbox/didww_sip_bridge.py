@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import re
 import struct
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -36,6 +37,59 @@ from agent_sandbox.voice_sessions import (
 logger = logging.getLogger(__name__)
 
 BridgeCallStatus = Literal["created", "connecting", "active", "ended", "failed"]
+
+_FAILED_HANGUP_CAUSE_CODES = {
+    1,
+    2,
+    3,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    27,
+    28,
+    34,
+    38,
+    41,
+    42,
+    44,
+    47,
+    57,
+    58,
+    63,
+    88,
+    102,
+}
+_FAILED_HANGUP_CAUSE_TEXTS = {
+    "allocated_channel_not_available",
+    "bearer_capability_not_authorized",
+    "bearer_capability_not_available",
+    "busy",
+    "call_rejected",
+    "congestion",
+    "destination_out_of_order",
+    "incompatible_destination",
+    "invalid_number_format",
+    "network_out_of_order",
+    "no_answer",
+    "no_answer_from_user",
+    "no_route_to_destination",
+    "no_route_to_specified_transit_network",
+    "no_user_responding",
+    "normal_circuit_congestion",
+    "number_changed",
+    "recovery_on_timer_expiry",
+    "requested_channel_not_available",
+    "resource_unavailable",
+    "service_or_option_not_available",
+    "subscriber_absent",
+    "switching_equipment_congestion",
+    "temporary_failure",
+    "unallocated_number",
+    "user_busy",
+}
 
 
 class DidwwSipBridgeConfig(BaseModel):
@@ -1329,8 +1383,11 @@ class DidwwSipBridgeService:
                     self.store.update_status(voice_session_id, "active")
                 if event_type in {"ChannelHangupRequest", "ChannelDestroyed", "StasisEnd"}:
                     cause = event.get("cause_txt") or event.get("cause") or "hangup"
-                    status = "failed" if str(cause).lower() in {"busy", "no_answer", "congestion"} else "ended"
-                    self.store.complete(voice_session_id, status=status, summary=f"Call ended: {cause}")
+                    self.store.complete(
+                        voice_session_id,
+                        status=_ari_hangup_status(event),
+                        summary=f"Call ended: {cause}",
+                    )
                     stop_event.set()
                     return
 
@@ -1506,6 +1563,35 @@ def _ari_channel_state(event: dict[str, Any]) -> str | None:
         state = channel.get("state")
         return str(state) if state is not None else None
     return None
+
+
+def _ari_hangup_status(event: dict[str, Any]) -> BridgeCallStatus:
+    if _ari_hangup_cause_is_failed(event.get("cause_txt")):
+        return "failed"
+    if _ari_hangup_cause_is_failed(event.get("cause")):
+        return "failed"
+    return "ended"
+
+
+def _ari_hangup_cause_is_failed(value: object) -> bool:
+    code = _ari_hangup_cause_code(value)
+    if code in _FAILED_HANGUP_CAUSE_CODES:
+        return True
+    return _normalize_hangup_cause_text(value) in _FAILED_HANGUP_CAUSE_TEXTS
+
+
+def _ari_hangup_cause_code(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    return int(text) if text.isdecimal() else None
+
+
+def _normalize_hangup_cause_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
 
 def _realtime_audio_delta(event: dict[str, Any]) -> str | None:
