@@ -422,25 +422,38 @@ The conformance report artifacts are also documented in `conformance-reports.md`
 ## Users & Groups
 
 The Users & Groups tab manages Admin Web user records, reusable permission groups, directory-scoped
-group assignments, and direct workflow grants when Azure SSO is enabled.
+group assignments, and direct workflow grants when Azure SSO is enabled. The page has separate
+**Users** and **Groups** modes. Open `/#users` for Users mode or `/#users/groups` to link directly
+to Groups mode.
 
 ![Users](assets/admin-ui/manual-users.png)
 
-Common tasks:
+Common user tasks:
 
 1. Sign in as a user with the `admin` role.
 2. Open **Users & Groups**.
-3. Click **New user**.
-4. Enter the user's login/email-style identifier.
-5. Optionally set a display name.
-6. Choose the legacy compatibility role.
-7. Optionally attach a directory-scoped contact.
-8. Add directory-scoped group assignments or direct workflow read/write grants.
-9. Click **Save**.
-10. Select an existing user to edit display name, role, contact, assignments, or grants.
-11. Select or create a group to edit its permission checkboxes.
+3. Select **Users**.
+4. Click **New user**.
+5. Enter the user's login/email-style identifier.
+6. Optionally set a display name.
+7. Choose the legacy compatibility role.
+8. Optionally attach a directory-scoped contact.
+9. Add directory-scoped group assignments or direct workflow read/write grants.
+10. Click **Save**.
+11. Select an existing user to edit display name, role, contact, assignments, or grants.
 12. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
     authenticated request.
+
+Common group tasks:
+
+1. Sign in as a user with the `admin` role.
+2. Open **Users & Groups**.
+3. Select **Groups**, or open `/#users/groups` directly.
+4. Click **New group**.
+5. Enter the group ID, name, and optional description.
+6. Select the permissions the group should grant.
+7. Click **Save group**.
+8. Select an existing custom group to edit or delete it.
 
 Users with `groups.manage` can edit reusable permission groups. Users with `users.manage` can edit
 user records, group assignments, and direct workflow grants. Other users can sign in and use
