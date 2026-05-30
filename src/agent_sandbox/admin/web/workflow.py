@@ -93,6 +93,7 @@ def _readable_graphs_for_document(
     auth: AdminWebAuth,
     request: Request,
     graphs: list[object],
+    permission: str = WORKFLOWS_READ_PERMISSION,
 ) -> list[dict[str, Any]]:
     readable_graphs: list[dict[str, Any]] = []
     for graph in graphs:
@@ -103,7 +104,7 @@ def _readable_graphs_for_document(
         else:
             continue
         directory_path = str(graph_payload.get("directory_path") or "").strip() or "root"
-        if auth.can(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path):
+        if auth.can(request, permission, directory_path=directory_path):
             readable_graphs.append(graph_payload)
     return readable_graphs
 
@@ -170,7 +171,12 @@ def _graph_directory_paths_for_node_ids(
 def _readable_workflow_run_graphs(
     *, auth: AdminWebAuth, request: Request, graphs: list[object]
 ) -> list[dict[str, Any]]:
-    readable_graphs = _readable_graphs_for_document(auth=auth, request=request, graphs=graphs)
+    readable_graphs = _readable_graphs_for_document(
+        auth=auth,
+        request=request,
+        graphs=graphs,
+        permission=WORKFLOW_RUNS_READ_PERMISSION,
+    )
     if readable_graphs:
         return readable_graphs
     if not graphs:

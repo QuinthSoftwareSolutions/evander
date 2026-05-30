@@ -13,7 +13,11 @@ from agent_sandbox.admin.web.user_store import (
     AdminWebUserStore,
     normalize_admin_web_login,
 )
-from agent_sandbox.admin.web.rbac import PERMISSION_CATALOG
+from agent_sandbox.admin.web.rbac import (
+    GROUPS_MANAGE_PERMISSION,
+    PERMISSION_CATALOG,
+    USERS_MANAGE_PERMISSION,
+)
 from agent_sandbox.directory_config import ContactDirectoryConfig
 
 WORKFLOW_TUTORIAL_PROGRESS_PREFERENCE_KEY = "workflow_tutorial_progress"
@@ -193,9 +197,13 @@ def _workflow_tutorial_progress_payload(payload: object) -> dict[str, list[str]]
 
 
 def _require_user_manager(auth: AdminWebAuth, request: Request) -> None:
+    auth.require_permission(request, USERS_MANAGE_PERMISSION)
+
+
+def _require_group_manager(auth: AdminWebAuth, request: Request) -> None:
     auth.require(request)
-    if not auth.can_manage_users(request):
-        raise PermissionError("User-management permission is required")
+    if not auth.can(request, GROUPS_MANAGE_PERMISSION):
+        raise PermissionError("Group-management permission is required")
 
 
 def _directory_path_from_request(service: AdminService, request: Request) -> str:
@@ -431,9 +439,21 @@ def admin_user_routes(
             {"user": _user_payload(user_store, user, directory_path=directory_path)}
         )
 
+    async def list_groups(request: Request):
+        try:
+            _require_group_manager(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return json_ok(
+            {
+                "permission_catalog": sorted(PERMISSION_CATALOG),
+                "groups": [_group_payload(group) for group in user_store.list_groups()],
+            }
+        )
+
     async def upsert_group(request: Request):
         try:
-            _require_user_manager(auth, request)
+            _require_group_manager(auth, request)
             payload = await _json_body(request)
             group_id = payload.get("group_id")
             display_name = payload.get("display_name")
@@ -458,7 +478,7 @@ def admin_user_routes(
     async def update_group(request: Request):
         group_id = request.path_params["group_id"]
         try:
-            _require_user_manager(auth, request)
+            _require_group_manager(auth, request)
             payload = await _json_body(request)
             existing = user_store.get_group(group_id)
             if existing is None:
@@ -486,7 +506,7 @@ def admin_user_routes(
     async def delete_group(request: Request):
         group_id = request.path_params["group_id"]
         try:
-            _require_user_manager(auth, request)
+            _require_group_manager(auth, request)
             group = user_store.delete_group(group_id)
             if group is None:
                 return json_error("Admin web group not found", status_code=404)
@@ -526,6 +546,7 @@ def admin_user_routes(
         Route("/api/admin/users", upsert_user, methods=["POST"]),
         Route("/api/admin/users/{login}", update_user, methods=["PATCH"]),
         Route("/api/admin/users/{login}", delete_user, methods=["DELETE"]),
+        Route("/api/admin/groups", list_groups, methods=["GET"]),
         Route("/api/admin/groups", upsert_group, methods=["POST"]),
         Route("/api/admin/groups/{group_id}", update_group, methods=["PATCH"]),
         Route("/api/admin/groups/{group_id}", delete_group, methods=["DELETE"]),

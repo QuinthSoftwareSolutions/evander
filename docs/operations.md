@@ -266,11 +266,12 @@ SQLite user table is empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds 
 Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
 empty; legacy `admin` and `regular` roles are retained for compatibility and mapped to Owner and
 Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
-truth. Users with user/group management permission manage groups, directory-scoped group
-assignments, and direct workflow read/write grants from the Admin Web Users & Groups tab. Directory
-scopes inherit downward, direct workflow write grants imply read, and privileged unlock remains a
-separate guard for high-risk mutations. Removing an Azure user from the runtime store invalidates
-their existing local admin session on the next authenticated request.
+truth. Users with `groups.manage` can create and edit reusable permission groups; users with
+`users.manage` can create users and edit their directory-scoped group assignments and direct
+workflow read/write grants from the Admin Web Users & Groups tab. Directory scopes inherit downward,
+direct workflow write grants imply read, and privileged unlock remains a separate guard for
+high-risk mutations. Removing an Azure user from the runtime store invalidates their existing local
+admin session on the next authenticated request.
 
 The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
 

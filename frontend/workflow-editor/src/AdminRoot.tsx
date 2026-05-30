@@ -92,7 +92,7 @@ type AdminExecutionBackend = "libvirt_vm" | "container_worker_vm";
 const WORKFLOW_READ_PERMISSIONS = new Set(["workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"]);
 const WORKFLOW_WRITE_PERMISSION = "workflows.write";
 const WORKFLOW_RUN_CONTROL_PERMISSION = "workflow_runs.control";
-const USER_MANAGEMENT_PERMISSIONS = new Set(["users.manage", "groups.manage"]);
+const USER_MANAGEMENT_PERMISSIONS = new Set(["users.manage"]);
 
 function normalizePermissionList(...values: Array<ReadonlyArray<string> | string[] | undefined>): string[] {
   const permissions = new Set<string>();

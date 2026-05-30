@@ -24,7 +24,6 @@ from agent_sandbox.admin.web.user_store import (
 )
 from agent_sandbox.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
-    GROUPS_MANAGE_PERMISSION,
     PERMISSION_CATALOG,
     USERS_MANAGE_PERMISSION,
 )
@@ -510,7 +509,6 @@ class AdminWebAuth:
             for permission in (
                 ADMIN_OWNER_PERMISSION,
                 USERS_MANAGE_PERMISSION,
-                GROUPS_MANAGE_PERMISSION,
             )
         )
 

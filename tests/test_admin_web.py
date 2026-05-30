@@ -36,6 +36,7 @@ from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
+    GROUPS_MANAGE_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -2905,11 +2906,19 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
     store.assign_user_group(
-        login="viewer@example.com", group_id="auditor", directory_path="root/ops"
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
     )
     client = TestClient(app)
     _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
 
+    definition_allowed = client.get("/api/workflow-editor/document")
+    runs_without_run_read = client.get("/api/workflow-editor/runs")
+    detail_without_run_read = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-ops"}
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="auditor", directory_path="root/ops"
+    )
     runs_response = client.get("/api/workflow-editor/runs")
     graph_allowed = client.get(
         "/api/workflow-editor/run-search", params={"graph_id": "graph-ops", "limit": "5"}
@@ -2927,6 +2936,15 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
         "/api/workflow-editor/run-detail", params={"event_id": "evt-root"}
     )
 
+    assert definition_allowed.status_code == 200
+    assert [graph["id"] for graph in definition_allowed.json()["graphs"]] == ["graph-ops"]
+    assert runs_without_run_read.status_code == 403
+    assert runs_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
+    assert detail_without_run_read.status_code == 403
+    assert (
+        detail_without_run_read.json()["error"]
+        == "Permission required: workflow_runs.read"
+    )
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()
     assert [run["event_id"] for run in runs_payload["runs"]] == ["evt-ops"]
@@ -6965,6 +6983,63 @@ def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grant
     assert updated_group.status_code == 200
     assert updated_group.json()["group"]["display_name"] == "Ops Workflow Reviewers"
     assert updated_group.json()["group"]["permissions"] == [WORKFLOWS_READ_PERMISSION]
+
+
+def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="group-manager@example.com", role="regular")
+    store.upsert_group(
+        group_id="group-managers",
+        display_name="Group Managers",
+        description="Can edit groups only.",
+    )
+    store.set_group_permissions("group-managers", [GROUPS_MANAGE_PERMISSION])
+    store.set_user_group_assignments(
+        login="group-manager@example.com",
+        assignments=[{"group_id": "group-managers", "directory_path": "root"}],
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app,
+        client,
+        login="group-manager@example.com",
+        display_name="Group Manager",
+    )
+    list_users = client.get("/api/admin/users")
+    create_user = client.post(
+        "/api/admin/users",
+        json={
+            "login": "other@example.com",
+            "role": "regular",
+            "group_assignments": [
+                {"group_id": "owner", "directory_path": "root"}
+            ],
+        },
+    )
+    list_groups = client.get("/api/admin/groups")
+    create_group = client.post(
+        "/api/admin/groups",
+        json={
+            "group_id": "ops-readers",
+            "display_name": "Ops Readers",
+            "permissions": [WORKFLOWS_READ_PERMISSION],
+        },
+    )
+
+    assert callback.status_code == 303
+    assert list_users.status_code == 403
+    assert create_user.status_code == 403
+    assert create_user.json()["error"] == "Permission required: users.manage"
+    assert list_groups.status_code == 200
+    assert create_group.status_code == 200
+    assert create_group.json()["group"]["group_id"] == "ops-readers"
 
 
 def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:

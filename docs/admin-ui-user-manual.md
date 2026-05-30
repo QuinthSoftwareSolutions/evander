@@ -439,9 +439,10 @@ Common tasks:
 12. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
     authenticated request.
 
-Only users with user/group management permission can manage this registry. Other users can sign in
-and use surfaces allowed by their effective permissions. Group directory scopes inherit downward,
-and direct workflow write grants imply read.
+Users with `groups.manage` can edit reusable permission groups. Users with `users.manage` can edit
+user records, group assignments, and direct workflow grants. Other users can sign in and use
+surfaces allowed by their effective permissions. Group directory scopes inherit downward, and direct
+workflow write grants imply read.
 
 ## Workers
 
