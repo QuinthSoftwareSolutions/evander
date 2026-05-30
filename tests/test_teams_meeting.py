@@ -29,9 +29,32 @@ from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
 
 class FakeBridgeClient:
     def __init__(self) -> None:
+        self.join_calls: list[dict[str, object]] = []
         self.speak_calls: list[dict[str, object]] = []
         self.leave_calls: list[str] = []
         self.events_by_meeting: dict[str, list[TeamsMeetingBridgeEvent]] = {}
+
+    def join(
+        self,
+        *,
+        join_url: str,
+        external_meeting_id: str,
+        default_voice: str | None = None,
+        metadata: dict[str, object] | None = None,
+        realtime: dict[str, object] | None = None,
+        projection: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        self.join_calls.append(
+            {
+                "join_url": join_url,
+                "external_meeting_id": external_meeting_id,
+                "default_voice": default_voice,
+                "metadata": metadata or {},
+                "realtime": realtime or {},
+                "projection": projection or {},
+            }
+        )
+        return {"meeting_id": "meeting-1", "status": "active"}
 
     def speak(
         self,
@@ -257,6 +280,121 @@ def test_teams_meeting_gateway_audits_bridge_http_error(tmp_path: Path) -> None:
     assert [(event.event_type, event.text) for event in meeting_events] == [
         ("error", "bridge down")
     ]
+
+
+def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
+    tmp_path: Path,
+) -> None:
+    from agent_sandbox.teams_meeting import TeamsMeetingService
+
+    context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
+    context.session_repository.upsert_session(
+            SessionManifest(
+                session_id="origin-session",
+                directory_path="root",
+            model="gpt-5.4",
+            allowed_tools=[ToolName.TEAMS_MEETING_GET_EVENTS],
+            metadata={"agent_thread_id": "thread-keep"},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    fake_bridge = FakeBridgeClient()
+    context.teams_meeting_bridge_client = fake_bridge
+    service = TeamsMeetingService(
+        config=context.config,
+        runtime=context,
+        store=context.teams_meeting_store,
+        bridge_client=fake_bridge,
+    )
+
+    result = service.start_meeting(
+        directory_path="root",
+        join_url="https://teams.microsoft.com/l/meetup-join/example",
+        model=None,
+        session_id="meeting-session",
+        origin_session_id="origin-session",
+        prompt="Represent the originating agent in this meeting.",
+    )
+
+    assert result.meeting_id == "meeting-1"
+    join_call = fake_bridge.join_calls[0]
+    assert join_call["metadata"]["origin_session_id"] == "origin-session"
+    voice_session_id = join_call["metadata"]["voice_session_id"]
+    assert join_call["projection"]["origin_session_id"] == "origin-session"
+    assert join_call["realtime"]["model"] == "gpt-realtime-2"
+    binding = context.teams_meeting_store.get_binding("meeting-1")
+    assert binding is not None
+    assert binding.metadata["voice_session_id"] == voice_session_id
+    voice_record = context.voice_session_store.get_by_voice_session_id(str(voice_session_id))
+    assert voice_record is not None
+    assert voice_record.origin_session_id == "origin-session"
+    assert voice_record.meeting_id == "meeting-1"
+
+
+def test_teams_meeting_stop_reconciles_projected_agent_speech(tmp_path: Path) -> None:
+    from agent_sandbox.teams_meeting import TeamsMeetingService
+
+    context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="origin-session",
+            directory_path="root",
+            model="gpt-5.4",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    fake_bridge = FakeBridgeClient()
+    context.teams_meeting_bridge_client = fake_bridge
+    service = TeamsMeetingService(
+        config=context.config,
+        runtime=context,
+        store=context.teams_meeting_store,
+        bridge_client=fake_bridge,
+    )
+    service.start_meeting(
+        directory_path="root",
+        join_url="https://teams.microsoft.com/l/meetup-join/example",
+        model=None,
+        session_id="meeting-session",
+        origin_session_id="origin-session",
+        prompt="Represent the originating agent in this meeting.",
+    )
+    binding = context.teams_meeting_store.get_binding("meeting-1")
+    assert binding is not None
+    voice_session_id = str(binding.metadata["voice_session_id"])
+    context.teams_meeting_store.append_bridge_events(
+        meeting_id="meeting-1",
+        bridge_events=[
+            TeamsMeetingBridgeEvent(
+                sequence=1,
+                event_type="transcript",
+                text="Can you commit to Friday?",
+            ),
+            TeamsMeetingBridgeEvent(
+                sequence=2,
+                event_type="speech_status",
+                speech_status="started",
+                text="This partial status should not be reconciled.",
+            ),
+            TeamsMeetingBridgeEvent(
+                sequence=3,
+                event_type="speech_status",
+                speech_status="completed",
+                text="I can commit to Friday.",
+            ),
+        ],
+    )
+
+    service.stop_meeting(session_id="meeting-session")
+
+    voice_record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+    assert voice_record is not None
+    assert voice_record.status == "ended"
+    assert voice_record.transcript == (
+        "Can you commit to Friday?\nassistant: I can commit to Friday."
+    )
+    assert "partial status" not in voice_record.transcript
 
 
 def test_teams_meeting_ingest_worker_polls_new_bridge_events_once(tmp_path: Path) -> None:

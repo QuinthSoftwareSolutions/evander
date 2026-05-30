@@ -214,7 +214,7 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
     assert resolution.validation_errors == []
 
 
-def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) -> None:
+def test_directory_config_store_allows_phone_provider_fields(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -231,6 +231,11 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
             "retell_from_number": "+15550000001",
             "retell_default_agent_id": "agent-default",
             "retell_request_timeout_seconds": 12.5,
+            "phone_call_backend": "openai_realtime_didww",
+            "openai_realtime_model": "gpt-realtime-2",
+            "didww_sip_bridge_url": "https://voice-bridge.test",
+            "didww_sip_bridge_token_env": "TEAM_DIDWW_TOKEN",
+            "didww_from_number": "+15550000009",
         },
     )
 
@@ -243,6 +248,8 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
 
     assert resolution.effective_config["retell_api_base_url"] == "https://retell.test"
     assert resolution.effective_config["retell_api_key_env"] == "TEAM_RETELL_API_KEY"
+    assert resolution.effective_config["phone_call_backend"] == "openai_realtime_didww"
+    assert resolution.effective_config["didww_sip_bridge_url"] == "https://voice-bridge.test"
     assert "retell_phonebook" not in resolution.effective_config
     assert resolution.validation_errors == []
 

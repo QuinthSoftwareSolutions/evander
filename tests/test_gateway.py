@@ -336,6 +336,9 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
     assert any(
+        tool.name == "submit_voice_query_response" for tool in server._tool_manager.list_tools()
+    )
+    assert any(
         tool.name == "mssql_provision_database" for tool in server._tool_manager.list_tools()
     )
     assert any(tool.name == "mssql_list_databases" for tool in server._tool_manager.list_tools())
@@ -1584,6 +1587,127 @@ def test_get_phone_call_result_denies_cross_session_reads(tmp_path: Path) -> Non
             server,
             "get_phone_call_result",
             {"session_id": "session-2", "request_id": "phone-1"},
+        )
+
+
+def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            voice_media_controller_token_env="VOICE_MEDIA_CONTROLLER_TOKEN",
+        )
+    )
+    voice_record, _ = context.voice_session_store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root",
+        channel="phone",
+        request_id="phone-1",
+        prompt_metadata={},
+        projection={"task": "call"},
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.SUBMIT_VOICE_QUERY_RESPONSE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        ),
+    )
+    client = TestClient(create_app(context))
+
+    response = client.post(
+        f"/voice-sessions/{voice_record.voice_session_id}/queries",
+        json={
+            "question": "What does the migration file change?",
+            "transcript_excerpt": "caller: check the migration",
+            "metadata": {"reason": "file access"},
+        },
+        headers={"Authorization": "Bearer controller-token"},
+    )
+
+    assert response.status_code == 201
+    query_id = response.json()["query_id"]
+    scheduled = context.wake_store.list_requests(session_id="session-1")
+    assert scheduled[0].request_id == f"voice-query:{query_id}"
+
+    server = create_server(context)
+    result = _call_tool(
+        server,
+        "submit_voice_query_response",
+        {
+            "session_id": "session-1",
+            "query_id": query_id,
+            "answer": "It adds the hybrid voice query path.",
+            "citations": ["src/agent_sandbox/voice_sessions.py"],
+            "confidence": "high",
+        },
+    )
+
+    assert result == {
+        "query_id": query_id,
+        "voice_session_id": voice_record.voice_session_id,
+        "status": "answered",
+    }
+    get_response = client.get(
+        f"/voice-sessions/{voice_record.voice_session_id}/queries/{query_id}",
+        headers={"Authorization": "Bearer controller-token"},
+    )
+    assert get_response.json()["answer"] == "It adds the hybrid voice query path."
+
+
+def test_submit_voice_query_response_requires_explicit_tool_policy(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    voice_record, _ = context.voice_session_store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root",
+        channel="phone",
+        request_id="phone-1",
+        prompt_metadata={},
+        projection={"task": "call"},
+    )
+    query = context.voice_session_store.create_query(
+        voice_record.voice_session_id,
+        question="Need live context?",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="submit_voice_query_response is not allowed"):
+        _call_tool(
+            server,
+            "submit_voice_query_response",
+            {
+                "session_id": "session-1",
+                "query_id": query.query_id,
+                "answer": "No access.",
+            },
         )
 
 
