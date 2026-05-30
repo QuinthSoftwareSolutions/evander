@@ -3580,6 +3580,12 @@ select {
   color: #9a3412;
 }
 
+.status-error_routed,
+.state-error_routed {
+  background: #ffeecf;
+  color: #8a4b00;
+}
+
 .status-running,
 .state-running {
   background: #dff5e7;
@@ -8339,6 +8345,12 @@ select {
 :root[data-theme="dark"] .state-failed {
   background: #321816;
   color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .status-error_routed,
+:root[data-theme="dark"] .state-error_routed {
+  background: #342412;
+  color: #f0c27b;
 }
 
 :root[data-theme="dark"] .status-running,

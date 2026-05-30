@@ -15,6 +15,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ApprovalPendingCreatedTriggerDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
@@ -34,6 +35,7 @@ from agent_sandbox.events.provider_models import (
     SessionContextQueryDefinition,
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
+    SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     WebhookTriggerDefinition,
 )
@@ -686,6 +688,42 @@ def test_review_request_trigger_validates() -> None:
     assert trigger.type == "trigger:review:new-request"
 
 
+def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    default_trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "approval-1",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+            }
+        )
+    )
+    assert isinstance(default_trigger, ApprovalPendingCreatedTriggerDefinition)
+    assert default_trigger.directory_path == "root"
+    assert default_trigger.action_types == []
+    assert default_trigger.tool_names == []
+
+    normalized_trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "approval-2",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+                "directory_path": " root/team-a ",
+                "action_types": [" grant ", "", "approve"],
+                "tool_names": " approval_submit ",
+            }
+        )
+    )
+
+    assert isinstance(normalized_trigger, ApprovalPendingCreatedTriggerDefinition)
+    assert normalized_trigger.directory_path == "root/team-a"
+    assert normalized_trigger.action_types == ["grant", "approve"]
+    assert normalized_trigger.tool_names == ["approval_submit"]
+
+
 def test_script_run_request_trigger_validates() -> None:
     trigger = ScriptRunRequestTriggerDefinition.model_validate(
         {
@@ -728,6 +766,28 @@ def test_communication_trigger_output_schema_exposes_normalized_payload_fields()
     assert schema["message"]["properties"]["message_id"] == {"type": "string"}
     assert schema["message"]["properties"]["target"] == {"type": "string"}
     assert schema["message"]["properties"]["metadata"] == {"type": "object"}
+
+
+def test_approval_pending_created_trigger_output_schema_exposes_approval_payload_fields() -> None:
+    schema = effective_node_output_schema({"type": "trigger:approval:pending-created"})
+
+    assert schema["approval_request_id"] == {"type": "string"}
+    assert schema["session_id"] == {"type": "string"}
+    assert schema["directory_path"] == {"type": "string"}
+    assert schema["action_type"] == {"type": "string"}
+    assert schema["tool_name"] == {"type": ["string", "null"]}
+    assert schema["human_summary"] == {"type": "string"}
+    assert schema["payload_digest"] == {"type": "string"}
+    assert schema["payload"] == {"type": "object"}
+    assert schema["notification_status"] == {"type": "string"}
+    assert schema["notification_target_ids"] == {"type": "array", "items": {"type": "string"}}
+    assert schema["notification_deliveries"]["items"]["properties"]["target_id"] == {
+        "type": "string"
+    }
+    assert schema["approval_request"]["properties"]["request_id"] == {"type": "string"}
+    assert schema["approval_request"]["properties"]["notification_status"] == {
+        "type": "string"
+    }
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
@@ -1189,6 +1249,56 @@ def test_session_approve_mcp_tools_for_run_effect_validates_target_selector() ->
         )
 
 
+def test_session_revoke_mcp_tool_approval_lease_effect_validates_lease_aliases() -> None:
+    effect = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "mcp_tool_approval_lease_id": "lease-1",
+            "session_id": "session-1",
+            "workflow_run_id": "workflow-run-1",
+        }
+    )
+    alias_effect = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "lease_id": "lease-2",
+            "session_id": "session-1",
+        }
+    )
+    both_aliases = SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+        {
+            "id": "effect-session-revoke-lease",
+            "display_name": "Revoke tool lease",
+            "type": "effect:session:revoke-mcp-tool-approval-lease",
+            "mcp_tool_approval_lease_id": "lease-3",
+            "lease_id": "lease-4",
+            "session_id": "session-1",
+        }
+    )
+
+    assert effect.mcp_tool_approval_lease_id == "lease-1"
+    assert effect.lease_id is None
+    assert effect.session_id == "session-1"
+    assert effect.workflow_run_id == "workflow-run-1"
+    assert alias_effect.lease_id == "lease-2"
+    assert both_aliases.mcp_tool_approval_lease_id == "lease-3"
+    assert both_aliases.lease_id == "lease-4"
+
+    with pytest.raises(ValueError, match="mcp_tool_approval_lease_id or lease_id"):
+        SessionRevokeMcpToolApprovalLeaseEffectDefinition.model_validate(
+            {
+                "id": "effect-session-revoke-lease",
+                "display_name": "Revoke tool lease",
+                "type": "effect:session:revoke-mcp-tool-approval-lease",
+                "session_id": "session-1",
+            }
+        )
+
+
 def test_session_renew_if_expired_effect_validates_target_selector() -> None:
     effect = SessionRenewIfExpiredEffectDefinition.model_validate(
         {
@@ -1197,11 +1307,39 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
             "type": "effect:session:renew-if-expired",
             "session_id": "session-1",
             "extend_by": "8h",
+            "renew_if_expires_within": "30m",
         }
     )
 
     assert effect.session_id == "session-1"
     assert effect.extend_by == "8h"
+    assert effect.renew_if_expires_within == "30m"
+
+    bound_threshold = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "session_id": "session-1",
+            "renew_if_expires_within": "${{query-session-context.renewal_window}}",
+        }
+    )
+
+    assert bound_threshold.renew_if_expires_within == "${{query-session-context.renewal_window}}"
+
+    effect_with_blank_selectors = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "target": "",
+            "session_id": "session-2",
+            "vm_name": "",
+        }
+    )
+
+    assert effect_with_blank_selectors.session_id == "session-2"
+    assert effect_with_blank_selectors.target == ""
 
     with pytest.raises(ValueError, match="target, session_id, or vm_name"):
         SessionRenewIfExpiredEffectDefinition.model_validate(
@@ -1209,6 +1347,31 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
                 "id": "effect-session-renew",
                 "display_name": "Renew expired session",
                 "type": "effect:session:renew-if-expired",
+            }
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="requires exactly one of target, session_id, or vm_name",
+    ):
+        SessionRenewIfExpiredEffectDefinition.model_validate(
+            {
+                "id": "effect-session-renew",
+                "display_name": "Renew expired session",
+                "type": "effect:session:renew-if-expired",
+                "target": "session-1",
+                "session_id": "session-2",
+            }
+        )
+
+    with pytest.raises(ValueError, match="renew_if_expires_within"):
+        SessionRenewIfExpiredEffectDefinition.model_validate(
+            {
+                "id": "effect-session-renew",
+                "display_name": "Renew expired session",
+                "type": "effect:session:renew-if-expired",
+                "session_id": "session-1",
+                "renew_if_expires_within": "soon",
             }
         )
 

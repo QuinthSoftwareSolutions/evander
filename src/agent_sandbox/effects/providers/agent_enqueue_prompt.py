@@ -9,17 +9,22 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, Executi
 from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
+from agent_sandbox.model_usage.runtime import (
+    register_model_usage_correlation_context,
+    resolve_runtime_dir,
+)
 from agent_sandbox.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
 from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
 from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.validation import NodeCapability
 
-from .agent_prompt import AgentPromptEffectProvider
+from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
 from .agent_session import (
     container_backend,
     container_prompt_command,
@@ -31,7 +36,7 @@ from .agent_session import (
     safe_effect_execution_id,
     selected_execution_backend_for_target,
 )
-from .base import EffectProviderBase
+from .base import EffectProviderBase, EffectProviderExecutionError
 from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
@@ -72,6 +77,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         max_inbound=1,
         allowed_source_ports=frozenset(
             {
+                AGENT_PROMPT_ERROR_PORT,
                 AGENT_PROMPT_STARTED_PORT,
                 AGENT_PROMPT_COMPLETED_PORT,
             }
@@ -149,6 +155,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_context=workflow_context,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                execution_context=execution_context,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -240,15 +247,58 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
-            raise RuntimeError(
+            error_message = (
                 "effect:agent:enqueue-prompt resume_agent failed; queued prompt for retry "
                 f"(vm_name={vm_name}, session_id={effective_session_id or '<none>'}, queue_key={record.queue_key}, "
                 f"coalesced_count={record.coalesced_count}, message={message})"
             )
+            raise EffectProviderExecutionError(
+                error_message,
+                outputs=_prompt_error_outputs(
+                    error_message,
+                    error_class="RuntimeError",
+                    failed_phase="dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=vm_name,
+                    queue_key=record.queue_key,
+                    queued=True,
+                    coalesced_count=record.coalesced_count,
+                ),
+            )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            raise RuntimeError(
+            message = (
                 "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
+            )
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class="RuntimeError",
+                    failed_phase="response_validation",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=vm_name,
+                    queued=False,
+                ),
+            )
+        session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
+        if directory_path is None:
+            directory_path = str(self._context().metadata.get("directory_path") or "root")
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect.id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=self._trace_id(execution_context),
             )
         self._persist_chat_assistant_thread_id(
             session_id=effective_session_id,
@@ -288,6 +338,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         workflow_context: dict[str, dict[str, Any]] | None,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
+        execution_context: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -395,11 +446,39 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
-            raise RuntimeError(
+            error_message = (
                 "effect:agent:enqueue-prompt container dispatch failed; queued prompt for retry "
                 f"(target={target}, session_id={session_id}, queue_key={record.queue_key}, "
                 f"coalesced_count={record.coalesced_count}, message={message})"
+            )
+            raise EffectProviderExecutionError(
+                error_message,
+                outputs=_prompt_error_outputs(
+                    error_message,
+                    error_class=type(exc).__name__,
+                    failed_phase="container_dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=target_name,
+                    queue_key=record.queue_key,
+                    queued=True,
+                    coalesced_count=record.coalesced_count,
+                    execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                ),
             ) from exc
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect_id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=str(getattr(session, "directory_path", None) or "root"),
+                model=resolved_model,
+                trace_id=self._trace_id(execution_context),
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -894,3 +973,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     @staticmethod
     def _make_dispatch_id(*, effect_id: str) -> str:
         return f"dispatch-{effect_id}-{uuid4().hex[:12]}"
+
+    def _trace_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("trace_id", "workflow_trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None

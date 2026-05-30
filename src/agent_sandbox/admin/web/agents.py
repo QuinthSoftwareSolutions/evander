@@ -46,6 +46,13 @@ def _bool_query(request: Request, name: str, *, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _optional_bool_query(request: Request, name: str) -> bool | None:
+    value = request.query_params.get(name)
+    if value is None:
+        return None
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _string_query(request: Request, name: str, *, default: str | None = None) -> str | None:
     value = request.query_params.get(name)
     if value is None:
@@ -71,12 +78,21 @@ def agent_routes(
         direct_only = _bool_query(request, "direct_only", default=True)
         include_inactive = _bool_query(request, "include_inactive", default=True)
         backend = _string_query(request, "backend", default="all")
+        summary_only = _bool_query(request, "summary_only", default=False)
+        reconcile_containers = _optional_bool_query(request, "reconcile_containers")
+        if reconcile_containers is None:
+            reconcile_containers = not summary_only
+        omit_vm_state = _optional_bool_query(request, "omit_vm_state")
+        if omit_vm_state is None:
+            omit_vm_state = summary_only
         try:
             records = await run_in_threadpool(
                 service.list_agents,
                 directory_path=directory_path,
                 direct_only=direct_only,
                 include_inactive=include_inactive,
+                reconcile_containers=reconcile_containers,
+                omit_vm_state=omit_vm_state,
                 backend=backend,
             )
         except ValueError as exc:
@@ -89,6 +105,9 @@ def agent_routes(
                 "directory_path": directory_path or "root",
                 "direct_only": direct_only,
                 "backend": backend,
+                "summary_only": summary_only,
+                "reconcile_containers": reconcile_containers,
+                "omit_vm_state": omit_vm_state,
             }
         )
 

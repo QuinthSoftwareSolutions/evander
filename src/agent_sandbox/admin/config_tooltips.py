@@ -250,11 +250,50 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "npm_audit_facade_timeout_seconds": (
         "Upstream request timeout in seconds for the npm audit facade."
     ),
-    "openai_api_base_url": ("Upstream OpenAI-compatible API base URL used by the host relay."),
+    "openai_provider_mode": (
+        "Provider mode for relay-backed OpenAI requests. Use openai_public for public OpenAI or "
+        "azure_openai for Azure OpenAI; public mode remains the default."
+    ),
+    "openai_api_base_url": (
+        "Upstream OpenAI-compatible API base URL used by the host relay in public mode."
+    ),
     "openai_api_key_env": (
-        "Name of the host environment variable that holds the upstream OpenAI API key."
+        "Name of the host environment variable that holds the upstream OpenAI API key in public mode."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "azure_openai_endpoint": (
+        "Azure OpenAI resource endpoint used by the host relay when provider mode is azure_openai."
+    ),
+    "azure_openai_auth_mode": (
+        "Authentication mode for Azure OpenAI requests. Currently only api_key is supported."
+    ),
+    "azure_openai_api_key_env": (
+        "Name of the host environment variable that holds the Azure OpenAI API key."
+    ),
+    "azure_openai_api_version": (
+        "Azure OpenAI api-version query parameter appended to upstream requests."
+    ),
+    "azure_openai_model_deployments": (
+        "JSON object mapping logical model names to Azure deployment names used by the relay."
+    ),
+    "openai_realtime_model": (
+        "OpenAI Realtime model used for projected live voice sessions."
+    ),
+    "openai_realtime_api_key_env": (
+        "Legacy provider setting; Realtime voice bridges use bridge-local API key configuration."
+    ),
+    "openai_realtime_api_base_url": (
+        "Legacy provider setting; Realtime voice bridges use bridge-local upstream URL configuration."
+    ),
+    "voice_media_controller_url": (
+        "Optional host-owned voice media controller URL passed to phone or meeting bridges."
+    ),
+    "voice_media_controller_token_env": (
+        "Name of the host environment variable that holds the voice media controller token."
+    ),
+    "voice_media_controller_request_timeout_seconds": (
+        "HTTP timeout in seconds for voice media controller and bridge requests."
+    ),
     "semantic_store_provider": (
         "Semantic store backend used by workflow semantic primitives. Currently only qdrant is supported."
     ),
@@ -292,6 +331,18 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "retell_request_timeout_seconds": (
         "HTTP timeout in seconds for host-side Retell create-call and get-call requests."
+    ),
+    "phone_call_backend": (
+        "Phone backend used by make_phone_call: existing Retell calls or OpenAI Realtime via DIDWW bridge."
+    ),
+    "didww_sip_bridge_url": (
+        "Host-owned DIDWW SIP bridge URL for OpenAI Realtime phone calls."
+    ),
+    "didww_sip_bridge_token_env": (
+        "Name of the host environment variable containing the DIDWW SIP bridge bearer token."
+    ),
+    "didww_from_number": (
+        "Optional caller ID passed to the DIDWW SIP bridge. Stored host-side only."
     ),
     "contacts": (
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "

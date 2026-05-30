@@ -4,6 +4,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from agent_sandbox.effects.providers.agent_clone_repo import (
     _container_reachable_git_remote_url,
 )
 from agent_sandbox.effects.providers.agent_session import (
+    build_container_session_files,
     _codex_json_log_filter_script,
     container_prompt_command,
     container_thread_id_from_logs,
@@ -25,6 +27,9 @@ from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffec
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
+)
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
@@ -342,6 +347,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:notification:send",
         "effect:session:update-metadata",
         "effect:session:approve-mcp-tools-for-run",
+        "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
@@ -354,6 +360,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
+        is SessionRevokeMcpToolApprovalLeaseEffectProvider
     )
 
 
@@ -1427,6 +1437,60 @@ def test_container_prompt_command_uses_fresh_context_for_new_context_without_thr
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
+
+
+def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
+    config = GatewayConfig(
+        runtime_dir=Path("/tmp/runtime"),
+        audit_log_path=Path("/tmp/runtime/audit.jsonl"),
+        session_store_path=Path("/tmp/runtime/sessions.json"),
+        approval_store_path=Path("/tmp/runtime/approvals.json"),
+        draft_store_path=Path("/tmp/runtime/drafts.json"),
+        email_store_path=Path("/tmp/runtime/emails.json"),
+        discord_command_store_path=Path("/tmp/runtime/discord.json"),
+        gateway_url="http://relay.test:8000/mcp",
+        openai_provider_mode="azure_openai",
+        azure_openai_endpoint="https://example-resource.openai.azure.com/",
+        azure_openai_api_key_env="AZURE_OPENAI_API_KEY",
+        azure_openai_model_deployments={"gpt-5.4": "deployment-gpt-5-4"},
+    )
+
+    files = build_container_session_files(
+        config=config,
+        session_id="session-1",
+        model="gpt-5.4",
+        web_search_enabled=False,
+        dotnet=False,
+        nuget=False,
+        playwright=False,
+    )
+    by_path = {entry["destination_path"]: entry["content"] for entry in files}
+    combined_content = "\n".join(by_path.values())
+
+    assert by_path["/home/agent/.codex/config.toml"] == (
+        'model = "gpt-5.4"\n'
+        'model_provider = "openai"\n'
+        'model_reasoning_effort = "high"\n'
+        'personality = "pragmatic"\n'
+        'web_search = "disabled"\n'
+        'openai_base_url = "http://relay.test:11434/v1/session/session-1"\n'
+        "\n"
+        "[mcp_servers.agent_sandbox]\n"
+        'url = "http://relay.test:8000/mcp?session_id=session-1"\n'
+        "enabled = true\n"
+        "\n"
+        '[projects."/home/agent"]\n'
+        'trust_level = "trusted"\n'
+    )
+    assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-relay-placeholder}\"" in by_path[
+        "/home/agent/.profile"
+    ]
+    assert "azure_openai_endpoint" not in combined_content
+    assert "azure_openai_api_key_env" not in combined_content
+    assert "azure_openai_model_deployments" not in combined_content
+    assert "https://example-resource.openai.azure.com" not in combined_content
+    assert "AZURE_OPENAI_API_KEY" not in combined_content
+    assert "deployment-gpt-5-4" not in combined_content
 
 
 def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:

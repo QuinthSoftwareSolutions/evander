@@ -356,6 +356,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:pull-request:new-feedback": provider_models.PullRequestNewFeedbackTriggerDefinition,
         "trigger:pull-request:completed": provider_models.PullRequestCompletedTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
+        "trigger:approval:pending-created": provider_models.ApprovalPendingCreatedTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
         "trigger:ci:run:completed": provider_models.CiRunCompletedTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
@@ -422,6 +423,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:session:approve-mcp-tools-for-run": (
             provider_models.SessionApproveMcpToolsForRunEffectDefinition
         ),
+        "effect:session:revoke-mcp-tool-approval-lease": (
+            provider_models.SessionRevokeMcpToolApprovalLeaseEffectDefinition
+        ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
         "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
@@ -431,6 +435,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
         "query:session:list": provider_models.SessionListQueryDefinition,
+        "query:model-usage:list": provider_models.ModelUsageListQueryDefinition,
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
         "query:issue:list": provider_models.IssueListQueryDefinition,

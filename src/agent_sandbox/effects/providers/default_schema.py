@@ -38,6 +38,7 @@ from agent_sandbox.effects.providers.schemas import (
     StateUpdateEffectDefinition,
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
+    SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -92,6 +93,9 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:communication:send-message": CommunicationSendMessageEffectDefinition,
     "effect:notification:send": NotificationSendEffectDefinition,
     "effect:session:approve-mcp-tools-for-run": SessionApproveMcpToolsForRunEffectDefinition,
+    "effect:session:revoke-mcp-tool-approval-lease": (
+        SessionRevokeMcpToolApprovalLeaseEffectDefinition
+    ),
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
     "effect:session:renew-if-expired": SessionRenewIfExpiredEffectDefinition,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,

@@ -369,6 +369,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
   "trigger:communication:new-message": "Start from new messages on configured communication targets.",
+  "trigger:approval:pending-created": "Start when a pending approval request is created.",
   "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
@@ -390,6 +391,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
   "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
+  "effect:session:revoke-mcp-tool-approval-lease": "Revoke an MCP tool approval lease for one agent session.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
@@ -411,7 +413,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
-  "effect:session:renew-if-expired": "Extend an expired session from the host.",
+  "effect:session:renew-if-expired": "Renew an expired or soon-expiring session.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
   "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
@@ -436,6 +438,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = [
   "failed",
+  "error_routed",
   "running",
   "waiting",
   "completion_pending",
@@ -1565,6 +1568,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       case_sensitive: false,
     };
   }
+  if (kind === "trigger" && type === "trigger:approval:pending-created") {
+    return {
+      id,
+      display_name: "Pending approval",
+      type,
+      directory_path: "root",
+      action_types: [],
+      tool_names: [],
+    };
+  }
   if (kind === "trigger" && type === "trigger:teams:direct-message") {
     return {
       id,
@@ -1864,10 +1877,19 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:session:renew-if-expired") {
     return {
       id,
-      display_name: "Renew expired session",
+      display_name: "Renew expired or soon-expiring session",
       type,
       session_id: "session-id",
       extend_by: "1d",
+      renew_if_expires_within: "2h",
+    };
+  }
+  if (kind === "effect" && type === "effect:session:revoke-mcp-tool-approval-lease") {
+    return {
+      id,
+      display_name: "Revoke MCP tool approval lease",
+      type,
+      mcp_tool_approval_lease_id: "mcp-tool-approval-lease-id",
     };
   }
   if (kind === "effect" && type === "effect:artifact:stage") {
@@ -2606,6 +2628,18 @@ function summarizeRunSearchStatuses(counts: Record<string, number>): string {
   return entries.map(([status, count]) => `${status} ${count}`).join(", ");
 }
 
+function workflowRunStateLabel(runState: string | null | undefined, fallbackState: string | null | undefined = null): string {
+  return runState ?? fallbackState ?? "active";
+}
+
+function workflowRunStateClassName(
+  runState: string | null | undefined,
+  fallbackState: string | null | undefined = null,
+): string {
+  const state = workflowRunStateLabel(runState, fallbackState);
+  return state === "errored" ? "failed" : state;
+}
+
 function workflowRunDetailGraphNodes(detail: WorkflowRunDetail): Array<WorkflowNodeConfig & { kind: WorkflowNodeKind }> {
   const snapshot = detail.graph.snapshot;
   const source = snapshot
@@ -2658,12 +2692,12 @@ function workflowRunDetailVisitedNodeIds(detail: WorkflowRunDetail): Set<string>
 }
 
 function workflowRunDetailIsFailed(detail: WorkflowRunDetail): boolean {
+  if (detail.run_state === "error_routed") return false;
   return Boolean(
     detail.run_state === "errored" ||
       detail.delivery_state === "failed" ||
       detail.failed_node_id ||
-      detail.failed_node_status ||
-      detail.error,
+      detail.failed_node_status === "failed",
   );
 }
 
@@ -8789,8 +8823,10 @@ export default function App() {
             <div className="section-label">Inspected run</div>
             <div className="runtime-run-event">{runDetail.event_id}</div>
           </div>
-          <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
-            {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
+          <span
+            className={`runtime-run-state state-${workflowRunStateClassName(runDetail.run_state, runDetail.delivery_state)}`}
+          >
+            {workflowRunStateLabel(runDetail.run_state, runDetail.delivery_state)}
           </span>
         </div>
         <div className="run-detail-meta-grid">
@@ -8951,7 +8987,7 @@ export default function App() {
   }
 
   function renderRunSearchResult(run: WorkflowRunSearchItem) {
-    const stateClass = run.run_state === "errored" ? "failed" : run.run_state || "active";
+    const stateClass = workflowRunStateClassName(run.run_state, run.delivery_state);
     const sessionLabel = run.has_agent_session
       ? `Session ${run.session_ids.slice(0, 2).join(", ")}${run.session_ids.length > 2 ? ` +${run.session_ids.length - 2}` : ""}`
       : "No agent session";
@@ -8959,7 +8995,7 @@ export default function App() {
       <div key={run.event_id} className="runtime-run-card run-search-card">
         <div className="runtime-run-header">
           <div className="runtime-run-event">{run.event_id}</div>
-          <div className={`runtime-run-state state-${stateClass}`}>{run.run_state}</div>
+          <div className={`runtime-run-state state-${stateClass}`}>{workflowRunStateLabel(run.run_state, run.delivery_state)}</div>
         </div>
         <div className="runtime-run-meta">
           Latest {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
@@ -9248,10 +9284,12 @@ export default function App() {
                 <div className="runtime-runs">
                   {visibleRuns.map((run: WorkflowRunSummary) => (
                     <div key={run.event_id} className="runtime-run-card">
-                      <div className="runtime-run-header">
-                        <div className="runtime-run-event">{run.event_id}</div>
-                        <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
-                          {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                <div className="runtime-run-header">
+                  <div className="runtime-run-event">{run.event_id}</div>
+                        <div
+                          className={`runtime-run-state state-${workflowRunStateClassName(run.run_state, run.delivery_state)}`}
+                        >
+                          {workflowRunStateLabel(run.run_state, run.delivery_state)}
                         </div>
                       </div>
                       <div className="runtime-run-meta">

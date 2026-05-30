@@ -12,7 +12,14 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+)
 from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.events.provider_models import (
+    SessionRevokeMcpToolApprovalLeaseEffectDefinition,
+)
 from agent_sandbox.gateway import (
     _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
@@ -30,6 +37,9 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.policy import PolicyError
+from agent_sandbox.repositories.session_tool_approval_leases import (
+    JsonSessionToolApprovalLeaseRepository,
+)
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.worker.models import (
     WorkerMssqlDatabaseDeleteRecord,
@@ -160,6 +170,39 @@ def _build_runtime_with_workflow_config(
         )
     )
     return context
+
+
+def _revoke_lease_with_provider(
+    runtime_dir: Path,
+    *,
+    lease_id: str,
+    session_id: str,
+    workflow_run_id: str,
+) -> None:
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(runtime_dir)
+    provider = SessionRevokeMcpToolApprovalLeaseEffectProvider()
+    provider.initialize(
+        effect_definition=SessionRevokeMcpToolApprovalLeaseEffectDefinition(
+            id="revoke-lease",
+            display_name="Revoke lease",
+            type="effect:session:revoke-mcp-tool-approval-lease",
+            mcp_tool_approval_lease_id=lease_id,
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+        ),
+        runtime_context=EffectRuntimeContext(
+            resolved_config=config,
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    tool_approval_leases=repository,
+                    config=config,
+                )
+            ),
+            env={},
+        ),
+    )
+    provider.execute()
 
 
 def _command(command_id: str, *, source: str) -> DiscordCommandEnvelope:
@@ -293,6 +336,9 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
     assert any(
+        tool.name == "submit_voice_query_response" for tool in server._tool_manager.list_tools()
+    )
+    assert any(
         tool.name == "mssql_provision_database" for tool in server._tool_manager.list_tools()
     )
     assert any(tool.name == "mssql_list_databases" for tool in server._tool_manager.list_tools())
@@ -405,6 +451,37 @@ def test_tool_approval_lease_from_request_context_allows_only_matching_run(
             _make_request_context(
                 session_id="session-1",
                 workflow_run_id="workflow-run-2",
+                mcp_tool_approval_lease_id=lease.lease_id,
+            ),
+        )
+
+
+def test_tool_approval_lease_from_request_context_rejects_revoked_lease(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    lease = context.tool_approval_leases.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    _revoke_lease_with_provider(
+        context.config.runtime_dir,
+        lease_id=lease.lease_id,
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not usable"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            _make_request_context(
+                session_id="session-1",
+                workflow_run_id="workflow-run-1",
                 mcp_tool_approval_lease_id=lease.lease_id,
             ),
         )
@@ -1510,6 +1587,127 @@ def test_get_phone_call_result_denies_cross_session_reads(tmp_path: Path) -> Non
             server,
             "get_phone_call_result",
             {"session_id": "session-2", "request_id": "phone-1"},
+        )
+
+
+def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            voice_media_controller_token_env="VOICE_MEDIA_CONTROLLER_TOKEN",
+        )
+    )
+    voice_record, _ = context.voice_session_store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root",
+        channel="phone",
+        request_id="phone-1",
+        prompt_metadata={},
+        projection={"task": "call"},
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.SUBMIT_VOICE_QUERY_RESPONSE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        ),
+    )
+    client = TestClient(create_app(context))
+
+    response = client.post(
+        f"/voice-sessions/{voice_record.voice_session_id}/queries",
+        json={
+            "question": "What does the migration file change?",
+            "transcript_excerpt": "caller: check the migration",
+            "metadata": {"reason": "file access"},
+        },
+        headers={"Authorization": "Bearer controller-token"},
+    )
+
+    assert response.status_code == 201
+    query_id = response.json()["query_id"]
+    scheduled = context.wake_store.list_requests(session_id="session-1")
+    assert scheduled[0].request_id == f"voice-query:{query_id}"
+
+    server = create_server(context)
+    result = _call_tool(
+        server,
+        "submit_voice_query_response",
+        {
+            "session_id": "session-1",
+            "query_id": query_id,
+            "answer": "It adds the hybrid voice query path.",
+            "citations": ["src/agent_sandbox/voice_sessions.py"],
+            "confidence": "high",
+        },
+    )
+
+    assert result == {
+        "query_id": query_id,
+        "voice_session_id": voice_record.voice_session_id,
+        "status": "answered",
+    }
+    get_response = client.get(
+        f"/voice-sessions/{voice_record.voice_session_id}/queries/{query_id}",
+        headers={"Authorization": "Bearer controller-token"},
+    )
+    assert get_response.json()["answer"] == "It adds the hybrid voice query path."
+
+
+def test_submit_voice_query_response_requires_explicit_tool_policy(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    voice_record, _ = context.voice_session_store.prepare_session(
+        origin_session_id="session-1",
+        directory_path="root",
+        channel="phone",
+        request_id="phone-1",
+        prompt_metadata={},
+        projection={"task": "call"},
+    )
+    query = context.voice_session_store.create_query(
+        voice_record.voice_session_id,
+        question="Need live context?",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="submit_voice_query_response is not allowed"):
+        _call_tool(
+            server,
+            "submit_voice_query_response",
+            {
+                "session_id": "session-1",
+                "query_id": query.query_id,
+                "answer": "No access.",
+            },
         )
 
 

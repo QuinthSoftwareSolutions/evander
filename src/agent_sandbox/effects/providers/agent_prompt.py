@@ -15,14 +15,21 @@ from agent_sandbox.execution import (
 )
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
+from agent_sandbox.model_usage.runtime import (
+    clear_model_usage_correlation_context,
+    register_model_usage_correlation_context,
+    resolve_runtime_dir,
+)
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.workflow.migrations import (
     AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
 from agent_sandbox.workflow.validation import NodeCapability
+from agent_sandbox.worker.security import sanitize_text
 
 from .agent_session import (
     container_backend,
@@ -36,7 +43,7 @@ from .agent_session import (
     safe_effect_execution_id,
     selected_execution_backend_for_target,
 )
-from .base import EffectProviderBase
+from .base import EffectProviderBase, EffectProviderExecutionError
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
@@ -50,6 +57,42 @@ _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+
+
+def _prompt_error_outputs(
+    message: str,
+    *,
+    error_class: str,
+    failed_phase: str,
+    dispatch_id: str | None = None,
+    session_id: str | None = None,
+    vm_name: str | None = None,
+    queue_key: str | None = None,
+    queued: bool | None = None,
+    coalesced_count: int | None = None,
+    execution_backend: str | None = None,
+) -> dict[str, Any]:
+    outputs: dict[str, Any] = {
+        "success": False,
+        "error_message": sanitize_text(str(message or error_class)),
+        "error_class": sanitize_text(str(error_class or "RuntimeError")),
+        "failed_phase": sanitize_text(str(failed_phase or "dispatch")),
+    }
+    for key, value in (
+        ("dispatch_id", dispatch_id),
+        ("session_id", session_id),
+        ("vm_name", vm_name),
+        ("queue_key", queue_key),
+        ("execution_backend", execution_backend),
+    ):
+        text = str(value or "").strip()
+        if text:
+            outputs[key] = sanitize_text(text)
+    if queued is not None:
+        outputs["queued"] = bool(queued)
+    if coalesced_count is not None:
+        outputs["coalesced_count"] = int(coalesced_count)
+    return outputs
 
 
 def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
@@ -74,6 +117,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         max_inbound=1,
         allowed_source_ports=frozenset(
             {
+                AGENT_PROMPT_ERROR_PORT,
                 AGENT_PROMPT_STARTED_PORT,
                 AGENT_PROMPT_COMPLETED_PORT,
             }
@@ -136,18 +180,30 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 config=config,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                execution_context=execution_context,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
 
-        if context.agent_resumer is None:
-            raise RuntimeError("effect:agent:prompt agent_resumer is not available")
         active_session_id, active_session = resolve_active_session_if_available(
             context,
             target,
             config=config,
         )
         session_id = active_session_id or self._resolve_session_id_if_available(target)
+        if context.agent_resumer is None:
+            message = "effect:agent:prompt agent_resumer is not available"
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class="RuntimeError",
+                    failed_phase="runtime_services",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=self._normalize_optional_string(payload.get("vm_name")),
+                ),
+            )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -175,15 +231,56 @@ class AgentPromptEffectProvider(EffectProviderBase):
             result_message = (
                 self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             )
-            raise RuntimeError(
+            message = (
                 "effect:agent:prompt resume_agent failed "
                 f"(target={target}, dispatch_id={dispatch_id}, message={result_message})"
             )
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class="RuntimeError",
+                    failed_phase="dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=self._normalize_optional_string(payload.get("vm_name")),
+                ),
+            )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            raise RuntimeError(
+            message = (
                 "effect:agent:prompt did not receive a thread_id from resume_agent "
                 "(success=True, message=<empty-or-missing-thread-id>)"
+            )
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class="RuntimeError",
+                    failed_phase="response_validation",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    vm_name=self._normalize_optional_string(payload.get("vm_name")),
+                ),
+            )
+        session = active_session or self._session_for_metadata_lookup(
+            target=target, session_id=session_id
+        )
+        directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
+        if directory_path is None:
+            directory_path = str(self._context().metadata.get("directory_path") or "root")
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect.id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=self._trace_id(execution_context),
             )
         self._persist_resume_thread_metadata_key(
             target=target,
@@ -211,6 +308,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         config: GatewayConfig,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
+        execution_context: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -248,21 +346,52 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ),
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
-        handle = backend.start(
-            backend.prepare(
-                ExecutionSpec(
-                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                    target_name=execution_id,
-                    session_id=session_id,
-                    directory_path=session.directory_path if session is not None else "root",
-                    command=command,
-                    metadata={
-                        "effect_type": self.node_type(),
-                        "dispatch_id": dispatch_id,
-                    },
+        try:
+            handle = backend.start(
+                backend.prepare(
+                    ExecutionSpec(
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                        target_name=execution_id,
+                        session_id=session_id,
+                        directory_path=session.directory_path if session is not None else "root",
+                        command=command,
+                        metadata={
+                            "effect_type": self.node_type(),
+                            "dispatch_id": dispatch_id,
+                        },
+                    )
                 )
             )
-        )
+        except Exception as exc:
+            detail = self._normalize_optional_string(exc) or type(exc).__name__
+            message = (
+                "effect:agent:prompt container dispatch failed "
+                f"(session_id={session_id}, dispatch_id={dispatch_id}, message={detail})"
+            )
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class=type(exc).__name__,
+                    failed_phase="container_dispatch",
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                ),
+            ) from exc
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=self._effect().id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=str(getattr(session, "directory_path", None) or "root"),
+                model=resolved_model,
+                trace_id=self._trace_id(execution_context),
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -871,6 +1000,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record.finished_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        runtime_dir = getattr(getattr(worker, "config", None), "runtime_dir", None)
+        if runtime_dir is not None and dispatch_id:
+            clear_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                dispatch_id=dispatch_id,
+            )
 
     @classmethod
     def _build_completion_queue_record_for_waiting_record(
@@ -1077,6 +1213,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not isinstance(execution_context, Mapping):
             return None
         for key in ("workflow_run_id", "workflow_trace_id", "trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None
+
+    def _trace_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("trace_id", "workflow_trace_id"):
             text = self._normalize_optional_string(execution_context.get(key))
             if text:
                 return text

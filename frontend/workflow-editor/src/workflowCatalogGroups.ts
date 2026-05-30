@@ -37,12 +37,13 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "tickets-reviews",
       label: "Tickets & reviews",
-      description: "Start from tickets, tracked issues, pull requests, or review requests.",
+      description: "Start from tickets, approval requests, tracked issues, pull requests, or review requests.",
       prefixes: [
         "trigger:ticket:",
         "trigger:issue:",
         "trigger:pull-request:",
         "trigger:review:",
+        "trigger:approval:",
       ],
     },
     {

@@ -2177,6 +2177,17 @@ def teams_meeting_start(
         str | None,
         typer.Option("--session-id", help="Optional explicit session id to create."),
     ] = None,
+    origin_session_id: Annotated[
+        str | None,
+        typer.Option(
+            "--origin-session-id",
+            help="Existing agent session to project into the live meeting.",
+        ),
+    ] = None,
+    prompt: Annotated[
+        str | None,
+        typer.Option("--prompt", help="Voice-session task prompt for the projected meeting agent."),
+    ] = None,
     ttl_hours: Annotated[
         int | None,
         typer.Option("--ttl-hours", help="Session time to live in hours."),
@@ -2197,6 +2208,8 @@ def teams_meeting_start(
             model=model,
             session_id=session_id,
             ttl_hours=ttl_hours,
+            origin_session_id=origin_session_id,
+            prompt=prompt,
         )
     except (ValueError, RuntimeError, httpx.HTTPError) as exc:
         typer.echo(f"Teams meeting start failed: {exc}", err=True)

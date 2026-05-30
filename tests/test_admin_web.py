@@ -685,6 +685,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "label": "Completed",
             "description": "Emits after the agent run has completed.",
         },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+        },
     ]
     agent_enqueue_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
@@ -712,6 +717,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "key": "completed",
             "label": "Completed",
             "description": "Emits after the dispatched agent run has completed.",
+        },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
         },
     ]
     tool_approval = next(
@@ -804,6 +814,22 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request"
     )
     assert review_request["fields"] == []
+    approval_request = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:approval:pending-created"
+    )
+    assert approval_request["label"] == "Pending approval"
+    assert approval_request["description"] == "Start when a pending approval request is created."
+    assert [field["key"] for field in approval_request["fields"]] == [
+        "directory_path",
+        "action_types",
+        "tool_names",
+    ]
+    approval_request_fields = {field["key"]: field for field in approval_request["fields"]}
+    assert approval_request_fields["directory_path"]["default_value"] == "root"
+    assert approval_request_fields["action_types"]["default_value"] == []
+    assert approval_request_fields["tool_names"]["default_value"] == []
     script_run_request = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request"
     )
@@ -1137,6 +1163,45 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert "active, expired, inactive, all, or any" in session_list_fields["state"]["description"]
     assert "expires_at" in session_list_fields["active_only"]["description"]
     assert "positive integer" in session_list_fields["limit"]["description"]
+    model_usage_list = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:model-usage:list"
+    )
+    assert [field["key"] for field in model_usage_list["fields"]] == [
+        "session_id",
+        "workflow_run_id",
+        "effect_id",
+        "dispatch_id",
+        "directory_path",
+        "include_directory_descendants",
+        "provider",
+        "model",
+        "agent_harness",
+        "execution_backend",
+        "normalized_usage_status",
+        "request_status",
+        "occurred_after",
+        "occurred_before",
+        "limit",
+    ]
+    model_usage_list_fields = {field["key"]: field for field in model_usage_list["fields"]}
+    assert model_usage_list_fields["directory_path"]["description"]
+    assert "descendants" in model_usage_list_fields["directory_path"]["description"]
+    assert model_usage_list_fields["include_directory_descendants"]["kind"] == "boolean"
+    assert model_usage_list_fields["include_directory_descendants"]["default_value"] is False
+    assert model_usage_list_fields["normalized_usage_status"]["kind"] == "enum"
+    assert [option["value"] for option in model_usage_list_fields["normalized_usage_status"]["options"]] == [
+        "available",
+        "usage_unavailable",
+    ]
+    assert model_usage_list_fields["request_status"]["kind"] == "enum"
+    assert [option["value"] for option in model_usage_list_fields["request_status"]["options"]] == [
+        "success",
+        "failed",
+        "error",
+        "cancelled",
+    ]
+    assert "ISO-8601" in model_usage_list_fields["occurred_after"]["description"]
+    assert "positive integer" in model_usage_list_fields["limit"]["description"]
     pr_feedback = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )
@@ -1277,8 +1342,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "extend_by",
+        "renew_if_expires_within",
         "directory_path",
     ]
+    session_renew_fields = {field["key"]: field for field in session_renew["fields"]}
+    assert "from now" in session_renew_fields["extend_by"]["description"]
+    assert "8h" in session_renew_fields["extend_by"]["description"]
+    assert "PT8H" in session_renew_fields["extend_by"]["description"]
+    assert "pre-expiry window" in session_renew_fields["renew_if_expires_within"]["description"]
+    assert "30m" in session_renew_fields["renew_if_expires_within"]["description"]
+    assert "4h" in session_renew_fields["renew_if_expires_within"]["description"]
     artifact_stage = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:artifact:stage"
     )
@@ -3107,6 +3180,74 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {"type": "string"}
 
 
+def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effects(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+                {
+                    "id": "effect-enqueue-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "effect-prompt-1"},
+                {
+                    "source_id": "effect-prompt-1",
+                    "target_id": "effect-enqueue-1",
+                    "source_port": "started",
+                },
+            ],
+        }
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["effect-prompt-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-prompt-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["dispatch_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["thread_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["success"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_message"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["error_class"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["failed_phase"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queued"] == {"type": "boolean"}
+    assert body["output_schemas"]["effect-enqueue-1"]["queue_key"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["vm_name"] == {"type": "string"}
+    assert body["output_schemas"]["effect-enqueue-1"]["coalesced_count"] == {"type": "integer"}
+
+
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
     tmp_path: Path,
 ) -> None:
@@ -3568,6 +3709,126 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     assert queue_payload[resume_event_id]["payload"]["__resume_target_node_id"] == "effect-prompt"
     assert queue_payload[resume_event_id]["payload"]["__resume_source_event_id"] == "evt-failed"
     assert queue_payload[resume_event_id]["payload"]["issue_number"] == "77"
+
+
+def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
+    tmp_path: Path,
+) -> None:
+    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    trigger_events_path = runtime_dir / "trigger-orchestrator-events.json"
+    effect_executions_path = runtime_dir / "effect-orchestrator-executions.json"
+
+    trigger_events = json.loads(trigger_events_path.read_text(encoding="utf-8"))
+    trigger_events["evt-routed"] = {
+        "event_id": "evt-routed",
+        "trigger_id": "trigger-ticket",
+        "trigger_type": "trigger:ticket:created",
+        "trace_id": "trace-routed",
+        "occurred_at": "2026-05-01T11:00:00Z",
+        "payload": {"issue_number": "101"},
+        "delivery_state": "delivered",
+        "inflight_at": "2026-05-01T11:00:05Z",
+        "delivered_at": "2026-05-01T11:00:06Z",
+        "idempotency_key": None,
+    }
+    _write_json_payload(trigger_events_path, trigger_events)
+
+    effect_executions = json.loads(effect_executions_path.read_text(encoding="utf-8"))
+    effect_executions["exec-routed"] = {
+        "execution_id": "exec-routed",
+        "idempotency_key": "evt-routed::effect-prompt",
+        "event_id": "evt-routed",
+        "trace_id": "trace-routed",
+        "source_node_id": "trigger-ticket",
+        "source_trigger_type": "trigger:ticket:created",
+        "effect_id": "effect-prompt",
+        "effect_type": "effect:agent:prompt",
+        "status": "error_routed",
+        "started_at": "2026-05-01T11:00:10Z",
+        "finished_at": "2026-05-01T11:00:11Z",
+        "resolved_config_hash": "hash-routed",
+        "resolved_config": {
+            "session_id": fixture["session_id"],
+            "vm_name": "vm-detail",
+            "prompt": "Investigate the issue",
+            "dispatch_id": "dispatch-routed",
+            "thread_id": "thread-routed",
+            "execution_id": "execution-routed",
+            "artifact_ids": [],
+            "request_id": "approval-rich",
+        },
+        "input_payload": {
+            "issue_number": "101",
+            "session_id": fixture["session_id"],
+            "request_id": "approval-rich",
+        },
+        "outputs": {
+            "success": False,
+            "dispatch_id": "dispatch-routed",
+            "session_id": fixture["session_id"],
+            "vm_name": "vm-detail",
+            "error_message": "prompt dispatch failed",
+            "error_class": "DispatchError",
+            "failed_phase": "dispatch",
+            "published_event_id": "evt-routed-published",
+            "completion_event_branch_port": "error",
+        },
+        "binding_trace": {
+            "consumed_output_keys": ["trigger-ticket.issue_number"],
+            "entries": [
+                {
+                    "config_path": "$.prompt",
+                    "expression": "${{trigger-ticket.issue_number}}",
+                    "reference": "trigger-ticket.issue_number",
+                    "source_node_id": "trigger-ticket",
+                    "output_path": "issue_number",
+                    "fallback_used": False,
+                    "status": "resolved",
+                    "resolved_value_preview": '"101"',
+                    "value_type": "str",
+                    "error": None,
+                }
+            ],
+        },
+        "binding_error": None,
+        "published_event_id": "evt-routed-published",
+        "completion_event_enqueued_at": "2026-05-01T11:00:12Z",
+        "config_revision": fixture["rich_revision"],
+        "error": "prompt dispatch failed",
+    }
+    _write_json_payload(effect_executions_path, effect_executions)
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    runs_response = client.get("/api/workflow-editor/runs")
+    detail_response = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-routed"})
+
+    assert runs_response.status_code == 200
+    runs_payload = runs_response.json()
+    routed_run = next(run for run in runs_payload["runs"] if run["event_id"] == "evt-routed")
+    assert routed_run["run_state"] == "error_routed"
+    assert routed_run["failed_node_id"] is None
+    assert routed_run["failed_node_status"] is None
+    assert routed_run["error"] == "prompt dispatch failed"
+    assert routed_run["resumable"] is False
+    assert runs_payload["node_activity"]["effect-prompt"]["error_routed"] == 1
+
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["event_id"] == "evt-routed"
+    assert detail_payload["run_state"] == "error_routed"
+    assert detail_payload["failed_node_id"] is None
+    assert detail_payload["failed_node_status"] is None
+    assert detail_payload["error"] == "prompt dispatch failed"
+    assert detail_payload["resumable"] is False
+    routed_node = next(node for node in detail_payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert routed_node["status"] == "error_routed"
+    assert routed_node["outputs"]["error_message"] == "prompt dispatch failed"
+    assert routed_node["outputs"]["error_class"] == "DispatchError"
+    assert routed_node["outputs"]["failed_phase"] == "dispatch"
+    assert routed_node["outputs"]["published_event_id"] == "evt-routed-published"
+    assert routed_node["outputs"]["completion_event_branch_port"] == "error"
 
 
 def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
@@ -7261,6 +7522,25 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert target_fields["targets"]["kind"] == "json"
     assert target_fields["targets"]["root_starts_editable"] is True
     assert "workflow notification" in target_fields["targets"]["tooltip"]
+
+    providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
+    openai_section = next(
+        section for section in providers["sections"] if section["title"] == "OpenAI"
+    )
+    openai_fields = {field["field_name"]: field for field in openai_section["fields"]}
+    assert {
+        "openai_provider_mode",
+        "openai_api_base_url",
+        "openai_api_key_env",
+        "openai_relay_timeout_seconds",
+        "azure_openai_endpoint",
+        "azure_openai_auth_mode",
+        "azure_openai_api_key_env",
+        "azure_openai_api_version",
+        "azure_openai_model_deployments",
+    }.issubset(openai_fields)
+    assert "azure_openai" in openai_fields["openai_provider_mode"]["tooltip"]
+    assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assistant = next(
         section for section in communications["sections"] if section["title"] == "Assistant"
     )
@@ -7361,13 +7641,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "semantic_embedding_dimensions",
         "semantic_vector_distance",
     }
-    retell = next(section for section in providers["sections"] if section["title"] == "Retell")
-    assert {field["field_name"] for field in retell["fields"]} == {
+    phone_calls = next(
+        section for section in providers["sections"] if section["title"] == "Phone calls"
+    )
+    assert {field["field_name"] for field in phone_calls["fields"]} == {
+        "phone_call_backend",
         "retell_api_base_url",
         "retell_api_key_env",
         "retell_from_number",
         "retell_default_agent_id",
         "retell_request_timeout_seconds",
+        "didww_sip_bridge_url",
+        "didww_sip_bridge_token_env",
+        "didww_from_number",
     }
     contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
     contact_list = next(
@@ -8090,6 +8376,36 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     ]
     assert list_vms_calls[0]["directory_path"] == "root/team-a"
     assert list_vms_calls[0]["direct_only"] is True
+    assert list_vms_calls[0]["omit_state"] is False
+    assert payload["summary_only"] is False
+    assert payload["reconcile_containers"] is True
+    assert payload["omit_vm_state"] is False
+
+    summary_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true"
+    )
+
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()
+    assert summary_payload["summary_only"] is True
+    assert summary_payload["reconcile_containers"] is False
+    assert summary_payload["omit_vm_state"] is True
+    assert list_vms_calls[1]["directory_path"] == "root/team-a"
+    assert list_vms_calls[1]["omit_state"] is True
+
+    override_response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&reconcile_containers=true&omit_vm_state=false"
+    )
+
+    assert override_response.status_code == 200
+    override_payload = override_response.json()
+    assert override_payload["summary_only"] is True
+    assert override_payload["reconcile_containers"] is True
+    assert override_payload["omit_vm_state"] is False
+    assert list_vms_calls[2]["directory_path"] == "root/team-a"
+    assert list_vms_calls[2]["omit_state"] is False
 
     root_response = client.get(
         "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true"
@@ -8097,6 +8413,111 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
 
     assert root_response.status_code == 200
     assert root_response.json()["items"] == []
+
+
+def test_admin_web_agents_summary_reads_use_dashboard_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session-a",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-a",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a-1",
+            session_id="container-session-a",
+            worker_job_id="job-a-1",
+            worker_url="http://worker.test",
+            target_name="target-a",
+            last_status="running",
+            directory_path="root/team-a",
+        )
+    )
+    original_list_agents = service.list_agents
+    list_agents_calls: list[dict[str, object]] = []
+
+    def list_agents(self, **kwargs):
+        list_agents_calls.append(kwargs)
+        return original_list_agents(**kwargs)
+
+    monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
+    client = TestClient(create_app(service))
+
+    summary_url = (
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&_dashboard=1"
+    )
+    deep_url = (
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=false&reconcile_containers=true&omit_vm_state=false"
+    )
+    refresh_url = f"{deep_url}&_dashboard=1&_dashboard_refresh=1"
+
+    first = client.get(summary_url)
+    second = client.get(summary_url)
+    live = client.get(deep_url)
+    refreshed = client.get(refresh_url)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert live.status_code == 200
+    assert refreshed.status_code == 200
+    assert first.headers["x-admin-web-cache"] == "miss"
+    assert second.headers["x-admin-web-cache"] == "hit"
+    assert "x-admin-web-cache" not in live.headers
+    assert refreshed.headers["x-admin-web-cache"] == "refresh"
+    assert first.json()["summary_only"] is True
+    assert first.json()["reconcile_containers"] is False
+    assert first.json()["omit_vm_state"] is True
+    assert second.json() == first.json()
+    assert live.json()["summary_only"] is False
+    assert live.json()["reconcile_containers"] is True
+    assert live.json()["omit_vm_state"] is False
+    assert refreshed.json()["summary_only"] is False
+    assert refreshed.json()["reconcile_containers"] is True
+    assert refreshed.json()["omit_vm_state"] is False
+    assert list_agents_calls == [
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": False,
+            "omit_vm_state": True,
+            "backend": "all",
+        },
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": True,
+            "omit_vm_state": False,
+            "backend": "all",
+        },
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": True,
+            "omit_vm_state": False,
+            "backend": "all",
+        },
+    ]
 
 
 def test_admin_web_agents_backend_filter_controls_vm_inventory_failures(
@@ -8524,6 +8945,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "mssql": True,
         "mssql_init_root": "/tmp/init",
         "playwright": True,
+        "web_search_enabled": False,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
     }
