@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -100,17 +101,22 @@ class MappingModelUsageExtractor:
         usage = response_payload.get("usage")
         usage_payload = usage if isinstance(usage, dict) else {}
         context = request.correlation_context
+        input_tokens = _first_int(usage_payload, "input_tokens", "prompt_tokens")
+        output_tokens = _first_int(usage_payload, "output_tokens", "completion_tokens")
+        total_tokens = _first_int(usage_payload, "total_tokens")
 
         event = ModelInferenceUsageEvent(
-            event_id=str(response_payload.get("id") or request.request_id or "model-usage-event"),
+            event_id=str(
+                response_payload.get("id") or request.request_id or f"model-usage-{uuid4().hex}"
+            ),
             occurred_at=request.occurred_at,
             provider=request.provider or self.provider_name,
             provider_endpoint_identifier=request.provider_endpoint_identifier,
             model=response_payload.get("model") or request.model,
             deployment=response_payload.get("deployment") or request.deployment,
-            input_tokens=usage_payload.get("input_tokens"),
-            output_tokens=usage_payload.get("output_tokens"),
-            total_tokens=usage_payload.get("total_tokens"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             request_status=request.request_status,
             duration_ms=request.duration_ms,
             normalized_usage_status=(
@@ -144,3 +150,17 @@ def extract_model_usage(
     extractor: ModelUsageExtractor, request: ModelUsageExtractionRequest
 ) -> ModelUsageExtractionResult:
     return extractor.extract(request)
+
+
+def _first_int(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            return number
+    return None
