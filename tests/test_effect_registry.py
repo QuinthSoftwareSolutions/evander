@@ -2175,6 +2175,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "registry=http://nexus.test:8081/repository/npm-all/"
         in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
+    assert "replace-registry-host=always" not in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     assert (
         'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
@@ -2296,6 +2297,145 @@ def test_agent_prompt_provider_rejects_expired_container_session_before_backend_
         ).execute()
 
     assert backend_calls == []
+
+
+def test_agent_create_container_can_override_npm_registry_url(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-facade",
+            npm_registry_url="http://facade.test:11881",
+        )
+    ).execute()
+
+    bootstrap_files = backend.written_files[0]["files"]
+    bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
+    assert (
+        "NPM_CONFIG_REGISTRY=http://facade.test:11881/"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "registry=http://facade.test:11881/"
+        in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+    )
+    assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+
+
+@pytest.mark.parametrize(
+    "npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
+def test_agent_create_effect_definition_rejects_invalid_npm_registry_url(
+    npm_registry_url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="npm_registry_url"):
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-invalid",
+            npm_registry_url=npm_registry_url,
+        )
+
+
+@pytest.mark.parametrize(
+    "resolved_npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
+def test_agent_create_container_rejects_invalid_npm_registry_url_before_bootstrap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_npm_registry_url: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    provider = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-invalid",
+            npm_registry_url="${{trigger_1.npm_registry_url}}",
+        )
+    )
+
+    with pytest.raises(ValueError, match="npm_registry_url"):
+        provider.execute(resolved_config={"npm_registry_url": resolved_npm_registry_url})
+
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
 
 
 def test_agent_clone_container_skips_config_job_when_repo_already_prepared(

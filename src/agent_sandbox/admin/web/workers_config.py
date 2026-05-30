@@ -298,6 +298,15 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("nuget_",),
         ),
         (
+            "NPM audit facade",
+            (
+                ("providers", "npm_audit_facade_audit_registry_url"),
+                ("providers", "npm_audit_facade_package_registry_url"),
+                ("providers", "npm_audit_facade_timeout_seconds"),
+            ),
+            ("npm_audit_facade_",),
+        ),
+        (
             "OpenAI",
             (
                 ("providers", "openai_api_base_url"),
@@ -367,6 +376,14 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("vm", "nuget_relay_port"),
             ),
             ("nuget_relay_",),
+        ),
+        (
+            "NPM audit facade",
+            (
+                ("vm", "npm_audit_facade_host"),
+                ("vm", "npm_audit_facade_port"),
+            ),
+            ("npm_audit_facade_",),
         ),
         (
             "OpenAI relay",

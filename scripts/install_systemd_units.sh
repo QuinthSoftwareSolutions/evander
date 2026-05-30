@@ -325,6 +325,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-npm-audit-facade.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-npm-audit-facade.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-http-target-relay.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-http-target-relay.service"
 
@@ -370,6 +374,7 @@ systemctl enable agent-sandbox-admin-web.service
 systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
+systemctl enable agent-sandbox-npm-audit-facade.service
 systemctl enable agent-sandbox-http-target-relay.service
 systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-proxy-issue-sync.service
@@ -388,6 +393,7 @@ Installed systemd units:
   agent-sandbox-openai-relay.service
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
+  agent-sandbox-npm-audit-facade.service
   agent-sandbox-http-target-relay.service
   agent-sandbox-ado-worker.service
   agent-sandbox-proxy-issue-sync.service
@@ -414,6 +420,7 @@ Next steps:
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
      sudo systemctl start agent-sandbox-nuget-relay.service
+     sudo systemctl start agent-sandbox-npm-audit-facade.service
      sudo systemctl start agent-sandbox-http-target-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
      sudo systemctl start agent-sandbox-proxy-issue-sync.service

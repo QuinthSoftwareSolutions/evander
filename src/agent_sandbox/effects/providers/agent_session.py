@@ -47,11 +47,30 @@ _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
 )
 
 
+def _contains_url_control_character(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 def normalize_optional_string(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def normalize_optional_http_url(value: Any, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    raw_text = str(value)
+    if _contains_url_control_character(raw_text):
+        raise ValueError(f"{field_name} must be a valid http(s) URL, got {value!r}")
+    text = raw_text.strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a valid http(s) URL, got {value!r}")
+    parts = urlsplit(text)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError(f"{field_name} must be a valid http(s) URL, got {value!r}")
+    return _ensure_trailing_slash(text)
 
 
 def normalize_existing_agent_behavior(value: Any) -> str:
@@ -537,9 +556,12 @@ def container_worker_guest_pypi_index_url(config: GatewayConfig) -> str:
 
 
 def container_worker_guest_npm_registry_url(config: GatewayConfig) -> str:
-    configured = normalize_optional_string(config.container_worker_guest_npm_registry_url)
+    configured = normalize_optional_http_url(
+        config.container_worker_guest_npm_registry_url,
+        field_name="container_worker_guest_npm_registry_url",
+    )
     if configured:
-        return _ensure_trailing_slash(configured)
+        return configured
     return _service_url_from_gateway_url(
         config.gateway_url,
         port=NEXUS_PACKAGE_CACHE_PORT,
@@ -584,6 +606,7 @@ def build_container_session_files(
     dotnet: bool,
     nuget: bool,
     playwright: bool,
+    npm_registry_url: str | None = None,
 ) -> list[dict[str, Any]]:
     resolved_model = model or "gpt-5.4"
     openai_base_url = container_worker_guest_openai_base_url(config)
@@ -591,7 +614,11 @@ def build_container_session_files(
     http_target_relay_base_url = container_worker_guest_http_target_relay_base_url(config)
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
     pypi_index_url = container_worker_guest_pypi_index_url(config)
-    npm_registry_url = container_worker_guest_npm_registry_url(config)
+    resolved_npm_registry_url = normalize_optional_http_url(
+        npm_registry_url, field_name="npm_registry_url"
+    )
+    if resolved_npm_registry_url is None:
+        resolved_npm_registry_url = container_worker_guest_npm_registry_url(config)
     session_openai_base_url = container_session_openai_base_url(config, session_id)
     session_gateway_url = container_session_gateway_url(config, session_id)
     session_env_values = {
@@ -611,7 +638,7 @@ def build_container_session_files(
         "NUGET_HTTP_CACHE_PATH": "/home/agent/.nuget/http-cache",
         "PIP_INDEX_URL": pypi_index_url,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-        "NPM_CONFIG_REGISTRY": npm_registry_url,
+        "NPM_CONFIG_REGISTRY": resolved_npm_registry_url,
     }
     pip_trusted_host = _pip_trusted_host(pypi_index_url)
     if pip_trusted_host:
@@ -630,7 +657,10 @@ def build_container_session_files(
         {
             "destination_path": "/home/agent/.npmrc",
             "mode": "0644",
-            "content": _npmrc_content(npm_registry_url),
+            "content": _npmrc_content(
+                resolved_npm_registry_url,
+                replace_registry_host_always=npm_registry_url is not None,
+            ),
         },
         {
             "destination_path": "/home/agent/.profile",
@@ -1116,8 +1146,11 @@ def _pip_config_content(pypi_index_url: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _npmrc_content(npm_registry_url: str) -> str:
-    return f"registry={_ensure_trailing_slash(npm_registry_url)}\n"
+def _npmrc_content(npm_registry_url: str, *, replace_registry_host_always: bool = False) -> str:
+    lines = [f"registry={_ensure_trailing_slash(npm_registry_url)}"]
+    if replace_registry_host_always:
+        lines.append("replace-registry-host=always")
+    return "\n".join(lines) + "\n"
 
 
 def _pip_trusted_host(index_url: str) -> str | None:

@@ -16,8 +16,11 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "agent_sandbox_admin_web_caddy_enabled" in text
     assert "agent_sandbox_services.package_cache" in text
     assert "agent_sandbox_services.apt_cache" in text
+    assert "agent_sandbox_services.npm_audit_facade" in text
     assert "agent_sandbox_services.semantic_store" in text
     assert "agent_sandbox_services.proxy_issue_sync" in text
+    assert "agent_sandbox_npm_audit_facade_port" in text
+    assert "config/npm-audit-facade.env" in text
     assert "agent_sandbox_nexus_admin_password" in text
     assert "agent_sandbox_nexus_accept_community_eula" in text
     assert "agent-sandbox-nexus.service" in text
@@ -27,6 +30,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "acng-report.html" in text
     assert "service/rest/v1/status" in text
     assert "registry.npmjs.org" in text
+    assert "11881" in text
     assert "Ubuntu mirrors" in text
     assert "agent_sandbox_worker_egress_policy_enabled: true" in text
     assert "agent-sandbox-worker-egress-policy.service" in text

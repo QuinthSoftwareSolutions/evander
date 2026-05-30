@@ -40,11 +40,17 @@ secret value in repo-root `secrets.env` or the service manager environment rathe
 |---|---|---|
 | `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
 
+## `config/npm-audit-facade.env.example`
+
+This host-local env file is optional and may stay empty. The npm audit facade currently reads
+its bind and upstream settings from runtime config, so there are no required env parameters in
+the checked-in example.
+
 ## `config/firewall.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `11881` for the npm audit facade, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
 
 ## `config/ado-worker.env.example`
 

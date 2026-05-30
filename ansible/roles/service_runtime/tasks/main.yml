@@ -12,6 +12,8 @@
         unit: agent-sandbox-openai-relay.service
       - key: nuget_relay
         unit: agent-sandbox-nuget-relay.service
+      - key: npm_audit_facade
+        unit: agent-sandbox-npm-audit-facade.service
       - key: http_target_relay
         unit: agent-sandbox-http-target-relay.service
       - key: ado_worker

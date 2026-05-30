@@ -501,6 +501,19 @@ class WorkflowRunNodeActivityPayload(BaseModel):
     error: str | None = None
 
 
+class WorkflowRunRecentNodeActivityPayload(BaseModel):
+    activity_key: str
+    event_id: str
+    node_id: str
+    status: str
+    source: str
+    activity_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    trace_id: str | None = None
+    error: str | None = None
+
+
 class WorkflowRunSummaryPayload(BaseModel):
     event_id: str
     run_state: str = "active"
@@ -523,6 +536,9 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
+    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(
+        default_factory=list
+    )
 
 
 class WorkflowRunSearchFilterPayload(BaseModel):
@@ -2656,6 +2672,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Model name the agent should use. Leave blank to inherit the directory default.",
+            ),
+            _field(
+                "npm_registry_url",
+                "NPM registry URL",
+                "string",
+                bindable=True,
+                description="Optional npm registry override for container-backed agent sessions.",
             ),
             _field(
                 "vm_user",
@@ -13480,12 +13503,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()
+        now = _utc_now()
+        lookback_start = now - timedelta(seconds=8)
         runtime_dir = stores["runtime_dir"]
         event_queue_store_path = stores["event_queue_store_path"]
         effect_execution_store_path = stores["effect_execution_store_path"]
         gate_execution_store_path = stores["gate_execution_store_path"]
         runs_by_event: dict[str, dict[str, object]] = {}
         node_activity: dict[str, dict[str, int]] = {}
+        recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = []
 
         def ensure_run(event_id: str) -> dict[str, object]:
             existing = runs_by_event.get(event_id)
@@ -13568,8 +13594,120 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
             node_status_counts[status] = node_status_counts.get(status, 0) + 1
 
+        def record_value(record: object, key: str) -> object | None:
+            if isinstance(record, Mapping):
+                return record.get(key)
+            return getattr(record, key, None)
+
+        def normalize_activity_text(value: object) -> str | None:
+            return _coerce_optional_string(value)
+
+        def activity_at_from_record(record: object) -> datetime | None:
+            return max(
+                (
+                    timestamp
+                    for timestamp in (
+                        _coerce_optional_datetime(record_value(record, "finished_at")),
+                        _coerce_optional_datetime(record_value(record, "delivered_at")),
+                        _coerce_optional_datetime(record_value(record, "started_at")),
+                        _coerce_optional_datetime(record_value(record, "inflight_at")),
+                        _coerce_optional_datetime(record_value(record, "occurred_at")),
+                    )
+                    if timestamp is not None
+                ),
+                default=None,
+            )
+
+        def register_recent_node_activity(
+            *,
+            source: str,
+            record_id: object,
+            event_id: object,
+            node_id: object,
+            status: object,
+            activity_at: datetime | None,
+            started_at: object = None,
+            finished_at: object = None,
+            trace_id: object = None,
+            error: object = None,
+        ) -> None:
+            normalized_source = normalize_activity_text(source)
+            normalized_record_id = normalize_activity_text(record_id)
+            normalized_event_id = normalize_activity_text(event_id)
+            normalized_node_id = normalize_activity_text(node_id)
+            normalized_status = normalize_activity_text(status)
+            if normalized_source is None or normalized_record_id is None:
+                return
+            if not normalized_event_id or not normalized_node_id:
+                return
+            if normalized_status is None or activity_at is None:
+                return
+            if activity_at < lookback_start or activity_at > now:
+                return
+            recent_node_activity.append(
+                WorkflowRunRecentNodeActivityPayload(
+                    activity_key=(
+                        f"{normalized_source}:{normalized_record_id}:{normalized_node_id}:"
+                        f"{normalized_status}:{activity_at.isoformat()}"
+                    ),
+                    event_id=normalized_event_id,
+                    node_id=normalized_node_id,
+                    status=normalized_status,
+                    source=normalized_source,
+                    activity_at=activity_at,
+                    started_at=_coerce_optional_datetime(started_at),
+                    finished_at=_coerce_optional_datetime(finished_at),
+                    trace_id=normalize_activity_text(trace_id),
+                    error=normalize_activity_text(error),
+                )
+            )
+
+        def collect_recent_activity(
+            records: list[Any],
+            *,
+            source: str,
+            record_id_field: str,
+            event_id_field: str = "event_id",
+            node_id_field: str,
+            status_field: str,
+            started_at_field: str | None = None,
+            finished_at_field: str | None = None,
+            trace_id_field: str | None = None,
+            error_field: str | None = None,
+        ) -> None:
+            for raw_record in records:
+                if not isinstance(raw_record, Mapping) and not isinstance(raw_record, BaseModel):
+                    continue
+                dismissed_at = _coerce_optional_datetime(record_value(raw_record, "dismissed_at"))
+                if dismissed_at is not None:
+                    continue
+                register_recent_node_activity(
+                    source=source,
+                    record_id=record_value(raw_record, record_id_field),
+                    event_id=record_value(raw_record, event_id_field),
+                    node_id=record_value(raw_record, node_id_field),
+                    status=(
+                        record_value(raw_record, status_field)
+                        if source != "trigger_event"
+                        else record_value(raw_record, status_field) or "event"
+                    ),
+                    activity_at=activity_at_from_record(raw_record),
+                    started_at=record_value(raw_record, started_at_field)
+                    if started_at_field is not None
+                    else None,
+                    finished_at=record_value(raw_record, finished_at_field)
+                    if finished_at_field is not None
+                    else None,
+                    trace_id=record_value(raw_record, trace_id_field)
+                    if trace_id_field is not None
+                    else None,
+                    error=record_value(raw_record, error_field)
+                    if error_field is not None
+                    else None,
+                )
+
         if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
             queue_payload = {
                 record.event_id: record.model_dump(mode="json")
                 for record in queue_store.list_active_records()
@@ -13582,10 +13720,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 record.execution_id: record.model_dump(mode="json")
                 for record in gate_store.list_active_records()
             }
+            queue_recent_records = queue_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
+            execution_recent_records = effect_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
+            gate_recent_records = gate_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
         else:
             queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
             execution_payload = _read_json_object(effect_execution_store_path)
             gate_payload = _read_json_object(gate_execution_store_path)
+            queue_recent_records = list(queue_payload.values())
+            execution_recent_records = list(execution_payload.values())
+            gate_recent_records = list(gate_payload.values())
 
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
@@ -13688,6 +13838,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 dispatch_id=dispatch_id,
             )
 
+        collect_recent_activity(
+            queue_recent_records,
+            source="trigger_event",
+            record_id_field="event_id",
+            node_id_field="trigger_id",
+            status_field="delivery_state",
+            started_at_field="inflight_at",
+            finished_at_field="delivered_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        collect_recent_activity(
+            execution_recent_records,
+            source="effect_execution",
+            record_id_field="execution_id",
+            node_id_field="effect_id",
+            status_field="status",
+            started_at_field="started_at",
+            finished_at_field="finished_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        collect_recent_activity(
+            gate_recent_records,
+            source="gate_execution",
+            record_id_field="execution_id",
+            node_id_field="gate_id",
+            status_field="status",
+            started_at_field="started_at",
+            finished_at_field="finished_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        recent_node_activity.sort(key=lambda item: (item.activity_at, item.activity_key), reverse=True)
+        recent_node_activity = recent_node_activity[:200]
+
         runs = [
             WorkflowRunSummaryPayload.model_validate(
                 {
@@ -13709,12 +13895,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             reverse=True,
         )
         return WorkflowRunSnapshotPayload(
-            generated_at=_utc_now(),
+            generated_at=now,
             runs=runs,
             node_activity={
                 node_id: dict(sorted(counts.items()))
                 for node_id, counts in sorted(node_activity.items())
             },
+            recent_node_activity=recent_node_activity,
         )
 
     def _read_workflow_run_search(
