@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -53,8 +54,33 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
             filename=artifact.metadata.filename,
         )
 
+    async def upload_artifact(request: Request) -> JSONResponse:
+        try:
+            form = await request.form()
+        except Exception:
+            return json_error("Request body must be multipart form data")
+        key = _optional_string(form.get("key"))
+        if key is None:
+            return json_error("key is required")
+        file_value = form.get("file")
+        if not isinstance(file_value, UploadFile):
+            return json_error("file is required")
+        try:
+            content = await file_value.read()
+            payload = service.upload_published_artifact(
+                key=key,
+                filename=file_value.filename or "artifact",
+                content=content,
+                artifact_path=_optional_string(form.get("artifact_path")),
+                metadata={"source_route": "/api/admin/artifacts/uploads"},
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload.model_dump(mode="json"), status_code=201)
+
     return [
         Route("/api/admin/artifacts", list_artifacts, methods=["GET"]),
+        Route("/api/admin/artifacts/uploads", upload_artifact, methods=["POST"]),
         Route("/api/admin/artifact-downloads/{key:path}", download_artifact, methods=["GET"]),
         Route("/api/admin/artifacts/{key:path}", get_artifact, methods=["GET"]),
     ]
@@ -72,3 +98,10 @@ def _parse_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"Invalid datetime value: {value}") from exc
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

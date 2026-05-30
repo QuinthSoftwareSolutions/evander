@@ -89,16 +89,22 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             clone_branch=clone_branch,
             repo_name=mirror.repo_name,
         )
-        self._configure_container_git(
+        self._write_container_git_helpers(
             backend=backend,
             session_id=session_id,
-            directory_path=session.directory_path if session is not None else directory_path,
             target_dir=result.target_dir,
-            repo_source=mirror.canonical_repo_source,
-            remote_url=result.remote_url,
-            clone_branch=clone_branch,
-            timeout_seconds=float(config.container_worker_job_timeout_seconds),
         )
+        if result.cloned:
+            self._configure_container_git(
+                backend=backend,
+                session_id=session_id,
+                directory_path=session.directory_path if session is not None else directory_path,
+                target_dir=result.target_dir,
+                repo_source=mirror.canonical_repo_source,
+                remote_url=result.remote_url,
+                clone_branch=clone_branch,
+                timeout_seconds=float(config.container_worker_job_timeout_seconds),
+            )
         return {
             "success": True,
             "message": (
@@ -116,17 +122,12 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "vm_name": None,
         }
 
-    def _configure_container_git(
+    def _write_container_git_helpers(
         self,
         *,
         backend: Any,
         session_id: str,
-        directory_path: str,
         target_dir: str,
-        repo_source: str,
-        remote_url: str,
-        clone_branch: str | None,
-        timeout_seconds: float,
     ) -> None:
         backend.write_files(
             session_id=session_id,
@@ -150,6 +151,19 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 },
             ],
         )
+
+    def _configure_container_git(
+        self,
+        *,
+        backend: Any,
+        session_id: str,
+        directory_path: str,
+        target_dir: str,
+        repo_source: str,
+        remote_url: str,
+        clone_branch: str | None,
+        timeout_seconds: float,
+    ) -> None:
         execution_id = safe_effect_execution_id("clone-config", session_id)
         command = self._container_git_config_command(
             session_id=session_id,

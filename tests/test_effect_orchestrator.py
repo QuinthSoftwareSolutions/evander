@@ -4759,6 +4759,79 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
 
+def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="scheduled-wake:wake-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="resume scheduled work",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_mode="same_context",
+            effect_id="scheduled-wake:wake-1",
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    published_events: list[tuple[str | None, dict[str, object]]] = []
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            published_events.append((branch_port, outputs)) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    command = str(backend.started_specs[0].command)
+    assert "codex exec resume --last" in command
+    assert "resume scheduled work" in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
+    assert waiting_records[0].input_payload["resume_mode"] == "same_context"
+    assert published_events[0][0] == "started"
+
+
 def test_agent_prompt_container_reconciliation_times_out_running_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5857,6 +5930,55 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
         (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
     )
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
+
+
+class _IndexedOnlyExecutionStore:
+    def __init__(self, records: list[object]) -> None:
+        self.records = records
+
+    def list_waiting_records(self, effect_type: str | None = None) -> list[object]:
+        normalized_type = str(effect_type or "").strip()
+        return [
+            record
+            for record in self.records
+            if str(getattr(record, "status", "") or "").strip() == "waiting"
+            and (
+                not normalized_type
+                or str(getattr(record, "effect_type", "") or "").strip() == normalized_type
+            )
+        ]
+
+    def read_all(self) -> dict[str, object]:
+        raise AssertionError("hot-path reconciliation should not call read_all")
+
+
+def test_agent_prompt_waiting_reconciliation_uses_indexed_store_method() -> None:
+    worker = SimpleNamespace(execution_store=_IndexedOnlyExecutionStore([]))
+
+    assert AgentPromptEffectProvider.reconcile_waiting(worker=worker) == 0
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 0
+
+
+def test_enqueue_prompt_queue_dispatch_checks_waiting_records_without_full_scan() -> None:
+    waiting_record = SimpleNamespace(
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={"session_id": "session-1"},
+        resolved_config={},
+        input_payload={},
+    )
+    worker = SimpleNamespace(
+        execution_store=_IndexedOnlyExecutionStore([waiting_record]),
+    )
+    queued_record = SimpleNamespace(session_id="session-1", vm_name="", target="")
+
+    assert (
+        AgentEnqueuePromptQueueDispatchHook()._has_waiting_enqueue_prompt_for_record(
+            worker=worker,
+            record=queued_record,
+        )
+        is True
+    )
 
 
 def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispatch(
@@ -7257,6 +7379,275 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
     )
     effect_record = next(iter(effect_payload.values()))
     assert effect_record["status"] == "succeeded"
+
+
+def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "string"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-merge",
+                    "display_name": "Merge",
+                    "type": "gate:merge",
+                    "outputs": {"shared": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-pre",
+                    "display_name": "Prepare",
+                    "type": "effect:agent:prompt",
+                    "prompt": "prepare",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-a",
+                    "display_name": "A",
+                    "type": "effect:agent:prompt",
+                    "prompt": "a",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-b",
+                    "display_name": "B",
+                    "type": "effect:agent:prompt",
+                    "prompt": "b",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-pre.session_id}}",
+                    "prompt": "shared ${{gate-merge.shared}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-pre"),
+                _edge("effect-pre", "effect-a"),
+                _edge("effect-pre", "effect-b"),
+                _edge("effect-a", "gate-merge"),
+                _edge("effect-b", "gate-merge"),
+                _edge("gate-merge", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-pre": {"session_id": "session-pre", "success": True},
+            "effect-a": {"shared": "a", "success": True},
+            "effect-b": {"shared": "b", "success": True},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-merge-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": "42"},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    ]
+    assert after_records
+    assert all(record["status"] == "succeeded" for record in after_records)
+    assert {record["resolved_config"]["session_id"] for record in after_records} == {
+        "session-pre"
+    }
+
+
+def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-merge",
+                    "display_name": "Merge",
+                    "type": "gate:merge",
+                    "outputs": {"shared": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-a",
+                    "display_name": "A",
+                    "type": "effect:agent:prompt",
+                    "prompt": "a",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-b",
+                    "display_name": "B",
+                    "type": "effect:agent:prompt",
+                    "prompt": "b",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "prompt": "branch ${{effect-a.shared}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-a"),
+                _edge("trigger-1", "effect-b"),
+                _edge("effect-a", "gate-merge"),
+                _edge("effect-b", "gate-merge"),
+                _edge("gate-merge", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-a": {"shared": "a"},
+            "effect-b": {"shared": "b"},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-merge-branch-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    ]
+    assert after_records
+    assert all(record["status"] == "failed" for record in after_records)
+    assert {
+        record["binding_error"] for record in after_records
+    } == {"Output reference node 'effect-a' is not available in this upstream path"}
+
+
+def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-debounce",
+                    "display_name": "Debounce",
+                    "type": "gate:debounce",
+                    "key": "fixed",
+                    "quiet_period": "PT0.001S",
+                    "max_delay": "PT0.001S",
+                    "outputs": {"message": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-pre",
+                    "display_name": "Prepare",
+                    "type": "effect:agent:prompt",
+                    "prompt": "prepare",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-pre.session_id}}",
+                    "prompt": "${{gate-debounce.message}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-pre"),
+                _edge("effect-pre", "gate-debounce"),
+                _edge("gate-debounce", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-pre": {"session_id": "session-pre", "message": "hello"},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-debounce-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_record = next(
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    )
+    assert after_record["status"] == "succeeded"
+    assert after_record["resolved_config"] == {
+        "prompt": "hello",
+        "session_id": "session-pre",
+    }
 
 
 def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path: Path) -> None:

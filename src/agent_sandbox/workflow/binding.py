@@ -81,10 +81,18 @@ def resolve_workflow_bindings(
 
     def _resolve_value(value: Any, *, config_path: tuple[str | int, ...] = ()) -> Any:
         if isinstance(value, dict):
-            return {
-                key: _resolve_value(item, config_path=(*config_path, key))
-                for key, item in value.items()
-            }
+            resolved_dict: dict[str, Any] = {}
+            for key, item in value.items():
+                resolved_key = _resolve_mapping_key(key, config_path=config_path)
+                if resolved_key in resolved_dict:
+                    formatted_path = _format_config_path(config_path)
+                    raise BindingResolutionError(
+                        f"Resolved duplicate object key {resolved_key!r} at {formatted_path}"
+                    )
+                resolved_dict[resolved_key] = _resolve_value(
+                    item, config_path=(*config_path, resolved_key)
+                )
+            return resolved_dict
         if isinstance(value, list):
             return [
                 _resolve_value(item, config_path=(*config_path, index))
@@ -116,6 +124,18 @@ def resolve_workflow_bindings(
             return str(resolved)
 
         return _OUTPUT_REF_ANY_RE.sub(_replace, text)
+
+    def _resolve_mapping_key(key: Any, *, config_path: tuple[str | int, ...]) -> str:
+        if not isinstance(key, str):
+            return str(key)
+        if "${{" not in key:
+            return key
+        resolved = _resolve_string(key, config_path=config_path)
+        if resolved is None or isinstance(resolved, (dict, list, tuple, set)):
+            raise BindingResolutionError(
+                f"Resolved object key at {_format_config_path(config_path)} must be scalar"
+            )
+        return str(resolved)
 
     def _validate_malformed_patterns(text: str) -> None:
         if "${{" not in text:

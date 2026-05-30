@@ -416,6 +416,21 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
 
 class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:new-feedback"]
+    agent_author_names: list[str] = Field(default_factory=list)
+    agent_mention_names: list[str] = Field(default_factory=list)
+    agent_author_ids: list[str] = Field(default_factory=list)
+    agent_mention_ids: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "agent_author_names",
+        "agent_mention_names",
+        "agent_author_ids",
+        "agent_mention_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_agent_identities(cls, value: object) -> object:
+        return normalize_string_list(value)
 
 
 class PullRequestCompletedTriggerDefinition(_PullRequestTriggerDefinition):
@@ -497,9 +512,7 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
         canonical = _CI_RUN_COMPLETED_PROVIDER_ALIASES.get(token)
         if canonical is None:
             allowed = ", ".join(sorted(_CI_RUN_COMPLETED_PROVIDER_ALIASES))
-            raise ValueError(
-                f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}"
-            )
+            raise ValueError(f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}")
         return canonical
 
     @field_validator("repo", "workflow", "project", "pipeline_name", mode="before")

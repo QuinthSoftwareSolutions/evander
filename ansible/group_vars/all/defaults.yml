@@ -35,11 +35,14 @@ agent_sandbox_repo_managed_tracked_config_paths: >-
     )
   }}
 agent_sandbox_repo_managed_base_untracked_config_paths:
+  - config/admin-web.env
   - config/ado-worker.env
   - config/discord-wake/config.json
+  - config/firewall.env
   - config/gateway.env
   - config/http-target-relay.env
   - config/openai-relay.env
+  - config/npm-audit-facade.env
   - config/scheduled-wake/config.json
 agent_sandbox_repo_managed_untracked_config_paths: >-
   {{
@@ -113,6 +116,7 @@ agent_sandbox_control_plane_private_ip: "{{ ansible_default_ipv4.address | defau
 # Control-plane apt cache for worker VM provisioning. This is intentionally
 # separate from Nexus, which only proxies PyPI and npm.
 agent_sandbox_apt_cache_port: 3142
+agent_sandbox_npm_audit_facade_port: 11881
 agent_sandbox_apt_cache_bind_host: "0.0.0.0"
 agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
 agent_sandbox_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
@@ -133,11 +137,18 @@ agent_sandbox_apt_cache_allowed_tcp_ports: >-
     if (agent_sandbox_services.apt_cache | default(false) | bool)
     else []
   }}
+agent_sandbox_npm_audit_facade_allowed_tcp_ports: >-
+  {{
+    [agent_sandbox_npm_audit_facade_port]
+    if (agent_sandbox_services.npm_audit_facade | default(false) | bool)
+    else []
+  }}
 agent_sandbox_allowed_tcp_ports: >-
   {{
     agent_sandbox_base_allowed_tcp_ports
     + agent_sandbox_package_cache_allowed_tcp_ports
     + agent_sandbox_apt_cache_allowed_tcp_ports
+    + agent_sandbox_npm_audit_facade_allowed_tcp_ports
   }}
 agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"
 
@@ -160,6 +171,9 @@ agent_sandbox_worker_egress_policy_allow_tcp_endpoints:
   - name: control-plane http target relay
     host: "{{ agent_sandbox_control_plane_private_ip }}"
     port: 11777
+  - name: control-plane npm audit facade
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: "{{ agent_sandbox_npm_audit_facade_port }}"
   - name: control-plane nexus package cache
     host: "{{ agent_sandbox_control_plane_private_ip }}"
     port: "{{ agent_sandbox_nexus_port }}"
@@ -290,6 +304,8 @@ agent_sandbox_openai_relay_env:
 agent_sandbox_nuget_relay_env:
   AZURE_ARTIFACTS_PAT: ""
 
+agent_sandbox_npm_audit_facade_env: {}
+
 agent_sandbox_http_target_relay_env: {}
 
 agent_sandbox_ado_worker_env:
@@ -379,6 +395,7 @@ agent_sandbox_services:
   firewall: "{{ agent_sandbox_service_profile == 'full' }}"
   openai_relay: true
   nuget_relay: true
+  npm_audit_facade: true
   package_cache: true
   apt_cache: true
   semantic_store: true

@@ -69,6 +69,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "communication_file_require_approval_for_send",
             "pr_reply_require_approval",
             "approval_required_tools",
+            "mcp_tool_policies",
             "tool_argument_policies",
             "redacted_keys",
         }
@@ -111,6 +112,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "nuget_azure_pat_env",
             "nuget_public_feed_base_url",
             "nuget_relay_timeout_seconds",
+            "npm_audit_facade_audit_registry_url",
+            "npm_audit_facade_package_registry_url",
+            "npm_audit_facade_timeout_seconds",
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
@@ -186,6 +190,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_port",
             "nuget_relay_host",
             "nuget_relay_port",
+            "npm_audit_facade_host",
+            "npm_audit_facade_port",
             "openai_relay_host",
             "openai_relay_port",
         }
@@ -479,6 +485,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
             "http_target_relay_port": config.http_target_relay_port,
             "nuget_relay_host": config.nuget_relay_host,
             "nuget_relay_port": config.nuget_relay_port,
+            "npm_audit_facade_host": config.npm_audit_facade_host,
+            "npm_audit_facade_port": config.npm_audit_facade_port,
             "openai_relay_host": config.openai_relay_host,
             "openai_relay_port": config.openai_relay_port,
         }

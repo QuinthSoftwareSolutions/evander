@@ -20,6 +20,10 @@ from agent_sandbox.repositories.orchestration import (
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
 )
+from agent_sandbox.repositories.orchestration_db import (
+    connect_orchestration_db,
+    maybe_checkpoint_orchestration_wal,
+)
 
 
 def _effect_record(
@@ -72,6 +76,69 @@ def _gate_record(
         input_event_ids_by_source={},
         input_occurred_at_by_source={},
     )
+
+
+def _effect_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    effect_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    event_id: str,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> EffectExecutionRecord:
+    record = _effect_record(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        event_id=event_id,
+    )
+    record.effect_id = effect_id
+    record.status = status
+    record.started_at = started_at
+    record.finished_at = finished_at
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
+
+
+def _gate_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    gate_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> GateExecutionRecord:
+    record = _gate_record(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        gate_id=gate_id,
+        finished_at=finished_at,
+    )
+    record.status = status
+    record.started_at = started_at
+    record.finished_at = finished_at
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
+
+
+def _sqlite_payload_json_by_execution_id(path: Path, table_name: str) -> dict[str, str]:
+    with connect_orchestration_db(path) as connection:
+        rows = connection.execute(
+            f"SELECT execution_id, payload_json FROM {table_name} ORDER BY execution_id"
+        ).fetchall()
+    return {row["execution_id"]: row["payload_json"] for row in rows}
 
 
 def _workflow_config_snapshot_payload(*, revision: str = "revision-1") -> dict[str, object]:
@@ -241,6 +308,381 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
     ]
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
 
+    with connect_orchestration_db(tmp_path / "orchestration.db") as connection:
+        index_names = {
+            row["name"]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                      'idx_trigger_events_activity',
+                      'idx_effect_executions_activity',
+                      'idx_gate_executions_activity',
+                      'idx_effect_executions_node_failed_dismissed',
+                      'idx_gate_executions_node_failed_dismissed'
+                  )
+                """
+            ).fetchall()
+        }
+
+    assert index_names == {
+        "idx_trigger_events_activity",
+        "idx_effect_executions_activity",
+        "idx_gate_executions_activity",
+        "idx_effect_executions_node_failed_dismissed",
+        "idx_gate_executions_node_failed_dismissed",
+    }
+
+
+def test_sqlite_execution_repository_dismisses_failed_records_for_node(tmp_path: Path) -> None:
+    db_path = tmp_path / "orchestration.db"
+    execution_store = SqliteExecutionStore(db_path)
+    dismissed_at = datetime(2026, 4, 23, 13, 0, tzinfo=UTC)
+
+    target_failed_1 = _effect_execution_record(
+        execution_id="exec-failed-1",
+        idempotency_key="idem-failed-1",
+        event_id="evt-target-1",
+        effect_id="effect-prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=UTC),
+    )
+    target_failed_2 = _effect_execution_record(
+        execution_id="exec-failed-2",
+        idempotency_key="idem-failed-2",
+        event_id="evt-target-2",
+        effect_id="effect-prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 2, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 3, tzinfo=UTC),
+    )
+    other_failed = _effect_execution_record(
+        execution_id="exec-other-failed",
+        idempotency_key="idem-other-failed",
+        event_id="evt-other",
+        effect_id="effect-other",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 4, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 5, tzinfo=UTC),
+    )
+    target_running = _effect_execution_record(
+        execution_id="exec-running",
+        idempotency_key="idem-running",
+        event_id="evt-running",
+        effect_id="effect-prompt",
+        status="running",
+        started_at=datetime(2026, 4, 23, 12, 6, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 7, tzinfo=UTC),
+    )
+    target_succeeded = _effect_execution_record(
+        execution_id="exec-succeeded",
+        idempotency_key="idem-succeeded",
+        event_id="evt-succeeded",
+        effect_id="effect-prompt",
+        status="succeeded",
+        started_at=datetime(2026, 4, 23, 12, 8, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 9, tzinfo=UTC),
+    )
+    target_dismissed = _effect_execution_record(
+        execution_id="exec-dismissed",
+        idempotency_key="idem-dismissed",
+        event_id="evt-dismissed",
+        effect_id="effect-prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 10, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 11, tzinfo=UTC),
+        dismissed_at=datetime(2026, 4, 23, 12, 12, tzinfo=UTC),
+        dismiss_reason="manual_dismiss_errored_workflow_run",
+    )
+    records = [
+        target_failed_1,
+        target_failed_2,
+        other_failed,
+        target_running,
+        target_succeeded,
+        target_dismissed,
+    ]
+    for record in records:
+        execution_store.record_execution(record)
+
+    before_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+    unchanged_before = {
+        execution_id: before_payloads[execution_id]
+        for execution_id in (
+            "exec-other-failed",
+            "exec-running",
+            "exec-succeeded",
+            "exec-dismissed",
+        )
+    }
+
+    def fail_read_all() -> None:
+        raise AssertionError("dismiss_failed_records_for_node should not read_all()")
+
+    def fail_update_all(*_: object, **__: object) -> None:
+        raise AssertionError("dismiss_failed_records_for_node should not update_all()")
+
+    execution_store.read_all = fail_read_all  # type: ignore[method-assign]
+    execution_store.update_all = fail_update_all  # type: ignore[method-assign]
+
+    updated = execution_store.dismiss_failed_records_for_node(
+        " effect-prompt ",
+        dismissed_at=dismissed_at,
+        dismiss_reason="manual_dismiss_node_failures",
+    )
+
+    after_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+
+    assert updated == 2
+    assert execution_store.get_execution("exec-failed-1").dismissed_at == dismissed_at
+    assert execution_store.get_execution("exec-failed-1").dismiss_reason == (
+        "manual_dismiss_node_failures"
+    )
+    assert execution_store.get_execution("exec-failed-2").dismissed_at == dismissed_at
+    assert execution_store.get_execution("exec-failed-2").dismiss_reason == (
+        "manual_dismiss_node_failures"
+    )
+    assert execution_store.get_execution("exec-running").dismissed_at is None
+    assert execution_store.get_execution("exec-succeeded").dismissed_at is None
+    assert execution_store.get_execution("exec-dismissed").dismiss_reason == (
+        "manual_dismiss_errored_workflow_run"
+    )
+    assert execution_store.get_execution("exec-other-failed").dismissed_at is None
+
+    assert after_payloads["exec-failed-1"] != before_payloads["exec-failed-1"]
+    assert after_payloads["exec-failed-2"] != before_payloads["exec-failed-2"]
+    assert after_payloads["exec-failed-1"].count("manual_dismiss_node_failures") == 1
+    assert after_payloads["exec-failed-2"].count("manual_dismiss_node_failures") == 1
+    assert json.loads(after_payloads["exec-failed-1"])["dismiss_reason"] == (
+        "manual_dismiss_node_failures"
+    )
+    assert json.loads(after_payloads["exec-failed-1"])["dismissed_at"] == "2026-04-23T13:00:00Z"
+    assert {
+        execution_id: after_payloads[execution_id]
+        for execution_id in unchanged_before
+    } == unchanged_before
+
+
+def test_sqlite_gate_execution_repository_dismisses_failed_records_for_node(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "orchestration.db"
+    gate_store = SqliteGateExecutionStore(db_path)
+    dismissed_at = datetime(2026, 4, 23, 13, 0, tzinfo=UTC)
+
+    target_failed_1 = _gate_execution_record(
+        execution_id="gate-failed-1",
+        idempotency_key="gate-idem-failed-1",
+        gate_id="gate-review",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=UTC),
+    )
+    target_failed_2 = _gate_execution_record(
+        execution_id="gate-failed-2",
+        idempotency_key="gate-idem-failed-2",
+        gate_id="gate-review",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 2, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 3, tzinfo=UTC),
+    )
+    other_failed = _gate_execution_record(
+        execution_id="gate-other-failed",
+        idempotency_key="gate-idem-other-failed",
+        gate_id="gate-other",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 4, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 5, tzinfo=UTC),
+    )
+    target_running = _gate_execution_record(
+        execution_id="gate-running",
+        idempotency_key="gate-idem-running",
+        gate_id="gate-review",
+        status="running",
+        started_at=datetime(2026, 4, 23, 12, 6, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 7, tzinfo=UTC),
+    )
+    target_succeeded = _gate_execution_record(
+        execution_id="gate-succeeded",
+        idempotency_key="gate-idem-succeeded",
+        gate_id="gate-review",
+        status="succeeded",
+        started_at=datetime(2026, 4, 23, 12, 8, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 9, tzinfo=UTC),
+    )
+    target_dismissed = _gate_execution_record(
+        execution_id="gate-dismissed",
+        idempotency_key="gate-idem-dismissed",
+        gate_id="gate-review",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 10, tzinfo=UTC),
+        finished_at=datetime(2026, 4, 23, 12, 11, tzinfo=UTC),
+        dismissed_at=datetime(2026, 4, 23, 12, 12, tzinfo=UTC),
+        dismiss_reason="manual_dismiss_node_failures",
+    )
+    records = [
+        target_failed_1,
+        target_failed_2,
+        other_failed,
+        target_running,
+        target_succeeded,
+        target_dismissed,
+    ]
+    for record in records:
+        gate_store.record_execution(record)
+
+    before_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+    unchanged_before = {
+        execution_id: before_payloads[execution_id]
+        for execution_id in (
+            "gate-other-failed",
+            "gate-running",
+            "gate-succeeded",
+            "gate-dismissed",
+        )
+    }
+
+    def fail_read_all() -> None:
+        raise AssertionError("dismiss_failed_records_for_node should not read_all()")
+
+    def fail_update_all(*_: object, **__: object) -> None:
+        raise AssertionError("dismiss_failed_records_for_node should not update_all()")
+
+    gate_store.read_all = fail_read_all  # type: ignore[method-assign]
+    gate_store.update_all = fail_update_all  # type: ignore[method-assign]
+
+    updated = gate_store.dismiss_failed_records_for_node(
+        " gate-review ",
+        dismissed_at=dismissed_at,
+        dismiss_reason="manual_dismiss_node_failures",
+    )
+
+    after_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+
+    assert updated == 2
+    assert gate_store.get_execution("gate-failed-1").dismissed_at == dismissed_at
+    assert gate_store.get_execution("gate-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    assert gate_store.get_execution("gate-failed-2").dismissed_at == dismissed_at
+    assert gate_store.get_execution("gate-failed-2").dismiss_reason == "manual_dismiss_node_failures"
+    assert gate_store.get_execution("gate-running").dismissed_at is None
+    assert gate_store.get_execution("gate-succeeded").dismissed_at is None
+    assert gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+    assert gate_store.get_execution("gate-other-failed").dismissed_at is None
+
+    assert after_payloads["gate-failed-1"] != before_payloads["gate-failed-1"]
+    assert after_payloads["gate-failed-2"] != before_payloads["gate-failed-2"]
+    assert after_payloads["gate-failed-1"].count("manual_dismiss_node_failures") == 1
+    assert after_payloads["gate-failed-2"].count("manual_dismiss_node_failures") == 1
+    assert json.loads(after_payloads["gate-failed-1"])["dismiss_reason"] == (
+        "manual_dismiss_node_failures"
+    )
+    assert json.loads(after_payloads["gate-failed-1"])["dismissed_at"] == "2026-04-23T13:00:00Z"
+    assert {
+        execution_id: after_payloads[execution_id]
+        for execution_id in unchanged_before
+    } == unchanged_before
+
+
+def test_execution_repositories_list_waiting_and_completion_pending_records(
+    tmp_path: Path,
+) -> None:
+    stores = [
+        JsonExecutionStore(tmp_path / "effect-executions.json"),
+        SqliteExecutionStore(tmp_path / "orchestration.db"),
+    ]
+    for index, execution_store in enumerate(stores):
+        waiting_target = _effect_record(
+            execution_id=f"exec-waiting-target-{index}",
+            idempotency_key=f"idem-waiting-target-{index}",
+        )
+        waiting_target.status = "waiting"
+        waiting_target.effect_type = "effect:agent:enqueue-prompt"
+        waiting_other = _effect_record(
+            execution_id=f"exec-waiting-other-{index}",
+            idempotency_key=f"idem-waiting-other-{index}",
+        )
+        waiting_other.status = "waiting"
+        waiting_other.effect_type = "effect:other"
+        pending = _effect_record(
+            execution_id=f"exec-pending-{index}",
+            idempotency_key=f"idem-pending-{index}",
+        )
+        pending.status = "completion_pending"
+        succeeded = _effect_record(
+            execution_id=f"exec-succeeded-{index}",
+            idempotency_key=f"idem-succeeded-{index}",
+        )
+        succeeded.status = "succeeded"
+
+        for record in (waiting_target, waiting_other, pending, succeeded):
+            execution_store.record_execution(record)
+
+        assert [
+            record.execution_id
+            for record in execution_store.list_waiting_records(
+                "effect:agent:enqueue-prompt"
+            )
+        ] == [waiting_target.execution_id]
+        assert {record.execution_id for record in execution_store.list_waiting_records()} == {
+            waiting_target.execution_id,
+            waiting_other.execution_id,
+        }
+        assert [
+            record.execution_id
+            for record in execution_store.list_completion_pending_records()
+        ] == [pending.execution_id]
+
+
+def test_gate_execution_repositories_list_waiting_and_completion_pending_records(
+    tmp_path: Path,
+) -> None:
+    stores = [
+        JsonGateExecutionStore(tmp_path / "gate-executions.json"),
+        SqliteGateExecutionStore(tmp_path / "orchestration.db"),
+    ]
+    for index, gate_store in enumerate(stores):
+        waiting_target = _gate_record(
+            execution_id=f"gate-waiting-target-{index}",
+            idempotency_key=f"gate-idem-waiting-target-{index}",
+            gate_id="gate-target",
+            finished_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+        )
+        waiting_target.status = "waiting"
+        waiting_target.gate_type = "gate:await-agent"
+        waiting_other = _gate_record(
+            execution_id=f"gate-waiting-other-{index}",
+            idempotency_key=f"gate-idem-waiting-other-{index}",
+            gate_id="gate-other",
+            finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=UTC),
+        )
+        waiting_other.status = "waiting"
+        waiting_other.gate_type = "gate:other"
+        pending = _gate_record(
+            execution_id=f"gate-pending-{index}",
+            idempotency_key=f"gate-idem-pending-{index}",
+            gate_id="gate-pending",
+            finished_at=datetime(2026, 4, 23, 12, 2, tzinfo=UTC),
+        )
+        pending.status = "completion_pending"
+
+        for record in (waiting_target, waiting_other, pending):
+            gate_store.record_execution(record)
+
+        assert [
+            record.execution_id
+            for record in gate_store.list_waiting_records("gate:await-agent")
+        ] == [waiting_target.execution_id]
+        assert {record.execution_id for record in gate_store.list_waiting_records()} == {
+            waiting_target.execution_id,
+            waiting_other.execution_id,
+        }
+        assert [record.execution_id for record in gate_store.list_completion_pending_records()] == [
+            pending.execution_id
+        ]
+
 
 def test_sqlite_execution_repository_treats_completion_pending_as_active(
     tmp_path: Path,
@@ -292,6 +734,44 @@ def test_sqlite_gate_execution_repository_treats_completion_pending_as_active(
     assert cleared == 1
     assert gate_store.get_execution("gate-1").status == "failed"
     assert gate_store.get_execution("gate-1").dismissed_at is not None
+
+
+def test_orchestration_wal_checkpoint_records_maintenance_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "orchestration.db"
+    execution_store = SqliteExecutionStore(db_path)
+    execution_store.record_execution(
+        _effect_record(execution_id="exec-1", idempotency_key="idem-1")
+    )
+
+    result = maybe_checkpoint_orchestration_wal(
+        db_path,
+        mode="truncate",
+        min_bytes=0,
+        interval_seconds=0,
+        busy_timeout_ms=100,
+    )
+
+    assert result.attempted is True
+    assert result.mode == "truncate"
+    with connect_orchestration_db(db_path) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key = ?",
+            ("last_wal_checkpoint",),
+        ).fetchone()
+    assert row is not None
+    payload = json.loads(row["value_json"])
+    assert payload["mode"] == "truncate"
+    assert isinstance(payload["wal_size_bytes"], int)
+
+    skipped = maybe_checkpoint_orchestration_wal(
+        db_path,
+        mode="truncate",
+        min_bytes=0,
+        interval_seconds=300,
+        busy_timeout_ms=100,
+    )
+    assert skipped.attempted is False
+    assert skipped.skipped_reason == "interval"
 
 
 def test_sqlite_execution_repository_clears_target_event_without_full_file_store(

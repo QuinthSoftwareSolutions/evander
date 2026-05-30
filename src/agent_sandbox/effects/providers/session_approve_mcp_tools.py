@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agent_sandbox.models import SessionToolApprovalLease, ToolName, normalize_tool_names
+from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
     SessionToolApprovalLeaseRepository,
@@ -43,7 +44,12 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
         if not tools:
             raise ValueError("effect:session:approve-mcp-tools-for-run requires at least one tool")
         workflow_run_id = self._workflow_run_id(execution_context)
-        expires_at = self._expires_at(payload=payload, session=session)
+        approval_settings = self._approval_settings_for_tools(session=session, tools=tools)
+        expires_at = self._expires_at(
+            payload=payload,
+            session=session,
+            approval_settings=approval_settings,
+        )
         store = self._lease_store()
         lease = store.upsert_lease(
             session_id=session_id,
@@ -51,6 +57,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             tools=tools,
             expires_at=expires_at,
             effect_execution_id=self._effect_execution_id(execution_context),
+            approval_settings=approval_settings,
         )
         return self._result_payload(lease)
 
@@ -93,12 +100,25 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             "effect:session:approve-mcp-tools-for-run requires target, session_id, or vm_name"
         )
 
-    def _expires_at(self, *, payload: Mapping[str, Any], session: Any) -> datetime:
+    def _expires_at(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        session: Any,
+        approval_settings: dict[str, Any],
+    ) -> datetime:
         ttl_seconds = self._coerce_positive_int(
             payload.get("expires_in_seconds"),
             field_name="expires_in_seconds",
             default=DEFAULT_TOOL_APPROVAL_LEASE_SECONDS,
         )
+        ttl_limits = [
+            setting.ttl_seconds
+            for setting in approval_settings.values()
+            if getattr(setting, "ttl_seconds", None) is not None
+        ]
+        if ttl_limits:
+            ttl_seconds = min(ttl_seconds, min(ttl_limits))
         requested = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
         session_expires_at = getattr(session, "expires_at", None)
         if isinstance(session_expires_at, datetime):
@@ -109,6 +129,63 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             )
             return min(requested, session_expires_at)
         return requested
+
+    def _approval_settings_for_tools(
+        self, *, session: Any, tools: list[ToolName]
+    ) -> dict[str, Any]:
+        policy_resolver = self._policy_resolver()
+        effective_policy = policy_resolver.resolve_for_session_manifest(session)
+        settings: dict[str, Any] = {}
+        for tool in tools:
+            rule = effective_policy.mcp_tool_policies.get(tool.value)
+            if rule is not None and rule.denied:
+                raise ValueError(
+                    f"Tool {tool.value} is denied by directory policy for session {session.session_id}"
+                )
+            if tool in set(effective_policy.approval_required_tools) or (
+                rule is not None and rule.require_approval
+            ):
+                raise ValueError(
+                    f"Tool {tool.value} requires per-invocation approval in this directory"
+                )
+            if rule is None:
+                continue
+            ttl_seconds = rule.max_ttl_seconds or DEFAULT_TOOL_APPROVAL_LEASE_SECONDS
+            max_uses = rule.max_uses
+            if rule.require_exact_payload:
+                raise ValueError(
+                    f"Tool {tool.value} requires exact-payload approval in this directory"
+                )
+            if rule.max_ttl_seconds is not None or max_uses is not None:
+                from agent_sandbox.models import ApprovalGrantSettings
+
+                settings[tool.value] = ApprovalGrantSettings(
+                    ttl_seconds=ttl_seconds,
+                    max_uses=max_uses,
+                    payload_mode="any",
+                )
+        return settings
+
+    def _policy_resolver(self) -> PolicyConfigResolver:
+        context = self._context()
+        runtime = getattr(context.admin_service, "runtime", None)
+        resolver = getattr(runtime, "policy_config", None)
+        if resolver is not None:
+            return resolver
+        config = getattr(runtime, "config", None)
+        if config is None:
+            provider_resolver = getattr(runtime, "provider_config", None)
+            if provider_resolver is None:
+                provider_resolver = getattr(context, "provider_config_resolver", None)
+            config = getattr(provider_resolver, "config", None)
+        if config is None:
+            config = getattr(context, "resolved_config", None)
+        if config is None:
+            raise RuntimeError(
+                "effect:session:approve-mcp-tools-for-run requires policy configuration"
+            )
+        session_store = getattr(runtime, "session_repository", None)
+        return PolicyConfigResolver(config, session_store=session_store)
 
     def _lease_store(self) -> SessionToolApprovalLeaseRepository:
         context = self._context()
@@ -184,4 +261,8 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             "workflow_run_id": lease.workflow_run_id,
             "tools": [tool.value if isinstance(tool, ToolName) else str(tool) for tool in lease.tools],
             "expires_at": lease.expires_at.astimezone(UTC).isoformat(),
+            "approval_settings": {
+                tool_name: settings.model_dump(mode="json")
+                for tool_name, settings in lease.approval_settings.items()
+            },
         }

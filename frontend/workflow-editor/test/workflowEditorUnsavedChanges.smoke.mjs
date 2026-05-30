@@ -42,6 +42,39 @@ function createDirectoryTree() {
   };
 }
 
+async function workflowViewportTransform(page) {
+  const viewport = page.locator(".react-flow__viewport");
+  await viewport.waitFor({ state: "visible" });
+  return viewport.evaluate((element) => getComputedStyle(element).transform);
+}
+
+async function changeWorkflowCanvasViewport(page) {
+  const canvasBox = await page.locator(".canvas-shell").boundingBox();
+  assert.ok(canvasBox, "expected canvas shell bounds");
+  const beforeTransform = await workflowViewportTransform(page);
+  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+  await page.mouse.wheel(0, 300);
+  await page.waitForFunction((expectedPreviousTransform) => {
+    const viewport = document.querySelector(".react-flow__viewport");
+    return Boolean(viewport) && getComputedStyle(viewport).transform !== expectedPreviousTransform;
+  }, beforeTransform, { timeout: 5000 });
+  const afterTransform = await workflowViewportTransform(page);
+  assert.notEqual(afterTransform, beforeTransform, "expected zooming to change the workflow viewport");
+  return afterTransform;
+}
+
+async function expectWorkflowViewportTransform(page, expectedTransform, message) {
+  await page.waitForTimeout(350);
+  assert.equal(await workflowViewportTransform(page), expectedTransform, message);
+}
+
+async function clickWorkflowNode(page, nodeId) {
+  const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  const nodeBox = await node.boundingBox();
+  assert.ok(nodeBox, `expected ${nodeId} node bounds`);
+  await page.mouse.click(nodeBox.x + nodeBox.width / 2, nodeBox.y + nodeBox.height / 2);
+}
+
 test("workflow editor stages unsaved changes, resets them, and guards tab and directory navigation", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -64,6 +97,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const requestedEndpoints = [];
   const pageErrors = [];
   const consoleErrors = [];
+  const consoleErrorDetails = [];
+  const failedResponses = [];
   const saveRequests = [];
   const tabConfirmMessages = [];
   const directoryConfirmMessages = [];
@@ -121,7 +156,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       validation_diagnostics: [],
     },
   };
-  const workflowDocument = {
+  let workflowDocument = {
     config_path: "workflow.json",
     layout_path: "workflow-layout.json",
     config_exists: true,
@@ -261,6 +296,14 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
+
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
@@ -271,19 +314,23 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       if (route.request().method() === "PUT") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         saveRequests.push(body);
-        assert.equal(body.expected_revision, "rev-1");
-        assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
-        assert.equal(body.config.effects[0].prompt, "Handle escalations");
-        await route.fulfill(
-          jsonResponse({
-            config: body.config,
-            layout: body.layout,
-            graphs: body.graphs,
-            output_schemas: {},
-            validation_diagnostics: [],
-            revision: "rev-2",
-          }),
-        );
+        const nextRevision = saveRequests.length === 1 ? "rev-2" : "rev-3";
+        assert.equal(body.expected_revision, workflowDocument.revision);
+        if (saveRequests.length === 1) {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
+          assert.equal(body.config.effects[0].prompt, "Handle escalations");
+        } else {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v3");
+          assert.equal(body.config.effects[0].prompt, "Handle renewals");
+        }
+        workflowDocument = {
+          ...workflowDocument,
+          config: body.config,
+          layout: body.layout,
+          graphs: body.graphs,
+          revision: nextRevision,
+        };
+        await route.fulfill(jsonResponse(workflowDocument));
         return;
       }
 
@@ -332,6 +379,17 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
+      consoleErrorDetails.push({
+        text: message.text(),
+        url: message.location().url,
+        line: message.location().lineNumber,
+        column: message.location().columnNumber,
+      });
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() === 404) {
+      failedResponses.push(response.url());
     }
   });
   page.on("dialog", async (dialog) => {
@@ -358,10 +416,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const saveStatus = page.locator(".save-status");
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
+  await changeWorkflowCanvasViewport(page);
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
-  const effectBox = await effectNode.boundingBox();
-  assert.ok(effectBox, "expected effect node bounds");
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
 
   const nodeInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Display name" });
   const displayNameInput = nodeInspector.locator(".inspector-label").filter({ hasText: "Display name" }).locator("input");
@@ -374,9 +431,15 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.ok(promptFieldBox, "expected prompt field bounds");
   assert.ok(outputsFieldBox, "expected outputs field bounds");
   assert.ok(outputsFieldBox.y > promptFieldBox.y, "expected Outputs to render after selected-node configuration fields");
+  const changedViewportTransform = await workflowViewportTransform(page);
   await displayNameInput.fill("Dispatch agent v2");
   const promptInput = promptField.locator("input");
   await promptInput.fill("Handle escalations");
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "inspector field edits should not refit the workflow canvas",
+  );
 
   await assert.doesNotReject(
     () => page.locator(".node-title").filter({ hasText: "Dispatch agent v2" }).first().waitFor({ state: "visible", timeout: 60000 }),
@@ -389,14 +452,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
 
-  const triggerNode = page.locator('.react-flow__node[data-id="trigger-1"]');
-  const triggerBox = await triggerNode.boundingBox();
-  assert.ok(triggerBox, "expected trigger node bounds");
-  await page.mouse.click(triggerBox.x + triggerBox.width / 2, triggerBox.y + triggerBox.height / 2);
+  await clickWorkflowNode(page, "trigger-1");
   await page.waitForTimeout(250);
   await nodeInspector.waitFor({ state: "visible" });
   assert.equal(await displayNameInput.inputValue(), "Incoming command");
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
   await page.waitForTimeout(250);
   await nodeInspector.waitFor({ state: "visible" });
   await assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
@@ -416,7 +476,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   await assert.equal(saveRequests.length, 0);
 
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
   await page.waitForTimeout(250);
   await displayNameInput.fill("Dispatch agent v2");
   await promptInput.fill("Handle escalations");
@@ -446,6 +506,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v2"));
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "saving workflow edits should not refit the workflow canvas",
+  );
 
   assert.equal(saveRequests.length, 1);
   assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
@@ -456,8 +521,32 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
   assert.equal(await promptInput.inputValue(), "Handle escalations");
 
+  await displayNameInput.fill("Dispatch agent v3");
+  await promptInput.fill("Handle renewals");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v3" }).count(), 1);
+
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+
+  assert.equal(saveRequests.length, 2);
+  assert.equal(saveRequests[1].expected_revision, "rev-2");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
+  assert.equal(await page.locator(".save-error-box").count(), 0);
+  assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v3");
+  assert.equal(await promptInput.inputValue(), "Handle renewals");
+
   assert.deepEqual(pageErrors, []);
-  assert.deepEqual(consoleErrors, []);
+  assert.deepEqual(consoleErrors, [], JSON.stringify(consoleErrorDetails));
+  assert.deepEqual(failedResponses, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));

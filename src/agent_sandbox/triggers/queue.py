@@ -381,8 +381,8 @@ class SqliteTriggerEventQueue:
                 """
                 SELECT payload_json
                 FROM trigger_events
-                WHERE occurred_at BETWEEN ? AND ?
-                ORDER BY occurred_at ASC, event_id ASC
+                WHERE COALESCE(delivered_at, inflight_at, occurred_at) BETWEEN ? AND ?
+                ORDER BY COALESCE(delivered_at, inflight_at, occurred_at) ASC, event_id ASC
                 """,
                 (start_text, end_text),
             ).fetchall()

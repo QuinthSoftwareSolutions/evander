@@ -21,6 +21,7 @@ SCRIPTS = [
     "create_libvirt_network.sh",
     "destroy_agent_vm.sh",
     "open_agent_pr.sh",
+    "push_existing_pr_branch.sh",
     "promote_agent_branch.sh",
     "inspect_nuget_cache.sh",
     "install_systemd_units.sh",

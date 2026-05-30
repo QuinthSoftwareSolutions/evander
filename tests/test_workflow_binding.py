@@ -37,6 +37,25 @@ def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None
     }
 
 
+def test_workflow_binding_resolution_supports_dynamic_object_keys() -> None:
+    raw = {
+        "targets": {
+            "${{gate_1.alias}}-api": {
+                "base_url": "https://${{gate_1.alias}}.example.test:5001"
+            }
+        }
+    }
+    upstream = {"gate_1": {"alias": "demo7"}}
+    declared = {"gate_1": {"alias"}}
+
+    result = resolve_gate_map_bindings(raw, upstream, declared)
+
+    assert result.resolved_config == {
+        "targets": {"demo7-api": {"base_url": "https://demo7.example.test:5001"}}
+    }
+    assert result.trace.consumed_output_keys == ("gate_1.alias",)
+
+
 def test_workflow_binding_resolution_records_trace_entries() -> None:
     raw = {
         "prompt": "Ticket ${{trigger_1.ticket_id}}",

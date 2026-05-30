@@ -2479,6 +2479,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
         "new_context",
     ]
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+    assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "disabled"
     assert captured["timeout"] == 120.0
     assert watcher == {}
 
@@ -2772,6 +2773,7 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
             expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
             allowed_tools=[],
             model="gpt-5.2-codex",
+            web_search_enabled=True,
         ),
     )
 
@@ -2795,6 +2797,7 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
     assert result.success is True
     assert result.thread_id == "thread-model-1"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+    assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
 
 
 def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
@@ -3075,9 +3078,12 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert "execution=exec-new" in latest_page["text"]
     assert "new line 2" in latest_page["text"]
     assert "exec-old" not in latest_page["text"]
+    assert "session transcript" not in latest_page["text"]
+    assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
     assert latest_page["total_lines"] is None
-    assert fake_backend.calls == [("exec-new", 0, "augmented")]
+    assert latest_page["view"] == "executions"
+    assert fake_backend.calls == [("exec-new", 0, "execution")]
 
     older_page = service.get_admin_agent_log_page(
         "session-1",
@@ -3089,11 +3095,455 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert "execution=exec-old" in older_page["text"]
     assert "old line 2" in older_page["text"]
     assert "exec-new" not in older_page["text"]
+    assert "session transcript" not in older_page["text"]
+    assert "augmented" not in older_page["text"]
     assert older_page["has_more_before"] is False
-    assert fake_backend.calls[-2:] == [
-        ("exec-new", 0, "augmented"),
-        ("exec-old", 0, "raw"),
+    assert older_page["view"] == "executions"
+    assert fake_backend.calls == [
+        ("exec-new", 0, "execution"),
+        ("exec-new", 0, "execution"),
+        ("exec-old", 0, "execution"),
     ]
+
+
+def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-raw-default",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-raw-default",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-raw-default",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-raw-default",
+            session_id="session-raw-default",
+            worker_job_id="job-raw-default",
+            worker_url="http://worker.test",
+            target_name="target-raw-default",
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "execution":
+                return "execution transcript for exec-raw-default\n"
+            if mode == "raw":
+                return "raw stdout for exec-raw-default\n"
+            if mode == "session":
+                return "session transcript for exec-raw-default\n"
+            if mode == "augmented":
+                return "augmented transcript for exec-raw-default\n"
+            raise AssertionError(f"unexpected mode: {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    snapshot_text = service.get_admin_agent_log_snapshot(
+        "session-raw-default",
+        backend="container_worker_vm",
+    )
+    page = service.get_admin_agent_log_page(
+        "session-raw-default",
+        backend="container_worker_vm",
+        limit=20,
+    )
+
+    assert "execution transcript for exec-raw-default" in snapshot_text
+    assert "raw stdout for exec-raw-default" not in snapshot_text
+    assert "session transcript for exec-raw-default" not in snapshot_text
+    assert "augmented transcript for exec-raw-default" not in snapshot_text
+    assert "log=execution" in snapshot_text
+    assert "execution transcript for exec-raw-default" in page["text"]
+    assert "raw stdout for exec-raw-default" not in page["text"]
+    assert "session transcript for exec-raw-default" not in page["text"]
+    assert "augmented transcript for exec-raw-default" not in page["text"]
+    assert page["view"] == "executions"
+    assert all(mode == "execution" for _, _, mode in fake_backend.calls)
+
+
+def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a2",
+            session_id="session-threads",
+            worker_job_id="job-a2",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 30, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-b1",
+            session_id="session-threads",
+            worker_job_id="job-b1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a1",
+            session_id="session-threads",
+            worker_job_id="job-a1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                if target == "exec-b1":
+                    return "session id: thread-b\nraw log for b1\n"
+                if target == "exec-a1":
+                    return "session id: thread-a\nraw log for a1\n"
+                if target == "exec-a2":
+                    return "session id: thread-a\nraw log for a2\n"
+            if mode == "session":
+                if target == "exec-b1":
+                    return "thread-b transcript\n"
+                if target == "exec-a1":
+                    return "thread-a transcript\n"
+                raise AssertionError(f"unexpected session fetch for {target}")
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"].count("thread=thread-b") == 1
+    assert page["text"].count("thread=thread-a") == 1
+    assert page["text"].index("thread=thread-b") < page["text"].index("thread=thread-a")
+    assert "first_execution=exec-b1" in page["text"]
+    assert "first_execution=exec-a1" in page["text"]
+    assert "executions=1" in page["text"]
+    assert "executions=2" in page["text"]
+    assert "thread-b transcript" in page["text"]
+    assert "thread-a transcript" in page["text"]
+    assert fake_backend.calls == [
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 0, "raw"),
+        ("exec-a2", 0, "raw"),
+        ("exec-b1", 0, "session"),
+        ("exec-a1", 0, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_fetches_offset_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-window",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-window",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-window",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-thread-window",
+            session_id="session-thread-window",
+            worker_job_id="job-thread-window",
+            worker_url="http://worker.test",
+            target_name="target-thread-window",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-thread-window":
+                return "session id: thread-window\nraw log\n"
+            if mode == "session" and target == "exec-thread-window":
+                transcript_lines = [f"thread line {index}" for index in range(1, 11)]
+                selected_lines = transcript_lines if lines <= 0 else transcript_lines[-lines:]
+                return "\n".join(selected_lines) + "\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-window",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+        offset=3,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"] == "thread line 3\nthread line 4\nthread line 5\n"
+    assert page["has_more_before"] is True
+    assert fake_backend.calls == [
+        ("exec-thread-window", 0, "raw"),
+        ("exec-thread-window", 0, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_searches_full_transcript(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-search",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-search",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-search",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-thread-search",
+            session_id="session-thread-search",
+            worker_job_id="job-thread-search",
+            worker_url="http://worker.test",
+            target_name="target-thread-search",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-thread-search":
+                return "session id: thread-search\nraw log\n"
+            if mode == "session" and target == "exec-thread-search":
+                transcript_lines = [
+                    "older needle match",
+                    "middle line",
+                    "recent line",
+                ]
+                selected_lines = transcript_lines if lines <= 0 else transcript_lines[-lines:]
+                return "\n".join(selected_lines) + "\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-search",
+        backend="container_worker_vm",
+        view="threads",
+        limit=1,
+        query="needle",
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"] == "older needle match\n"
+    assert page["total_lines"] == 1
+    assert fake_backend.calls == [
+        ("exec-thread-search", 0, "raw"),
+        ("exec-thread-search", 0, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-unthreaded",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-unthreaded",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-unthreaded",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-alone",
+            session_id="session-unthreaded",
+            worker_job_id="job-alone",
+            worker_url="http://worker.test",
+            target_name="target-unthreaded",
+            started_at=datetime(2026, 5, 18, 9, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-alone":
+                return "raw log without thread id\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-unthreaded",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert "thread=unthreaded" in page["text"]
+    assert "first_execution=exec-alone" in page["text"]
+    assert "executions=1" in page["text"]
+    assert "raw log without thread id" in page["text"]
+    assert fake_backend.calls == [("exec-alone", 0, "raw")]
 
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
@@ -3456,12 +3906,30 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
         tool_name="email_send_approved",
     )
     health = service.approval_queue_health(directory_path=team_path, direct_only=True)
+    root_descendants = service.list_approval_requests(
+        directory_path="root",
+        direct_only=False,
+    )
+    root_direct = service.list_approval_requests(
+        directory_path="root",
+        direct_only=True,
+    )
+    root_descendant_health = service.approval_queue_health(
+        directory_path="root",
+        direct_only=False,
+    )
     review = service.get_approval_review("approval-pending")
 
     assert [request.request_id for request in pending] == ["approval-pending"]
     assert health.total == 2
     assert health.pending == 1
     assert health.denied == 1
+    assert {request.request_id for request in root_descendants} == {
+        "approval-pending",
+        "approval-denied",
+    }
+    assert root_direct == []
+    assert root_descendant_health.total == 2
     assert review["request"]["intended_effect"] == "Send the approved email payload to the recipient."
     assert review["redacted_payload"]["token"] == "<redacted>"
     assert review["request"]["payload"]["token"] == "<redacted>"
@@ -4299,10 +4767,13 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     assert reread.revision == save_result.revision
     assert reread.saved_at is not None
 
+    revision_config = dict(reread.config)
+    if save_result.graphs:
+        revision_config.pop("workflow_graphs", None)
     expected_revision = hashlib.sha256(
         json.dumps(
             {
-                "config": reread.config,
+                "config": revision_config,
                 "layout": save_result.layout,
                 "graphs": [graph.model_dump(mode="json") for graph in save_result.graphs],
             },
@@ -5372,6 +5843,278 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     assert cleared_gate is not None
     assert cleared_gate.status == "failed"
     assert cleared_gate.clear_reason == "manual_clear_stale_workflow_runs"
+
+
+def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_json_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    queue_store = TriggerEventQueue(stores["event_queue_store_path"])
+    queue_store.publish(
+        TriggerEvent(
+            event_id="evt-trigger-recent",
+            trigger_id="trigger-recent",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "json"},
+            trace_id="trace-trigger-recent",
+        )
+    )
+    queue_store.mark_delivered("evt-trigger-recent", delivered_at=now - timedelta(seconds=3))
+
+    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-effect-recent",
+            idempotency_key="evt-effect-recent::effect-recent",
+            event_id="evt-effect-recent",
+            trace_id="trace-effect-recent",
+            source_node_id="trigger-recent",
+            source_trigger_type="trigger:test",
+            effect_id="effect-recent",
+            effect_type="effect:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=4),
+            finished_at=now - timedelta(seconds=2),
+            resolved_config_hash="hash-effect-recent",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-effect-old",
+            idempotency_key="evt-effect-old::effect-old",
+            event_id="evt-effect-old",
+            trace_id="trace-effect-old",
+            source_node_id="trigger-old",
+            source_trigger_type="trigger:test",
+            effect_id="effect-old",
+            effect_type="effect:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=20),
+            resolved_config_hash="hash-effect-old",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+        )
+    )
+
+    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+    gate_store.record_execution(
+        GateExecutionRecord(
+            execution_id="exec-gate-recent",
+            idempotency_key="evt-gate-recent::gate-recent",
+            event_id="evt-gate-recent",
+            trace_id="trace-gate-recent",
+            source_node_id="effect-recent",
+            source_trigger_type="trigger:test",
+            gate_id="gate-recent",
+            gate_type="gate:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=3),
+            finished_at=now - timedelta(seconds=1),
+            resolved_config_hash="hash-gate-recent",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+            inputs_by_source={},
+            input_event_ids_by_source={},
+            input_occurred_at_by_source={},
+        )
+    )
+
+    snapshot = service.read_workflow_run_snapshot()
+    payload = snapshot.model_dump(mode="json")
+
+    assert snapshot.generated_at == now
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert [item["node_id"] for item in payload["recent_node_activity"]] == [
+        "gate-recent",
+        "effect-recent",
+        "trigger-recent",
+    ]
+    assert payload["recent_node_activity"][2]["activity_at"] == "2026-05-21T11:59:57Z"
+    assert payload["recent_node_activity"][0]["source"] == "gate_execution"
+
+
+def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "json-runtime"
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin,
+        "_workflow_run_store_bundle",
+        lambda _: pytest.fail("JSON snapshot read constructed workflow stores"),
+    )
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    snapshot = service.read_workflow_run_snapshot()
+
+    assert snapshot.runs == []
+    assert snapshot.node_activity == {}
+    assert snapshot.recent_node_activity == []
+    assert not runtime_dir.exists()
+
+
+def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_sqlite_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "sqlite",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 365,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    queue_store.publish(
+        TriggerEvent(
+            event_id="evt-trigger-sqlite",
+            trigger_id="trigger-sqlite",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "sqlite"},
+            trace_id="trace-trigger-sqlite",
+        )
+    )
+    queue_store.mark_delivered("evt-trigger-sqlite", delivered_at=now - timedelta(seconds=3))
+
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-effect-sqlite",
+            idempotency_key="evt-effect-sqlite::effect-sqlite",
+            event_id="evt-effect-sqlite",
+            trace_id="trace-effect-sqlite",
+            source_node_id="trigger-sqlite",
+            source_trigger_type="trigger:test",
+            effect_id="effect-sqlite",
+            effect_type="effect:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=4),
+            finished_at=now - timedelta(seconds=2),
+            resolved_config_hash="hash-effect-sqlite",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-effect-sqlite-old",
+            idempotency_key="evt-effect-sqlite-old::effect-old",
+            event_id="evt-effect-sqlite-old",
+            trace_id="trace-effect-sqlite-old",
+            source_node_id="trigger-sqlite-old",
+            source_trigger_type="trigger:test",
+            effect_id="effect-sqlite-old",
+            effect_type="effect:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=20),
+            resolved_config_hash="hash-effect-sqlite-old",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+        )
+    )
+
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
+    gate_store.record_execution(
+        GateExecutionRecord(
+            execution_id="exec-gate-sqlite",
+            idempotency_key="evt-gate-sqlite::gate-sqlite",
+            event_id="evt-gate-sqlite",
+            trace_id="trace-gate-sqlite",
+            source_node_id="effect-sqlite",
+            source_trigger_type="trigger:test",
+            gate_id="gate-sqlite",
+            gate_type="gate:test",
+            status="succeeded",
+            started_at=now - timedelta(seconds=3),
+            finished_at=now - timedelta(seconds=1),
+            resolved_config_hash="hash-gate-sqlite",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+            inputs_by_source={},
+            input_event_ids_by_source={},
+            input_occurred_at_by_source={},
+        )
+    )
+
+    snapshot = service.read_workflow_run_snapshot()
+    payload = snapshot.model_dump(mode="json")
+
+    assert snapshot.generated_at == now
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert [item["node_id"] for item in payload["recent_node_activity"]] == [
+        "gate-sqlite",
+        "effect-sqlite",
+        "trigger-sqlite",
+    ]
+    assert payload["recent_node_activity"][2]["activity_at"] == "2026-05-21T11:59:57Z"
+    assert payload["recent_node_activity"][2]["source"] == "trigger_event"
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:
@@ -6589,9 +7332,7 @@ def test_delete_session_cleans_detached_worker_state(
             self.deleted_sessions.append(session_id)
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "removed"
                 record.cleanup_status = "cleanup_succeeded"
                 record.cleanup_attempted_at = attempted_at
@@ -6738,9 +7479,7 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "cleanup_failed"
                 record.cleanup_status = "cleanup_failed"
                 record.cleanup_attempted_at = attempted_at
@@ -7154,6 +7893,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "communication_file_allowed_extensions": [".txt", " txt ", ".png"],
             "communication_file_blocked_extensions": [".exe", " exe "],
             "communication_file_require_approval_for_send": True,
+            "web_search_enabled": True,
             "metadata": {"keep": "new-value"},
         },
     )
@@ -7178,6 +7918,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_allowed_extensions == [".txt", "txt", ".png"]
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
+    assert updated.web_search_enabled is True
     assert updated.metadata == {"keep": "new-value"}
 
 
@@ -7237,6 +7978,7 @@ def test_effective_tool_policy_payload_combines_directory_and_session_rules(
 
     assert effective is not None
     assert effective["allowed_tools"] == ["claim_next_issue", "approval_check"]
+    assert effective["inherited_approval_required_tools"] == ["approval_check"]
     assert effective["approval_required_tools"] == [
         "approval_check",
         "complete_issue",
@@ -8213,6 +8955,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         vm_name="lab-vm",
         session_id="lab-session",
         labels={"workflow": "issue-worker", "agent_role": "issue"},
+        metadata={"workflow": {"state": "active"}, "labels": {"priority": "high"}},
         dotnet=True,
         nuget=True,
         playwright=True,
@@ -8246,7 +8989,14 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
-    assert manifest.metadata == {"labels": {"workflow": "issue-worker", "agent_role": "issue"}}
+    assert manifest.metadata == {
+        "workflow": {"state": "active"},
+        "labels": {
+            "workflow": "issue-worker",
+            "agent_role": "issue",
+            "priority": "high",
+        },
+    }
     assert result.message == "ok:setup_vm.sh"
 
 
@@ -8817,6 +9567,56 @@ def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
     rule = manifest.tool_argument_policies["create_ado_backlog_item"][0]
     assert rule.id == "upsert-policy"
     assert rule.constraints[0].path == "project"
+
+
+def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is True
+
+    result = service.create_vm(
+        vm_name="lab-vm-2",
+        session_id="lab-session",
+        allow_existing_session=True,
+        web_search_enabled=False,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.web_search_enabled is False
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(

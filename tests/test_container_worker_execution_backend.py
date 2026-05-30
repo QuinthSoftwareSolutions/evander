@@ -9,7 +9,10 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
-from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRepository
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -224,9 +227,10 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
     assert handle.execution_id == "exec-1"
     assert handle.image == "custom-runner:latest"
     assert handle.repo_source == "git@example.test/repo.git"
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["worker_job_id"] == "exec-1"
-    assert store["exec-1"]["session_id"] == "session-1"
+    stored = backend.repository.get("exec-1")
+    assert stored is not None
+    assert stored.worker_job_id == "exec-1"
+    assert stored.session_id == "session-1"
 
 
 def test_start_requires_first_class_command(tmp_path: Path) -> None:
@@ -286,11 +290,11 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
     assert client.stopped == ["exec-1"]
     assert client.logged == [("exec-1", None), ("exec-1", "raw")]
     assert client.deleted == ["exec-1"]
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
+    store = backend.repository.read_all()
     assert set(store) == {"exec-1"}
-    assert store["exec-1"]["last_status"] == "removed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
-    assert store["exec-1"]["cleanup_error"] is None
+    assert store["exec-1"].last_status == "removed"
+    assert store["exec-1"].cleanup_status == "cleanup_succeeded"
+    assert store["exec-1"].cleanup_error is None
 
 
 def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
@@ -317,11 +321,11 @@ def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
     with pytest.raises(ContainerWorkerClientError):
         backend.destroy("exec-1")
 
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["last_status"] == "cleanup_failed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_failed"
-    assert "boom" in store["exec-1"]["cleanup_error"]
-    assert store["exec-1"]["finished_at"] is not None
+    store = backend.repository.read_all()
+    assert store["exec-1"].last_status == "cleanup_failed"
+    assert store["exec-1"].cleanup_status == "cleanup_failed"
+    assert "boom" in store["exec-1"].cleanup_error
+    assert store["exec-1"].finished_at is not None
 
 
 def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path: Path) -> None:
@@ -364,10 +368,65 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert client.deleted_sessions == ["session-1"]
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["last_status"] == "removed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
-    assert store["exec-1"]["cleanup_error"] is None
+    store = backend.repository.read_all()
+    assert store["exec-1"].last_status == "removed"
+    assert store["exec-1"].cleanup_status == "cleanup_succeeded"
+    assert store["exec-1"].cleanup_error is None
+
+
+def test_delete_session_uses_targeted_repository_lookup(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    record = ContainerWorkerExecutionRepository(
+        tmp_path / "container-worker-executions.json"
+    )
+    record.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="session-1",
+            worker_job_id="worker-1",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            last_status="running",
+        )
+    )
+
+    class TargetedRepository:
+        def __init__(self, source: ContainerWorkerExecutionRepository) -> None:
+            self.source = source
+            self.listed_sessions: list[str] = []
+            self.updated: list[ContainerWorkerExecutionRecord] = []
+
+        def list_by_session(self, session_id: str) -> list[ContainerWorkerExecutionRecord]:
+            self.listed_sessions.append(session_id)
+            return self.source.list_by_session(session_id)
+
+        def put(self, value: ContainerWorkerExecutionRecord) -> None:
+            self.updated.append(value)
+            self.source.put(value)
+
+        def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
+            raise AssertionError("delete_session should not scan all execution mappings")
+
+    targeted_repository = TargetedRepository(record)
+    backend = ContainerWorkerVmExecutionBackend(
+        config=GatewayConfig(
+            runtime_dir=tmp_path,
+            execution_backend="container_worker_vm",
+            container_worker_base_url="http://worker.test",
+        ),
+        client=client,
+        repository=targeted_repository,  # type: ignore[arg-type]
+    )
+
+    result = backend.delete_session("session-1")
+
+    assert result == {"deleted": True, "session_id": "session-1"}
+    assert targeted_repository.listed_sessions == ["session-1"]
+    assert [updated.execution_id for updated in targeted_repository.updated] == ["exec-1"]
+    stored = record.get("exec-1")
+    assert stored is not None
+    assert stored.last_status == "removed"
+    assert stored.cleanup_status == "cleanup_succeeded"
 
 
 def test_mssql_provisioning_uses_configured_advertised_endpoint(tmp_path: Path) -> None:
@@ -437,7 +496,9 @@ def test_secret_metadata_is_redacted_before_request_and_store(tmp_path: Path) ->
     )
 
     request_payload = client.created[0].model_dump(mode="json")
-    store_text = (tmp_path / "container-worker-executions.json").read_text(encoding="utf-8")
+    store_record = backend.repository.get("exec-1")
+    assert store_record is not None
+    store_text = json.dumps(store_record.model_dump(mode="json"))
     assert "should-not-leak" not in json.dumps(request_payload)
     assert "hidden" not in json.dumps(request_payload)
     assert "should-not-leak" not in store_text

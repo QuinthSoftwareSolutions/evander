@@ -21,8 +21,10 @@ from pydantic import (
 
 from agent_sandbox.models import (
     DirectoryPath,
+    McpToolPolicyRule,
     ToolArgumentPolicyRule,
     ToolName,
+    normalize_mcp_tool_policies,
     normalize_tool_argument_policies,
     normalize_tool_names,
     validate_tool_argument_policy_map,
@@ -45,6 +47,12 @@ from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _contains_url_control_character(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 bootstrap_default_node_schemas()
 
 
@@ -225,6 +233,11 @@ class GatewayConfig(BaseModel):
     )
     nuget_azure_pat_env: str = "AZURE_ARTIFACTS_PAT"
     nuget_relay_timeout_seconds: float = 300.0
+    npm_audit_facade_host: str = "0.0.0.0"
+    npm_audit_facade_port: int = 11881
+    npm_audit_facade_timeout_seconds: float = 300.0
+    npm_audit_facade_audit_registry_url: str = "https://registry.npmjs.org"
+    npm_audit_facade_package_registry_url: str | None = None
     default_session_ttl_seconds: int = 28800
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -240,6 +253,7 @@ class GatewayConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
@@ -328,6 +342,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
         "openai_realtime_api_base_url",
         "voice_media_controller_url",
@@ -338,6 +354,10 @@ class GatewayConfig(BaseModel):
     def normalize_http_url_fields(cls, value: object, info) -> object:
         if not isinstance(value, str):
             return value
+        if _contains_url_control_character(value):
+            raise ValueError(
+                f"{info.field_name} must be a valid http(s) URL, got {value!r}"
+            )
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError(f"{info.field_name} cannot be empty")
@@ -347,6 +367,11 @@ class GatewayConfig(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("mcp_tool_policies", mode="before")
+    @classmethod
+    def normalize_mcp_tool_policies_field(cls, value: object) -> dict[str, object]:
+        return normalize_mcp_tool_policies(value, field_name="mcp_tool_policies")
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
@@ -377,6 +402,8 @@ class GatewayConfig(BaseModel):
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "npm_audit_facade_audit_registry_url",
+        "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
         "openai_realtime_api_base_url",
         "voice_media_controller_url",
@@ -811,6 +838,12 @@ class OrchestrationCoreConfig(BaseModel):
     orchestration_store_backend: Literal["sqlite", "json"] = "sqlite"
     orchestration_store_path: Path | None = None
     orchestration_retention_days: int = Field(default=30, ge=0)
+    orchestration_wal_checkpoint_mode: Literal[
+        "disabled", "passive", "full", "restart", "truncate"
+    ] = "truncate"
+    orchestration_wal_checkpoint_min_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
+    orchestration_wal_checkpoint_interval_seconds: int = Field(default=5 * 60, ge=0)
+    orchestration_wal_checkpoint_busy_timeout_ms: int = Field(default=1_000, ge=0)
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None

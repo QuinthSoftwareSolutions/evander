@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
@@ -12,8 +14,21 @@ from agent_sandbox.admin.service import (
     AdminService,
 )
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
-from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
-from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary, ToolName
+from agent_sandbox.admin.web.shared import (
+    AdminWebAuth,
+    json_error,
+    request_has_privileged_operations,
+)
+from agent_sandbox.models import (
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
+    ApprovalRequest,
+    ApprovalStatus,
+    McpToolPolicyRule,
+    SessionSummary,
+    ToolName,
+    normalize_mcp_tool_policies,
+)
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
@@ -48,6 +63,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
 
 
 _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
+    "web_search_enabled": "bool",
     "communication_file_receive_enabled": "bool",
     "communication_file_send_enabled": "bool",
     "communication_file_max_bytes": "int_or_null",
@@ -62,19 +78,30 @@ _SESSION_POLICY_FIELD_LABELS: dict[str, str] = {
     field_name: field_name.removeprefix("communication_file_").replace("_", " ")
     for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 }
+_SESSION_POLICY_FIELD_LABELS["web_search_enabled"] = "web search"
 _SESSION_POLICY_FIELD_LABELS["tool_argument_policies"] = "tool argument policy"
 
 
 def _session_policy_field_catalog() -> list[dict[str, str]]:
     catalog = [
         {
-            "field_name": field_name,
-            "label": _SESSION_POLICY_FIELD_LABELS[field_name],
-            "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
-            "section": "Communication files",
-        }
-        for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+            "field_name": "web_search_enabled",
+            "label": _SESSION_POLICY_FIELD_LABELS["web_search_enabled"],
+            "kind": _SESSION_POLICY_FIELD_KINDS["web_search_enabled"],
+            "section": "Hosted tools",
+        },
     ]
+    catalog.extend(
+        [
+            {
+                "field_name": field_name,
+                "label": _SESSION_POLICY_FIELD_LABELS[field_name],
+                "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
+                "section": "Communication files",
+            }
+            for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+        ]
+    )
     catalog.append(
         {
             "field_name": "tool_argument_policies",
@@ -163,6 +190,56 @@ def _approval_review_payload(review: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _json_revision(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _rule_effective_settings(rule: McpToolPolicyRule | None) -> ApprovalGrantSettings:
+    settings = ApprovalGrantSettings()
+    if rule is not None and rule.default_settings is not None:
+        settings = rule.default_settings
+    if rule is not None:
+        ttl_seconds = settings.ttl_seconds
+        if rule.max_ttl_seconds is not None:
+            ttl_seconds = min(ttl_seconds, rule.max_ttl_seconds)
+        max_uses = settings.max_uses
+        if rule.max_uses is not None:
+            max_uses = rule.max_uses if max_uses is None else min(max_uses, rule.max_uses)
+        payload_mode = settings.payload_mode
+        if rule.require_exact_payload:
+            payload_mode = ApprovalPayloadMode.EXACT
+        settings = ApprovalGrantSettings(
+            ttl_seconds=ttl_seconds,
+            max_uses=max_uses,
+            payload_mode=payload_mode,
+        )
+    return settings
+
+
+def _tool_option(tool: ToolName) -> dict[str, Any]:
+    return {
+        "value": tool.value,
+        "label": tool.value.replace("_", " "),
+        "description": _TOOL_DESCRIPTIONS.get(tool, ""),
+    }
+
+
+def _approval_actor_from_request(
+    auth: AdminWebAuth, request: Request, payload: dict[str, Any]
+) -> str:
+    if not auth.config.auth_required:
+        return str(payload.get("approver") or "").strip()
+    session = auth.require(request)
+    return str(
+        session.get("name")
+        or session.get("login")
+        or session.get("sub")
+        or session.get("sid")
+        or ""
+    ).strip()
+
+
 def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [
@@ -188,7 +265,7 @@ def _wake_schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 def session_approval_routes(
     service: AdminService,
-    _auth: AdminWebAuth,
+    auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
     async def approvals_index(request: Request) -> JSONResponse:
@@ -243,7 +320,7 @@ def session_approval_routes(
             return json_error("Request body must be valid JSON.")
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
-        approver = str(payload.get("approver") or "").strip()
+        approver = _approval_actor_from_request(auth, request, payload)
         reason = str(payload.get("reason") or "").strip()
         approve_raw = payload.get("approve")
         if not approver:
@@ -264,15 +341,36 @@ def session_approval_routes(
             return json_error(str(exc), status_code=status_code)
         return JSONResponse({"request": _approval_payload(updated)})
 
+    async def revoke_approval(request: Request) -> JSONResponse:
+        request_id = request.path_params.get("request_id", "")
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        approver = _approval_actor_from_request(auth, request, payload)
+        reason = str(payload.get("reason") or "").strip()
+        if not approver:
+            return json_error("Approver is required.")
+        if not reason:
+            return json_error("Reason is required.")
+        try:
+            updated = service.revoke_approval_request(
+                request_id,
+                approver=approver,
+                reason=reason,
+            )
+        except ValueError as exc:
+            status_code = 404 if "Unknown approval request" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        return JSONResponse({"request": _approval_payload(updated)})
+
     async def sessions_catalog(_: Request) -> JSONResponse:
         return JSONResponse(
             {
                 "tool_options": [
-                    {
-                        "value": tool.value,
-                        "label": tool.value.replace("_", " "),
-                        "description": _TOOL_DESCRIPTIONS.get(tool, ""),
-                    }
+                    _tool_option(tool)
                     for tool in ToolName
                 ],
                 "resume_mode_options": [
@@ -449,6 +547,97 @@ def session_approval_routes(
             }
         )
 
+    def _mcp_tools_payload(directory_path: str) -> dict[str, Any]:
+        raw_result = service.read_directory_domain_config(directory_path, "policy")
+        raw_config = (
+            raw_result.data.config
+            if raw_result.ok and raw_result.data is not None and raw_result.data.config is not None
+            else {}
+        )
+        raw_policies = raw_config.get("mcp_tool_policies")
+        if not isinstance(raw_policies, dict):
+            raw_policies = {}
+        effective_policy = service.runtime.policy_config.resolve_for_directory(directory_path)
+        items: list[dict[str, Any]] = []
+        for tool in sorted(ToolName, key=lambda item: item.value):
+            effective_rule = effective_policy.mcp_tool_policies.get(tool.value)
+            effective_settings = _rule_effective_settings(effective_rule)
+            items.append(
+                {
+                    **_tool_option(tool),
+                    "local_policy": raw_policies.get(tool.value),
+                    "effective_policy": effective_rule.model_dump(mode="json")
+                    if effective_rule is not None
+                    else None,
+                    "effective_settings": effective_settings.model_dump(mode="json"),
+                    "approval_required": (
+                        tool in set(effective_policy.approval_required_tools)
+                        or bool(effective_rule and effective_rule.require_approval)
+                    ),
+                    "denied": bool(effective_rule and effective_rule.denied),
+                }
+            )
+        return {
+            "directory_path": directory_path,
+            "revision": _json_revision({"directory_path": directory_path, "policy": raw_config}),
+            "mcp_tool_policies": raw_policies,
+            "items": items,
+        }
+
+    async def mcp_tools_index(request: Request) -> JSONResponse:
+        directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
+        try:
+            payload = _mcp_tools_payload(directory_path)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(payload)
+
+    async def update_mcp_tools(request: Request) -> JSONResponse:
+        directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
+        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+            return json_error("Privileged operations are locked.", status_code=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        expected_revision = str(payload.get("expected_revision") or "").strip()
+        if not expected_revision:
+            return json_error("expected_revision is required.", status_code=428)
+        try:
+            current = _mcp_tools_payload(directory_path)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        if current["revision"] != expected_revision:
+            return json_error(
+                "MCP tool policy changed before save. Reload before saving again.",
+                status_code=409,
+            )
+        try:
+            normalized_policies = normalize_mcp_tool_policies(
+                payload.get("mcp_tool_policies"),
+                field_name="mcp_tool_policies",
+            )
+            validated_policies = {
+                tool_name: McpToolPolicyRule.model_validate(policy).model_dump(mode="json")
+                for tool_name, policy in normalized_policies.items()
+            }
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        raw_result = service.read_directory_domain_config(directory_path, "policy")
+        raw_config = (
+            dict(raw_result.data.config)
+            if raw_result.ok and raw_result.data is not None and raw_result.data.config is not None
+            else {}
+        )
+        raw_config["mcp_tool_policies"] = validated_policies
+        result = service.write_directory_domain_config(directory_path, "policy", raw_config)
+        if not result.ok:
+            message = result.errors[0].message if result.errors else "Unable to save MCP tool policy."
+            return json_error(message, status_code=400)
+        return JSONResponse(_mcp_tools_payload(directory_path))
+
     async def list_wake_schedules(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -533,6 +722,9 @@ def session_approval_routes(
         ),
         Route("/api/admin/approvals/{request_id:str}", get_approval_detail, methods=["GET"]),
         Route("/api/admin/approvals/{request_id:str}/decision", decide_approval, methods=["POST"]),
+        Route("/api/admin/approvals/{request_id:str}/revoke", revoke_approval, methods=["POST"]),
+        Route("/api/admin/mcp-tools", mcp_tools_index, methods=["GET"]),
+        Route("/api/admin/mcp-tools", update_mcp_tools, methods=["PUT"]),
         Route("/api/admin/sessions/catalog", sessions_catalog, methods=["GET"]),
         Route(
             "/api/admin/sessions",

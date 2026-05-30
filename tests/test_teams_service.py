@@ -24,6 +24,27 @@ def patch_httpx_client(
     )
 
 
+class RecordingTeamsMessageStore:
+    def __init__(self) -> None:
+        self.records: dict[str, TeamsMessageEnvelope] = {}
+        self.put_calls = 0
+        self.put_many_calls = 0
+
+    def get(self, cursor: str) -> TeamsMessageEnvelope | None:
+        return self.records.get(cursor)
+
+    def put(self, cursor: str, envelope: TeamsMessageEnvelope) -> None:
+        self.put_calls += 1
+        self.records[cursor] = envelope
+
+    def put_many(self, records: dict[str, TeamsMessageEnvelope]) -> None:
+        self.put_many_calls += 1
+        self.records.update(records)
+
+    def read_all(self) -> dict[str, TeamsMessageEnvelope]:
+        return dict(self.records)
+
+
 def test_teams_services_default_and_override_read_reaction_emoji(tmp_path: Path) -> None:
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     stub_default = StubTeamsService(store)
@@ -96,6 +117,103 @@ def test_graph_teams_service_creates_one_on_one_chat_for_allowlisted_user(
         "chat:19:one-on-one@thread.v2"
     )
     assert [request.url.path for request in requests] == ["/v1.0/me", "/v1.0/chats"]
+
+
+def test_graph_teams_service_resolves_user_refs_to_graph_ids(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/user-allowed":
+            return httpx.Response(
+                200,
+                json={"id": "user-allowed", "userPrincipalName": "allowed@example.com"},
+                request=request,
+            )
+        if request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                200,
+                json={"id": "user-operator", "mail": "operator@example.com"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "user-allowed") == "user-allowed"
+        assert service.resolve_user_id(client, "user:operator@example.com") == "user-operator"
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/user-allowed",
+        "/v1.0/users/operator@example.com",
+    ]
+    assert all(request.url.params.get("$select") == "id,userPrincipalName,mail" for request in requests)
+
+
+def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/primary@example.com":
+            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+        if request.url.path == "/v1.0/users":
+            assert request.url.params.get("$filter") == (
+                "mail eq 'primary@example.com' or "
+                "userPrincipalName eq 'primary@example.com'"
+            )
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "user-primary", "mail": "primary@example.com"}]},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "primary@example.com") == "user-primary"
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/primary@example.com",
+        "/v1.0/users",
+    ]
+
+
+def test_graph_teams_service_returns_none_for_unresolved_mail(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1.0/users/missing@example.com":
+            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+        if request.url.path == "/v1.0/users":
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "missing@example.com") is None
 
 
 def test_graph_teams_service_rejects_non_allowlisted_user_chat_creation(
@@ -178,6 +296,58 @@ def test_graph_teams_service_polls_allowlisted_channels_and_flattens_replies(
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
     assert requests[0].url.params.get("$top") == "25"
     assert requests[0].url.params.get("$expand") == "replies"
+
+
+def test_graph_teams_service_batches_fetched_message_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "first", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        },
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-03-30T11:01:00Z",
+                            "body": {"content": "second", "contentType": "text"},
+                            "from": {"user": {"id": "user-2"}},
+                        },
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    store = RecordingTeamsMessageStore()
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages()
+
+    assert [message.cursor for message in messages] == [
+        "team-a/channel-1/msg-1",
+        "team-a/channel-1/msg-2",
+    ]
+    assert store.put_many_calls == 1
+    assert store.put_calls == 0
+    assert set(store.records) == {
+        "team-a/channel-1/msg-1",
+        "team-a/channel-1/msg-2",
+    }
 
 
 def test_graph_teams_service_uses_token_provider_for_requests(
@@ -873,6 +1043,48 @@ def test_graph_teams_service_renders_common_markdown_formatting_as_html(
         b"<li><em>Italic</em> item with <code>inline_code</code></li></ul>"
         b"<ol><li>First</li><li>Second with <del>strike</del></li></ol>"
         b'<blockquote><p>Quote line</p></blockquote><p>See <a href=\\"https://example.com/docs\\">docs</a></p>",'
+        b'"contentType":"html"}}'
+    )
+
+
+def test_graph_teams_service_nests_bullets_inside_numbered_status_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": "msg-root",
+                "createdDateTime": "2026-03-30T12:00:00Z",
+                "body": {"content": "<p>ok</p>", "contentType": "html"},
+                "from": {"application": {"id": "bot-app"}},
+                "webUrl": "https://teams.example/root",
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    message = "1. Rubrik A\n- detalj A\n\n2. Rubrik B\n- detalj B"
+    service.post_status(message, "team-a/channel-1", "session-1")
+
+    assert requests[0].content == (
+        b'{"body":{"content":"<ol><li>Rubrik A<ul><li>detalj A</li></ul></li>'
+        b"<li>Rubrik B<ul><li>detalj B</li></ul></li></ol>\","
         b'"contentType":"html"}}'
     )
 

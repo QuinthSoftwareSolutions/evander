@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from agent_sandbox.worker.service import WorkerDaemon
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerJobStore,
     WorkerSessionPaths,
     create_app,
 )
@@ -243,6 +245,30 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
     assert telemetry.jobs.error_count == 1
 
 
+def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+
+    class LockedJobStore:
+        def list_all_ordered(self) -> list[WorkerJobRecord]:
+            raise sqlite3.OperationalError("database is locked")
+
+    daemon.store = LockedJobStore()  # type: ignore[assignment]
+
+    telemetry = daemon.read_telemetry()
+
+    assert telemetry.jobs.status is TelemetryStatus.UNSUPPORTED
+    assert telemetry.jobs.health is HealthState.UNKNOWN
+    assert telemetry.jobs.error_count == 1
+    assert telemetry.jobs.errors[0].message == "job store is unavailable"
+
+
 def test_worker_job_request_rejects_egress_policy_fields() -> None:
     with pytest.raises(ValidationError, match="egress_policy_enabled"):
         WorkerJobRequest.model_validate(
@@ -338,6 +364,55 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     ).read_text(encoding="utf-8") == "task: test\n"
 
 
+def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+
+    payload = {
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+                "overwrite": True,
+            }
+        ]
+    }
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    mode_change = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "# Agent\n",
+                    "mode": "0600",
+                    "overwrite": True,
+                }
+            ]
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["copied_count"] == 1
+    assert first.json()["copied_paths"] == ["/home/agent/AGENTS.md"]
+    assert second.status_code == 200
+    assert second.json()["copied_count"] == 0
+    assert second.json()["copied_paths"] == []
+    assert mode_change.status_code == 200
+    assert mode_change.json()["copied_count"] == 1
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     tmp_path: Path,
 ) -> None:
@@ -416,9 +491,11 @@ def test_session_delete_removes_durable_paths_and_worker_jobs(tmp_path: Path) ->
     assert job_response.status_code == 200
     assert job_response.json()["status"] == "removed"
     assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
-    store = json.loads((tmp_path / "runtime" / "worker-jobs.json").read_text(encoding="utf-8"))
-    assert store["job-1"]["status"] == "removed"
-    assert store["job-1"]["cleanup_status"] == "cleanup_succeeded"
+    store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.json")
+    record = store.get("job-1")
+    assert record is not None
+    assert record.status == "removed"
+    assert record.cleanup_status == "cleanup_succeeded"
 
 
 def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
@@ -446,6 +523,77 @@ def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
     assert job_response.status_code == 200
     assert job_response.json()["status"] == "removed"
     assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
+
+
+def test_session_delete_uses_session_scoped_job_lookup(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+
+    session_a = WorkerSessionPaths.resolve(daemon.worker_root, "session-a")
+    session_b = WorkerSessionPaths.resolve(daemon.worker_root, "session-b")
+    session_jobs: dict[str, WorkerJobRecord] = {
+        "job-a": WorkerJobRecord(
+            job_id="job-a",
+            session_id="session-a",
+            image="codex:latest",
+            command=["true"],
+            container_name="agent-worker-job-a",
+            status="running",
+            started_at=datetime(2026, 5, 21, 10, 0, tzinfo=UTC),
+            agent_home_path=str(session_a.agent_home),
+            repo_root_path=str(session_a.repo_root),
+            artifacts_path=str(session_a.artifacts),
+            logs_path=str(session_a.logs),
+        ),
+        "job-b": WorkerJobRecord(
+            job_id="job-b",
+            session_id="session-b",
+            image="codex:latest",
+            command=["true"],
+            container_name="agent-worker-job-b",
+            status="running",
+            started_at=datetime(2026, 5, 21, 10, 5, tzinfo=UTC),
+            agent_home_path=str(session_b.agent_home),
+            repo_root_path=str(session_b.repo_root),
+            artifacts_path=str(session_b.artifacts),
+            logs_path=str(session_b.logs),
+        ),
+    }
+
+    class FakeWorkerJobStore:
+        def __init__(self) -> None:
+            self.put_calls: list[str] = []
+            self.list_by_session_calls: list[str] = []
+
+        def list_by_session(self, session_id: str) -> list[WorkerJobRecord]:
+            self.list_by_session_calls.append(session_id)
+            return [record for record in session_jobs.values() if record.session_id == session_id]
+
+        def read_all(self) -> dict[str, WorkerJobRecord]:
+            raise AssertionError("read_all should not be used")
+
+        def put(self, record: WorkerJobRecord) -> None:
+            self.put_calls.append(record.job_id)
+            session_jobs[record.job_id] = record
+
+        def get(self, job_id: str) -> WorkerJobRecord | None:
+            return session_jobs.get(job_id)
+
+    daemon.store = FakeWorkerJobStore()
+
+    deleted = daemon.delete_session("session-a")
+
+    assert deleted is True
+    assert runtime.removed == ["job-a"]
+    assert daemon.store.list_by_session_calls == ["session-a"]
+    assert daemon.store.get("job-a").status == "removed"
+    assert daemon.store.get("job-a").cleanup_status == "cleanup_succeeded"
+    assert daemon.store.get("job-b").status == "running"
 
 
 def test_session_delete_marks_cleanup_failed_when_session_root_removal_fails(
@@ -481,9 +629,11 @@ def test_session_delete_marks_cleanup_failed_when_session_root_removal_fails(
     assert job_response.json()["status"] == "removed"
     assert job_response.json()["cleanup_status"] == "cleanup_failed"
     assert "permission denied" in job_response.json()["cleanup_error"]
-    store = json.loads((tmp_path / "runtime" / "worker-jobs.json").read_text(encoding="utf-8"))
-    assert store["job-1"]["status"] == "removed"
-    assert store["job-1"]["cleanup_status"] == "cleanup_failed"
+    store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.json")
+    record = store.get("job-1")
+    assert record is not None
+    assert record.status == "removed"
+    assert record.cleanup_status == "cleanup_failed"
 
 
 def test_mssql_database_endpoints_are_session_scoped_and_cleanup_on_delete(
@@ -839,33 +989,34 @@ def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path)
     runtime_dir.mkdir()
     legacy_workspace = tmp_path / "worker-root" / "sessions" / "legacy-session" / "workspace"
     store_path = runtime_dir / "worker-jobs.json"
-    store_path.write_text(
-        json.dumps(
-            {
-                "legacy-job": {
-                    "job_id": "legacy-job",
-                    "session_id": "legacy-session",
-                    "image": "codex:latest",
-                    "command": ["true"],
-                    "container_name": "agent-worker-legacy-job",
-                    "status": "exited",
-                    "created_at": "2026-05-03T20:00:00+00:00",
-                    "workspace_path": str(legacy_workspace),
-                    "agent_home_path": str(
-                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "agent_home"
-                    ),
-                    "artifacts_path": str(
-                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "artifacts"
-                    ),
-                    "logs_path": str(
-                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "logs"
-                    ),
-                    "metadata": {},
-                }
+    legacy_text = json.dumps(
+        {
+            "legacy-job": {
+                "job_id": "legacy-job",
+                "session_id": "legacy-session",
+                "image": "codex:latest",
+                "command": ["true"],
+                "container_name": "agent-worker-legacy-job",
+                "status": "exited",
+                "created_at": "2026-05-03T20:00:00+00:00",
+                "workspace_path": str(legacy_workspace),
+                "agent_home_path": str(
+                    tmp_path / "worker-root" / "sessions" / "legacy-session" / "agent_home"
+                ),
+                "artifacts_path": str(
+                    tmp_path / "worker-root" / "sessions" / "legacy-session" / "artifacts"
+                ),
+                "logs_path": str(
+                    tmp_path / "worker-root" / "sessions" / "legacy-session" / "logs"
+                ),
+                "metadata": {},
             }
-        ),
-        encoding="utf-8",
+        },
+        indent=2,
+        sort_keys=True,
     )
+    store_path.write_text(legacy_text, encoding="utf-8")
+    legacy_bytes = store_path.read_bytes()
     runtime = FakeContainerRuntime()
     client = _client(tmp_path, runtime)
 
@@ -881,9 +1032,16 @@ def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path)
     )
 
     assert response.status_code == 201
-    payload = json.loads(store_path.read_text(encoding="utf-8"))
-    assert payload["legacy-job"]["repo_root_path"] == str(legacy_workspace)
-    assert "workspace_path" not in payload["legacy-job"]
+    store = WorkerJobStore(store_path)
+    assert store.path == runtime_dir / "worker-jobs.db"
+    record = store.get("legacy-job")
+    assert record is not None
+    assert record.repo_root_path == str(legacy_workspace)
+    assert not hasattr(record, "workspace_path")
+    new_record = store.get("job-1")
+    assert new_record is not None
+    assert new_record.session_id == "session-1"
+    assert store_path.read_bytes() == legacy_bytes
 
 
 def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
@@ -1058,6 +1216,76 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert response.text.count("I am checking the repo now.") == 1
     log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
+
+
+def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="removed",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "timestamp": (started_at - timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "old planner message"},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=10)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message during this job"},
+                },
+                {
+                    "timestamp": (finished_at + timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message after this job"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert daemon.get_logs(record, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+    )
 
 
 def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
@@ -1319,12 +1547,22 @@ def test_job_store_omits_secret_fields_and_rejects_raw_environment(tmp_path: Pat
     )
 
     assert response.status_code == 201
-    store_text = (tmp_path / "runtime" / "worker-jobs.json").read_text(encoding="utf-8")
-    assert "Bearer secret" not in store_text
-    assert "OPENAI_API_KEY" not in store_text
-    payload = json.loads(store_text)
-    assert payload["job-1"]["metadata"] == {
+    store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.json")
+    record = store.get("job-1")
+    assert record is not None
+    assert record.metadata == {
         "authorization": "[redacted]",
         "nested": {"api_key": "[redacted]"},
         "purpose": "test",
     }
+
+    db_path = tmp_path / "runtime" / "worker-jobs.db"
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM worker_jobs WHERE job_id = ?",
+            ("job-1",),
+        ).fetchone()
+
+    assert row is not None
+    assert "Bearer secret" not in row[0]
+    assert "OPENAI_API_KEY" not in row[0]

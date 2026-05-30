@@ -86,6 +86,7 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
     ("providers", "execution_backend"): "Execution backend",
+    ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
 _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
@@ -94,6 +95,9 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ),
     ("policy", "tool_argument_policies"): (
         "Directory-scoped tool argument guardrails keyed by exact MCP tool name."
+    ),
+    ("policy", "mcp_tool_policies"): (
+        "Directory-scoped MCP tool deny, approval requirement, approval default, and hard-limit rules."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."
@@ -218,6 +222,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("communication_file_",),
         ),
         (
+            "MCP tool policy",
+            (("policy", "mcp_tool_policies"),),
+            (),
+        ),
+        (
             "Tool argument policy",
             (("policy", "tool_argument_policies"),),
             (),
@@ -287,6 +296,15 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "nuget_relay_timeout_seconds"),
             ),
             ("nuget_",),
+        ),
+        (
+            "NPM audit facade",
+            (
+                ("providers", "npm_audit_facade_audit_registry_url"),
+                ("providers", "npm_audit_facade_package_registry_url"),
+                ("providers", "npm_audit_facade_timeout_seconds"),
+            ),
+            ("npm_audit_facade_",),
         ),
         (
             "OpenAI",
@@ -368,6 +386,14 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("vm", "nuget_relay_port"),
             ),
             ("nuget_relay_",),
+        ),
+        (
+            "NPM audit facade",
+            (
+                ("vm", "npm_audit_facade_host"),
+                ("vm", "npm_audit_facade_port"),
+            ),
+            ("npm_audit_facade_",),
         ),
         (
             "OpenAI relay",
@@ -489,6 +515,10 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "event_queue_cursor_store_path": "JSON cursor state file tracking workflow poll progress.",
     "workflow_event_journal_path": "JSONL journal used to notify workflow editor streams about runtime state changes.",
     "effect_execution_store_path": "JSON execution log for effect-orchestrator runs.",
+    "orchestration_wal_checkpoint_mode": "SQLite orchestration-store WAL checkpoint mode.",
+    "orchestration_wal_checkpoint_min_bytes": "Minimum WAL size before explicit checkpoint maintenance runs.",
+    "orchestration_wal_checkpoint_interval_seconds": "Minimum interval between explicit WAL checkpoint attempts.",
+    "orchestration_wal_checkpoint_busy_timeout_ms": "Short busy timeout used for explicit WAL checkpoint attempts.",
     "effect_cursor_store_path": "JSON cursor state file written by the effect orchestrator.",
     "effect_lock_path": "Single-instance lock file for the effect orchestrator worker loop.",
     "triggers": "Configured trigger definitions for the trigger orchestrator graph.",

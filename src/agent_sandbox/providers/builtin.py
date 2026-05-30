@@ -4,6 +4,7 @@ from agent_sandbox.effects.providers.default_schema import effect_node_schema_re
 from agent_sandbox.gates.providers.default_schema import gate_node_schema_resolvers
 from agent_sandbox.queries.providers.default_schema import query_node_schema_resolvers
 from agent_sandbox.triggers.providers.default_schema import trigger_node_schema_resolvers
+from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
 from agent_sandbox.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
@@ -14,6 +15,7 @@ from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffec
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
 from agent_sandbox.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from agent_sandbox.effects.providers.artifacts import (
+    ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
 )
@@ -38,6 +40,9 @@ from agent_sandbox.effects.providers.issue_upsert_ado_proxy import (
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
 from agent_sandbox.effects.providers.pull_request_update import PullRequestUpdateEffectProvider
+from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
+    RuntimeDiagnosticsSnapshotEffectProvider,
+)
 from agent_sandbox.effects.providers.semantic_delete import SemanticDeleteEffectProvider
 from agent_sandbox.effects.providers.semantic_ensure_collection import (
     SemanticEnsureCollectionEffectProvider,
@@ -106,7 +111,9 @@ from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessa
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.event import EventTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
-from agent_sandbox.triggers.providers.issue_comment_created import IssueCommentCreatedTriggerProvider
+from agent_sandbox.triggers.providers.issue_comment_created import (
+    IssueCommentCreatedTriggerProvider,
+)
 from agent_sandbox.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
 )
@@ -123,6 +130,7 @@ from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.providers.webhook import WebhookTriggerProvider
+
 
 def register_providers() -> dict[str, dict[str, type]]:
     return dict(
@@ -177,18 +185,21 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
             "effect:artifact:stage": ArtifactStageEffectProvider,
             "effect:artifact:publish-artifacts": ArtifactPublishArtifactsEffectProvider,
+            "effect:artifact:import-published": ArtifactImportPublishedEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
             "effect:http:request": HttpRequestEffectProvider,
+            "effect:runtime:diagnostics-snapshot": RuntimeDiagnosticsSnapshotEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
             "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectProvider,
+            "effect:ado:pipeline-run": AdoPipelineRunEffectProvider,
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,

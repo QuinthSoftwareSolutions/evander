@@ -13,11 +13,10 @@ from agent_sandbox.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
 )
-from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.repositories.cursors import (
-    JsonDiscordInboxCursorRepository,
     JsonTeamsInboxCursorRepository,
 )
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.services import (
     normalize_teams_target,
     parse_teams_target,
@@ -227,7 +226,10 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         inbox_store = JsonTeamsInboxCursorRepository(
             self._runtime_dir() / "teams-inbox-store.json"
         )
-        raw_messages = inbox_store.list_all_messages()
+        raw_messages = inbox_store.list_all_messages(
+            channel_targets=list(self._teams_targets_by_address),
+            created_at_from=cursor,
+        )
         candidates: list[_PendingCommunicationEvent] = []
 
         for message in raw_messages:
@@ -295,20 +297,13 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         if not self._discord_targets_by_channel_id:
             return []
 
-        inbox_store = JsonDiscordInboxCursorRepository(
-            self._runtime_dir() / "discord-inbox-store.json"
-        )
-        raw_messages = inbox_store.read_raw().get("messages", {})
+        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
+        raw_messages = inbox_store.list_all_messages(
+            channel_ids=list(self._discord_targets_by_channel_id),
+        ).messages
         candidates: list[_PendingCommunicationEvent] = []
 
-        for raw in raw_messages.values():
-            if not isinstance(raw, dict):
-                continue
-            try:
-                message = DiscordMessageEnvelope.model_validate(raw)
-            except Exception:
-                continue
-
+        for message in raw_messages:
             channel_id = message.channel_id.strip()
             target_ids = self._discord_targets_by_channel_id.get(channel_id, [])
             if not target_ids:

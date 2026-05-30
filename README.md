@@ -9,6 +9,7 @@
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
+- A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message`
@@ -231,6 +232,7 @@ sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-didww-sip-bridge.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-npm-audit-facade.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl start agent-sandbox-discord-wake.service
@@ -738,6 +740,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
+  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
+    as `User.ReadBasic.All` or `User.Read`
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /
   device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
   confidential client and needs to be updated or replaced.
@@ -767,8 +771,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   latest matching message in the batch. Agents that need surrounding context should call
   `teams_get_messages` with that `channel_target`.
 - `trigger:teams:direct-message` emits one event per new one-on-one Teams direct message sent to
-  the configured Teams identity by an explicitly allowlisted Graph sender user id. It reuses the
-  same host-side Teams ingest worker and emits `channel_target` as the resolved `chat:<chat-id>`.
+  the configured Teams identity by an explicitly allowlisted Graph sender user id, UPN, or mail
+  address. It reuses the same host-side Teams ingest worker and emits `channel_target` as the
+  resolved `chat:<chat-id>`.
 - `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
@@ -782,7 +787,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   It reuses the host-owned Teams and Discord inbox stores and does not expose communication target
   auth profile references in trigger outputs.
 - Direct-message triggers use a separate sender allowlist:
-  - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id>"]}`
+  - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 
@@ -801,7 +806,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
   - `GET /chats/{chat-id}/messages` for group chats
   - `GET /me/chats` plus `GET /chats/{chat-id}/messages` for allowlisted direct-message triggers
-  It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
+  It stores both top-level messages and any expanded replies in `runtime/teams_messages.db`.
+  Existing `runtime/teams_messages.json` stores are imported on first use.
 - `teams_get_messages` accepts optional `channel_target`, `since_cursor`, `before_cursor`, and
   `limit` arguments. Cursorless reads are bounded recent reads: the gateway defaults the call to
   `teams_poll_limit`, and the Graph adapter stops after `teams_history_page_cap` pages or
@@ -837,7 +843,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `POST /teams/{team-id}/channels/{channel-id}/messages/{thread_id}/replies` for replies
   - `POST /chats/{chat-id}/messages` for top-level chat posts
   - `POST /chats/{chat-id}/messages/{message-id}/replies` for chat replies
-- Outbound posts are audited and persisted in `runtime/teams_messages.json` with
+- Outbound posts are audited and persisted in `runtime/teams_messages.db` with
   `metadata.source == "teams_graph_api_status"` and the originating `session_id`.
 - Source filtering is strict: only envelopes tagged with `metadata.source == "teams_graph_api"`
   and originating from a session allowlisted `team-id/channel-id` are returned to that session.
@@ -992,9 +998,12 @@ Response:
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
+- `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
+  bind and upstream settings from runtime config.
 - Keep these values in host-only shell environment or systemd env files such as:
   - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
   - `config/nuget-relay.env`
+  - `config/npm-audit-facade.env`
 - Directory-specific OpenAI model key env vars named by `openai_api_key_env` should be
   available to the relay.
 - Do not place these values in guest images, cloud-init, session manifests, or guest shell

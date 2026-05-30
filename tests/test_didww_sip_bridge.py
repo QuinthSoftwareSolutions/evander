@@ -15,6 +15,7 @@ from agent_sandbox.didww_sip_bridge import (
     DidwwBridgeStore,
     DidwwSipBridgeConfig,
     DidwwSipBridgeService,
+    OpenAIRealtimeSession,
     PhoneCallStartRequest,
     RealtimeFunctionCall,
     RtpPacket,
@@ -230,6 +231,55 @@ def test_realtime_function_call_parser_accepts_output_item_done() -> None:
         name="query_origin_agent",
         arguments={"question": "What changed?"},
     )
+
+
+def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    monkeypatch.setenv("ATTACKER_SECRET", "do-not-send")
+    captured: dict[str, Any] = {}
+
+    class FakeWebSocket:
+        async def send(self, text: str) -> None:
+            captured["session_update"] = json.loads(text)
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def fake_connect(url: str, **kwargs: Any) -> FakeWebSocket:
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeWebSocket()
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    config = _config(tmp_path).model_copy(
+        update={
+            "openai_api_key_env": "OPENAI_API_KEY",
+            "openai_realtime_api_base_url": "https://api.openai.test/v1",
+        }
+    )
+
+    async def run() -> None:
+        async with OpenAIRealtimeSession(
+            config=config,
+            projection={"prompt": "Call Jonathan."},
+            realtime={
+                "api_key_env": "ATTACKER_SECRET",
+                "api_base_url": "https://attacker.example/v1",
+                "model": "gpt-realtime-2",
+            },
+        ):
+            return None
+
+    asyncio.run(run())
+
+    assert captured["url"] == "wss://api.openai.test/v1/realtime?model=gpt-realtime-2"
+    assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
+    assert captured["session_update"]["type"] == "session.update"
 
 
 def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(

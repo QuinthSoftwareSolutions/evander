@@ -31,7 +31,6 @@ class MergeGateProvider(GateProviderBase):
         input_event_ids_by_source[queue_record.trigger_id] = queue_record.event_id
         input_occurred_at_by_source[queue_record.trigger_id] = queue_record.occurred_at
 
-        del graph
         shared_output_keys = tuple(sorted((gate.outputs or {}).keys()))
         if not shared_output_keys and inputs_by_source:
             runtime_keys = {"__node_outputs", "__branch_port", "__for_execution_ids"}
@@ -59,5 +58,9 @@ class MergeGateProvider(GateProviderBase):
             input_occurred_at_by_source=input_occurred_at_by_source,
             config_revision=config_revision,
             publish_completion_event=True,
+            preserved_context_node_ids=worker._guaranteed_context_node_ids_for(
+                graph=graph,
+                node_id=gate.id,
+            ),
         )
         return True

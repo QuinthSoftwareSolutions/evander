@@ -1,3 +1,4 @@
+from agent_sandbox.pr_feedback.agent_directed import annotate_agent_directed_feedback
 from agent_sandbox.pr_feedback.providers import (
     AzureDevOpsFeedbackAdapter,
     FeedbackProviderAdapter,
@@ -29,5 +30,6 @@ __all__ = [
     "_latest_cursor",
     "_parse_dt",
     "_stream_key",
+    "annotate_agent_directed_feedback",
     "pr_feedback_item_payload",
 ]

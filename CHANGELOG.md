@@ -5,6 +5,361 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-30 - Realtime Voice Bridge Hardening
+
+- Kept host Realtime API keys and upstream base URLs under bridge-local configuration instead of
+  accepting per-call or per-meeting payload overrides.
+- Updated Teams OpenAI Realtime speech responses to request audio with the current
+  `output_modalities` response shape.
+
+## 2026-05-29 - Workflow Run Snapshot I/O Fix
+
+- Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web
+  reads do not initialize runtime store or journal files.
+- Added SQLite activity timestamp indexes for recent workflow run snapshots.
+
+## 2026-05-29 - Live Workflow Node Pulse
+
+- Added `recent_node_activity` to workflow run snapshots so Admin Web can
+  surface recent trigger, effect, and gate activity without changing existing
+  active run cards or node activity counts.
+- Made the workflow editor show a short live-only pulse on visible nodes for
+  newly streamed backend activity keys, while keeping inspect/tutorial views
+  and duplicate keys from replaying.
+- Kept the pulse one-shot and motion-safe, with bounded timers and reduced
+  motion behavior for users who prefer less animation.
+
+## 2026-05-29 - Container NPM Registry URL Validation
+
+- Rejected control characters in container npm registry URLs before generating
+  session `.npmrc` content.
+
+## 2026-05-29 - Session Web Search Policy
+
+- Added a first-class `web_search_enabled` session flag for agent create and
+  policy update flows.
+- Made the OpenAI relay deny hosted Responses web search tool declarations
+  unless the session explicitly enables the flag.
+- Wrote Codex bootstrap, VM resume, and container prompt config with
+  `web_search` set from the session flag so agents default to disabled search.
+- Fixed agent-create upserts so omitting `web_search_enabled` preserves the
+  existing session policy while explicitly setting `false` disables it.
+
+## 2026-05-29 - Agent Create Session Metadata
+
+- Added an optional `metadata` JSON patch to `effect:agent:create` so workflow
+  authors can initialize session metadata without a separate
+  `effect:session:update-metadata` node.
+- Wired the metadata patch through libvirt and container-worker agent creation
+  and exposed it in the workflow editor catalog.
+
+## 2026-05-29 - npm Audit Facade Deployment Wiring
+
+- Added the host-side npm audit facade to the persistent systemd install flow and start list.
+- Rendered the facade's optional env file through Ansible, enabled it in the managed service map,
+  and included its `11881` listener in the control-plane firewall and worker egress allowlists.
+- Documented the facade's health endpoint, upstream routing, and manual smoke checks in the
+  operator guides.
+
+## 2026-05-28 - Workflow Editor Bindable Selectors
+
+- Kept bindable enum workflow fields, including `query:session:list` State,
+  editable through either a finite literal selector or an upstream binding.
+- Kept `query:session:list` metadata filter bindings reachable from the
+  structured metadata rule editor.
+- Exposed PR-feedback agent identity fields in the workflow editor catalog.
+
+## 2026-05-28 - PR Feedback Agent-Directed Metadata
+
+- Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO
+  mention names, plus optional PR-feedback trigger configuration that annotates
+  whether a comment is directed at an agent.
+- Shared agent-directed feedback annotation between the trigger provider and the
+  ADO worker publisher so workflow gates see the same metadata on live ADO
+  feedback events.
+- Added support for ADO compact mention identity IDs, including trigger config
+  fields for matching raw agent author and mention GUIDs.
+
+## 2026-05-28 - Session Metadata Equals Flattening
+
+- Made the workflow-editor `query:session:list` metadata rule editor expand
+  nested `metadata_equals` objects into dot-path Equals rows.
+
+## 2026-05-28 - Existing PR Branch Push Wrapper
+
+- Added a `push_existing_pr_branch.sh` helper that wraps push-only
+  `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
+  branch preflight failures.
+- Normalized ref-prefixed base and source branch names before invoking
+  `open_agent_pr.sh`.
+
+## 2026-05-28 - Session Metadata Rule Editor
+
+- Added a structured workflow-editor metadata rule editor for
+  `query:session:list`, replacing separate raw JSON controls for equals,
+  exists, and prefix filters when the existing configuration can be represented
+  as simple rules.
+
+## 2026-05-28 - Session List State Selector
+
+- Changed the workflow-editor `query:session:list` State field from free text to
+  an enum selector for the accepted state values.
+
+## 2026-05-28 - Session List Field Help
+
+- Added workflow-editor tooltips for every `query:session:list` configuration
+  field.
+
+## 2026-05-28 - Scheduled Wake Queue Failure Fix
+
+- Fixed busy container scheduled wakes so queue write failures record a failed
+  dispatch with the original request id instead of crashing the wake worker.
+
+## 2026-05-28 - Scheduled Wake Container Docs
+
+- Documented that scheduled wakes cover both VM-bound `libvirt_vm` sessions and
+  `container_worker_vm` sessions.
+- Noted that MCP-created scheduled resumes stay `resume_mode=same_context`,
+  which uses Codex resume-last behavior for container workers when no explicit
+  thread id is available.
+- Clarified that busy container wakes queue the prompt, still count as handled,
+  and can advance one-shot or cron schedules accordingly.
+
+## 2026-05-28 - Container Session Idempotency
+
+- Skipped container-worker file rewrites when the destination content and mode
+  already match the requested file.
+- Avoided starting a short-lived Git configuration container when
+  `effect:agent:clone-repo` finds the repo already prepared for the session.
+
+## 2026-05-28 - Agent Log View Corrections
+
+- Made container-worker execution logs include only execution-scoped Codex
+  messages, avoiding restored-thread history while still showing assistant
+  progress that is not present in raw container stdout.
+- Changed Admin Web thread logs to page from the oldest thread forward and
+  stopped auto-polling the expensive thread transcript view.
+- Rendered the Admin Web execution/thread log switch as attached tabs so the
+  active log view is clearer.
+
+## 2026-05-28 - Workflow Binding Context
+
+- Made workflow binding diagnostics distinguish guaranteed upstream references
+  from path-conditional branch references.
+- Preserved guaranteed pre-branch context across merge gates while keeping
+  branch-local data available through explicit merge projections.
+- Kept debounce gate releases from dropping inherited workflow binding context.
+- Scoped workflow editor binding validation to visible graphs and scheduled
+  graph validation progressively so large workflow packs do not block initial
+  rendering.
+
+## 2026-05-28 - Approval Queue Review Fixes
+
+- Kept any-payload MCP approval grants from consuming uses until the retry
+  matches the approved session and tool.
+- Made Admin Web approval directory filters include descendant queues when
+  direct-only matching is disabled.
+- Kept per-session approval requirements removable in the Sessions tool editor
+  while preserving inherited admin-required gates.
+
+## 2026-05-28 - Configurable MCP Tool Approvals
+
+- Added configurable MCP invocation approval grants with restrictive defaults:
+  single use, 3600 second TTL, and exact-payload matching.
+- Added directory-scoped MCP tool policies for admin defaults, hard approval
+  limits, forced approval, and inherited tool deny rules.
+- Added Admin Web MCP Tools policy editing and per-session approval settings
+  controls, and made workflow-run MCP tool leases honor directory rules.
+
+## 2026-05-28 - Admin Approval Directory Scope
+
+- Defaulted the Approvals page to include descendant directories instead of
+  limiting the queue to direct directory matches.
+
+## 2026-05-28 - Admin Issues Copy
+
+- Reworded the Admin Web Issues tab summary so it describes issue intake and
+  records instead of presenting VM creation as the page purpose.
+
+## 2026-05-28 - Admin Approval Decisions
+
+- Used the signed-in Admin Web user as the approval decision actor when
+  authentication is enabled, leaving the editable approver field only for
+  anonymous/no-auth operation.
+- Added an Admin Web revoke action for still-valid approved requests.
+
+## 2026-05-28 - Admin Approval List Layout
+
+- Kept approval status badges inside approval list cards when long request
+  summaries wrap in the Admin Web sidebar.
+
+## 2026-05-28 - Approvals Review Panel Layout
+
+- Removed the Admin Web Approvals `Queue health` panel.
+- Promoted approval `Summary` content out of its nested card so it reads as a
+  root section inside the `Review` panel.
+- Added more vertical spacing between Approvals page cards.
+- Fixed decision-history cards so they use dark-mode surfaces and metadata
+  colors.
+
+## 2026-05-27 - Thread Log Pagination
+
+- Fixed container worker thread-log paging so older transcript lines are fetched
+  before applying the Admin Web page window.
+- Made thread-log search inspect full session transcripts instead of only the
+  current tail page.
+
+## 2026-05-27 - Teams Trigger Wake Notifications
+
+- Woke the trigger orchestrator immediately after Teams ingest stores new inbox
+  messages, reducing healthy-path `trigger:teams:new-message` latency without
+  increasing Teams Graph polling.
+- Resolved relative trigger lock paths against the project root before deriving
+  the Teams ingest wake socket, so `scripts/run_teams_ingest.sh` works from any
+  caller directory.
+- Kept missing trigger wake sockets non-fatal so the existing trigger polling
+  interval remains the fallback path.
+
+## 2026-05-27 - Discord Inbox SQLite Integration
+
+- Batched Discord command-envelope persistence so a successful poll cycle can
+  store all fetched commands with one repository write.
+- Kept Discord inbox construction compatible with the legacy
+  `runtime/discord-inbox-store.json` path while the live store uses
+  `runtime/discord-inbox-store.db`.
+- Preserved first-use import from legacy Discord inbox JSON and retained the
+  SQLite message compaction rules for old messages once channel cursors move
+  past them.
+
+## 2026-05-27 - Worker Job Store SQLite
+
+- Moved the worker daemon job store from `worker-jobs.json` full-store rewrites
+  to `worker-jobs.db` SQLite row updates while preserving `WorkerJobStore` as
+  the public entry point.
+- Added first-use import from legacy `worker-jobs.json` files when the SQLite
+  table is empty, leaving the JSON source untouched.
+- Updated worker session cleanup and diagnostics to use indexed SQLite job
+  reads instead of scanning or tailing the legacy JSON store.
+- Made worker telemetry degrade gracefully when SQLite job-store reads fail.
+
+## 2026-05-27 - Wake Store SQLite Migration
+
+- Moved the scheduled wake store to SQLite while keeping the public repository
+  API stable for gateway, admin, and worker callers.
+- Preserved legacy `wake-requests-store.json` compatibility as import-only
+  input, with sibling `.db` storage used for active persistence.
+- Updated gateway-facing wake schedule coverage to assert repository behavior
+  instead of treating the legacy JSON file as the live datastore.
+
+## 2026-05-27 - Orchestration SQLite WAL Maintenance
+
+- Added configurable SQLite WAL checkpoint maintenance for the workflow
+  orchestration store, defaulting to truncated checkpoints when
+  `orchestration.db-wal` reaches 64 MiB and at most once every five minutes.
+- Ran WAL checkpoint maintenance from active trigger/effect worker cycles so
+  long-running SQLite deployments are not limited to startup cleanup.
+- Removed full-history effect execution scans from the effect-orchestrator hot
+  loop by using indexed waiting/completion-pending queries and running
+  waiting/gate maintenance after event dispatch.
+- Avoided rewriting unchanged workflow config snapshots on every effect worker
+  cycle.
+- Moved the Teams ingest inbox from JSON-object rewrites to SQLite with
+  first-use import from existing `runtime/teams-inbox-store.json` files, and
+  targeted Teams trigger queries by channel target and cursor timestamp.
+- Stored Teams inbox SQLite comparison timestamps in fixed-width UTC form so
+  same-second fractional messages are not skipped by cursor filters.
+
+## 2026-05-26 - Teams Message Store SQLite
+
+- Moved the durable Teams message store from per-write JSON rewrites to SQLite,
+  with first-use import from existing `runtime/teams_messages.json` files.
+- Batched `teams_get_messages` persistence so each fetch stores refreshed Teams
+  messages in one repository transaction.
+
+## 2026-05-26 - Secret File Cleanup
+
+- Removed local env files from the tracked repository surface.
+- Ignored generated `config/*.env` files while keeping checked-in `.env.example` files.
+- Moved client-specific Azure Pipeline, inventory, group vars, and Vault material out of the
+  product repo and added non-secret Ansible examples.
+
+## 2026-05-26 - Teams Status List Rendering
+
+- Rendered unindented bullet details following numbered Teams status items as
+  nested lists inside the same ordered list item, preventing Teams from
+  restarting numbering at 1 for each item.
+
+## 2026-05-26 - Teams Direct Message Sender Emails
+
+- Allowed `trigger:teams:direct-message` `sender_user_ids` entries to be
+  Microsoft Graph user IDs, UPNs, or mail addresses, resolving email-style
+  entries to Graph user IDs during host-side Teams ingest.
+- Preserved resolved direct-message sender aliases in the Teams inbox so trigger
+  polling can emit events for workflows configured with UPNs or mail addresses.
+- Seeded new Teams direct-message trigger cursors on first poll so enabling a
+  sender does not replay already-ingested one-on-one chat history.
+
+## 2026-05-26 - Azure DevOps Pipeline Run Effect
+
+- Added `effect:ado:pipeline-run` for typed Azure DevOps pipeline queue/poll
+  workflows without invoking host-side Bash.
+- Preserved ADO pipeline run outputs such as `run_id` and `run_url` when checked
+  failed, canceled, or timed-out runs are recorded as failed effects.
+- Updated checked-in APP demo workflow examples to queue the provisioning
+  pipeline, derive relay metadata with `gate:map`, and store it through
+  `effect:session:update-metadata`.
+- Replaced the checked-in synthetic workflow's host Bash example with a safe
+  internal event emit.
+- Added dynamic object-key bindings and `gate:filter` `matches_regex` support so
+  workflows can build nested metadata maps while rejecting unsafe request names.
+
+## 2026-05-26 - Runtime Diagnostics Snapshot Effect
+
+- Added `effect:runtime:diagnostics-snapshot` for bounded, redacted host
+  diagnostics collection without allowing workflow-configured shell scripts or
+  arbitrary host paths.
+
+## 2026-05-26 - Tool Call Audit SQLite Index
+
+- Added a SQLite read index for Admin Web Tool Calls while keeping
+  `runtime/audit.jsonl` as the canonical append-only audit journal.
+- Added `agent-sandbox-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
+  from the JSONL audit log.
+- Fixed directory-filtered audit queries so incomplete indexes fall back to the
+  canonical JSONL log and directory prefixes containing SQLite wildcard
+  characters do not match unrelated paths.
+- Kept default Tool Calls reads from treating bounded, incomplete tail imports as
+  authoritative when the SQLite audit index has not been fully imported.
+
+## 2026-05-26 - Agent Exec Command Editor
+
+- Rendered the workflow editor `effect:agent:exec` Command field as a
+  multiline text area so long commands are easier to read and edit.
+
+## 2026-05-26 - Artifact Upload Dialog
+
+- Moved manual artifact uploads into a toolbar dialog and defaulted uploaded
+  archives to the selected file's own filename instead of asking for an
+  internal artifact path.
+
+## 2026-05-26 - Workflow Editor Viewport Stability
+
+- Preserved the workflow editor canvas viewport across node field edits,
+  validation, resets, and workflow saves instead of refitting the graph after
+  routine document patches.
+
+## 2026-05-25 - Published Artifact Import And Upload
+
+- Added `effect:artifact:import-published` for extracting immutable published
+  artifact archives into a selected session's `/artifacts` folder.
+- Added Admin Web artifact uploads so operators can publish a single local file
+  into the durable artifact store for later workflow use.
+
+## 2026-05-25 - Admin Sign-In Branding
+
+- Moved sign-in branding into a top bar with the company logo on the left,
+  the theme toggle centered, and a smaller evander logo on the right.
+
 ## 2026-05-25 - Hybrid Voice Delegation
 
 - Added durable live voice query records so Realtime phone sessions can delegate

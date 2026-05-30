@@ -13,6 +13,10 @@ from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
 )
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.repositories.records import (
+    SqliteTeamsRecordsRepository,
+    teams_records_db_path,
+)
 from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
@@ -72,6 +76,16 @@ def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> N
     assert isinstance(runtime.teams_service, StubTeamsService)
     assert runtime.discord_service.read_reaction_emoji == "👀"
     assert runtime.teams_service.read_reaction_emoji == "👀"
+
+
+def test_build_runtime_initializes_sqlite_teams_message_store(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.teams_messages, SqliteTeamsRecordsRepository)
+    assert runtime.teams_messages.path == teams_records_db_path(config.teams_message_store_path)
+    assert runtime.teams_messages.path.exists()
 
 
 def test_build_runtime_requires_bot_token_for_bot_api_backend(
@@ -205,6 +219,8 @@ def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None
 
     assert isinstance(runtime.discord_inbox_service, DiscordInboxService)
     assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
+    assert runtime.discord_inbox_service.store.path == tmp_path / "discord-inbox-store.db"
+    assert runtime.discord_inbox_service.store.path.exists()
 
 
 def test_build_runtime_initializes_agent_prompt_store(tmp_path: Path) -> None:

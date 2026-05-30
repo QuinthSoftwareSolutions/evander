@@ -184,7 +184,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     ["type"] = "response.create",
                     ["response"] = new Dictionary<string, object?>
                     {
-                        ["modalities"] = new[] { "audio", "text" },
+                        ["output_modalities"] = new[] { "audio" },
                     },
                 },
                 cancellationToken);
@@ -621,35 +621,14 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             var turnDetection = FirstString(request.Realtime, "turn_detection") ?? options.TurnDetection;
             var transcriptionModel = FirstString(request.Realtime, "transcription_model")
                 ?? options.TranscriptionModel;
-            var baseUrl = ResolveBaseUrl(options.BaseUrl, FirstString(request.Realtime, "api_base_url"));
             return new OpenAIRealtimeSessionSettings(
                 options.ApiKey,
-                BuildRealtimeUri(baseUrl, model),
+                BuildRealtimeUri(options.BaseUrl, model),
                 model,
                 voice,
                 turnDetection,
                 transcriptionModel,
                 BuildInstructions(request));
-        }
-
-        private static Uri ResolveBaseUrl(Uri configuredBaseUrl, string? requestBaseUrl)
-        {
-            if (string.IsNullOrWhiteSpace(requestBaseUrl))
-            {
-                return configuredBaseUrl;
-            }
-
-            var text = requestBaseUrl.Trim();
-            if (text.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            {
-                text = ToWebSocketRealtimeUrl("wss", text["https://".Length..]);
-            }
-            else if (text.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-            {
-                text = ToWebSocketRealtimeUrl("ws", text["http://".Length..]);
-            }
-
-            return new Uri(text);
         }
 
         private static Uri BuildRealtimeUri(Uri baseUrl, string model)
@@ -663,14 +642,6 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     ? modelParameter
                     : $"{query}&{modelParameter}";
             return builder.Uri;
-        }
-
-        private static string ToWebSocketRealtimeUrl(string scheme, string hostAndPath)
-        {
-            var trimmed = hostAndPath.TrimEnd('/');
-            return trimmed.EndsWith("/realtime", StringComparison.OrdinalIgnoreCase)
-                ? $"{scheme}://{trimmed}"
-                : $"{scheme}://{trimmed}/realtime";
         }
 
         private static bool QueryContainsKey(string query, string key)

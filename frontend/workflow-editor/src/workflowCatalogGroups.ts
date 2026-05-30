@@ -115,6 +115,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:http:"],
     },
     {
+      key: "runtime-diagnostics",
+      label: "Runtime diagnostics",
+      description: "Capture bounded, redacted host runtime diagnostics.",
+      prefixes: ["effect:runtime:"],
+    },
+    {
       key: "semantic",
       label: "Semantic store",
       description: "Manage semantic collections and points.",
@@ -129,7 +135,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "artifacts",
       label: "Artifacts",
-      description: "Stage and publish agent artifacts.",
+      description: "Stage, import, and publish agent artifacts.",
       prefixes: ["effect:artifact:"],
     },
     {
@@ -207,6 +213,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   notification: "Notification",
   pr: "PR",
   pull: "Pull",
+  runtime: "Runtime",
   semantic: "Semantic",
   state: "State",
   session: "Session",

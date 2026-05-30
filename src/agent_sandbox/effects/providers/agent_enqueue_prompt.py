@@ -49,6 +49,22 @@ _ACTIVE_CONTAINER_STATUSES = {
 }
 
 
+def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
+    execution_store = getattr(worker, "execution_store", None)
+    list_waiting = getattr(execution_store, "list_waiting_records", None)
+    if callable(list_waiting):
+        return list(list_waiting(effect_type))
+    read_all = getattr(execution_store, "read_all", None)
+    if not callable(read_all):
+        return []
+    return [
+        record
+        for record in read_all().values()
+        if str(getattr(record, "effect_type", "") or "").strip() == effect_type
+        and str(getattr(record, "status", "") or "").strip() == "waiting"
+    ]
+
+
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     capability = NodeCapability(
         min_inbound=1,
@@ -345,6 +361,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                     effective_config
                                 ),
                             ),
+                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
                         metadata={
                             "effect_type": self.node_type(),
@@ -432,9 +449,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return 0
 
         finalized = 0
-        for record in worker.execution_store.read_all().values():
-            if record.effect_type != cls.node_type() or record.status != "waiting":
-                continue
+        for record in _waiting_execution_records(worker, cls.node_type()):
             if str(record.outputs.get("dispatch_id") or "").strip() != dispatch_id:
                 continue
             AgentPromptEffectProvider._finalize_waiting_record(
@@ -452,9 +467,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return 0
         completed = 0
         vm_records: list[Any] = []
-        for record in worker.execution_store.read_all().values():
-            if record.effect_type != cls.node_type() or record.status != "waiting":
-                continue
+        for record in _waiting_execution_records(worker, cls.node_type()):
             if (
                 str(record.outputs.get("execution_backend") or "").strip()
                 == ExecutionBackendKind.CONTAINER_WORKER_VM.value
@@ -493,16 +506,27 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def container_session_is_busy_for_backend(cls, *, backend: Any, session_id: str) -> bool:
-        repository = getattr(backend, "repository", None)
-        read_all = getattr(repository, "read_all", None)
-        if not callable(read_all):
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
             return False
-        for record in read_all().values():
-            if str(getattr(record, "session_id", "") or "").strip() != session_id:
-                continue
+        repository = getattr(backend, "repository", None)
+        list_active_by_session = getattr(repository, "list_active_by_session", None)
+        if callable(list_active_by_session):
+            records = list_active_by_session(normalized_session_id, _ACTIVE_CONTAINER_STATUSES)
+        else:
+            read_all = getattr(repository, "read_all", None)
+            if not callable(read_all):
+                return False
+            records = [
+                record
+                for record in read_all().values()
+                if str(getattr(record, "session_id", "") or "").strip() == normalized_session_id
+                and str(getattr(record, "last_status", "") or "").strip().casefold()
+                in _ACTIVE_CONTAINER_STATUSES
+            ]
+
+        for record in records:
             status = str(getattr(record, "last_status", "") or "").strip().casefold()
-            if status not in _ACTIVE_CONTAINER_STATUSES:
-                continue
             try:
                 inspected = backend.inspect(getattr(record, "execution_id"))
                 inspected_status = getattr(inspected, "status", None)

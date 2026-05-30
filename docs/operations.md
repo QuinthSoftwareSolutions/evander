@@ -90,6 +90,8 @@ Troubleshooting checklist:
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
    - Exact `${{node.output_name}}` and embedded `"...${{node.output_name}}..."` both require the referenced key to exist.
+   - After a branch re-merges, bind directly only to nodes that are guaranteed on every path to
+     the downstream node. Map branch-local values into merge outputs when they must be used later.
 3. **Merge gate output is not being emitted**
    - Confirm the merge gate has at least one inbound edge and that the configured edges point at
      the upstream node ids you expect to observe.
@@ -129,6 +131,10 @@ Troubleshooting checklist:
   graph selection and labels. `user_ids` are owner/audit metadata only; workflow graphs are visible
   to control-plane operators. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
+- For the live Weekly APP Audit graph, use Admin Web or the workflow API to edit the audit
+  `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
+  `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
+  on Nexus-backed registry defaults so only audit sessions opt into the facade.
 - In the Workflow editor, node inspector edits are staged into the local workflow document as soon
   as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
@@ -167,7 +173,8 @@ and surfaces:
 - direct-owned VM/session/issue listings for the selected directory
 - a Tool Calls tab for read-only inspection of the configured `audit_log_path`
   (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
-  directory/scope, and time range
+  directory/scope, and time range. The UI uses `runtime/audit.db` as an indexed
+  SQLite read model when available and falls back to JSONL when needed.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
@@ -362,6 +369,8 @@ Storage layout for directory config:
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
+  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
+    as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
@@ -484,15 +493,20 @@ Storage layout for directory config:
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `11881` for the host-side npm audit facade, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 8081 3142 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
+- Hosted OpenAI web search is denied by default at the relay. Set the session
+  policy flag `web_search_enabled: true` only for agents that should be allowed
+  to declare Responses `web_search` tools.
+- Codex bootstrap and resume paths set `web_search` from that session policy,
+  defaulting to `disabled`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
 
 ### Relay streaming troubleshooting
@@ -750,7 +764,6 @@ For the `openai_realtime_didww` backend, configure:
 {
   "phone_call_backend": "openai_realtime_didww",
   "openai_realtime_model": "gpt-realtime-2",
-  "openai_realtime_api_key_env": "OPENAI_API_KEY",
   "voice_media_controller_url": "http://127.0.0.1:8000",
   "voice_media_controller_token_env": "VOICE_MEDIA_CONTROLLER_TOKEN",
   "didww_sip_bridge_url": "https://your-phone-bridge.example",
@@ -758,6 +771,10 @@ For the `openai_realtime_didww` backend, configure:
   "didww_from_number": "+15551230000"
 }
 ```
+
+Configure the OpenAI Realtime key env var and upstream base URL in the DIDWW SIP bridge service
+environment. The gateway does not pass those credential-routing values through each phone-call
+request.
 
 The DIDWW bridge receives a projected voice-session prompt, the selected contact phone number, and
 Realtime connection metadata. It owns SIP trunk origination and raw audio forwarding. When the bridge
@@ -1034,11 +1051,21 @@ effect, canonical payload digest, and an audited `pending_approval` tool-call ev
 MCP tool error instructing the agent to retry the exact same payload with the generated
 `approval_request_id` after an operator approves it.
 
+Approval grants default to the restrictive shape: one use, 3600 second TTL, and exact payload
+matching. Operators can override those settings per session when enabling `Require approval` for a
+tool, and directory policy can set tool defaults or hard limits. A hard directory limit wins over
+the session setting.
+
 After approval, the agent retries the same tool call and includes `approval_request_id`. The gateway
 executes only if the request is approved, belongs to the same session, targets the same tool, has not
-expired, and matches the original payload digest. Denied, expired, wrong-tool, wrong-session, or
-changed-payload retries are blocked and audited with the approval request id for review in Admin Web
--> Tool Calls.
+expired, has remaining uses, and satisfies the configured payload matching mode. Denied, expired,
+exhausted, wrong-tool, wrong-session, or changed-payload retries are blocked and audited with the
+approval request id for review in Admin Web -> Tool Calls.
+
+Directory policy can also set `mcp_tool_policies` for known tools. A rule can deny a tool outright,
+force per-invocation approval, provide default grant settings, cap TTL or use count, or force exact
+payload matching. Deny rules are inherited downward and cannot be reopened by a descendant directory
+or by session policy.
 
 ### Tool Argument Policies
 
@@ -1203,6 +1230,13 @@ against raw JSONL:
 tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
 ```
 
+If the Tool Calls SQLite index needs a full refresh after deleting or repairing `runtime/audit.db`,
+run:
+
+```bash
+agent-sandbox-cli rebuild-audit-index --config runtime
+```
+
 Review for:
 
 - `decision == "allowed"` on expected list/download/copy/send calls.
@@ -1348,6 +1382,10 @@ live provider APIs.
   selected by setting `repo` on the PR trigger; it lists candidate PRs from ADO
   using the trigger criteria, stores trigger-owned cursors outside
   `pr-map.json`, and emits normalized PR events without session bindings.
+  `trigger:pull-request:new-feedback` can set `agent_author_names`,
+  `agent_mention_names`, `agent_author_ids`, and `agent_mention_ids` so
+  downstream gates can filter on
+  `feedback.metadata.agent_directed` without running host scripts.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
@@ -1364,6 +1402,9 @@ live provider APIs.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
+- For `container_worker_vm` sessions, that same-context dispatch uses Codex resume-last behavior when a worker prompt does not already carry an explicit thread id.
+- Admin-created recurring wake schedules can still request `resume_mode=new_context`, which starts a fresh Codex exec session on container workers.
+- Busy container wakes queue the prompt for later dispatch and still count as handled for schedule advancement.
 - Recurring cron wake schedules are consumed only after a successful host resume dispatch. Failed, timed-out, or missing-script attempts stay due/retryable and remain visible through wake dispatch history.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
@@ -1395,7 +1436,9 @@ live provider APIs.
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
-- Host audit trail: `runtime/audit.jsonl` (backing store for Admin Web Tool Calls, plus denials/errors).
+- Host audit trail: `runtime/audit.jsonl` (canonical append-only audit journal, plus
+  denials/errors). Admin Web Tool Calls indexes tool-call entries into `runtime/audit.db`
+  for faster filtering and can rebuild that index from JSONL.
 
 ### Security boundary reminder
 
@@ -1550,6 +1593,21 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The relay reads Azure feed credentials from host environment (`AZURE_ARTIFACTS_PAT`) and does not require guest-side private feed credentials.
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
+
+## Host-Side npm Audit Facade
+
+- The scaffold includes `agent-sandbox-npm-audit-facade`, a host-side relay that forwards npm audit POSTs to `https://registry.npmjs.org` while routing package metadata and tarballs through the control-plane Nexus npm group.
+- The facade listens on `11881` and exposes `/healthz` for host-side and guest-side smoke checks.
+- Configure any optional host-local overrides in `config/npm-audit-facade.env`. The runtime bind and upstream settings still come from the directory/runtime config surface.
+- Manual smoke commands:
+
+```bash
+curl -fsS http://127.0.0.1:11881/healthz
+curl -fsS http://127.0.0.1:11881/left-pad
+curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
+  -H 'content-type: application/json' \
+  --data '{}'
+```
 
 ## Host-Side Azure DevOps PR Worker And Work-Item Workflow Intake
 
@@ -1706,25 +1764,23 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 
 - `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
   `provision_exampleindustry_app_demo_environment.sh`.
-- That wrapper lives in this repo under `scripts/` and delegates to the host script named by
-  `EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH`.
-- The effect-orchestrator service account must also be able to run `az` and must have a non-interactive
-  Azure CLI account context before the wrapper can create Azure resources. On Azure control-plane
-  deployments, Ansible installs Azure CLI when `agent_sandbox_install_azure_cli` is enabled, but
-  Azure authentication is still an operator-owned prerequisite.
-- The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
-  the orchestrator can capture the result blob without parsing human-oriented progress output.
-- The wrapper emits a `session_metadata_patch` object that appends two relay targets under
+- The checked-in workflow no longer runs a host-side Bash provisioning script. It queues a typed
+  Azure DevOps pipeline with `effect:ado:pipeline-run`, waits for the terminal result, and then
+  maps the deterministic demo URLs and aliases with `gate:map`.
+- The Azure DevOps pipeline owns Azure resource creation, deployment, and any cloud-side
+  prerequisites. The effect uses the directory-scoped Azure DevOps provider configuration and PAT
+  to queue and poll the pipeline.
+- The first request parameter must be a lowercase alphanumeric resource name. The gate rejects
+  names outside `^[a-z0-9]+$` so `gate:map` can safely derive DNS labels without string
+  normalization helpers.
+- The mapped `session_metadata_patch` object appends two relay targets under
   `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
   `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
   `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
   `metadata.example_app_last_provision` with the selected environment alias plus its API alias, UI
   alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
 - The trigger graph writes that metadata patch into the originating session and resumes the same
-  session with the provisioning result in the follow-up prompt.
-- The orchestrator filter expects the script request to pass the environment name as the first
-  parameter; the current workflow forwards that value as `--resource-base-name` and uses it as the
-  reported logical environment alias.
+  session with the provisioning pipeline run URL in the follow-up prompt.
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
@@ -1732,11 +1788,8 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
   `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
   Azure URL directly.
 
-You can run the wrapper directly on the host for validation:
-
-```bash
-./scripts/provision_exampleindustry_app_demo_environment.sh --resource-base-name demo-blue
-```
+The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
+compatibility with older live workflow packs and should not be used for new provisioning graphs.
 
 ### Teams ingest worker
 
@@ -1749,8 +1802,8 @@ You can run the wrapper directly on the host for validation:
   target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
   `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
   separate ingest worker or provider credential is configured for this node.
-- Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
-  workflows.
+- Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
+  addresses so only configured one-on-one senders can wake workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.
@@ -1787,6 +1840,7 @@ This creates:
 - `agent-sandbox-openai-relay.service`
 - `agent-sandbox-didww-sip-bridge.service`
 - `agent-sandbox-nuget-relay.service`
+- `agent-sandbox-npm-audit-facade.service`
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
 - `agent-sandbox-proxy-issue-sync.service`
@@ -1805,9 +1859,11 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    automation settings.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and DIDWW SIP bridge, and
-   `AZURE_ARTIFACTS_PAT` when the
-   NuGet relay needs private Azure Artifacts access. Additional directory-specific key env vars
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and DIDWW SIP bridge when using
+   default OpenAI Realtime settings, and `AZURE_ARTIFACTS_PAT` when the NuGet relay needs private
+   Azure Artifacts access. The npm audit facade does not require a host secret by default, but you
+   can keep optional local overrides in `config/npm-audit-facade.env`. Additional
+   directory-specific key env vars
    should be supplied through `config/admin-web.env`, `secrets.env`, or the service manager
    environment. The HTTP
    target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
@@ -1824,6 +1880,7 @@ sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-didww-sip-bridge.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-npm-audit-facade.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service
@@ -1839,6 +1896,7 @@ sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-didww-sip-bridge.service
 sudo systemctl status agent-sandbox-nuget-relay.service
+sudo systemctl status agent-sandbox-npm-audit-facade.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-proxy-issue-sync.service
@@ -1911,8 +1969,12 @@ UTF-8 text file from that folder.
 Use `effect:artifact:stage` to copy a file or directory from `/home/agent` into
 that folder, then `effect:artifact:publish-artifacts` to publish the full folder
 as an immutable keyed `tar.gz` archive under `runtime/published-artifacts/`.
+Use `effect:artifact:import-published` to extract a previously published archive
+back into a selected session's `/artifacts` folder; imports fail on existing
+files unless `overwrite` is set.
 The Admin Web Artifacts tab can resolve archives by key, list them by publish
-time, and download the stored archive.
+time, download the stored archive, and manually upload a single file as a
+published artifact archive.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification
@@ -2136,9 +2198,10 @@ decision-complete runbook covering:
 - Rotate Discord and email credentials independently from VM lifecycle.
 - Keep Discord bot tokens only in host environment files or shell context; do not write them into
   guest images, cloud-init, or session manifests.
-- Review Admin Web -> Tool Calls for privileged activity; it reads the configured
-  `audit_log_path` (`runtime/audit.jsonl` by default) and shows redacted payloads
-  plus related session, approval, and workflow links when present.
+- Review Admin Web -> Tool Calls for privileged activity; it reads the indexed
+  `runtime/audit.db` view of the configured `audit_log_path` (`runtime/audit.jsonl`
+  by default), shows redacted payloads, and falls back to the JSONL journal if the
+  index is unavailable.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
 
 

@@ -25,9 +25,10 @@ manager environment or optional repo-root `secrets.env`.
 
 Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
 configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
-backend uses `openai_realtime_api_key_env` and `didww_sip_bridge_token_env`. For systemd
-deployments, put actual secret values in repo-root `secrets.env` or the service manager environment
-rather than `config/gateway.env`.
+backend uses `didww_sip_bridge_token_env`; the DIDWW bridge service uses its own
+`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials. For systemd deployments,
+put actual secret values in repo-root `secrets.env` or the service manager environment rather than
+`config/gateway.env`.
 
 ## `config/openai-relay.env.example`
 
@@ -51,11 +52,17 @@ rather than `config/gateway.env`.
 |---|---|---|
 | `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
 
+## `config/npm-audit-facade.env.example`
+
+This host-local env file is optional and may stay empty. The npm audit facade currently reads
+its bind and upstream settings from runtime config, so there are no required env parameters in
+the checked-in example.
+
 ## `config/firewall.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `11881` for the npm audit facade, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
 
 ## `config/ado-worker.env.example`
 
@@ -115,6 +122,10 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `orchestration_store_backend` | `config/trigger-orchestrator/config.json` | Hot orchestration store backend. Defaults to `sqlite`; set to `json` for rollback to legacy files. |
 | `orchestration_store_path` | `config/trigger-orchestrator/config.json` | SQLite database path for trigger events, effect executions, gate executions, and workflow events. Defaults to `runtime/orchestration.db`. |
 | `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window for the SQLite backend. Defaults to `30`. |
+| `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `truncate`; set to `disabled` to skip explicit checkpoints. |
+| `orchestration_wal_checkpoint_min_bytes` | `config/trigger-orchestrator/config.json` | Minimum `orchestration.db-wal` size before explicit checkpointing. Defaults to `67108864` bytes. |
+| `orchestration_wal_checkpoint_interval_seconds` | `config/trigger-orchestrator/config.json` | Minimum interval between explicit WAL checkpoint attempts. Defaults to `300`. |
+| `orchestration_wal_checkpoint_busy_timeout_ms` | `config/trigger-orchestrator/config.json` | Short busy timeout used only for explicit WAL checkpoint attempts. Defaults to `1000`. |
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and as the migration source. |
@@ -173,7 +184,7 @@ Type-specific keys:
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
@@ -255,8 +266,9 @@ described above. Review requests are fed from the host-owned
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
 script name. The checked-in global workflow currently filters that trigger down to
-`provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
-Industry APP Azure provisioning script and resumes the originating session with the JSON result.
+`provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
+maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
+session after `effect:session:update-metadata` stores that metadata.
 
 `trigger:communication:new-message` is a provider-neutral chat trigger over declared
 directory-scoped communication targets. Its `communication_target_ids` list is required and must
@@ -365,13 +377,16 @@ validate in the editor.
 
 `gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
 arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.
-The runtime also records the latest inbound payload seen from each upstream source in the gate
-execution log for debugging.
+Downstream nodes can bind to the merge outputs and to upstream nodes that are guaranteed to have
+executed on every path to the merge. Branch-local outputs should be mapped into a shared shape
+before the merge and read from the merge node. The runtime also records the latest inbound payload
+seen from each upstream source in the gate execution log for debugging.
 
 `gate:debounce` groups inbound activations by its bindable `key`, waits until no newer
 activation for that key has arrived for the ISO-8601 `quiet_period`, and caps each burst by
 ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
 diagnostics including key, first/last seen times, scheduled release time, and release reason.
+Delayed debounce releases preserve the inherited workflow binding context.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.
@@ -404,12 +419,13 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
+| `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
@@ -417,17 +433,30 @@ Type-specific keys:
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
+| `effect:runtime:diagnostics-snapshot` | _none beyond envelope_ | `since`, `units`, `include_failed_units`, `include_journal`, `include_runtime_files`, `max_journal_lines_per_unit`, `max_runtime_file_bytes`, `command_timeout_seconds`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
+| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
+
+`effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
+runtime deep-merges that patch into the created session manifest after built-in
+create metadata such as labels, model, execution backend, and worker URL are
+assembled.
+
+`web_search_enabled` defaults to `false`. When it is false, the OpenAI relay
+rejects Responses requests that declare hosted web search tools. Set it to
+`true` only for sessions that should be allowed to receive OpenAI-hosted web
+content in model context. Codex VM resume and container-worker prompt commands
+also set Codex `web_search` to `disabled` or `live` from this session flag.
 
 `effect:http:request` performs a host-side raw HTTP or HTTPS request from the
 effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
@@ -440,6 +469,15 @@ origin when they include a scheme, for example `https://api.example.test/*`, and
 against the host or `host:port` when they do not, for example `*.example.test`.
 This effect does not use the guest HTTP target relay or its destination
 allowlist.
+
+`effect:runtime:diagnostics-snapshot` captures a host-side diagnostic snapshot
+without accepting arbitrary commands or paths from workflow config. It reads only
+the configured runtime directory, fixed orchestration failure files, and an
+allowlisted subset of `agent-sandbox-*` systemd units. Service log collection is
+bounded by `since`, `units`, `max_journal_lines_per_unit`, and
+`command_timeout_seconds`; runtime file reads are bounded by
+`max_runtime_file_bytes`. Redaction is always enabled before the snapshot is
+returned in `snapshot_text`, `stdout`, and `message`.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the
@@ -492,6 +530,11 @@ set, is relative to `/artifacts` and cannot contain dot or parent segments.
 `effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder
 as a `tar.gz` archive and stores it in the host durable artifact store under an
 immutable caller-provided `key`. Reusing a key fails.
+`effect:artifact:import-published` reads an immutable published artifact by
+`key`, copies its archive into the selected session, and extracts it under that
+session's `/artifacts` folder. `destination_path`, when set, is a relative
+prefix under `/artifacts`; existing files cause the import to fail unless
+`overwrite` is true.
 
 ### Query definition schema keys
 
@@ -597,10 +640,14 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:bash:script` with this repo's
-`scripts/provision_exampleindustry_app_demo_environment.sh`, projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
-`app_api_alias`, `app_ui_alias`, and `public_domain` as declared outputs, stores those values in
-session metadata, and then resumes the originating agent session.
+`effect:bash:script` is retained for compatibility but is high-risk host-side shell execution and
+should not be used for new workflows. Prefer typed effects such as `effect:ado:pipeline-run`.
+
+The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
+deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,
+`app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
+`session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
+agent session is resumed.
 
 ### Graph examples
 
@@ -847,6 +894,11 @@ Mixed graph:
 }
 ```
 
+MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
+prompt command resumes the last Codex context when no explicit thread id is available. Admin
+created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
+container Codex exec session.
+
 - Recurring cron schedule (host CLI):
 
 ```bash
@@ -858,6 +910,10 @@ agent-sandbox-cli wake-schedules create \
   --mode new_context \
   --source admin_cli
 ```
+
+Busy container-worker wake requests are still treated as handled for one-shot consumption and cron
+advancement after they queue a prompt, so the same schedule rules apply whether the session is
+resumed immediately or deferred by the prompt queue.
 
 ## Root issue setup and git automation config
 
@@ -988,8 +1044,8 @@ invent fallback graph IDs for state nodes.
 | `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
 | `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges; defaults to `gpt-realtime-2`. |
-| `openai_realtime_api_key_env` | provider config overlays | Host env-var name for the OpenAI Realtime API key; default `OPENAI_API_KEY`. |
-| `openai_realtime_api_base_url` | provider config overlays | OpenAI API base URL advertised to host-owned Realtime media bridges. |
+| `openai_realtime_api_key_env` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local API key env configuration instead of accepting per-call env-var names. |
+| `openai_realtime_api_base_url` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local upstream base URL configuration instead of accepting per-call base URL overrides. |
 | `voice_media_controller_url` | provider config overlays | Optional voice media controller URL passed to DIDWW or Teams bridges. |
 | `voice_media_controller_token_env` | provider config overlays | Host env-var name for the voice media controller token. |
 | `voice_media_controller_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for voice media controller and bridge requests. |
@@ -1141,7 +1197,7 @@ Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
-| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `tool_argument_policies` |
+| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `mcp_tool_policies`, `tool_argument_policies` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
@@ -1208,6 +1264,26 @@ Approval-required tool policy:
   id.
 - `approval_submit` and `approval_check` are excluded from generic invocation gating so agents can
   request and inspect approvals.
+
+MCP tool approval policy:
+
+- `mcp_tool_policies` is a tool-keyed map of directory rules. Keys must match a known MCP
+  `ToolName`.
+- Each rule can set:
+  - `denied`: fully disallow the tool in this directory and descendants.
+  - `require_approval`: force per-invocation approval for the tool.
+  - `default_settings`: default grant settings with `ttl_seconds`, `max_uses` (`null` means
+    unlimited), and `payload_mode` (`exact` or `any`).
+  - `max_ttl_seconds`: hard upper bound for any approval grant TTL.
+  - `max_uses`: hard upper bound for finite or unlimited approval grants.
+  - `require_exact_payload`: hard rule that forbids payload variance.
+- Approval grants default to `ttl_seconds: 3600`, `max_uses: 1`, and `payload_mode: exact`.
+- Session-specific approval settings may relax those defaults only until a directory hard rule
+  clamps them. Directory `denied` rules are inherited downward and cannot be undone by descendant
+  directories or session policy.
+- `effect:session:approve-mcp-tools-for-run` respects these rules: denied tools, tools that require
+  per-invocation approval, and tools that force exact payload matching cannot be approved by a
+  workflow-run lease.
 
 Tool argument policy:
 
@@ -1297,7 +1373,8 @@ mode remains supported for compatibility through `teams_graph_access_token_env` 
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
 that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
-`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
+`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
+UPNs, or mail addresses.
 
 Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
 directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
@@ -1311,7 +1388,7 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 `teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 Direct-message trigger polling is configured with `sender_user_ids` on
-`trigger:teams:direct-message`.
+`trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
 
 Key delegated Teams provider settings now include:
 
@@ -1321,6 +1398,8 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_tenant_id`
 - optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
+- Resolving Teams direct-message sender mail addresses may require adding a Graph user-read scope
+  such as `User.ReadBasic.All` or `User.Read.All` and rerunning Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default

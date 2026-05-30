@@ -7,6 +7,8 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
+import stat
 import subprocess
 import uuid
 from collections.abc import Sequence
@@ -222,11 +224,14 @@ class WorkerDaemon:
         tail_lines: int | None = None,
     ) -> str:
         selected_mode = str(mode or "augmented").strip().casefold()
-        if selected_mode not in {"augmented", "raw", "session"}:
-            raise ValueError("log mode must be one of: augmented, raw, session")
+        if selected_mode not in {"augmented", "execution", "raw", "session"}:
+            raise ValueError("log mode must be one of: augmented, execution, raw, session")
         text = self._raw_logs(record, tail_lines=tail_lines)
         if selected_mode == "raw":
             return text
+        if selected_mode == "execution":
+            execution_log = self._codex_execution_log(record, text, skip_existing=True)
+            return self._append_codex_session_log(text, execution_log)
         session_log = self._codex_session_log(
             record,
             text,
@@ -304,6 +309,39 @@ class WorkerDaemon:
             for message in self._codex_session_messages(
                 agent_home,
                 thread_id,
+                include_running_context=record.status == "running",
+            ):
+                if message in seen or (skip_existing and message in text):
+                    continue
+                seen.add(message)
+                messages.append(message)
+        if not messages:
+            return ""
+        return "\n".join(messages) + "\n"
+
+    def _codex_execution_log(
+        self,
+        record: WorkerJobRecord,
+        text: str,
+        *,
+        skip_existing: bool,
+    ) -> str:
+        if record.started_at is None and record.finished_at is None:
+            return ""
+        agent_home = Path(record.agent_home_path)
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_codex_session_ids(agent_home)
+        if not thread_ids:
+            return ""
+        messages: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            for message in self._codex_session_messages(
+                agent_home,
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
                 include_running_context=record.status == "running",
             ):
                 if message in seen or (skip_existing and message in text):
@@ -456,11 +494,30 @@ class WorkerDaemon:
                 container_path=container_path,
             )
             if entry.content_base64 is not None:
-                destination.write_bytes(base64.b64decode(entry.content_base64))
+                desired_content = base64.b64decode(entry.content_base64)
+            else:
+                desired_content = (entry.content or "").encode("utf-8")
+            desired_mode = (
+                int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
+            )
+            if destination.is_file() and entry.overwrite:
+                content_matches = destination.read_bytes() == desired_content
+                mode_matches = (
+                    desired_mode is None
+                    or stat.S_IMODE(destination.stat().st_mode) == desired_mode
+                )
+                if content_matches and mode_matches:
+                    continue
+                if content_matches and desired_mode is not None:
+                    destination.chmod(desired_mode)
+                    copied_paths.append(container_path)
+                    continue
+            if entry.content_base64 is not None:
+                destination.write_bytes(desired_content)
             else:
                 destination.write_text(entry.content or "", encoding="utf-8")
-            if entry.mode is not None:
-                destination.chmod(int(self._normalize_mode(entry.mode), 8))
+            if desired_mode is not None:
+                destination.chmod(desired_mode)
             copied_paths.append(container_path)
         return WorkerFileWriteRecord(
             session_id=session_id,
@@ -515,11 +572,7 @@ class WorkerDaemon:
 
         mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
-        session_records = [
-            record
-            for record in list(self.store.read_all().values())
-            if record.session_id == normalized_session_id
-        ]
+        session_records = self.store.list_by_session(normalized_session_id)
         cleanup_started_at = now_utc()
         for record in session_records:
             if record.status == "removed":
@@ -681,7 +734,7 @@ class WorkerDaemon:
 
     def _job_telemetry(self) -> WorkerJobTelemetry:
         try:
-            records = list(self.store.read_all().values())
+            records = self.store.list_all_ordered()
         except FileNotFoundError:
             return self._job_telemetry_failure(
                 TelemetryStatus.MISSING,
@@ -692,7 +745,7 @@ class WorkerDaemon:
                 TelemetryStatus.PERMISSION_DENIED,
                 "permission denied",
             )
-        except (OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError):
             return self._job_telemetry_failure(
                 TelemetryStatus.UNSUPPORTED,
                 "job store is unavailable",

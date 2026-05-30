@@ -74,6 +74,9 @@ async def workflow_run_events(service: AdminService, request: Request) -> AsyncI
             {
                 "runs": [run.model_dump(mode="json") for run in snapshot.runs],
                 "node_activity": snapshot.node_activity,
+                "recent_node_activity": [
+                    item.model_dump(mode="json") for item in snapshot.recent_node_activity
+                ],
             },
             sort_keys=True,
         )

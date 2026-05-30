@@ -12,19 +12,19 @@
         "expression": "* * * * *"
       },
       {
-        "id": "effect-log-synthetic",
-        "display_name": "Synthetic script",
-        "type": "effect:bash:script",
-        "script_path": "/bin/echo",
-        "args": [
-          "synthetic-workflow"
-        ]
+        "id": "effect-emit-synthetic",
+        "display_name": "Synthetic event",
+        "type": "effect:event:emit",
+        "event_type": "synthetic.workflow.tick",
+        "payload": {
+          "source": "synthetic-trivial"
+        }
       }
     ],
     "edges": [
       {
         "source_id": "trigger-cron-synthetic",
-        "target_id": "effect-log-synthetic"
+        "target_id": "effect-emit-synthetic"
       }
     ]
   }

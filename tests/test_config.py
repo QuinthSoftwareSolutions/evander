@@ -9,6 +9,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
 from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
@@ -353,6 +354,14 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
             "nuget_azure_feed_base_url",
             " https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/ ",
         ),
+        (
+            "npm_audit_facade_audit_registry_url",
+            " https://registry.npmjs.org/ ",
+        ),
+        (
+            "npm_audit_facade_package_registry_url",
+            " http://nexus.test:8081/repository/npm-all/ ",
+        ),
     ],
 )
 def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
@@ -374,15 +383,46 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_nuget_relay_base_url", ""),
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
+        ("container_worker_guest_npm_registry_url", "http://facade.test\nfetch-retries=0"),
         ("openai_api_base_url", "not-a-url"),
         ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
         ("nuget_azure_feed_base_url", ""),
+        ("npm_audit_facade_audit_registry_url", "ftp://registry.npmjs.org"),
+        ("npm_audit_facade_package_registry_url", ""),
     ],
 )
 def test_http_url_fields_reject_invalid_values_with_field_name(field_name: str, value: str) -> None:
     with pytest.raises(ValueError, match=field_name):
         GatewayConfig.model_validate({field_name: value})
+
+
+def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None:
+    host_config = HostConfig(
+        runtime_dir="/tmp/agent-sandbox-runtime",
+        npm_audit_facade_host="127.0.0.1",
+        npm_audit_facade_port=18181,
+    )
+
+    config = build_runtime_gateway_config(host_config)
+
+    assert config.npm_audit_facade_host == "127.0.0.1"
+    assert config.npm_audit_facade_port == 18181
+
+
+def test_legacy_gateway_config_import_preserves_npm_audit_facade_bind_settings() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "npm_audit_facade_host": "127.0.0.1",
+            "npm_audit_facade_port": 18181,
+        }
+    )
+
+    host_config = HostConfig.from_legacy_gateway_config(config)
+
+    assert host_config.npm_audit_facade_host == "127.0.0.1"
+    assert host_config.npm_audit_facade_port == 18181
 
 
 def test_bind_network_cidr_trims_whitespace_and_normalizes() -> None:
@@ -635,6 +675,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert config.orchestration_store_backend == "sqlite"
     assert str(config.orchestration_store_path) == "/tmp/agent-sandbox-runtime/orchestration.db"
     assert config.orchestration_retention_days == 30
+    assert config.orchestration_wal_checkpoint_mode == "truncate"
+    assert config.orchestration_wal_checkpoint_min_bytes == 64 * 1024 * 1024
+    assert config.orchestration_wal_checkpoint_interval_seconds == 5 * 60
+    assert config.orchestration_wal_checkpoint_busy_timeout_ms == 1_000
     assert (
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"

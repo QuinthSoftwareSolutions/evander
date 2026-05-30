@@ -21,7 +21,11 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
+from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
+from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
+    RuntimeDiagnosticsSnapshotEffectProvider,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -48,7 +52,12 @@ from agent_sandbox.events.provider_models import (
     VmCreateEffectDefinition,
 )
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.models import SessionManifest, ToolName, UpdatePullRequestResponse, VmActionResult
+from agent_sandbox.models import (
+    SessionManifest,
+    ToolName,
+    UpdatePullRequestResponse,
+    VmActionResult,
+)
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 
@@ -91,6 +100,7 @@ class _FakeContainerBackend:
         self.prepare_error: Exception | None = None
         self.write_files_error: Exception | None = None
         self.start_error: Exception | None = None
+        self.clone_result_cloned = True
 
     def prepare_session(self, **kwargs):
         if self.prepare_error is not None:
@@ -108,7 +118,7 @@ class _FakeContainerBackend:
             target_dir=f"/home/agent/repos/{repo_name}",
             guest_repo_name=repo_name,
             remote_url=kwargs["repo_source"],
-            cloned=True,
+            cloned=self.clone_result_cloned,
         )
 
     def write_files(self, **kwargs):
@@ -306,6 +316,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:copy-files",
         "effect:artifact:stage",
         "effect:artifact:publish-artifacts",
+        "effect:artifact:import-published",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
         "effect:chat-assistant:ensure-session",
@@ -316,6 +327,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:state:update",
         "effect:bash:script",
         "effect:http:request",
+        "effect:runtime:diagnostics-snapshot",
         "effect:event:emit",
         "effect:event:schedule",
         "effect:vm:exec",
@@ -324,6 +336,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:issue:update-state",
         "effect:issue:update-metadata",
         "effect:issue:upsert-ado-proxy",
+        "effect:ado:pipeline-run",
         "effect:ado:update-work-item",
         "effect:communication:send-message",
         "effect:notification:send",
@@ -335,6 +348,13 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pull-request:update",
     }
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:runtime:diagnostics-snapshot"]
+        is RuntimeDiagnosticsSnapshotEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
+    )
 
 
 def test_event_schedule_effect_definition_validates_contract_shape() -> None:
@@ -583,6 +603,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         communication_file_send_enabled=False,
         communication_file_max_bytes=4096,
         communication_file_require_approval_for_send=True,
+        web_search_enabled=True,
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -609,10 +630,38 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_receive_enabled"] is True
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
-    assert (
-        admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"]
-        is True
+    assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+
+
+def test_agent_create_provider_passes_session_metadata() -> None:
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        metadata={"workflow": {"state": "active"}, "owns_pr": True},
     )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect, directory_path="root/team-a").execute()
+
+    assert output["session_id"] == "lab-session"
+    assert admin_service.create_vm_calls[0]["metadata"] == {
+        "workflow": {"state": "active"},
+        "owns_pr": True,
+    }
 
 
 def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
@@ -749,6 +798,23 @@ def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
     assert output["success"] is True
     assert output["skipped"] is False
     assert admin_service.create_vm_calls[0]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[0]["web_search_enabled"] is None
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent-disable-search",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm-2",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            web_search_enabled=False,
+        )
+    ).execute()
+
+    assert admin_service.create_vm_calls[1]["allow_existing_session"] is True
+    assert admin_service.create_vm_calls[1]["web_search_enabled"] is False
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
@@ -934,11 +1000,7 @@ def test_agent_prompt_provider_uses_resume_thread_metadata_key() -> None:
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     factory = EffectProviderFactory(
@@ -1048,11 +1110,7 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
@@ -1092,11 +1150,7 @@ def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
@@ -1137,12 +1191,8 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_collection_ov
     admin_service._sessions["session-42"] = session.model_copy(
         update={
             "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-default"
-                },
-                "team_threads": {
-                    "teams:chat-1:agent_thread_id": "thread-override"
-                },
+                "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-default"},
+                "team_threads": {"teams:chat-1:agent_thread_id": "thread-override"},
             }
         }
     )
@@ -1156,9 +1206,7 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_collection_ov
     assert output["thread_id"] == "thread-override"
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-override"
     updated = admin_service._sessions["session-42"]
-    assert updated.metadata["team_threads"]["teams:chat-1:agent_thread_id"] == (
-        "thread-override"
-    )
+    assert updated.metadata["team_threads"]["teams:chat-1:agent_thread_id"] == ("thread-override")
     assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
         "thread-default"
     )
@@ -1277,6 +1325,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
+    assert 'web_search="disabled"' in command
     assert "cd /home/agent" in command
 
 
@@ -1288,6 +1337,34 @@ def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> 
     )
 
     assert "exec resume chat-thread-alice-123" not in command
+    assert "codex exec --json" in command
+    assert "-s danger-full-access" in command
+    assert "-C /home/agent" in command
+
+
+def test_container_prompt_command_uses_resume_last_for_same_context_without_thread() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.4-mini",
+        resume_thread_id=None,
+        resume_mode="same_context",
+    )
+
+    assert "codex exec resume --last" in command
+    assert "--json" in command
+    assert "-s danger-full-access" not in command
+    assert "-C /home/agent" not in command
+
+
+def test_container_prompt_command_uses_fresh_context_for_new_context_without_thread() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.4-mini",
+        resume_thread_id=None,
+        resume_mode="new_context",
+    )
+
+    assert "codex exec resume --last" not in command
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
@@ -1390,16 +1467,19 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
         metadata={},
     )
     backend.repository = SimpleNamespace(
-        read_all=lambda: {
-            "agent-session-1-old": ContainerWorkerExecutionRecord(
+        list_active_by_session=lambda session_id, active_statuses: [
+            ContainerWorkerExecutionRecord(
                 execution_id="agent-session-1-old",
-                session_id="session-1",
+                session_id=session_id,
                 worker_job_id="job-1",
                 worker_url="http://worker.test",
                 target_name="agent-session-1-old",
-                last_status="running",
+                last_status=next(iter(active_statuses)),
             )
-        }
+        ],
+        read_all=lambda: (_ for _ in ()).throw(
+            AssertionError("container enqueue should not scan all execution mappings")
+        ),
     )
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
@@ -1469,16 +1549,19 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
         metadata={},
     )
     backend.repository = SimpleNamespace(
-        read_all=lambda: {
-            "agent-session-1-old": ContainerWorkerExecutionRecord(
+        list_active_by_session=lambda session_id, active_statuses: [
+            ContainerWorkerExecutionRecord(
                 execution_id="agent-session-1-old",
-                session_id="session-1",
+                session_id=session_id,
                 worker_job_id="job-1",
                 worker_url="http://worker.test",
                 target_name="agent-session-1-old",
-                last_status="running",
+                last_status=next(iter(active_statuses)),
             )
-        }
+        ],
+        read_all=lambda: (_ for _ in ()).throw(
+            AssertionError("container enqueue should not scan all execution mappings")
+        ),
     )
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
@@ -1505,9 +1588,9 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
 
     queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
     assert sorted(queued) == ["teams:chat-1:msg-1", "teams:chat-1:msg-2"]
-    assert {
-        record.resume_thread_metadata_key for record in queued.values()
-    } == {"teams:chat-1:agent_thread_id"}
+    assert {record.resume_thread_metadata_key for record in queued.values()} == {
+        "teams:chat-1:agent_thread_id"
+    }
 
 
 def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> None:
@@ -1840,9 +1923,14 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             communication_file_send_enabled=True,
             communication_file_max_bytes=2048,
             communication_file_require_approval_for_send=True,
+            web_search_enabled=True,
             dotnet=True,
             nuget=True,
             playwright=True,
+            metadata={
+                "workflow": {"state": "active"},
+                "labels": {"agent_role": "reviewer"},
+            },
         )
     ).execute()
     clone = factory.build(
@@ -1886,6 +1974,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048
     assert manifest.communication_file_require_approval_for_send is True
+    assert manifest.web_search_enabled is True
+    assert manifest.metadata["workflow"] == {"state": "active"}
+    assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     assert create["execution_backend"] == "container_worker_vm"
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"
@@ -1952,39 +2043,35 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "registry=http://nexus.test:8081/repository/npm-all/"
         in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
+    assert "replace-registry-host=always" not in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     assert (
         'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert (
-        "AGENT_SANDBOX_DOTNET_TOOLS_ROOT"
-        in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
-    assert (
-        'export DOTNET_CLI_HOME="$HOME"'
-        in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
+    assert "AGENT_SANDBOX_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert 'export DOTNET_CLI_HOME="$HOME"' in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert ".dotnet-cli" not in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
-    assert "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
+    assert (
+        "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "AGENT_SANDBOX_PLAYWRIGHT_RUNTIME" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "AGENT_SANDBOX_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "PLAYWRIGHT_MCP_SANDBOX" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROME_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROMIUM_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
@@ -2010,8 +2097,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
     assert "config alias.sync-base" in clone_config_command
-    assert '.agent-sandbox/bin/push-agent' in clone_config_command
-    assert '.agent-sandbox/bin/sync-base' in clone_config_command
+    assert ".agent-sandbox/bin/push-agent" in clone_config_command
+    assert ".agent-sandbox/bin/sync-base" in clone_config_command
     assert "git config agent-sandbox.prNotesRef" in clone_config_command
     assert 'git config agent-sandbox.workBranch "$WORK_BRANCH"' in clone_config_command
     assert "git switch -c" in clone_config_command
@@ -2022,6 +2109,204 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
+    assert 'web_search="live"' in str(backend.started_specs[-1].command)
+
+
+def test_agent_create_container_can_override_npm_registry_url(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-facade",
+            npm_registry_url="http://facade.test:11881",
+        )
+    ).execute()
+
+    bootstrap_files = backend.written_files[0]["files"]
+    bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
+    assert (
+        "NPM_CONFIG_REGISTRY=http://facade.test:11881/"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "registry=http://facade.test:11881/"
+        in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+    )
+    assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+
+
+@pytest.mark.parametrize(
+    "npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
+def test_agent_create_effect_definition_rejects_invalid_npm_registry_url(
+    npm_registry_url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="npm_registry_url"):
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-invalid",
+            npm_registry_url=npm_registry_url,
+        )
+
+
+@pytest.mark.parametrize(
+    "resolved_npm_registry_url",
+    [
+        "ftp://nexus.test/repository/npm-all/",
+        "http://facade.test\nfetch-retries=0",
+        "http://facade.test\rfetch-retries=0",
+        "http://facade.test\tfetch-retries=0",
+    ],
+)
+def test_agent_create_container_rejects_invalid_npm_registry_url_before_bootstrap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_npm_registry_url: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    provider = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-invalid",
+            npm_registry_url="${{trigger_1.npm_registry_url}}",
+        )
+    )
+
+    with pytest.raises(ValueError, match="npm_registry_url"):
+        provider.execute(resolved_config={"npm_registry_url": resolved_npm_registry_url})
+
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
+
+
+def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.clone_result_cloned = False
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+        )
+    ).execute()
+
+    assert output["message"] == "Repo already prepared for container worker session session-1"
+    assert output["target_dir"] == "/home/agent/repos/repo"
+    assert backend.written_files[0]["files"][0]["destination_path"].endswith("agent-pr-note")
+    assert backend.written_files[0]["files"][1]["destination_path"].endswith("push-agent")
+    assert backend.written_files[0]["files"][2]["destination_path"].endswith("sync-base")
+    assert backend.started_specs == []
+    assert backend.destroyed == []
 
 
 def test_agent_create_container_noops_when_session_exists(
@@ -2103,6 +2388,7 @@ def test_agent_create_container_upserts_when_session_exists(
             vm_provider="container_worker_vm",
             model="gpt-5.4",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
+            web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"existing": "replace"},
         )
@@ -2144,8 +2430,15 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
+    assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["model"] == "gpt-5.5"
+    bootstrap_by_path = {
+        entry["destination_path"]: entry for entry in backend.written_files[0]["files"]
+    }
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
+        "content"
+    ]
 
 
 def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(
@@ -2633,9 +2926,10 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
     assert output["session_id"] == "session-container"
     assert output["status"] == "cleaned_up"
     assert session_repository.get_session("session-container") is not None
-    assert session_repository.get_session("session-container").metadata["container_lifecycle"][
-        "state"
-    ] == "cleaned_up"
+    assert (
+        session_repository.get_session("session-container").metadata["container_lifecycle"]["state"]
+        == "cleaned_up"
+    )
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

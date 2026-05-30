@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from agent_sandbox.messaging.wake_dispatch import (
     probe_agent_dispatch_state,
     set_session_cooldown,
 )
+from agent_sandbox.session_backends import session_is_container_worker_vm
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class ScheduledWakeWorker:
         now_utc = datetime.now(UTC)
         requests_due = 0
         wakes_dispatched = 0
-        for request in _load_due_wake_requests(wake_store=wake_store, now_utc=now_utc):
+        for request in wake_store.find_due_requests(now_utc=now_utc):
             session = self.runtime.session_repository.get_session(request.session_id)
             if session is None:
                 continue
@@ -176,55 +177,67 @@ class ScheduledWakeWorker:
             session_id=binding.session_id,
         ):
             return False
-        if not binding.vm_id:
-            return False
-        agent_state = probe_agent_dispatch_state(
-            session_id=binding.session_id,
-            vm_id=binding.vm_id,
-            script_path=scoped_config.host_busy_check_script_path,
-        )
-        if agent_state != "idle":
-            if agent_state == "busy":
-                set_session_cooldown(
-                    path=scoped_config.wake_session_cooldown_path,
-                    session_id=binding.session_id,
-                    cooldown_seconds=scoped_config.wake_cooldown_seconds,
-                )
-            return False
-        dispatch = self.dispatcher.resume_binding(
-            binding,
-            worker_config=scoped_config,
-            prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
-            resume_mode=request.resume_mode,
-            dispatch_source=source,
-            request_id=request.request_id,
-            scheduled_for=request.next_run_at or request.schedule.resume_at,
-            wake_metadata={"schedule_cron": request.schedule.cron},
-        )
-        dispatch_succeeded = bool(dispatch and dispatch.status == "dispatched")
-        if dispatch_succeeded:
+        if session_is_container_worker_vm(session):
+            dispatch = self.dispatcher.resume_container_binding(
+                session,
+                worker_config=scoped_config,
+                prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
+                resume_mode=request.resume_mode,
+                dispatch_source=source,
+                request_id=request.request_id,
+                scheduled_for=request.next_run_at or request.schedule.resume_at,
+                wake_metadata={"schedule_cron": request.schedule.cron},
+            )
+        else:
+            if not binding.vm_id:
+                return False
+            agent_state = probe_agent_dispatch_state(
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                script_path=scoped_config.host_busy_check_script_path,
+            )
+            if agent_state != "idle":
+                if agent_state == "busy":
+                    set_session_cooldown(
+                        path=scoped_config.wake_session_cooldown_path,
+                        session_id=binding.session_id,
+                        cooldown_seconds=scoped_config.wake_cooldown_seconds,
+                    )
+                return False
+            dispatch = self.dispatcher.resume_binding(
+                binding,
+                worker_config=scoped_config,
+                prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
+                resume_mode=request.resume_mode,
+                dispatch_source=source,
+                request_id=request.request_id,
+                scheduled_for=request.next_run_at or request.schedule.resume_at,
+                wake_metadata={"schedule_cron": request.schedule.cron},
+            )
+        dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
+        if dispatch_handled:
             set_session_cooldown(
                 path=scoped_config.wake_session_cooldown_path,
                 session_id=binding.session_id,
                 cooldown_seconds=scoped_config.wake_cooldown_seconds,
             )
-        if (request.schedule.cron or "").strip() and dispatch_succeeded:
+        if (request.schedule.cron or "").strip() and dispatch_handled:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
                 mark_consumed=False,
-                was_dispatched=True,
+                was_handled=True,
             )
-        elif dispatch_succeeded:
+        elif dispatch_handled:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
                 mark_consumed=True,
-                was_dispatched=True,
+                was_handled=True,
             )
-        return dispatch_succeeded
+        return dispatch_handled
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
@@ -331,32 +344,9 @@ def _build_scheduled_resume_prompt(worker_config: GatewayConfig, requested_promp
     return cleaned_requested
 
 
-def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeScheduledRequest]:
-    payload = wake_store.read_raw()
-    raw_requests = payload.get("requests", {})
-    if not isinstance(raw_requests, dict):
-        return []
-    due: list[WakeScheduledRequest] = []
-    for raw_value in raw_requests.values():
-        if not isinstance(raw_value, dict):
-            continue
-        request = _parse_wake_request(raw_value)
-        if request is None or not request.enabled:
-            continue
-        next_run_at = request.next_run_at
-        if next_run_at is None:
-            cron = (request.schedule.cron or "").strip()
-            if cron:
-                next_run_at = next_cron_time(cron, now_utc - timedelta(minutes=1))
-                if next_run_at is not None:
-                    request.next_run_at = next_run_at
-                    request.updated_at = now_utc
-                    wake_store.upsert_request(request)
-        if next_run_at is None or next_run_at > now_utc:
-            continue
-        due.append(request)
-    due.sort(key=lambda request: request.next_run_at or request.created_at)
-    return due
+def _wake_dispatch_counts_as_handled(dispatch: Any | None) -> bool:
+    status = str(getattr(dispatch, "status", "") or "").strip()
+    return status in {"dispatched", "queued"}
 
 
 def _advance_cron_wake_request(
@@ -365,9 +355,9 @@ def _advance_cron_wake_request(
     request: WakeScheduledRequest,
     now_utc: datetime,
     mark_consumed: bool,
-    was_dispatched: bool,
+    was_handled: bool,
 ) -> None:
-    request.last_dispatched_at = now_utc if was_dispatched else request.last_dispatched_at
+    request.last_dispatched_at = now_utc if was_handled else request.last_dispatched_at
     request.updated_at = now_utc
     if mark_consumed:
         request.enabled = False
@@ -381,11 +371,3 @@ def _advance_cron_wake_request(
     next_base = request.next_run_at or now_utc
     request.next_run_at = next_cron_time(cron, next_base)
     wake_store.upsert_request(request)
-
-
-def _parse_wake_request(raw_value: dict[str, Any]) -> WakeScheduledRequest | None:
-    try:
-        return WakeScheduledRequest.model_validate(raw_value)
-    except Exception:
-        logger.warning("Skipping invalid wake request entry=%r", raw_value, exc_info=True)
-        return None

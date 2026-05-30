@@ -1063,8 +1063,6 @@ def realtime_session_config(config: Any) -> dict[str, Any]:
     return {
         "provider": "openai_realtime",
         "model": getattr(config, "openai_realtime_model", "gpt-realtime-2"),
-        "api_key_env": getattr(config, "openai_realtime_api_key_env", "OPENAI_API_KEY"),
-        "api_base_url": getattr(config, "openai_realtime_api_base_url", None),
         "media_controller_url": getattr(config, "voice_media_controller_url", None),
         "media_controller_token_env": getattr(
             config, "voice_media_controller_token_env", None

@@ -114,6 +114,8 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 4096,
             "communication_file_require_approval_for_send": True,
+            "npm_registry_url": "http://facade.test:11881/",
+            "metadata": {"workflow": {"state": "active"}},
         }
     )
     agent_create_chat_only = adapter.validate_python(
@@ -158,9 +160,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Copy agent files",
             "type": "effect:agent:copy-files",
             "session_id": "session-1",
-            "files": [
-                {"destination_path": "/home/agent/repos/repo/task.yaml", "content": "task"}
-            ],
+            "files": [{"destination_path": "/home/agent/repos/repo/task.yaml", "content": "task"}],
         }
     )
     prompt = adapter.validate_python(
@@ -209,6 +209,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "payload": {"message": "hello"},
         }
     )
+    diagnostics_snapshot = adapter.validate_python(
+        {
+            "id": "effect-runtime-diagnostics",
+            "display_name": "Runtime diagnostics snapshot",
+            "type": "effect:runtime:diagnostics-snapshot",
+            "since": "24 hours ago",
+            "units": ["agent-sandbox-effect-orchestrator.service"],
+        }
+    )
     vm_exec = adapter.validate_python(
         {
             "id": "effect-exec",
@@ -239,6 +248,16 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "type": "effect:issue:update-state",
             "issue_id": "14084",
             "state": "In Progress",
+        }
+    )
+    ado_pipeline = adapter.validate_python(
+        {
+            "id": "effect-ado-pipeline",
+            "display_name": "ADO pipeline run",
+            "type": "effect:ado:pipeline-run",
+            "directory_path": "root/team",
+            "pipeline_id": 42,
+            "variables": {"resourceBaseName": "demo7"},
         }
     )
     promote = adapter.validate_python(
@@ -313,6 +332,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "key": "runs/session-1/report",
         }
     )
+    artifact_import = adapter.validate_python(
+        {
+            "id": "effect-artifact-import",
+            "display_name": "Import artifact",
+            "type": "effect:artifact:import-published",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
@@ -329,6 +357,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_create.communication_file_send_enabled is True
     assert agent_create.communication_file_max_bytes == 4096
     assert agent_create.communication_file_require_approval_for_send is True
+    assert agent_create.metadata == {"workflow": {"state": "active"}}
     assert agent_destroy.type == "effect:agent:destroy"
     assert agent_clone.type == "effect:agent:clone-repo"
     assert agent_frontend.type == "effect:agent:bootstrap-frontend"
@@ -339,15 +368,20 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert bash_script.type == "effect:bash:script"
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]
+    assert diagnostics_snapshot.type == "effect:runtime:diagnostics-snapshot"
+    assert diagnostics_snapshot.units == ["agent-sandbox-effect-orchestrator.service"]
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"
+    assert ado_pipeline.type == "effect:ado:pipeline-run"
+    assert ado_pipeline.pipeline_id == 42
     assert communication.type == "effect:communication:send-message"
     assert notification.type == "effect:notification:send"
     assert session_renew.type == "effect:session:renew-if-expired"
     assert session_approve_tools.type == "effect:session:approve-mcp-tools-for-run"
     assert artifact_stage.type == "effect:artifact:stage"
     assert artifact_publish.type == "effect:artifact:publish-artifacts"
+    assert artifact_import.type == "effect:artifact:import-published"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

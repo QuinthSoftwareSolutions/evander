@@ -170,7 +170,9 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         normalized_target = normalize_teams_target(target.address)
         target_messages = [
             message
-            for message in TeamsInboxStore(runtime_dir / "teams-inbox-store.json").list_all_messages()
+            for message in TeamsInboxStore(
+                runtime_dir / "teams-inbox-store.json"
+            ).list_all_messages(channel_targets=[normalized_target])
             if teams_target_from_message(
                 team_id=message.team_id,
                 channel_id=message.channel_id,
@@ -296,16 +298,9 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         if not channel_id:
             raise ValueError("query:communication:messages requires a Discord channel target")
 
-        raw_messages = DiscordInboxStore(runtime_dir / "discord-inbox-store.json").read_raw()
-        raw_message_items = raw_messages.get("messages", {})
-        if not isinstance(raw_message_items, dict):
-            raw_message_items = {}
-        candidates = [
-            DiscordMessageEnvelope.model_validate(raw_value)
-            for raw_value in raw_message_items.values()
-            if isinstance(raw_value, dict)
-            and str(raw_value.get("channel_id") or "").strip() == channel_id
-        ]
+        candidates = DiscordInboxStore(runtime_dir / "discord-inbox-store.json").list_all_messages(
+            channel_ids=[channel_id],
+        ).messages
         paged_messages = self._page_discord_messages(
             messages=candidates,
             limit=limit,

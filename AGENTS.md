@@ -351,6 +351,13 @@ Focused suites that often matter for control-plane changes:
 
 Do not assume the suite is currently green; run it and inspect failures in the current worktree.
 
+For UI, browser, Playwright, workflow-editor, and broad smoke tests, use explicit command-level
+timeouts and prefer focused tests first. These tests can hang on pending promises, unclosed
+browser/server handles, `networkidle` waits, or missing UI conditions even after nearby assertions
+have passed. If a broad UI/smoke command times out, stop it, report the exact command, timeout, and
+last useful output, then keep verification scoped to the focused suites that cover the change.
+Do not leave stalled test processes running while continuing work.
+
 ## Guidance For Future Changes
 
 - Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.

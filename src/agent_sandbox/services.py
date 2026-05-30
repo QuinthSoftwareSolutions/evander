@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterator, Literal, Mapping, Protocol
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import httpx
@@ -851,6 +851,7 @@ class DiscordBotApiService:
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
+        fetched_commands: dict[str, DiscordCommandEnvelope] = {}
         with httpx.Client(timeout=self.timeout_seconds) as client:
             channel_ids = sorted(
                 set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
@@ -885,7 +886,9 @@ class DiscordBotApiService:
                         },
                     )
                     envelopes[envelope.command_id] = envelope
-                    self.command_store.put(envelope.command_id, envelope)
+                    fetched_commands[envelope.command_id] = envelope
+
+        _put_discord_commands(self.command_store, fetched_commands)
 
         commands = sorted(
             envelopes.values(),
@@ -1098,6 +1101,33 @@ class DiscordBotApiService:
 
 def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
+
+
+def _put_teams_messages(
+    message_store: TeamsRecordsRepository, messages: dict[str, TeamsMessageEnvelope]
+) -> None:
+    if not messages:
+        return
+    put_many = getattr(message_store, "put_many", None)
+    if callable(put_many):
+        put_many(messages)
+        return
+    for cursor, message in messages.items():
+        message_store.put(cursor, message)
+
+
+def _put_discord_commands(
+    command_store: DiscordRecordsRepository,
+    commands: Mapping[str, DiscordCommandEnvelope],
+) -> None:
+    if not commands:
+        return
+    put_many = getattr(command_store, "put_many", None)
+    if callable(put_many):
+        put_many(commands)
+        return
+    for command_id, envelope in commands.items():
+        command_store.put(command_id, envelope)
 
 
 def _filter_teams_messages_since_cursor(
@@ -1680,6 +1710,10 @@ class GraphTeamsService:
         normalized_user_target = normalize_teams_user_target(user_target)
         return f"{self.user_chat_cache_namespace}:{normalized_user_target}"
 
+    def _user_id_cache_key(self, user_ref: str) -> str:
+        normalized_user_target = normalize_teams_user_target(user_ref)
+        return f"{self.user_chat_cache_namespace}:user-id:{normalized_user_target}"
+
     def _current_user_cache_key(self) -> str:
         return f"{self.user_chat_cache_namespace}:me"
 
@@ -1687,6 +1721,80 @@ class GraphTeamsService:
     def _graph_user_bind_url(api_base_url: str, user_ref: str) -> str:
         escaped_ref = str(user_ref).replace("'", "''")
         return f"{api_base_url}/users('{escaped_ref}')"
+
+    @staticmethod
+    def _graph_user_lookup_url(api_base_url: str, user_ref: str) -> str:
+        return f"{api_base_url}/users/{quote(user_ref, safe='')}"
+
+    @staticmethod
+    def _graph_user_ref(user_ref: str) -> str:
+        normalized = str(user_ref or "").strip().strip("/")
+        if normalized.startswith("user:"):
+            normalized = normalized.removeprefix("user:").strip()
+        if (
+            not normalized
+            or "/" in normalized
+            or any(character.isspace() for character in normalized)
+        ):
+            raise ValueError(f"Invalid Teams user target {user_ref!r}: {_TEAMS_TARGET_ERROR}")
+        return normalized
+
+    @staticmethod
+    def _graph_user_payload_id(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        user_id = str(payload.get("id") or "").strip()
+        return user_id or None
+
+    def resolve_user_id(self, client: httpx.Client, user_ref: str) -> str | None:
+        normalized_ref = self._graph_user_ref(user_ref)
+        cache_key = self._user_id_cache_key(normalized_ref)
+        cached = self.user_chat_cache.get(cache_key)
+        if cached:
+            return cached
+
+        params = {"$select": "id,userPrincipalName,mail"}
+        try:
+            response = self._request_with_retries(
+                client,
+                "GET",
+                self._graph_user_lookup_url(self.api_base_url, normalized_ref),
+                params=params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404 or "@" not in normalized_ref:
+                raise
+        else:
+            user_id = self._graph_user_payload_id(response.json())
+            if user_id:
+                self.user_chat_cache[cache_key] = user_id
+                return user_id
+
+        if "@" not in normalized_ref:
+            return None
+
+        escaped_ref = normalized_ref.replace("'", "''")
+        response = self._request_with_retries(
+            client,
+            "GET",
+            f"{self.api_base_url}/users",
+            params={
+                **params,
+                "$filter": (
+                    f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"
+                ),
+                "$top": 1,
+            },
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        for item in payload.get("value", []):
+            user_id = self._graph_user_payload_id(item)
+            if user_id:
+                self.user_chat_cache[cache_key] = user_id
+                return user_id
+        return None
 
     def _require_allowed_user_target(self, user_ref: str) -> str:
         normalized = normalize_teams_user_target(user_ref)
@@ -2058,6 +2166,7 @@ class GraphTeamsService:
         if since_cursor is None and before_cursor is None and effective_limit is None:
             effective_limit = self.poll_limit
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
+        fetched_messages: dict[str, TeamsMessageEnvelope] = {}
         since_cursor_parts = _parse_teams_cursor(since_cursor)
         before_cursor_parts = _parse_teams_cursor(before_cursor)
         requested_target = None
@@ -2114,7 +2223,7 @@ class GraphTeamsService:
                             fetched=envelope,
                         )
                         messages[envelope.cursor] = envelope
-                        self.message_store.put(envelope.cursor, envelope)
+                        fetched_messages[envelope.cursor] = envelope
 
                         if target_mode == "since":
                             if envelope.message_id == target_cursor:
@@ -2145,6 +2254,7 @@ class GraphTeamsService:
                     if stop_target:
                         break
 
+        _put_teams_messages(self.message_store, fetched_messages)
         ordered = _sorted_teams_messages(messages)
         if requested_target is not None:
             ordered = [
@@ -2696,7 +2806,6 @@ class DiscordInboxService:
         limit: int | None,
         persist_session_cursor: bool,
     ) -> ListUnreadDiscordMessagesResponse:
-        payload = self._read_store()
         allowed_channels = {stream["channel_id"] for stream in streams}
         channel_cursors = {
             stream["channel_id"]: self._effective_cursor(
@@ -2707,20 +2816,24 @@ class DiscordInboxService:
             for stream in streams
         }
         items: list[DiscordMessageEnvelope] = []
-        for raw_value in payload.get("messages", {}).values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = DiscordMessageEnvelope.model_validate(raw_value)
-            if candidate.channel_id not in allowed_channels:
-                continue
-            if session_id is not None and self._is_self_authored_message(
-                candidate, session_id=session_id
-            ):
-                continue
-            effective_cursor = channel_cursors.get(candidate.channel_id)
-            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
-                continue
-            items.append(candidate)
+        if allowed_channels:
+            candidates = self.store.list_all_messages(
+                channel_ids=sorted(allowed_channels),
+                limit=None,
+            ).messages
+            for candidate in candidates:
+                if candidate.channel_id not in allowed_channels:
+                    continue
+                if session_id is not None and self._is_self_authored_message(
+                    candidate, session_id=session_id
+                ):
+                    continue
+                effective_cursor = channel_cursors.get(candidate.channel_id)
+                if effective_cursor and candidate.created_at <= self._parse_cursor(
+                    effective_cursor
+                ):
+                    continue
+                items.append(candidate)
 
         items.sort(
             key=lambda item: (

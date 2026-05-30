@@ -51,6 +51,7 @@ import {
   type WorkflowRunSearchItem,
   type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
+  type WorkflowRunRecentNodeActivity,
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
@@ -93,6 +94,7 @@ import {
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
 import {
+  buildWorkflowUpstreamIndex,
   declaredOutputsForNode,
   deriveWorkflowOutputSchemas,
   isPassThroughGateType,
@@ -143,10 +145,14 @@ type GraphNodeData = {
   dominantStatus: string | null;
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
+  diagnosticErrorCount: number;
+  diagnosticWarningCount: number;
   hasDiagnostics: boolean;
+  hasErrorDiagnostics: boolean;
   hasUnsavedChanges: boolean;
   isDisabled: boolean;
   isInspectGhost?: boolean;
+  runtimePulse: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
   tutorialBlocked?: boolean;
@@ -189,6 +195,15 @@ type WorkflowFieldOption = WorkflowEditorFieldDefinition["options"][number];
 
 type StringMapDraftRow = {
   id: string;
+  key: string;
+  value: string;
+};
+
+type SessionListMetadataRuleKind = "equals" | "exists" | "prefix";
+
+type SessionListMetadataRuleDraftRow = {
+  id: string;
+  kind: SessionListMetadataRuleKind;
   key: string;
   value: string;
 };
@@ -277,10 +292,29 @@ type WorkflowDocumentLike = {
   output_schemas?: WorkflowOutputSchemas;
 };
 
+type WorkflowValidationCacheEntry = {
+  signature: string;
+  diagnostics: WorkflowValidationDiagnostic[];
+};
+
+type RuntimePulseContext = {
+  isInspectMode: boolean;
+  isTutorialMode: boolean;
+  workflowGeneratorOpen: boolean;
+  visibleGraphNodeIds: ReadonlySet<string>;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
+const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
+const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const SESSION_LIST_METADATA_FIELD_KEYS = [
+  "metadata_equals",
+  "metadata_exists",
+  "metadata_prefix",
+] as const;
 const COMMUNICATION_EFFECT_NODE_TYPES = new Set([
   "effect:communication:send-message",
   "effect:notification:send",
@@ -361,6 +395,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
   "effect:state:update": "Set, patch, or delete graph-local workflow state.",
   "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
+  "effect:runtime:diagnostics-snapshot": "Capture a bounded, redacted host runtime diagnostics snapshot.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -373,11 +408,13 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:event:emit": "Emit an internal workflow event for other graphs.",
   "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+  "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
+  "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "effect:pull-request:update": "Update pull request metadata or tags.",
@@ -514,9 +551,9 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
-      }${nodeData.hasDiagnostics ? " invalid" : ""}${
+      }${nodeData.hasErrorDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${nodeData.runtimePulse ? " runtime-pulse" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -536,9 +573,14 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
             <div className="node-kind">{nodeData.kind}</div>
           </Tooltip>
           <div className="node-badges">
-            {nodeData.hasDiagnostics ? (
-              <Tooltip content={`${nodeData.diagnosticCount} workflow binding problem${nodeData.diagnosticCount === 1 ? "" : "s"}`}>
-                <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
+            {nodeData.diagnosticErrorCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticErrorCount} workflow binding error${nodeData.diagnosticErrorCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge error">{nodeData.diagnosticErrorCount}</div>
+              </Tooltip>
+            ) : null}
+            {nodeData.diagnosticWarningCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticWarningCount} workflow binding warning${nodeData.diagnosticWarningCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge warning">{nodeData.diagnosticWarningCount}</div>
               </Tooltip>
             ) : null}
             {nodeData.hasUnsavedChanges ? (
@@ -820,6 +862,11 @@ function nodeStatusBadges(activity: WorkflowNodeActivityCounts | undefined): Gra
   });
 }
 
+function trimNonEmpty(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized ? normalized : null;
+}
+
 function buildNodes(
   config: WorkflowConfig,
   layout: WorkflowLayout,
@@ -830,6 +877,7 @@ function buildNodes(
   selectedNodeIds: string[] = [],
   dirtyNodeIds: ReadonlySet<string> = new Set<string>(),
   ghostNodeIds: ReadonlySet<string> = new Set<string>(),
+  runtimePulseNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -844,7 +892,10 @@ function buildNodes(
     const activity = nodeActivity[node.id];
     const catalogEntry = getCatalogEntry(catalog, node.type);
     const outputPorts = workflowOutputPortsForNode(node, catalogEntry?.output_ports ?? []);
-    const diagnosticCount = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id).length;
+    const nodeDiagnostics = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id);
+    const diagnosticErrorCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") !== "warning").length;
+    const diagnosticWarningCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") === "warning").length;
+    const diagnosticCount = diagnosticErrorCount + diagnosticWarningCount;
     return {
       id: node.id,
       type: "workflowNode",
@@ -863,10 +914,14 @@ function buildNodes(
         dominantStatus: dominantNodeStatus(activity),
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
+        diagnosticErrorCount,
+        diagnosticWarningCount,
         hasDiagnostics: diagnosticCount > 0,
+        hasErrorDiagnostics: diagnosticErrorCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
+        runtimePulse: runtimePulseNodeIds.has(node.id),
       },
     };
   });
@@ -1678,6 +1733,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       check: false,
     };
   }
+  if (kind === "effect" && type === "effect:runtime:diagnostics-snapshot") {
+    return {
+      id,
+      display_name: "Runtime diagnostics snapshot",
+      type,
+      since: "24 hours ago",
+      include_failed_units: true,
+      include_journal: true,
+      include_runtime_files: true,
+      max_journal_lines_per_unit: 200,
+      max_runtime_file_bytes: 120000,
+      command_timeout_seconds: 10,
+    };
+  }
   if (kind === "effect" && type === "effect:vm:create") {
     return { id, display_name: "New VM effect", type };
   }
@@ -1770,6 +1839,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       sync_proxy_cache: true,
     };
   }
+  if (kind === "effect" && type === "effect:ado:pipeline-run") {
+    return {
+      id,
+      display_name: "ADO pipeline run",
+      type,
+      directory_path: "root",
+      pipeline_id: 12345,
+      variables: {},
+      template_parameters: {},
+      timeout_seconds: 3600,
+      poll_interval_seconds: 10,
+      check: true,
+    };
+  }
   if (kind === "effect" && type === "effect:session:update-metadata") {
     return {
       id,
@@ -1804,6 +1887,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       session_id: "session-id",
       key: "runs/artifact-key",
+    };
+  }
+  if (kind === "effect" && type === "effect:artifact:import-published") {
+    return {
+      id,
+      display_name: "Import published artifact",
+      type,
+      session_id: "session-id",
+      key: "runs/artifact-key",
+      destination_path: "input",
+      overwrite: false,
     };
   }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
@@ -2272,6 +2366,174 @@ function formatJson(value: unknown, fallback = "{}"): string {
   return JSON.stringify(value, null, 2);
 }
 
+function isSessionListMetadataFieldKey(
+  key: string,
+): key is (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number] {
+  return SESSION_LIST_METADATA_FIELD_KEYS.includes(
+    key as (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number],
+  );
+}
+
+function createSessionListMetadataRuleDraftRow(
+  kind: SessionListMetadataRuleKind = "equals",
+  key = "",
+  value = "",
+): SessionListMetadataRuleDraftRow {
+  const randomSuffix = Math.random().toString(36).slice(2);
+  return {
+    id: `metadata-rule-${Date.now()}-${randomSuffix}`,
+    kind,
+    key,
+    value,
+  };
+}
+
+function sessionListMetadataEqualsRuleValueText(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return JSON.stringify(value);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataPrefixRuleValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataRuleValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function sessionListMetadataExistsFlagIsPresent(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "string") {
+    return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function appendSessionListMetadataEqualsRuleRows(
+  rows: SessionListMetadataRuleDraftRow[],
+  selector: string,
+  value: unknown,
+) {
+  if (isRecord(value) && Object.keys(value).length > 0) {
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      const nestedSelector = selector ? `${selector}.${nestedKey}` : nestedKey;
+      appendSessionListMetadataEqualsRuleRows(rows, nestedSelector, nestedValue);
+    }
+    return;
+  }
+  rows.push(createSessionListMetadataRuleDraftRow(
+    "equals",
+    selector,
+    sessionListMetadataEqualsRuleValueText(value),
+  ));
+}
+
+function sessionListMetadataRuleDraftRowsFromValues(values: Record<string, unknown>): {
+  rows: SessionListMetadataRuleDraftRow[];
+  supported: boolean;
+} {
+  const rows: SessionListMetadataRuleDraftRow[] = [];
+  const metadataEquals = values.metadata_equals;
+  const metadataExists = values.metadata_exists;
+  const metadataPrefix = values.metadata_prefix;
+  if (
+    isExactBindingValue(metadataEquals) ||
+    isExactBindingValue(metadataExists) ||
+    isExactBindingValue(metadataPrefix)
+  ) {
+    return { rows, supported: false };
+  }
+  if (metadataEquals !== undefined && metadataEquals !== null && !isRecord(metadataEquals)) {
+    return { rows, supported: false };
+  }
+  if (metadataPrefix !== undefined && metadataPrefix !== null && !isRecord(metadataPrefix)) {
+    return { rows, supported: false };
+  }
+  if (isRecord(metadataEquals)) {
+    for (const [key, value] of Object.entries(metadataEquals)) {
+      appendSessionListMetadataEqualsRuleRows(rows, key, value);
+    }
+  }
+  if (typeof metadataExists === "string") {
+    const key = metadataExists.trim();
+    if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+  } else if (Array.isArray(metadataExists)) {
+    for (const item of metadataExists) {
+      const key = String(item ?? "").trim();
+      if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (isRecord(metadataExists)) {
+    for (const [key, flag] of Object.entries(metadataExists)) {
+      if (!sessionListMetadataExistsFlagIsPresent(flag)) {
+        return { rows: [], supported: false };
+      }
+      if (key.trim()) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (metadataExists !== undefined && metadataExists !== null) {
+    return { rows: [], supported: false };
+  }
+  if (isRecord(metadataPrefix)) {
+    for (const [key, value] of Object.entries(metadataPrefix)) {
+      rows.push(createSessionListMetadataRuleDraftRow(
+        "prefix",
+        key,
+        sessionListMetadataPrefixRuleValueText(value),
+      ));
+    }
+  }
+  return { rows, supported: true };
+}
+
+function sessionListMetadataRuleValues(rows: SessionListMetadataRuleDraftRow[]): {
+  metadata_equals?: Record<string, unknown>;
+  metadata_exists?: string[];
+  metadata_prefix?: Record<string, string>;
+} {
+  const metadataEquals: Record<string, unknown> = {};
+  const metadataExists: string[] = [];
+  const metadataPrefix: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    if (row.kind === "equals") {
+      metadataEquals[key] = sessionListMetadataRuleValue(row.value);
+    } else if (row.kind === "exists") {
+      metadataExists.push(key);
+    } else if (row.kind === "prefix") {
+      metadataPrefix[key] = row.value;
+    }
+  }
+  return {
+    ...(Object.keys(metadataEquals).length > 0 ? { metadata_equals: metadataEquals } : {}),
+    ...(metadataExists.length > 0 ? { metadata_exists: metadataExists } : {}),
+    ...(Object.keys(metadataPrefix).length > 0 ? { metadata_prefix: metadataPrefix } : {}),
+  };
+}
+
 function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLookupKind): URLSearchParams {
   const normalized = value.trim();
   const query = new URLSearchParams();
@@ -2719,10 +2981,15 @@ function validateWorkflowBindingDiagnostics(
   const nodes = workflowNodes(config);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const allNodeIds = new Set(nodes.map((node) => node.id));
+  const upstreamIndex = buildWorkflowUpstreamIndex(config);
 
   for (const node of nodes) {
+    const ancestorNodeIds = upstreamIndex.ancestorNodeIdsByNodeId.get(node.id) ?? [];
+    const guaranteedNodeIds = new Set(
+      upstreamIndex.guaranteedUpstreamNodeIdsByNodeId.get(node.id) ?? [],
+    );
     const declaredOutputs = new Map(
-      collectAncestorNodeIds(config, node.id)
+      ancestorNodeIds
         .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), outputSchemas)] as const),
     );
     for (const [fieldPath, value] of walkEditableNodeConfigValues(node)) {
@@ -2732,6 +2999,7 @@ function validateWorkflowBindingDiagnostics(
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -2740,24 +3008,138 @@ function validateWorkflowBindingDiagnostics(
   return diagnostics;
 }
 
-function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
-  const inboundByTarget = new Map<string, string[]>();
-  for (const edge of config.edges) {
-    const current = inboundByTarget.get(edge.target_id) ?? [];
-    current.push(edge.source_id);
-    inboundByTarget.set(edge.target_id, current);
+function validateWorkflowGraphBindingDiagnostics(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
+): WorkflowValidationDiagnostic[] {
+  const graphConfig = workflowGraphScopedConfig(config, graph);
+  return validateWorkflowBindingDiagnostics(
+    graphConfig,
+    deriveWorkflowOutputSchemas(graphConfig, outputSchemas),
+  );
+}
+
+function workflowGraphScopedConfig(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+): WorkflowConfig {
+  const graphNodeIds = new Set(graph.node_ids);
+  const includesGraphNode = (node: WorkflowNodeConfig) => graphNodeIds.has(node.id);
+  return {
+    ...config,
+    triggers: (config.triggers ?? []).filter(includesGraphNode),
+    gates: (config.gates ?? []).filter(includesGraphNode),
+    effects: (config.effects ?? []).filter(includesGraphNode),
+    queries: (config.queries ?? []).filter(includesGraphNode),
+    edges: (config.edges ?? []).filter((edge) =>
+      graphNodeIds.has(edge.source_id) && graphNodeIds.has(edge.target_id),
+    ),
+  };
+}
+
+function workflowGraphValidationSignature(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+  outputSchemas: WorkflowOutputSchemas,
+): string {
+  const graphNodeIds = new Set(graph.node_ids);
+  const nodes = workflowNodes(config)
+    .filter((node) => graphNodeIds.has(node.id))
+    .map((node) => [node.id, node] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+  const edges = (config.edges ?? [])
+    .filter((edge) => graphNodeIds.has(edge.source_id) && graphNodeIds.has(edge.target_id))
+    .map((edge) => ({
+      source_id: edge.source_id,
+      source_port: edge.source_port ?? null,
+      target_id: edge.target_id,
+      allow_cycle: Boolean(edge.allow_cycle),
+    }))
+    .sort((left, right) =>
+      `${left.source_id}\u0000${left.source_port ?? ""}\u0000${left.target_id}`.localeCompare(
+        `${right.source_id}\u0000${right.source_port ?? ""}\u0000${right.target_id}`,
+      ),
+    );
+  const schemas = [...graphNodeIds]
+    .sort()
+    .map((nodeId) => [nodeId, outputSchemas[nodeId] ?? null] as const);
+  return JSON.stringify({
+    node_ids: [...graphNodeIds].sort(),
+    nodes,
+    edges,
+    schemas,
+  });
+}
+
+function cachedVisibleValidationDiagnostics(
+  cache: Map<string, WorkflowValidationCacheEntry>,
+  visibleGraphs: ReadonlyArray<WorkflowGraphMetadata>,
+): WorkflowValidationDiagnostic[] {
+  const diagnostics: WorkflowValidationDiagnostic[] = [];
+  for (const graph of visibleGraphs) {
+    const entry = cache.get(graph.id);
+    if (!entry) continue;
+    for (const diagnostic of entry.diagnostics) {
+      diagnostics.push(diagnostic);
+    }
   }
-  const ordered: string[] = [];
-  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
+  return dedupeWorkflowDiagnostics(diagnostics);
+}
+
+function workflowDiagnosticsForGraphs(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+  graphs: ReadonlyArray<WorkflowGraphMetadata>,
+): WorkflowValidationDiagnostic[] {
+  const graphNodeIds = new Set(graphs.flatMap((graph) => graph.node_ids));
+  return diagnostics.filter((diagnostic) =>
+    diagnostic.node_id ? graphNodeIds.has(diagnostic.node_id) : true,
+  );
+}
+
+function mergeWorkflowDiagnostics(
+  first: ReadonlyArray<WorkflowValidationDiagnostic>,
+  second: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  return dedupeWorkflowDiagnostics([...first, ...second]);
+}
+
+function dedupeWorkflowDiagnostics(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  const nextDiagnostics: WorkflowValidationDiagnostic[] = [];
   const seen = new Set<string>();
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    ordered.push(current);
-    queue.push(...(inboundByTarget.get(current) ?? []));
+  for (const diagnostic of diagnostics) {
+    const key = [
+      diagnostic.code,
+      diagnostic.severity ?? "error",
+      diagnostic.node_id ?? "",
+      diagnostic.node_type ?? "",
+      diagnostic.field_path ?? "",
+      diagnostic.reference ?? "",
+      diagnostic.message,
+    ].join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    nextDiagnostics.push(diagnostic);
   }
-  return ordered;
+  return nextDiagnostics;
+}
+
+function scheduleWorkflowValidation(callback: () => void): () => void {
+  const idleGlobal = globalThis as typeof globalThis & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (
+    typeof idleGlobal.requestIdleCallback === "function" &&
+    typeof idleGlobal.cancelIdleCallback === "function"
+  ) {
+    const handle = idleGlobal.requestIdleCallback(callback, { timeout: 250 });
+    return () => idleGlobal.cancelIdleCallback?.(handle);
+  }
+  const handle = globalThis.setTimeout(callback, 0);
+  return () => globalThis.clearTimeout(handle);
 }
 
 function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
@@ -2798,12 +3180,14 @@ function validateBindingValue({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   value: unknown;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   if (typeof value !== "string" || !value.includes("${{")) return [];
@@ -2836,6 +3220,7 @@ function validateBindingValue({
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -2863,12 +3248,14 @@ function validateBindingExpression({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   expression: ParsedBindingExpression;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const diagnostics = validateBindingReference({
@@ -2876,6 +3263,7 @@ function validateBindingExpression({
     fieldPath,
     node,
     declaredOutputs,
+    guaranteedNodeIds,
     allNodeIds,
   });
   if (!expression.hasFallback) return diagnostics;
@@ -2887,6 +3275,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -2897,6 +3286,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -2909,12 +3299,14 @@ function validateBindingReference({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   reference: ParsedBindingReference;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const resolved = resolveAvailableBindingReference(reference, declaredOutputs, allNodeIds);
@@ -2937,6 +3329,17 @@ function validateBindingReference({
     return [{
       code: "missing_binding_output",
       message: `${fieldPath} references missing output ${outputRef}`,
+      node_id: node.id,
+      node_type: node.type,
+      field_path: fieldPath,
+      reference: outputRef,
+    }];
+  }
+  if (!guaranteedNodeIds.has(resolved.nodeId)) {
+    return [{
+      code: "conditional_binding_node",
+      message: `${fieldPath} references conditionally available upstream node ${resolved.nodeId}; bind through a merge-projected output when this value must be available after branching`,
+      severity: "warning",
       node_id: node.id,
       node_type: node.type,
       field_path: fieldPath,
@@ -2967,6 +3370,20 @@ function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "
   if (isExactBindingValue(value)) return "bind";
   if (field.kind === "string" && hasBindingToken(value)) return "template";
   return "literal";
+}
+
+function enumOptionValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const stringValue = typeof value === "string" ? value : "";
+  if (!stringValue) return "";
+  return field.options.some((option) => option.value === stringValue) ? stringValue : "";
+}
+
+function enumLiteralFallbackValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const currentValue = enumOptionValue(field, value);
+  if (currentValue) return currentValue;
+  const defaultValue = enumOptionValue(field, field.default_value);
+  if (defaultValue) return defaultValue;
+  return field.required ? field.options[0]?.value ?? "" : "";
 }
 
 function parseJsonDraft(text: string, fallback: unknown): unknown {
@@ -3120,6 +3537,18 @@ export default function App() {
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const workflowGeneratorAbortRef = useRef<AbortController | null>(null);
   const workflowGeneratorRequestIdRef = useRef(0);
+  const validationCacheRef = useRef<Map<string, WorkflowValidationCacheEntry>>(new Map());
+  const validationRunIdRef = useRef(0);
+  const runtimePulseContextRef = useRef<RuntimePulseContext>({
+    isInspectMode: false,
+    isTutorialMode: false,
+    workflowGeneratorOpen: false,
+    visibleGraphNodeIds: new Set<string>(),
+  });
+  const runtimePulseNodeIdsRef = useRef<Set<string>>(new Set<string>());
+  const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
+  const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
+  const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -3131,6 +3560,7 @@ export default function App() {
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
   const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
     () => ({ completedTutorialIds: [], skippedTutorialIds: [] }),
@@ -3152,6 +3582,7 @@ export default function App() {
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
+  const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -3180,6 +3611,9 @@ export default function App() {
   const [inspectorJsonDisplayModes, setInspectorJsonDisplayModes] = useState<Record<string, JsonDisplayMode>>({});
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
+  const [inspectorSessionListMetadataRules, setInspectorSessionListMetadataRules] = useState<
+    SessionListMetadataRuleDraftRow[]
+  >([]);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
@@ -3203,6 +3637,9 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  useEffect(() => {
+    runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
+  }, [runtimePulseNodeIds]);
   const workflowTutorialProgressSets = useMemo(() => ({
     completed: new Set(workflowTutorialProgress.completedTutorialIds),
     skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
@@ -3223,6 +3660,14 @@ export default function App() {
   );
   const visibleGraphNodeIds = new Set(visibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
   const visibleGraphNodeIdKey = workflowGraphKey([...visibleGraphNodeIds]);
+  useEffect(() => {
+    runtimePulseContextRef.current = {
+      isInspectMode,
+      isTutorialMode,
+      workflowGeneratorOpen,
+      visibleGraphNodeIds: new Set(visibleGraphNodeIds),
+    };
+  }, [isInspectMode, isTutorialMode, visibleGraphNodeIdKey, workflowGeneratorOpen]);
   const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
@@ -3248,6 +3693,7 @@ export default function App() {
         selectedNodeId ? [selectedNodeId] : [],
         new Set<string>(),
         inspectGhostNodeIds,
+        new Set<string>(),
       )
     : [];
   const inspectFlowEdges = inspectConfig
@@ -3277,6 +3723,7 @@ export default function App() {
           [],
           {},
           selectedNodeIds,
+          new Set<string>(),
           new Set<string>(),
           new Set<string>(),
         ),
@@ -3341,6 +3788,9 @@ export default function App() {
     : undefined;
   const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId
     ? nodeById(activeWorkflowConfig, selectedNodeId)
+    : undefined;
+  const selectedNodeGraph = selectedNode && !isTutorialMode
+    ? visibleWorkflowGraphs.find((graph) => graph.node_ids.includes(selectedNode.id))
     : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(activeWorkflowCatalog, selectedNode.type) : undefined;
   const selectedNodeDiagnostics = selectedNode
@@ -3443,9 +3893,18 @@ export default function App() {
     const withRoot = ensureDirectorySelectOption(treeOptions, "root", "root");
     return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
   }, [directoryTree, selectedDirectoryPath]);
-  const selectedNodeBindingOptions = selectedNode
-    ? upstreamBindingOptions(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
-    : [];
+  const selectedNodeBindingConfig = useMemo(
+    () => selectedNodeGraph
+      ? workflowGraphScopedConfig(activeWorkflowConfig, selectedNodeGraph)
+      : activeWorkflowConfig,
+    [activeWorkflowConfig, selectedNodeGraph],
+  );
+  const selectedNodeBindingOptions = useMemo(
+    () => selectedNode
+      ? upstreamBindingOptions(selectedNodeBindingConfig, selectedNode.id, activeWorkflowOutputSchemas)
+      : [],
+    [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
+  );
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
     selectedNode?.type === "effect:agent:prompt" ||
@@ -3648,10 +4107,17 @@ export default function App() {
           normalizedDocument,
           initialGraphDirectoryPathRef.current,
         );
-        const nextDiagnostics = payload.validation_diagnostics
-          ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
-        setRunSnapshot(runSnapshotPayload);
-        setValidationDiagnostics(nextDiagnostics);
+        validationCacheRef.current.clear();
+        applyWorkflowRunSnapshot(runSnapshotPayload);
+        const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
+          graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
+        );
+        const nextBackendDiagnostics = workflowDiagnosticsForGraphs(
+          payload.validation_diagnostics ?? [],
+          visibleGraphsForDocument,
+        );
+        setBackendValidationDiagnostics(payload.validation_diagnostics ?? []);
+        setValidationDiagnostics(nextBackendDiagnostics);
         setDocument(savedNormalizedDocument);
         setSavedDocument(savedNormalizedDocument);
         setError(null);
@@ -3665,6 +4131,76 @@ export default function App() {
     };
   }, []);
 
+  function rememberRuntimePulseSeenActivityKey(activityKey: string) {
+    const seenKeys = runtimePulseSeenActivityKeysRef.current;
+    if (seenKeys.has(activityKey)) {
+      return;
+    }
+    seenKeys.add(activityKey);
+    const keyOrder = runtimePulseSeenActivityKeyOrderRef.current;
+    keyOrder.push(activityKey);
+    while (keyOrder.length > RUNTIME_NODE_PULSE_SEEN_KEY_CAP) {
+      const removedKey = keyOrder.shift();
+      if (removedKey !== undefined) {
+        seenKeys.delete(removedKey);
+      }
+    }
+  }
+
+  function scheduleRuntimePulse(nodeId: string) {
+    const existingTimeout = runtimePulseTimeoutsRef.current.get(nodeId);
+    if (existingTimeout !== undefined) {
+      clearTimeout(existingTimeout);
+    }
+    setRuntimePulseNodeIds((current) => {
+      if (current.has(nodeId)) return current;
+      const next = new Set(current);
+      next.add(nodeId);
+      return next;
+    });
+    const timeout = setTimeout(() => {
+      if (runtimePulseTimeoutsRef.current.get(nodeId) !== timeout) {
+        return;
+      }
+      runtimePulseTimeoutsRef.current.delete(nodeId);
+      setRuntimePulseNodeIds((current) => {
+        if (!current.has(nodeId)) return current;
+        const next = new Set(current);
+        next.delete(nodeId);
+        return next;
+      });
+    }, RUNTIME_NODE_PULSE_DURATION_MS);
+    runtimePulseTimeoutsRef.current.set(nodeId, timeout);
+  }
+
+  function applyWorkflowRunSnapshot(payload: WorkflowRunSnapshot) {
+    setRunSnapshot(payload);
+    const recentNodeActivity = payload.recent_node_activity ?? [];
+    if (recentNodeActivity.length === 0) {
+      return;
+    }
+    const context = runtimePulseContextRef.current;
+    const latestUnseenNodeActivity = new Map<string, WorkflowRunRecentNodeActivity>();
+    for (const activity of recentNodeActivity) {
+      const activityKey = trimNonEmpty(activity.activity_key);
+      if (!activityKey) continue;
+      const wasSeen = runtimePulseSeenActivityKeysRef.current.has(activityKey);
+      rememberRuntimePulseSeenActivityKey(activityKey);
+      const nodeId = trimNonEmpty(activity.node_id);
+      const activityAt = trimNonEmpty(activity.activity_at);
+      if (!nodeId || !activityAt) continue;
+      if (wasSeen || latestUnseenNodeActivity.has(nodeId)) continue;
+      latestUnseenNodeActivity.set(nodeId, activity);
+    }
+    if (context.isInspectMode || context.isTutorialMode || context.workflowGeneratorOpen) {
+      return;
+    }
+    for (const [nodeId] of latestUnseenNodeActivity) {
+      if (!context.visibleGraphNodeIds.has(nodeId)) continue;
+      scheduleRuntimePulse(nodeId);
+    }
+  }
+
   const documentLoaded = document !== null;
 
   useEffect(() => {
@@ -3675,6 +4211,7 @@ export default function App() {
         if (cancelled) return;
         setCatalog(catalogPayload);
         setError(null);
+        const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIdsRef.current;
         setFlowNodes((currentNodes) =>
           buildNodes(
             document.config,
@@ -3685,6 +4222,8 @@ export default function App() {
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
             dirtyNodeIdSet,
+            new Set<string>(),
+            pulseNodeIds,
           ),
         );
         setFlowEdges(buildEdges(document.config, catalogPayload));
@@ -3699,13 +4238,72 @@ export default function App() {
   }, [documentLoaded, selectedDirectoryPath, workflowGeneratorOpen]);
 
   useEffect(() => {
+    if (!document || isTutorialMode) return;
+    const visibleGraphsForValidation = (document.graphs ?? []).filter((graph) =>
+      graphVisibleInDirectory(graph, selectedDirectoryPath),
+    );
+    const outputSchemas = document.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
+    const cache = validationCacheRef.current;
+    const pendingGraphs: Array<{ graph: WorkflowGraphMetadata; signature: string }> = [];
+    const visibleBackendDiagnostics = workflowDiagnosticsForGraphs(
+      backendValidationDiagnostics,
+      visibleGraphsForValidation,
+    );
+    for (const graph of visibleGraphsForValidation) {
+      const signature = workflowGraphValidationSignature(document.config, graph, outputSchemas);
+      const cached = cache.get(graph.id);
+      if (cached?.signature === signature) continue;
+      cache.delete(graph.id);
+      pendingGraphs.push({ graph, signature });
+    }
+
+    const cachedDiagnostics = cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation);
+    setValidationDiagnostics(mergeWorkflowDiagnostics(visibleBackendDiagnostics, cachedDiagnostics));
+    if (pendingGraphs.length === 0) return;
+
+    let cancelled = false;
+    let cancelScheduled = () => {};
+    const runId = validationRunIdRef.current + 1;
+    validationRunIdRef.current = runId;
+    const runNext = () => {
+      if (cancelled || validationRunIdRef.current !== runId) return;
+      const next = pendingGraphs.shift();
+      if (!next) return;
+      const diagnostics = validateWorkflowGraphBindingDiagnostics(
+        document.config,
+        next.graph,
+        outputSchemas,
+      );
+      if (cancelled || validationRunIdRef.current !== runId) return;
+      cache.set(next.graph.id, {
+        signature: next.signature,
+        diagnostics,
+      });
+      setValidationDiagnostics(
+        mergeWorkflowDiagnostics(
+          visibleBackendDiagnostics,
+          cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation),
+        ),
+      );
+      if (pendingGraphs.length > 0) {
+        cancelScheduled = scheduleWorkflowValidation(runNext);
+      }
+    };
+    cancelScheduled = scheduleWorkflowValidation(runNext);
+    return () => {
+      cancelled = true;
+      cancelScheduled();
+    };
+  }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
+
+  useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
 
     stream.addEventListener("snapshot", (event) => {
       if (!(event instanceof MessageEvent)) return;
       try {
         const payload = JSON.parse(event.data) as WorkflowRunSnapshot;
-        setRunSnapshot(payload);
+        applyWorkflowRunSnapshot(payload);
       } catch {
         // Ignore malformed event payloads and keep last known snapshot.
       }
@@ -3715,7 +4313,13 @@ export default function App() {
       // Keep the last snapshot visible when the stream reports an error.
     });
 
-    return () => stream.close();
+    return () => {
+      stream.close();
+      for (const timeout of runtimePulseTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      runtimePulseTimeoutsRef.current.clear();
+    };
   }, []);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
@@ -3762,7 +4366,7 @@ export default function App() {
         method: "DELETE",
       });
       const nextSnapshot = await fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs");
-      setRunSnapshot(nextSnapshot);
+      applyWorkflowRunSnapshot(nextSnapshot);
       setNodeConnectionMenu(null);
       setPendingConnection(null);
       setError(null);
@@ -4133,6 +4737,8 @@ export default function App() {
           currentPositionsFromNodes(currentNodes),
           restoredSelectedNodeIds,
           new Set(restoredDirtyNodeIds),
+          new Set<string>(),
+          workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
         ),
       );
       setFlowEdges(buildEdges(document.config, catalog));
@@ -4184,6 +4790,7 @@ export default function App() {
       blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
       [],
       [],
+      { autoFit: true },
     );
   }
 
@@ -4204,7 +4811,8 @@ export default function App() {
       applyWorkflowDocumentState(
         savedDocument,
         [],
-        validateWorkflowBindingDiagnostics(savedDocument.config, savedDocument.output_schemas ?? {}),
+        [],
+        { autoFit: true },
       );
     }
   }
@@ -4235,7 +4843,7 @@ export default function App() {
     setWorkflowGeneratorModel(null);
     setWorkflowGeneratorReadyDescription(null);
     setNodeEditOrigins({});
-    applyWorkflowDocumentState(merged.document, merged.importedNodeIds);
+    applyWorkflowDocumentState(merged.document, merged.importedNodeIds, undefined, { autoFit: true });
     const selectedGeneratedGraph = merged.document.graphs.find((graph) =>
       graph.node_ids.some((nodeId) => merged.importedNodeIds.includes(nodeId)),
     );
@@ -4254,6 +4862,7 @@ export default function App() {
       blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
       [],
       [],
+      { autoFit: true },
     );
   }
 
@@ -4317,6 +4926,7 @@ export default function App() {
         draftDocument,
         workflowNodeIds(draftDocument.config),
         draft.validation_diagnostics,
+        { autoFit: true },
       );
       setWorkflowGeneratorWarnings(draft.warnings ?? []);
       setWorkflowGeneratorModel(draft.model);
@@ -4373,6 +4983,7 @@ export default function App() {
   useEffect(() => {
     if (!document) return;
     setFlowNodes((currentNodes) => {
+      const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds;
       return buildNodes(
         document.config,
         document.layout,
@@ -4382,10 +4993,12 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
         dirtyNodeIdSet,
+        new Set<string>(),
+        pulseNodeIds,
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics, workflowGeneratorOpen]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, runtimePulseNodeIds, validationDiagnostics, workflowGeneratorOpen]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -4490,6 +5103,7 @@ export default function App() {
       setInspectorJsonDisplayModes({});
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
+      setInspectorSessionListMetadataRules([]);
       setInspectorFieldModes({});
       setRawJsonDraft("{}");
       return;
@@ -4507,6 +5121,9 @@ export default function App() {
     const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
+    const nextSessionListMetadataRules = nextNode.type === "query:session:list"
+      ? sessionListMetadataRuleDraftRowsFromValues(nextKnownValues).rows
+      : [];
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
@@ -4576,6 +5193,7 @@ export default function App() {
     setInspectorJsonDisplayModes(nextJsonDisplayModes);
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
+    setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
     setInspectorDraftError(null);
@@ -4607,18 +5225,23 @@ export default function App() {
     nextDocument: WorkflowEditorDocument,
     selectedNodeIdsAfterPatch: string[] = [],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
+    options: { autoFit?: boolean } = {},
   ) {
     const normalizedDocument = normalizeWorkflowEditorDocument(nextDocument, selectedDirectoryPath);
     const validNodeIds = new Set(workflowNodeIds(normalizedDocument.config));
     const nextSelectedNodeIds = Array.from(new Set(selectedNodeIdsAfterPatch)).filter((nodeId) =>
       validNodeIds.has(nodeId),
     );
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
-      normalizedDocument.config,
-      normalizedDocument.output_schemas,
+    const visibleGraphsForDocument = (normalizedDocument.graphs ?? []).filter((graph) =>
+      graphVisibleInDirectory(graph, selectedDirectoryPath),
     );
+    const nextBackendDiagnostics = diagnosticsOverride ?? [];
+    const nextDiagnostics = diagnosticsOverride
+      ? workflowDiagnosticsForGraphs(diagnosticsOverride, visibleGraphsForDocument)
+      : [];
     const nextDirtyNodeIds = dirtyWorkflowNodeIds(normalizedDocument, savedDocument, nodeEditOrigins);
     setDocument(normalizedDocument);
+    setBackendValidationDiagnostics(nextBackendDiagnostics);
     setValidationDiagnostics(nextDiagnostics);
     setSelectedNodeIds(nextSelectedNodeIds);
     setSelectedNodeId((currentSelectedNodeId) => {
@@ -4638,11 +5261,15 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         nextSelectedNodeIds,
         new Set(nextDirtyNodeIds),
+        new Set<string>(),
+        workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
       ),
     );
     setFlowEdges(buildEdges(normalizedDocument.config, catalog));
     setSaveState("idle");
-    hasAutoFitRef.current = false;
+    if (options.autoFit) {
+      hasAutoFitRef.current = false;
+    }
   }
 
   function patchDocument(
@@ -5847,6 +6474,7 @@ export default function App() {
     setSaveState("saving");
     setError(null);
     try {
+      const expectedRevision = savedDocument?.revision ?? document.revision;
       const saved = await fetchJson<WorkflowEditorSave>(
         "/api/workflow-editor/document",
         {
@@ -5855,7 +6483,7 @@ export default function App() {
             config: document.config,
             layout: document.layout,
             graphs: document.graphs,
-            expected_revision: document.revision,
+            expected_revision: expectedRevision,
           }),
         },
       );
@@ -6007,6 +6635,32 @@ export default function App() {
 
   function updateFieldMode(key: string, mode: "literal" | "bind" | "template") {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
+  }
+
+  function updateBindableEnumFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else {
+      updateKnownField(field.key, enumLiteralFallbackValue(field, value));
+    }
+  }
+
+  function updateMetadataFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else if (isExactBindingValue(value)) {
+      updateKnownField(field.key, undefined);
+    }
   }
 
   async function copyBindingExpression(bindingExpression: string) {
@@ -7026,11 +7680,261 @@ export default function App() {
     stageInspectorDraft({ knownValues: next });
   }
 
+  function updateSessionListMetadataRuleRows(nextRows: SessionListMetadataRuleDraftRow[]) {
+    const metadataValues = sessionListMetadataRuleValues(nextRows);
+    const nextKnownValues = { ...inspectorKnownValues };
+    const nextJsonDrafts = { ...inspectorJsonDrafts };
+    for (const key of SESSION_LIST_METADATA_FIELD_KEYS) {
+      delete nextKnownValues[key];
+      const value = metadataValues[key];
+      nextJsonDrafts[key] = value === undefined ? "" : JSON.stringify(value, null, 2);
+      if (value !== undefined) {
+        nextKnownValues[key] = value;
+      }
+    }
+    setInspectorSessionListMetadataRules(nextRows);
+    setInspectorKnownValues(nextKnownValues);
+    setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorFieldModes((current) => ({
+      ...current,
+      metadata_equals: "literal",
+      metadata_exists: "literal",
+      metadata_prefix: "literal",
+    }));
+    stageInspectorDraft({
+      knownValues: nextKnownValues,
+      jsonDrafts: nextJsonDrafts,
+    });
+  }
+
+  function mutateSessionListMetadataRuleRows(
+    updater: (rows: SessionListMetadataRuleDraftRow[]) => SessionListMetadataRuleDraftRow[],
+  ) {
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const currentRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    updateSessionListMetadataRuleRows(updater(currentRows));
+  }
+
+  function renderGenericJsonField(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    mode: "literal" | "bind" | "template",
+    isDisabled: boolean,
+  ) {
+    return (
+      <div key={field.key} className="inspector-field">
+        <div className="field-toolbar">
+          {renderFieldHeader(field)}
+          {renderModeSelect(field, mode, (nextMode) => {
+            updateFieldMode(field.key, nextMode);
+            if (nextMode === "bind") {
+              updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+            } else {
+              updateKnownField(field.key, undefined);
+            }
+          }, isDisabled)}
+        </div>
+        {mode === "bind"
+          ? renderBindingSelect(
+            field,
+            selectedNodeBindingOptions,
+            value,
+            (nextValue) => updateKnownField(field.key, nextValue),
+          )
+          : (
+            <textarea
+              value={inspectorJsonDrafts[field.key] ?? ""}
+              rows={field.key === "outputs" ? 5 : 8}
+              onChange={(event) => {
+                const nextText = event.target.value;
+                const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                setInspectorJsonDrafts(next);
+                stageInspectorDraft({ jsonDrafts: next });
+              }}
+              disabled={isDisabled}
+            />
+          )}
+      </div>
+    );
+  }
+
+  function renderSessionListMetadataRules(isDisabled: boolean) {
+    const metadataFields = SESSION_LIST_METADATA_FIELD_KEYS
+      .map((fieldKey) => selectedCatalogEntry?.fields.find((field) => field.key === fieldKey))
+      .filter((field): field is WorkflowEditorFieldDefinition => Boolean(field));
+    const unsupportedByMode = metadataFields.some((field) => {
+      const value = inspectorKnownValues[field.key];
+      return (inspectorFieldModes[field.key] ?? fieldValueMode(field, value)) !== "literal";
+    });
+    const supportedByValues = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).supported;
+    const structured = !unsupportedByMode && supportedByValues;
+    const headerField: WorkflowEditorFieldDefinition = {
+      key: "metadata_rules",
+      label: "Metadata rules",
+      kind: "json",
+      required: false,
+      bindable: false,
+      read_only: false,
+      multiline: false,
+      description: "Rules that match session metadata with exact values, key presence, or string prefixes.",
+      placeholder: null,
+      json_value_type: "object",
+      default_value: null,
+      options: [],
+      item_fields: [],
+    };
+
+    if (!structured) {
+      return (
+        <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+          <div className="field-toolbar">
+            {renderFieldHeader(headerField)}
+          </div>
+          <div className="metadata-rule-raw-fields">
+            {metadataFields.map((field) => {
+              const value = inspectorKnownValues[field.key];
+              const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
+              const rawFieldDisabled = field.read_only
+                || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+              return renderGenericJsonField(field, value, mode, rawFieldDisabled);
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const metadataRuleRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    return (
+      <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+        <div className="field-toolbar">
+          {renderFieldHeader(headerField)}
+        </div>
+        <div className="metadata-rule-field-modes">
+          {metadataFields.map((field) => {
+            const fieldValue = inspectorKnownValues[field.key];
+            const fieldMode = inspectorFieldModes[field.key] ?? fieldValueMode(field, fieldValue);
+            return (
+              <div key={`${field.key}-mode`} className="metadata-rule-field-mode">
+                {renderFieldHeader(field)}
+                {renderModeSelect(
+                  field,
+                  fieldMode,
+                  (nextMode) => updateMetadataFieldMode(field, fieldValue, nextMode),
+                  isDisabled,
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="metadata-rule-list">
+          {metadataRuleRows.map((row, index) => {
+            const rowClassName = row.kind === "exists"
+              ? "metadata-rule-row metadata-rule-row-exists"
+              : "metadata-rule-row";
+            return (
+              <div key={row.id} className={rowClassName}>
+                <label className="field-inline">
+                  <span>Rule</span>
+                  <select
+                    value={row.kind}
+                    onChange={(event) => {
+                      const nextKind = event.target.value as SessionListMetadataRuleKind;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, kind: nextKind } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  >
+                    <option value="equals">Equals</option>
+                    <option value="exists">Exists</option>
+                    <option value="prefix">Prefix</option>
+                  </select>
+                </label>
+                <label className="field-inline">
+                  <span>Metadata key</span>
+                  <input
+                    value={row.key}
+                    placeholder="user.name"
+                    onChange={(event) => {
+                      const nextKey = event.target.value;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, key: nextKey } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  />
+                </label>
+                {row.kind !== "exists" ? (
+                  <label className="field-inline">
+                    <span>{row.kind === "prefix" ? "Prefix" : "Exact value"}</span>
+                    <input
+                      value={row.value}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        mutateSessionListMetadataRuleRows((currentRows) =>
+                          currentRows.map((currentRow) =>
+                            currentRow.id === row.id
+                              ? { ...currentRow, value: nextValue }
+                              : currentRow,
+                          ),
+                        );
+                      }}
+                      disabled={isDisabled}
+                    />
+                  </label>
+                ) : null}
+                <button
+                  type="button"
+                  className="subtle-button metadata-rule-remove"
+                  onClick={() =>
+                    mutateSessionListMetadataRuleRows((currentRows) =>
+                      currentRows.filter((currentRow) => currentRow.id !== row.id),
+                    )
+                  }
+                  disabled={isDisabled}
+                  aria-label={`Remove metadata rule ${index + 1}`}
+                >
+                  Remove
+                </button>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() =>
+              mutateSessionListMetadataRuleRows((currentRows) => [
+                ...currentRows,
+                createSessionListMetadataRuleDraftRow(),
+              ])
+            }
+            disabled={isDisabled}
+          >
+            Add metadata rule
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
+
+    if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
+      return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;
+    }
 
     if (field.kind === "string") {
       const communicationState = field.key === "thread_id" && isCommunicationEffectNodeType(selectedNodeType)
@@ -7229,23 +8133,33 @@ export default function App() {
         );
       }
       return (
-        <label key={field.key} className="inspector-field">
+        <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
             {renderFieldHeader(field)}
+            {renderModeSelect(
+              field,
+              mode,
+              (nextMode) => updateBindableEnumFieldMode(field, value, nextMode),
+              isDisabled,
+            )}
           </div>
-          <select
-            value={typeof value === "string" ? value : ""}
-            onChange={(event) => updateKnownField(field.key, event.target.value)}
-            disabled={isDisabled}
-          >
-            <option value="">Select</option>
-            {field.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <select
+                value={enumOptionValue(field, value)}
+                onChange={(event) => updateKnownField(field.key, event.target.value || undefined)}
+                disabled={isDisabled}
+              >
+                <option value="">Select</option>
+                {field.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
+        </div>
       );
     }
 
@@ -7337,36 +8251,7 @@ export default function App() {
     }
 
     if (field.kind === "json") {
-      return (
-        <div key={field.key} className="inspector-field">
-          <div className="field-toolbar">
-            {renderFieldHeader(field)}
-            {renderModeSelect(field, mode, (nextMode) => {
-              updateFieldMode(field.key, nextMode);
-              if (nextMode === "bind") {
-                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
-              } else {
-                updateKnownField(field.key, undefined);
-              }
-            }, isDisabled)}
-          </div>
-          {mode === "bind"
-            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
-            : (
-              <textarea
-                value={inspectorJsonDrafts[field.key] ?? ""}
-                rows={field.key === "outputs" ? 5 : 8}
-                onChange={(event) => {
-                  const nextText = event.target.value;
-                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
-                  setInspectorJsonDrafts(next);
-                  stageInspectorDraft({ jsonDrafts: next });
-                }}
-                disabled={isDisabled}
-              />
-            )}
-        </div>
-      );
+      return renderGenericJsonField(field, value, mode, isDisabled);
     }
 
     if (field.kind === "object_list") {

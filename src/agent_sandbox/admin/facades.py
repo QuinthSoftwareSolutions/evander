@@ -582,6 +582,15 @@ class SessionAdminFacade:
             seen.add(normalized_tool)
             normalized_tools.append(normalized_tool)
         manifest.allowed_tools = normalized_tools
+        allowed_values = {tool.value for tool in normalized_tools}
+        manifest.approval_required_tools = [
+            tool for tool in manifest.approval_required_tools if tool.value in allowed_values
+        ]
+        manifest.approval_tool_settings = {
+            tool_name: settings
+            for tool_name, settings in manifest.approval_tool_settings.items()
+            if tool_name in allowed_values
+        }
         self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,

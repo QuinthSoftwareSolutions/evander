@@ -15,6 +15,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
     CiRunCompletedTriggerDefinition,
@@ -214,6 +215,7 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
     assert trigger.targets[0].message_filter.mentions.user_ids == [
         "143e5b02-868f-4f0c-a262-cf509b6c09e5"
     ]
+
 
 def test_communication_trigger_normalizes_targets_and_authors() -> None:
     trigger = CommunicationNewMessageTriggerDefinition.model_validate(
@@ -427,6 +429,26 @@ def test_pr_triggers_accept_ado_without_repo(
     assert trigger.project is None
 
 
+def test_pr_feedback_trigger_accepts_agent_directed_identity_names() -> None:
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "t-pr-feedback",
+            "display_name": "PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "agent_author_names": [" evander Bot ", "Truman Bot"],
+            "agent_mention_names": ["@evander", "Truman"],
+            "agent_author_ids": [" bot-id "],
+            "agent_mention_ids": [" C74221CB-EE08-6A83-9055-AF01C3333112 "],
+        }
+    )
+
+    assert trigger.agent_author_names == ["evander Bot", "Truman Bot"]
+    assert trigger.agent_mention_names == ["@evander", "Truman"]
+    assert trigger.agent_author_ids == ["bot-id"]
+    assert trigger.agent_mention_ids == ["C74221CB-EE08-6A83-9055-AF01C3333112"]
+
+
 @pytest.mark.parametrize(
     ("trigger_cls", "trigger_type"),
     [
@@ -539,7 +561,9 @@ def test_ci_run_completed_trigger_treats_empty_conclusions_as_default() -> None:
     assert trigger.conclusions == ["success", "failure", "cancelled", "timed_out", "skipped"]
 
 
-def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_missing_provider() -> None:
+def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_missing_provider() -> (
+    None
+):
     with pytest.raises(ValueError, match="Unsupported CI provider"):
         CiRunCompletedTriggerDefinition.model_validate(
             {
@@ -700,9 +724,7 @@ def test_communication_trigger_output_schema_exposes_normalized_payload_fields()
     assert schema["received_at"] == {"type": "string"}
     assert schema["target"] == {"type": "string"}
     assert schema["message"]["properties"]["provider"] == {"type": "string"}
-    assert schema["message"]["properties"]["communication_target_id"] == {
-        "type": "string"
-    }
+    assert schema["message"]["properties"]["communication_target_id"] == {"type": "string"}
     assert schema["message"]["properties"]["message_id"] == {"type": "string"}
     assert schema["message"]["properties"]["target"] == {"type": "string"}
     assert schema["message"]["properties"]["metadata"] == {"type": "object"}
@@ -842,7 +864,9 @@ def test_http_request_effect_rejects_invalid_static_method() -> None:
 def test_http_request_effect_rejects_invalid_static_url() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
 
-    with pytest.raises(ValueError, match="effect:http:request url must be a non-empty http or https URL"):
+    with pytest.raises(
+        ValueError, match="effect:http:request url must be a non-empty http or https URL"
+    ):
         adapter.validate_python(
             {
                 "id": "effect-http",
@@ -1208,9 +1232,19 @@ def test_artifact_effects_validate_target_selectors() -> None:
             "key": "runs/session-1/report",
         }
     )
+    artifact_import = ArtifactImportPublishedEffectDefinition.model_validate(
+        {
+            "id": "effect-artifact-import",
+            "display_name": "Import artifact",
+            "type": "effect:artifact:import-published",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
 
     assert stage.path == "repos/project/report.html"
     assert publish.key == "runs/session-1/report"
+    assert artifact_import.overwrite is False
     with pytest.raises(ValueError, match="target, session_id, or vm_name"):
         ArtifactStageEffectDefinition.model_validate(
             {
@@ -1226,6 +1260,15 @@ def test_artifact_effects_validate_target_selectors() -> None:
                 "id": "effect-artifact-publish",
                 "display_name": "Publish artifacts",
                 "type": "effect:artifact:publish-artifacts",
+                "key": "report",
+            }
+        )
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        ArtifactImportPublishedEffectDefinition.model_validate(
+            {
+                "id": "effect-artifact-import",
+                "display_name": "Import artifact",
+                "type": "effect:artifact:import-published",
                 "key": "report",
             }
         )

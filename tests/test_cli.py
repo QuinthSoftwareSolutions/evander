@@ -1,5 +1,6 @@
 import json
 import re
+import sqlite3
 import subprocess
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -4542,6 +4543,45 @@ def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Pa
     assert seeded["metadata"]["source"] == "discord_channel_seed"
 
 
+def test_rebuild_audit_index_cli_imports_tool_call_jsonl(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    audit_log_path = runtime_dir / "audit.jsonl"
+    audit_log_path.write_text(
+        "\n".join(
+            [
+                "{bad-json}",
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "directory_path": "root/team",
+                        "tool_name": "assistant_read_status",
+                        "decision": "allowed",
+                        "created_at": "2026-05-18T10:00:00Z",
+                    },
+                    sort_keys=True,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["rebuild-audit-index", "--config", str(config_path), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["imported"] == 1
+    assert payload["skipped_malformed"] == 1
+    assert payload["complete"] is True
+    with sqlite3.connect(runtime_dir / "audit.db") as connection:
+        count = connection.execute("SELECT COUNT(*) FROM tool_call_audit_entries").fetchone()[0]
+    assert count == 1
+
+
 def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -4773,7 +4813,13 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
     class _FakeWorker:
         def run_once_with_lock(self):
             calls.append("run_once_with_lock")
-            return SimpleNamespace(directories_polled=4, sessions_seen=6, next_sleep_seconds=21.25)
+            return SimpleNamespace(
+                directories_polled=4,
+                sessions_seen=6,
+                new_messages_discovered=2,
+                trigger_wake_notified=True,
+                next_sleep_seconds=21.25,
+            )
 
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
@@ -4791,6 +4837,8 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
     assert calls == ["run_once_with_lock"]
     assert "directories=4" in result.output
     assert "sessions=6" in result.output
+    assert "new_messages=2" in result.output
+    assert "trigger_wake_notified=True" in result.output
 
 
 def test_wake_schedules_create_and_list(tmp_path: Path) -> None:

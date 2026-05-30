@@ -35,8 +35,9 @@ from agent_sandbox.repositories.records import (
     EmailRecordsRepository,
     JsonDiscordRecordsRepository,
     JsonEmailRecordsRepository,
-    JsonTeamsRecordsRepository,
+    SqliteTeamsRecordsRepository,
     TeamsRecordsRepository,
+    teams_records_db_path,
 )
 from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
@@ -316,7 +317,10 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         config, directory_store=directories, session_store=session_repository
     )
     discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
-    teams_messages = JsonTeamsRecordsRepository(config.teams_message_store_path)
+    teams_messages = SqliteTeamsRecordsRepository(
+        teams_records_db_path(config.teams_message_store_path),
+        legacy_json_path=config.teams_message_store_path,
+    )
     teams_user_chat_cache: dict[str, str] = {}
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")

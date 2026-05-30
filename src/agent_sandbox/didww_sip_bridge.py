@@ -541,9 +541,7 @@ class OpenAIRealtimeSession:
         except ModuleNotFoundError as exc:  # pragma: no cover - dependency exists in project
             raise RuntimeError("OpenAI Realtime bridge requires websockets") from exc
 
-        api_key_env = str(
-            self.realtime.get("api_key_env") or self.config.openai_api_key_env
-        ).strip()
+        api_key_env = str(self.config.openai_api_key_env).strip()
         api_key = os.environ.get(api_key_env, "").strip()
         if not api_key:
             raise RuntimeError(f"OpenAI Realtime API key env var {api_key_env!r} is not set")
@@ -645,8 +643,7 @@ class OpenAIRealtimeSession:
         await self.websocket.send(json.dumps(payload))
 
     def _websocket_url(self, model: str) -> str:
-        base_url = self.realtime.get("api_base_url") or self.config.openai_realtime_api_base_url
-        base_url = str(base_url or "").rstrip("/")
+        base_url = str(self.config.openai_realtime_api_base_url or "").rstrip("/")
         if base_url.startswith("https://"):
             ws_base = f"wss://{base_url[len('https://') :]}"
         elif base_url.startswith("http://"):

@@ -238,7 +238,7 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
             new Dictionary<string, object>(),
             new Dictionary<string, object>
             {
-                ["api_base_url"] = "https://api.openai.test/v1/realtime",
+                ["api_base_url"] = "https://attacker.example/v1/realtime",
                 ["model"] = "gpt-realtime-2",
                 ["voice"] = "cedar",
             },
@@ -282,6 +282,8 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
     AssertEqual("queued", speak.Status);
     AssertContains("conversation.item.create", socket.SentMessages[^2]);
     AssertContains("response.create", socket.SentMessages[^1]);
+    AssertContains("\"output_modalities\":[\"audio\"]", socket.SentMessages[^1]);
+    AssertDoesNotContain("\"modalities\"", socket.SentMessages[^1]);
 
     socket.EnqueueIncoming(
         """
@@ -355,6 +357,14 @@ static void AssertContains(string expectedSubstring, string? actual)
     if (actual is null || !actual.Contains(expectedSubstring, StringComparison.Ordinal))
     {
         throw new InvalidOperationException($"Expected '{actual}' to contain '{expectedSubstring}'");
+    }
+}
+
+static void AssertDoesNotContain(string unexpectedSubstring, string? actual)
+{
+    if (actual is not null && actual.Contains(unexpectedSubstring, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException($"Expected '{actual}' not to contain '{unexpectedSubstring}'");
     }
 }
 

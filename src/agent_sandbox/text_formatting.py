@@ -70,30 +70,14 @@ def _text_fragment_to_html(text: str) -> str:
             blocks.append(f"<blockquote>{quote_html}</blockquote>")
             continue
 
-        unordered_match = _UNORDERED_LIST_RE.match(line)
-        if unordered_match:
-            items = [f"<li>{_render_inline(unordered_match.group(1))}</li>"]
-            index += 1
-            while index < len(lines):
-                next_match = _UNORDERED_LIST_RE.match(lines[index])
-                if not next_match:
-                    break
-                items.append(f"<li>{_render_inline(next_match.group(1))}</li>")
-                index += 1
-            blocks.append(f"<ul>{''.join(items)}</ul>")
+        if _UNORDERED_LIST_RE.match(line):
+            list_html, index = _parse_unordered_list(lines, index)
+            blocks.append(list_html)
             continue
 
-        ordered_match = _ORDERED_LIST_RE.match(line)
-        if ordered_match:
-            items = [f"<li>{_render_inline(ordered_match.group(1))}</li>"]
-            index += 1
-            while index < len(lines):
-                next_match = _ORDERED_LIST_RE.match(lines[index])
-                if not next_match:
-                    break
-                items.append(f"<li>{_render_inline(next_match.group(1))}</li>")
-                index += 1
-            blocks.append(f"<ol>{''.join(items)}</ol>")
+        if _ORDERED_LIST_RE.match(line):
+            list_html, index = _parse_ordered_list(lines, index)
+            blocks.append(list_html)
             continue
 
         paragraph_lines = [line]
@@ -108,6 +92,46 @@ def _text_fragment_to_html(text: str) -> str:
         blocks.append(f"<p>{paragraph_html}</p>")
 
     return "".join(blocks)
+
+
+def _parse_unordered_list(lines: list[str], index: int) -> tuple[str, int]:
+    items: list[str] = []
+    while index < len(lines):
+        match = _UNORDERED_LIST_RE.match(lines[index])
+        if not match:
+            break
+        items.append(f"<li>{_render_inline(match.group(1))}</li>")
+        index += 1
+    return f"<ul>{''.join(items)}</ul>", index
+
+
+def _parse_ordered_list(lines: list[str], index: int) -> tuple[str, int]:
+    items: list[str] = []
+    while index < len(lines):
+        match = _ORDERED_LIST_RE.match(lines[index])
+        if not match:
+            break
+        item_blocks = [_render_inline(match.group(1))]
+        index += 1
+
+        while index < len(lines):
+            if not lines[index].strip() or _ORDERED_LIST_RE.match(lines[index]):
+                break
+            if not _UNORDERED_LIST_RE.match(lines[index]):
+                break
+            unordered_html, index = _parse_unordered_list(lines, index)
+            item_blocks.append(unordered_html)
+
+        items.append(f"<li>{''.join(item_blocks)}</li>")
+
+        next_index = index
+        while next_index < len(lines) and not lines[next_index].strip():
+            next_index += 1
+        if next_index < len(lines) and _ORDERED_LIST_RE.match(lines[next_index]):
+            index = next_index
+            continue
+        break
+    return f"<ol>{''.join(items)}</ol>", index
 
 
 def _line_starts_block(line: str) -> bool:

@@ -20,6 +20,7 @@ from agent_sandbox.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
     ApprovalRequest,
+    ApprovalStatus,
     SessionManifest,
     ToolName,
 )
@@ -205,6 +206,108 @@ def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
     assert bad_approve_type.json()["error"] == "approve must be a boolean."
 
 
+def test_admin_web_uses_authenticated_identity_for_approval_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    login = client.post("/api/auth/login", json={"username": "operator", "password": "swordfish"})
+    decision = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "spoofed-user", "approve": True, "reason": "safe"},
+    )
+
+    stored = service.runtime.approvals.get("approval-1")
+    assert login.status_code == 200
+    assert decision.status_code == 200
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.approver == "operator"
+    assert stored.decision_history[-1].approver == "operator"
+
+
+def test_admin_web_revokes_valid_approved_approval(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            status=ApprovalStatus.APPROVED,
+            approver="ops",
+            decision_at=datetime.now(UTC),
+            decision_reason="safe",
+            decision_history=[
+                {
+                    "status": "approved",
+                    "approver": "ops",
+                    "reason": "safe",
+                    "decided_at": datetime.now(UTC),
+                }
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    revoked = client.post(
+        "/api/admin/approvals/approval-1/revoke",
+        json={"approver": "alice", "reason": "approval no longer applies"},
+    )
+
+    stored = service.runtime.approvals.get("approval-1")
+    assert revoked.status_code == 200
+    assert revoked.json()["request"]["status"] == "denied"
+    assert stored is not None
+    assert stored.status == ApprovalStatus.DENIED
+    assert stored.approver == "alice"
+    assert stored.decision_reason == "approval no longer applies"
+    assert stored.decision_history[-1].status == ApprovalStatus.DENIED
+    assert stored.decision_history[-1].reason == "approval no longer applies"
+
+
 def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -322,6 +425,73 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert revoke_response.json()["action"] == "revoke_session"
 
 
+def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nenable_directory_scoped_config: true\n")
+    service = AdminService(config_path)
+    client = TestClient(create_app(service))
+
+    initial_response = client.get("/api/admin/mcp-tools?directory_path=root")
+    assert initial_response.status_code == 200
+    initial_payload = initial_response.json()
+    run_script = next(
+        item for item in initial_payload["items"] if item["value"] == "run_script"
+    )
+    assert run_script["effective_settings"] == {
+        "ttl_seconds": 3600,
+        "max_uses": 1,
+        "payload_mode": "exact",
+    }
+
+    locked_response = client.put(
+        "/api/admin/mcp-tools?directory_path=root",
+        json={
+            "expected_revision": initial_payload["revision"],
+            "mcp_tool_policies": {},
+        },
+    )
+    assert locked_response.status_code == 403
+
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    assert unlock_response.status_code == 200
+    update_response = client.put(
+        "/api/admin/mcp-tools?directory_path=root",
+        json={
+            "expected_revision": initial_payload["revision"],
+            "mcp_tool_policies": {
+                "run_script": {
+                    "require_approval": True,
+                    "default_settings": {
+                        "ttl_seconds": 600,
+                        "max_uses": 2,
+                        "payload_mode": "any",
+                    },
+                    "max_ttl_seconds": 300,
+                    "max_uses": 5,
+                    "require_exact_payload": True,
+                },
+                "get_agent_status": {"denied": True},
+            },
+        },
+    )
+
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    by_tool = {item["value"]: item for item in payload["items"]}
+    assert by_tool["run_script"]["approval_required"] is True
+    assert by_tool["run_script"]["effective_settings"] == {
+        "ttl_seconds": 300,
+        "max_uses": 2,
+        "payload_mode": "exact",
+    }
+    assert by_tool["get_agent_status"]["denied"] is True
+    stored = service.read_directory_domain_config("root", "policy")
+    assert stored.ok
+    assert stored.data is not None
+    assert stored.data.config["mcp_tool_policies"]["get_agent_status"]["denied"] is True
+
+
 def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -364,9 +534,7 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "removed"
                 record.cleanup_status = "cleanup_succeeded"
                 record.cleanup_attempted_at = attempted_at
@@ -458,9 +626,7 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "cleanup_failed"
                 record.cleanup_status = "cleanup_failed"
                 record.cleanup_attempted_at = attempted_at
@@ -515,7 +681,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         SessionManifest(
             session_id="issue-14085-session",
             vm_id="vm-14085",
-            allowed_tools=[ToolName.APPROVAL_CHECK],
+            allowed_tools=[ToolName.APPROVAL_CHECK, ToolName.RUN_SCRIPT],
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
@@ -558,6 +724,14 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
             "communication_file_allowed_extensions": [".pdf"],
             "communication_file_blocked_extensions": [".exe"],
             "communication_file_require_approval_for_send": True,
+            "approval_required_tools": ["run_script"],
+            "approval_tool_settings": {
+                "run_script": {
+                    "ttl_seconds": 120,
+                    "max_uses": None,
+                    "payload_mode": "any",
+                }
+            },
             "metadata": {"keep": "new-value"},
         },
     )
@@ -576,9 +750,25 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
         "create_ado_backlog_item"
     ][0]["id"] == "issue-policy"
+    assert response.json()["session"]["approval_required_tools"] == ["run_script"]
+    assert response.json()["session"]["approval_tool_settings"]["run_script"] == {
+        "ttl_seconds": 120,
+        "max_uses": None,
+        "payload_mode": "any",
+    }
+    assert response.json()["session"]["effective_tool_policy"]["approval_tool_settings"][
+        "run_script"
+    ] == {
+        "ttl_seconds": 120,
+        "max_uses": None,
+        "payload_mode": "any",
+    }
     updated = service.runtime.session_repository.get_session("issue-14085-session")
     assert updated is not None
     assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "issue-policy"
+    assert updated.approval_required_tools == [ToolName.RUN_SCRIPT]
+    assert updated.approval_tool_settings["run_script"].ttl_seconds == 120
+    assert updated.approval_tool_settings["run_script"].max_uses is None
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 4096

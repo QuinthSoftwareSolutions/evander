@@ -37,6 +37,16 @@ export function DownloadIcon() {
   );
 }
 
+export function UploadIcon() {
+  return (
+    <ActionIcon>
+      <path d="M12 19.5v-9" />
+      <path d="M8.5 13.5L12 10l3.5 3.5" />
+      <path d="M5.5 5.5h13" />
+    </ActionIcon>
+  );
+}
+
 export function EditIcon() {
   return (
     <ActionIcon>
@@ -101,6 +111,22 @@ export function RevokeIcon() {
     <ActionIcon>
       <circle cx="12" cy="12" r="8" />
       <path d="M8.5 8.5l7 7" />
+    </ActionIcon>
+  );
+}
+
+export function SettingsIcon() {
+  return (
+    <ActionIcon>
+      <circle cx="12" cy="12" r="2.7" />
+      <path d="M12 4.5v2" />
+      <path d="M12 17.5v2" />
+      <path d="M4.5 12h2" />
+      <path d="M17.5 12h2" />
+      <path d="M6.7 6.7l1.4 1.4" />
+      <path d="M15.9 15.9l1.4 1.4" />
+      <path d="M17.3 6.7l-1.4 1.4" />
+      <path d="M8.1 15.9l-1.4 1.4" />
     </ActionIcon>
   );
 }

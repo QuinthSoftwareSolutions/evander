@@ -592,7 +592,7 @@ export function IssuesPage() {
           <div>
             <h2>{creating ? "Create issue" : editing ? `Edit ${selectedIssue?.issue_number ?? "issue"}` : selectedIssue?.title ?? "Issues"}</h2>
             <p className="muted-text">
-              Create local issues, import YAML-backed issues, and launch issue VMs without leaving the admin surface.
+              Create local issues, import YAML-backed issues, and inspect issue records without leaving the admin surface.
             </p>
           </div>
           {!showingForm && selectedIssue ? (

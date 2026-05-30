@@ -93,6 +93,7 @@ export type WorkflowEditorGeneratedDraft = {
 export type WorkflowValidationDiagnostic = {
   code: string;
   message: string;
+  severity?: "error" | "warning" | string;
   node_id?: string | null;
   node_type?: string | null;
   field_path?: string | null;
@@ -154,6 +155,19 @@ export type WorkflowRunNodeActivity = {
   error?: string | null;
 };
 
+export type WorkflowRunRecentNodeActivity = {
+  activity_key: string;
+  event_id: string;
+  node_id: string;
+  status: string;
+  source: string;
+  activity_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  trace_id?: string | null;
+  error?: string | null;
+};
+
 export type WorkflowRunSummary = {
   event_id: string;
   run_state: string;
@@ -178,6 +192,7 @@ export type WorkflowRunSnapshot = {
   generated_at: string;
   runs: WorkflowRunSummary[];
   node_activity: Record<string, WorkflowNodeActivityCounts>;
+  recent_node_activity?: WorkflowRunRecentNodeActivity[];
 };
 
 export type WorkflowRunSearchFilter = {

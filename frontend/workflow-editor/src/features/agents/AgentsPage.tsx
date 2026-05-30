@@ -12,6 +12,7 @@ import type {
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
+  AgentLogView,
   AgentRecord,
   AgentPolicyUpdateRequest,
   AgentSessionPolicy,
@@ -37,6 +38,7 @@ type AgentCreateFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -56,6 +58,7 @@ type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -117,6 +120,7 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -138,6 +142,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -224,12 +229,13 @@ async function loadSkillList(): Promise<SkillLibraryItem[]> {
 
 async function loadAgentLogPage(
   agent: AgentRecord | null,
-  options: { limit?: number; offset?: number; query?: string } = {},
+  options: { limit?: number; offset?: number; query?: string; view?: AgentLogView } = {},
 ): Promise<AgentLogResponse> {
   if (!agent) {
     return {
       agent_id: "",
       backend: null,
+      view: options.view ?? "executions",
       lines: 0,
       text: "No agent selected.",
       returned_lines: 1,
@@ -240,6 +246,7 @@ async function loadAgentLogPage(
     return {
       agent_id: agent.agent_id,
       backend: agent.backend,
+      view: options.view ?? "executions",
       lines: 0,
       text: "Logs are not available for this agent.",
       returned_lines: 1,
@@ -250,6 +257,7 @@ async function loadAgentLogPage(
     backend: agent.backend,
     limit: String(options.limit ?? LOG_PAGE_LIMIT),
     offset: String(options.offset ?? 0),
+    view: options.view ?? "executions",
   });
   const searchQuery = options.query?.trim();
   if (searchQuery) query.set("query", searchQuery);
@@ -394,6 +402,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    web_search_enabled: Boolean(rawPolicy.web_search_enabled),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -417,6 +426,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     model: policy?.model ?? "",
     ttlHours: "",
     labels: formatLabels(labels),
+    webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
@@ -435,6 +445,7 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     model: optionalText(form.model),
     ttl_hours: optionalNumber(form.ttlHours),
     labels,
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -465,6 +476,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
     labels: parseLabels(form.labels),
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -609,6 +621,7 @@ export function AgentsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
   const [logSearchInput, setLogSearchInput] = useState("");
+  const [logView, setLogView] = useState<AgentLogView>("executions");
   const [logReloadNonce, setLogReloadNonce] = useState(0);
   const [agentPrompt, setAgentPrompt] = useState("");
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
@@ -634,7 +647,7 @@ export function AgentsPage() {
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
-  const pendingLogScrollRef = useRef<"bottom" | { previousHeight: number; previousTop: number } | null>(null);
+  const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
@@ -679,6 +692,9 @@ export function AgentsPage() {
     if (pending === "bottom") {
       element.scrollTop = element.scrollHeight;
       logSticksToBottomRef.current = true;
+    } else if (pending === "top") {
+      element.scrollTop = 0;
+      logSticksToBottomRef.current = false;
     } else {
       element.scrollTop = element.scrollHeight - pending.previousHeight + pending.previousTop;
     }
@@ -751,6 +767,7 @@ export function AgentsPage() {
     [filteredItems, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+  const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
 
   useEffect(() => {
     if (showPromptForm) return;
@@ -794,7 +811,7 @@ export function AgentsPage() {
     const activeQuery = agentLog.appliedQuery;
     const refreshLog = async (showLoadingState: boolean) => {
       if (showLoadingState) {
-        pendingLogScrollRef.current = "bottom";
+        pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
         setAgentLog((current) => ({
           ...emptyLogState("Loading..."),
           appliedQuery: activeQuery,
@@ -808,6 +825,7 @@ export function AgentsPage() {
           limit: activeQuery ? LOG_PAGE_LIMIT : Math.max(LOG_PAGE_LIMIT, logLoadedLinesRef.current),
           offset: 0,
           query: activeQuery || undefined,
+          view: activeLogView,
         });
         if (cancelled) return;
         if (!activeQuery && !showLoadingState && !shouldStick) {
@@ -821,7 +839,7 @@ export function AgentsPage() {
           return;
         }
         if (!activeQuery) {
-          pendingLogScrollRef.current = "bottom";
+          pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
         }
         const returnedLines = responseReturnedLines(payload);
         logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, returnedLines);
@@ -856,7 +874,7 @@ export function AgentsPage() {
       }
     };
     void refreshLog(true);
-    const timer = activeQuery
+    const timer = activeQuery || activeLogView === "threads"
       ? null
       : window.setInterval(() => {
           void refreshLog(false);
@@ -865,7 +883,7 @@ export function AgentsPage() {
       cancelled = true;
       if (timer !== null) window.clearInterval(timer);
     };
-  }, [agentLog.appliedQuery, logReloadNonce, selectedAgent?.backend, selectedAgent?.agent_id]);
+  }, [activeLogView, agentLog.appliedQuery, logReloadNonce, selectedAgent?.backend, selectedAgent?.agent_id]);
 
   async function handleManualRefresh() {
     setLoading(true);
@@ -882,7 +900,7 @@ export function AgentsPage() {
 
   function reloadLog(query: string) {
     const normalizedQuery = query.trim();
-    pendingLogScrollRef.current = "bottom";
+    pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
     logLoadedLinesRef.current = LOG_PAGE_LIMIT;
     setAgentLog((current) => ({
       ...emptyLogState("Loading..."),
@@ -892,10 +910,21 @@ export function AgentsPage() {
     setLogReloadNonce((current) => current + 1);
   }
 
+  function changeLogView(nextView: AgentLogView) {
+    if (nextView === logView) return;
+    setLogView(nextView);
+    setLogSearchInput("");
+    logLoadedLinesRef.current = LOG_PAGE_LIMIT;
+    pendingLogScrollRef.current = nextView === "threads" ? "top" : "bottom";
+    setAgentLog(emptyLogState("Loading..."));
+    setLogReloadNonce((current) => current + 1);
+  }
+
   async function loadOlderLogLines() {
     if (!selectedAgent || agentLog.loadingOlder || !agentLog.hasMoreBefore) return;
+    const requestedView = activeLogView;
     const element = logViewRef.current;
-    pendingLogScrollRef.current = element
+    pendingLogScrollRef.current = requestedView === "threads" ? null : element
       ? { previousHeight: element.scrollHeight, previousTop: element.scrollTop }
       : null;
     setAgentLog((current) => ({ ...current, loadingOlder: true, error: null }));
@@ -904,6 +933,7 @@ export function AgentsPage() {
         limit: LOG_PAGE_LIMIT,
         offset: agentLog.loadedLines,
         query: agentLog.appliedQuery || undefined,
+        view: requestedView,
       });
       const returnedLines = responseReturnedLines(payload);
       setAgentLog((current) => {
@@ -911,7 +941,9 @@ export function AgentsPage() {
         logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, loadedLines);
         return {
           ...current,
-          text: appendLogText(payload.text, current.text),
+          text: requestedView === "threads"
+            ? appendLogText(current.text, payload.text)
+            : appendLogText(payload.text, current.text),
           loading: false,
           loadingOlder: false,
           error: null,
@@ -1590,6 +1622,14 @@ export function AgentsPage() {
                       onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
                   </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={createForm.webSearchEnabled}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
+                  </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>
                     <textarea
@@ -1740,6 +1780,14 @@ export function AgentsPage() {
                       value={editForm.allowedTools}
                       onChange={(event) => setEditForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
+                  </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={editForm.webSearchEnabled}
+                      onChange={(event) => setEditForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
                   </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>
@@ -2124,7 +2172,7 @@ export function AgentsPage() {
                   onClick={() => void loadOlderLogLines()}
                   disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
                 >
-                  {agentLog.loadingOlder ? "Loading..." : "Load older"}
+                  {agentLog.loadingOlder ? "Loading..." : activeLogView === "threads" ? "Load more" : "Load older"}
                 </button>
                 <button
                   type="button"
@@ -2139,9 +2187,33 @@ export function AgentsPage() {
                 {agentLog.loading ? <span className="panel-meta">Loading...</span> : null}
                 {agentLog.error ? <span className="panel-meta error-text">{agentLog.error}</span> : null}
               </div>
+              {selectedAgent?.backend === "container_worker_vm" ? (
+                <div className="agent-log-tabs" role="tablist" aria-label="Log view">
+                  <button
+                    type="button"
+                    role="tab"
+                    className={activeLogView === "executions" ? "active" : ""}
+                    aria-selected={activeLogView === "executions"}
+                    onClick={() => changeLogView("executions")}
+                    disabled={agentLog.loading && activeLogView === "executions"}
+                  >
+                    Executions
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    className={activeLogView === "threads" ? "active" : ""}
+                    aria-selected={activeLogView === "threads"}
+                    onClick={() => changeLogView("threads")}
+                    disabled={agentLog.loading && activeLogView === "threads"}
+                  >
+                    Threads
+                  </button>
+                </div>
+              ) : null}
               <pre
                 ref={logViewRef}
-                className="log-view vm-agent-log"
+                className={`log-view vm-agent-log ${selectedAgent?.backend === "container_worker_vm" ? "has-log-tabs" : ""}`}
                 onScroll={(event) => {
                   const atBottom = isScrolledToBottom(event.currentTarget);
                   logSticksToBottomRef.current = atBottom;

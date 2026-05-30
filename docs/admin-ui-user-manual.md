@@ -69,7 +69,7 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, Tool Calls, Configuration, Users, Workflow, and dashboard panels.
+Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Configuration, Users, Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
@@ -164,6 +164,10 @@ Notes:
 
 - The provider field can be left blank to use the directory/default backend.
 - Skill choices come from the managed Skills tab.
+- Container-worker logs default to **Executions**, which shows raw worker job logs by execution.
+  Use **Threads** when you need the Codex conversation grouped by thread ID. The thread view is
+  available only for container-worker sessions; VM-backed agents continue to show their normal
+  agent output.
 - Some actions are unavailable until privileged operations are unlocked.
 
 ## Approvals
@@ -195,7 +199,8 @@ The Artifacts tab resolves and downloads published agent artifact archives.
 
 ![Artifacts](assets/admin-ui/manual-artifacts.png)
 
-Use it when a workflow or agent has published `/artifacts` as an immutable archive.
+Use it when a workflow or agent has published `/artifacts` as an immutable archive, or when an
+operator needs to upload a single local file into the same artifact store for a later workflow.
 
 Common tasks:
 
@@ -206,6 +211,8 @@ Common tasks:
 5. Select an archive row to inspect session ID, backend, byte counts, source file counts,
    source artifacts root, SHA-256, and metadata.
 6. Use the download button to download the selected archive.
+7. To upload a local file, click the upload button, enter a new artifact key, select the file,
+   and click **Upload**. The published archive uses the selected file's name.
 
 Artifact keys are durable identifiers. Prefer resolving by key when a workflow, tool call, or run
 detail links to an artifact directly.
@@ -294,15 +301,33 @@ Common tasks:
 8. Use delete only when you intend to remove saved local session state.
 9. Edit the model field when a session needs a different model for future resume/prompt work.
 10. Toggle allowed tools and **Require approval** for tools that should queue human decisions.
-11. Edit allowed scripts and communication allowlists.
-12. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
+11. Use the settings button next to **Require approval** to set approval TTL, use count, and payload
+    matching for that session.
+12. Edit allowed scripts and communication allowlists.
+13. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-13. Save settings.
-14. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+14. Save settings.
+15. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
 Review both tool access and approval policy before saving.
+
+## MCP Tools
+
+The MCP Tools tab manages directory-scoped tool rules and approval defaults.
+
+Common tasks:
+
+1. Open **MCP Tools** and choose the directory.
+2. Unlock privileges before editing.
+3. Select a tool.
+4. Set a local rule to disallow the tool, always require approval, define default TTL/use/payload
+   settings, or set hard TTL/use/payload limits.
+5. Save policy.
+
+Inherited disallow rules remain effective in child directories. A child directory or session cannot
+re-enable a tool that an ancestor directory has denied.
 
 ## Tool Calls
 
@@ -531,8 +556,10 @@ view or changing directory while there are unsaved workflow changes prompts for 
 4. Select the session.
 5. In **Model and access**, enable the target tool if it is not already allowed.
 6. Check **Require approval** for the same tool.
-7. Save settings.
-8. When the session uses that tool, review the queued request in **Approvals**.
+7. Use the settings button if the approval should allow more than one use, a shorter TTL, or payload
+   variance.
+8. Save settings.
+9. When the session uses that tool, review the queued request in **Approvals**.
 
 ### Review And Decide An Approval
 

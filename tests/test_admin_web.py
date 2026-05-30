@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import json
 import subprocess
+import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MethodType
@@ -16,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
+import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
@@ -27,6 +30,8 @@ from agent_sandbox.admin.service import (
     CapacitySessionSummaryPayload,
     CapacityWorkerTelemetryEntryPayload,
     CapacityWorkerTelemetrySummaryPayload,
+    WorkflowRunRecentNodeActivityPayload,
+    WorkflowRunSnapshotPayload,
 )
 from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
@@ -43,6 +48,14 @@ from agent_sandbox.capacity_health import (
     TelemetryStatus,
 )
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.daemons.effect_orchestrator import (
+    EffectExecutionRecord,
+    GateExecutionRecord,
+    JsonExecutionStore,
+    JsonGateExecutionStore,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.published_artifacts import PublishedArtifactStore
@@ -72,8 +85,11 @@ from agent_sandbox.models import (
     WorkerSummary,
 )
 from agent_sandbox.events.internal import InternalEventBus
+from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
+from agent_sandbox.repositories.orchestration_db import connect_orchestration_db
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from agent_sandbox.triggers.queue import TriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
 
@@ -102,6 +118,115 @@ def write_config(
     return config_path
 
 
+def _write_trigger_orchestrator_sqlite_config(tmp_path: Path) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "orchestration_store_backend": "sqlite",
+                "orchestration_store_path": str(runtime_dir / "orchestration.db"),
+                "orchestration_retention_days": 365,
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [],
+                "gates": [],
+                "edges": [],
+                "effects": [],
+                "queries": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _sqlite_payload_json_by_execution_id(path: Path, table_name: str) -> dict[str, str]:
+    with connect_orchestration_db(path) as connection:
+        rows = connection.execute(
+            f"SELECT execution_id, payload_json FROM {table_name} ORDER BY execution_id"
+        ).fetchall()
+    return {row["execution_id"]: row["payload_json"] for row in rows}
+
+
+def _effect_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    event_id: str,
+    effect_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> EffectExecutionRecord:
+    record = EffectExecutionRecord(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        event_id=event_id,
+        trace_id="trace-test",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id=effect_id,
+        effect_type="effect:agent:prompt",
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        resolved_config_hash="hash-test",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
+
+
+def _gate_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    event_id: str,
+    gate_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> GateExecutionRecord:
+    record = GateExecutionRecord(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        event_id=event_id,
+        trace_id="trace-test",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id=gate_id,
+        gate_type="gate:filter",
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        resolved_config_hash="hash-test",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+    )
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
+
+
 def _workflow_expected_revision(client: TestClient) -> str:
     response = client.get("/api/workflow-editor/document")
     assert response.status_code == 200
@@ -123,9 +248,7 @@ def _snapshot_runtime_files(runtime_dir: Path) -> dict[str, bytes]:
 def _configuration_expected_revision(
     client: TestClient, directory_path: str, tab_or_domain: str
 ) -> str:
-    response = client.get(
-        f"/api/configuration/state?directory_path={directory_path}"
-    )
+    response = client.get(f"/api/configuration/state?directory_path={directory_path}")
     assert response.status_code == 200
     payload = response.json()
     snapshot = payload["tab_snapshots"].get(tab_or_domain) or payload["snapshots"][tab_or_domain]
@@ -277,20 +400,27 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     descriptions_by_type = {
         node["type"]: node.get("description") for node in catalog_payload["nodes"]
     }
-    assert all(
-        descriptions_by_type[node["type"]] for node in catalog_payload["nodes"]
-    ), descriptions_by_type
+    assert all(descriptions_by_type[node["type"]] for node in catalog_payload["nodes"]), (
+        descriptions_by_type
+    )
     assert not any(
         descriptions_by_type[node["type"]] in generic_kind_tooltips
         for node in catalog_payload["nodes"]
     )
+    assert descriptions_by_type["effect:bash:script"] == (
+        "Deprecated high-risk host-side Bash execution from the effect orchestrator."
+    )
     assert (
-        descriptions_by_type["effect:bash:script"]
-        == "Run a host-side Bash script from the effect orchestrator."
+        descriptions_by_type["effect:ado:pipeline-run"]
+        == "Queue an Azure DevOps pipeline run and wait for its terminal result."
     )
     assert (
         descriptions_by_type["effect:http:request"]
         == "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
+    )
+    assert (
+        descriptions_by_type["effect:runtime:diagnostics-snapshot"]
+        == "Capture a bounded, redacted host runtime diagnostics snapshot from allowlisted sources."
     )
     assert (
         descriptions_by_type["effect:agent:exec"]
@@ -317,6 +447,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    agent_exec_command = next(field for field in agent_exec["fields"] if field["key"] == "command")
+    assert agent_exec_command["multiline"] is True
     semantic_ensure = next(
         node
         for node in catalog_payload["nodes"]
@@ -372,9 +504,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert state_update_fields["patch"]["kind"] == "json"
     assert state_update_fields["patch"]["json_value_type"] == "object"
     assert state_update_fields["expected_version"]["kind"] == "number"
-    state_get = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "query:state:get"
-    )
+    state_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:state:get")
     assert state_get["description"] == (
         "Read graph-local workflow state for the current persisted workflow graph."
     )
@@ -388,9 +518,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert state_get_fields["key"]["required"]
     assert state_get_fields["key"]["bindable"]
     agent_copy_files = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "effect:agent:copy-files"
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:copy-files"
     )
     agent_copy_fields = {field["key"]: field for field in agent_copy_files["fields"]}
     assert all(
@@ -436,9 +564,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "sync_proxy_cache",
     ]
     issue_metadata = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "effect:issue:update-metadata"
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:issue:update-metadata"
     )
     assert [field["key"] for field in issue_metadata["fields"]] == [
         "issue_id",
@@ -448,9 +574,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "sync_proxy_cache",
     ]
     ado_update = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "effect:ado:update-work-item"
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:ado:update-work-item"
     )
     assert [field["key"] for field in ado_update["fields"]] == [
         "directory_path",
@@ -462,9 +586,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "sync_proxy_cache",
     ]
     pr_update = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "effect:pull-request:update"
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:update"
     )
     assert [field["key"] for field in pr_update["fields"]] == [
         "provider",
@@ -515,9 +637,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "message",
         "thread_id",
     ]
-    assert next(
-        field for field in communication["fields"] if field["key"] == "communication_target_id"
-    )["kind"] == "enum"
+    assert (
+        next(
+            field for field in communication["fields"] if field["key"] == "communication_target_id"
+        )["kind"]
+        == "enum"
+    )
     assert any(
         field["key"] == "message" and field["bindable"] and field["multiline"]
         for field in communication["fields"]
@@ -617,6 +742,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    ado_pipeline = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:ado:pipeline-run"
+    )
+    assert [field["key"] for field in ado_pipeline["fields"]] == [
+        "directory_path",
+        "pipeline_id",
+        "project",
+        "branch",
+        "variables",
+        "template_parameters",
+        "timeout_seconds",
+        "poll_interval_seconds",
+        "check",
+    ]
     http_request = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:http:request"
     )
@@ -628,6 +767,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "headers",
         "timeout_seconds",
         "check",
+    ]
+    diagnostics = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:runtime:diagnostics-snapshot"
+    )
+    assert [field["key"] for field in diagnostics["fields"]] == [
+        "since",
+        "units",
+        "include_failed_units",
+        "include_journal",
+        "include_runtime_files",
+        "max_journal_lines_per_unit",
+        "max_runtime_file_bytes",
+        "command_timeout_seconds",
     ]
     http_request_fields = {field["key"]: field for field in http_request["fields"]}
     assert [option["value"] for option in http_request_fields["method"]["options"]] == [
@@ -678,9 +832,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         False,
     ]
     issue_comment = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "trigger:issue:comment-created"
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:issue:comment-created"
     )
     assert [field["key"] for field in issue_comment["fields"]] == [
         "provider",
@@ -716,7 +868,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         for node in catalog_payload["nodes"]
         if node["type"] == "trigger:pull-request:new-feedback"
     )
-    assert [field["key"] for field in pr_feedback_trigger["fields"]] == pr_trigger_field_keys
+    assert [field["key"] for field in pr_feedback_trigger["fields"]] == [
+        *pr_trigger_field_keys,
+        "agent_author_names",
+        "agent_mention_names",
+        "agent_author_ids",
+        "agent_mention_ids",
+    ]
     pr_completed_trigger = next(
         node
         for node in catalog_payload["nodes"]
@@ -749,9 +907,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"value": "github_actions", "label": "GitHub Actions"},
         {"value": "ado_pipelines", "label": "Azure DevOps Pipelines"},
     ]
-    assert next(field for field in ci_run_completed["fields"] if field["key"] == "include_existing")[
-        "kind"
-    ] == "boolean"
+    assert (
+        next(field for field in ci_run_completed["fields"] if field["key"] == "include_existing")[
+            "kind"
+        ]
+        == "boolean"
+    )
     communication_message = next(
         node
         for node in catalog_payload["nodes"]
@@ -764,20 +925,26 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "content_contains",
         "case_sensitive",
     ]
-    assert next(
-        field
-        for field in communication_message["fields"]
-        if field["key"] == "communication_target_ids"
-    )["kind"] == "string_list"
+    assert (
+        next(
+            field
+            for field in communication_message["fields"]
+            if field["key"] == "communication_target_ids"
+        )["kind"]
+        == "string_list"
+    )
     teams_direct_message = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "trigger:teams:direct-message"
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:direct-message"
     )
     assert [field["key"] for field in teams_direct_message["fields"]] == [
         "sender_user_ids",
         "message_filter",
     ]
+    sender_user_ids_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "sender_user_ids"
+    )
+    assert sender_user_ids_field["label"] == "Sender user IDs or emails"
+    assert "UPNs, or mail addresses" in sender_user_ids_field["description"]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
     )
@@ -845,9 +1012,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     semantic_status = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "query:semantic:store-status"
+        node for node in catalog_payload["nodes"] if node["type"] == "query:semantic:store-status"
     )
     assert [field["key"] for field in semantic_status["fields"]] == [
         "collection_name",
@@ -873,9 +1038,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
     ]
     artifact_text = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "query:agent:artifact-text"
+        node for node in catalog_payload["nodes"] if node["type"] == "query:agent:artifact-text"
     )
     assert [field["key"] for field in artifact_text["fields"]] == [
         "session_id",
@@ -956,10 +1119,26 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "active_only",
         "limit",
     ]
+    session_list_fields = {field["key"]: field for field in session_list["fields"]}
+    assert all(field["description"] for field in session_list_fields.values())
+    assert "descendants" in session_list_fields["directory_path"]["description"]
+    assert "dot-path selectors" in session_list_fields["metadata_equals"]["description"]
+    assert "presence" in session_list_fields["metadata_exists"]["description"]
+    assert "string prefixes" in session_list_fields["metadata_prefix"]["description"]
+    assert session_list_fields["state"]["kind"] == "enum"
+    assert session_list_fields["state"]["bindable"] is True
+    assert [option["value"] for option in session_list_fields["state"]["options"]] == [
+        "active",
+        "expired",
+        "inactive",
+        "all",
+        "any",
+    ]
+    assert "active, expired, inactive, all, or any" in session_list_fields["state"]["description"]
+    assert "expires_at" in session_list_fields["active_only"]["description"]
+    assert "positive integer" in session_list_fields["limit"]["description"]
     pr_feedback = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "query:pull-request:feedback"
+        node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )
     assert [field["key"] for field in pr_feedback["fields"]] == [
         "provider",
@@ -971,9 +1150,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "cursor",
     ]
     communication_messages = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "query:communication:messages"
+        node for node in catalog_payload["nodes"] if node["type"] == "query:communication:messages"
     )
     assert [field["key"] for field in communication_messages["fields"]] == [
         "communication_target_id",
@@ -987,14 +1164,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         field["key"]: field for field in communication_messages["fields"]
     }
     assert communication_messages_fields["communication_target_id"]["kind"] == "enum"
-    assert "read-capable Teams or Discord" in communication_messages_fields[
-        "communication_target_id"
-    ]["description"]
+    assert (
+        "read-capable Teams or Discord"
+        in communication_messages_fields["communication_target_id"]["description"]
+    )
     assert communication_messages_fields["limit"]["default_value"] == 50
     assert "Maximum 200" in communication_messages_fields["limit"]["description"]
-    assert "Discord targets reject thread_id" in communication_messages_fields["thread_id"][
-        "description"
-    ]
+    assert (
+        "Discord targets reject thread_id"
+        in communication_messages_fields["thread_id"]["description"]
+    )
     vm_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )
@@ -1025,18 +1204,28 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "communication_file_send_enabled",
         "communication_file_require_approval_for_send",
         "communication_file_max_bytes",
+        "web_search_enabled",
         "dotnet",
         "nuget",
         "mssql",
         "mssql_init_root",
         "playwright",
         "codex_skills",
+        "npm_registry_url",
         "directory_path",
+        "metadata",
     }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["metadata"]["kind"] == "json"
+    assert agent_create_fields["metadata"]["json_value_type"] == "object"
+    assert agent_create_fields["metadata"]["description"]
     assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["npm_registry_url"]["bindable"]
+    assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
+    assert agent_create_fields["web_search_enabled"]["bindable"] is True
+    assert "web_search" in agent_create_fields["web_search_enabled"]["description"]
     assert agent_create_fields["allowed_tools"]["options"]
     assert {
         "value": ToolName.RUN_SCRIPT.value,
@@ -1111,6 +1300,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "key",
+        "vm_user",
+    ]
+    artifact_import = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:artifact:import-published"
+    )
+    assert [field["key"] for field in artifact_import["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "key",
+        "destination_path",
+        "overwrite",
         "vm_user",
     ]
     agent_clone_repo = next(
@@ -1352,19 +1555,12 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         return next(
             candidate
             for candidate in nodes
-            if isinstance(candidate, dict)
-            and candidate["type"] == node_type
+            if isinstance(candidate, dict) and candidate["type"] == node_type
         )
 
-    def get_field(
-        payload: dict[str, object], node_type: str, field_key: str
-    ) -> dict[str, object]:
+    def get_field(payload: dict[str, object], node_type: str, field_key: str) -> dict[str, object]:
         node = get_node(payload, node_type)
-        field = next(
-            candidate
-            for candidate in node["fields"]
-            if candidate["key"] == field_key
-        )
+        field = next(candidate for candidate in node["fields"] if candidate["key"] == field_key)
         return field
 
     def get_options(
@@ -1411,9 +1607,9 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     send_thread_description = get_field(
         root_payload, "effect:communication:send-message", "thread_id"
     )["description"]
-    notify_thread_description = get_field(
-        root_payload, "effect:notification:send", "thread_id"
-    )["description"]
+    notify_thread_description = get_field(root_payload, "effect:notification:send", "thread_id")[
+        "description"
+    ]
 
     assert "write or reply capability" in send_target_description
     assert "notify capability" in notify_target_description
@@ -1569,7 +1765,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         ),
     )
     (service.project_dir / "pyproject.toml").write_text(
-        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        '[project]\nname = "agent-sandbox"\nversion = "9.8.7"\n',
         encoding="utf-8",
     )
     (service.project_dir / "CHANGELOG.md").write_text(
@@ -1869,9 +2065,7 @@ def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
     assert response_payload["prompts"]["status"] == "missing"
 
 
-def test_admin_web_capacity_health_requires_auth_when_enabled(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_admin_web_capacity_health_requires_auth_when_enabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
     service = AdminService(write_config(tmp_path))
@@ -1882,9 +2076,7 @@ def test_admin_web_capacity_health_requires_auth_when_enabled(
     assert response.status_code == 401
 
 
-def test_admin_web_release_info_uses_project_metadata(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
     monkeypatch.setattr(
@@ -1895,7 +2087,7 @@ def test_admin_web_release_info_uses_project_metadata(
         ),
     )
     (service.project_dir / "pyproject.toml").write_text(
-        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        '[project]\nname = "agent-sandbox"\nversion = "9.8.7"\n',
         encoding="utf-8",
     )
     (service.project_dir / "CHANGELOG.md").write_text(
@@ -1964,9 +2156,7 @@ def test_admin_web_release_info_uses_project_metadata(
     assert older_release_info.news.next_index is None
 
 
-def test_admin_web_release_info_reports_missing_sources(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.delenv("AGENT_SANDBOX_REPO_VERSION", raising=False)
     monkeypatch.delenv("agent_sandbox_repo_version", raising=False)
@@ -2078,6 +2268,294 @@ def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
     assert asyncio.run(read_first_event()).startswith("event: snapshot\n")
 
 
+def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    trigger_queue = TriggerEventQueue(stores["event_queue_store_path"])
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-recent",
+            trigger_id="trigger-recent",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "json"},
+            trace_id="trace-trigger-recent",
+        )
+    )
+    trigger_queue.mark_delivered("evt-trigger-recent", delivered_at=now - timedelta(seconds=1))
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-old",
+            trigger_id="trigger-old",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=30),
+            payload={"kind": "json"},
+            trace_id="trace-trigger-old",
+        )
+    )
+    trigger_queue.mark_delivered("evt-trigger-old", delivered_at=now - timedelta(seconds=20))
+
+    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-recent",
+            idempotency_key="evt-gate-recent::gate-recent",
+            event_id="evt-gate-recent",
+            gate_id="gate-recent",
+            status="succeeded",
+            started_at=now - timedelta(seconds=5),
+            finished_at=now - timedelta(seconds=2),
+        )
+    )
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-old",
+            idempotency_key="evt-effect-old::effect-old",
+            event_id="evt-effect-old",
+            effect_id="effect-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=40),
+            finished_at=now - timedelta(seconds=35),
+        )
+    )
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-old",
+            idempotency_key="evt-gate-old::gate-old",
+            event_id="evt-gate-old",
+            gate_id="gate-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=40),
+            finished_at=now - timedelta(seconds=35),
+        )
+    )
+
+    for index in range(201):
+        effect_store.record_execution(
+            _effect_execution_record(
+                execution_id=f"exec-effect-{index}",
+                idempotency_key=f"evt-effect-{index}::effect-{index}",
+                event_id=f"evt-effect-{index}",
+                effect_id=f"effect-{index}",
+                status="succeeded",
+                started_at=now - timedelta(seconds=4, microseconds=index),
+                finished_at=now - timedelta(seconds=3, microseconds=index),
+            )
+        )
+
+    client = TestClient(create_app(service))
+    response = client.get("/api/workflow-editor/runs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert len(payload["recent_node_activity"]) == 200
+    assert [item["node_id"] for item in payload["recent_node_activity"][:3]] == [
+        "trigger-recent",
+        "gate-recent",
+        "effect-0",
+    ]
+    assert payload["recent_node_activity"][0]["source"] == "trigger_event"
+    assert payload["recent_node_activity"][0]["status"] == "delivered"
+    assert payload["recent_node_activity"][0]["activity_at"] == "2026-05-21T11:59:59Z"
+    assert payload["recent_node_activity"][-1]["node_id"] == "effect-197"
+    assert payload["recent_node_activity"][-1]["source"] == "effect_execution"
+
+
+def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write_trigger_orchestrator_sqlite_config(tmp_path)
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "sqlite",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 365,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    trigger_queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    trigger_queue.publish(
+        TriggerEvent(
+            event_id="evt-trigger-sqlite",
+            trigger_id="trigger-sqlite",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(seconds=20),
+            payload={"kind": "sqlite"},
+            trace_id="trace-trigger-sqlite",
+        )
+    )
+    trigger_queue.mark_delivered(
+        "evt-trigger-sqlite", delivered_at=now - timedelta(seconds=3)
+    )
+
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-sqlite",
+            idempotency_key="evt-effect-sqlite::effect-sqlite",
+            event_id="evt-effect-sqlite",
+            effect_id="effect-sqlite",
+            status="succeeded",
+            started_at=now - timedelta(seconds=4),
+            finished_at=now - timedelta(seconds=2),
+        )
+    )
+    effect_store.record_execution(
+        _effect_execution_record(
+            execution_id="exec-effect-sqlite-old",
+            idempotency_key="evt-effect-sqlite-old::effect-old",
+            event_id="evt-effect-sqlite-old",
+            effect_id="effect-sqlite-old",
+            status="succeeded",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=25),
+        )
+    )
+    gate_store.record_execution(
+        _gate_execution_record(
+            execution_id="exec-gate-sqlite",
+            idempotency_key="evt-gate-sqlite::gate-sqlite",
+            event_id="evt-gate-sqlite",
+            gate_id="gate-sqlite",
+            status="succeeded",
+            started_at=now - timedelta(seconds=2),
+            finished_at=now - timedelta(seconds=1),
+        )
+    )
+
+    client = TestClient(create_app(service))
+    response = client.get("/api/workflow-editor/runs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runs"] == []
+    assert payload["node_activity"] == {}
+    assert [item["node_id"] for item in payload["recent_node_activity"]] == [
+        "gate-sqlite",
+        "effect-sqlite",
+        "trigger-sqlite",
+    ]
+    assert payload["recent_node_activity"][2]["source"] == "trigger_event"
+    assert payload["recent_node_activity"][2]["activity_at"] == "2026-05-21T11:59:57Z"
+    assert payload["recent_node_activity"][2]["status"] == "delivered"
+
+
+def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    snapshots = iter(
+        [
+            WorkflowRunSnapshotPayload(
+                generated_at=now,
+                runs=[],
+                node_activity={},
+                recent_node_activity=[
+                    WorkflowRunRecentNodeActivityPayload(
+                        activity_key="trigger_event:evt-1:trigger-a:delivered:2026-05-21T11:59:59Z",
+                        event_id="evt-1",
+                        node_id="trigger-a",
+                        status="delivered",
+                        source="trigger_event",
+                        activity_at=now - timedelta(seconds=1),
+                    )
+                ],
+            ),
+            WorkflowRunSnapshotPayload(
+                generated_at=now,
+                runs=[],
+                node_activity={},
+                recent_node_activity=[
+                    WorkflowRunRecentNodeActivityPayload(
+                        activity_key="trigger_event:evt-2:trigger-a:delivered:2026-05-21T11:59:58Z",
+                        event_id="evt-2",
+                        node_id="trigger-a",
+                        status="delivered",
+                        source="trigger_event",
+                        activity_at=now - timedelta(seconds=2),
+                    )
+                ],
+            ),
+        ]
+    )
+
+    class FakeJournal:
+        def cursor(self) -> object:
+            return object()
+
+        async def wait_after(self, cursor: object, timeout_seconds: float) -> tuple[list[str], object]:
+            return (["workflow.run.snapshot"], object())
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    monkeypatch.setattr(service, "workflow_event_journal", lambda: FakeJournal())
+    monkeypatch.setattr(service, "read_workflow_run_snapshot", lambda: next(snapshots))
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event.startswith("event: snapshot\n")
+    assert '"event_id": "evt-1"' in first_event
+    assert '"event_id": "evt-2"' in second_event
+
+
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
     payload = {
@@ -2132,6 +2610,64 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert isinstance(save_response.json().get("revision"), str)
     assert isinstance(save_response.json().get("saved_at"), str)
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
+
+
+def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+        },
+        "layout": {
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+        "graphs": [
+            {
+                "id": "graph-cron-15m",
+                "name": "Scheduled prompt",
+                "description": "Prompts an agent on the cron schedule.",
+                "directory_paths": ["root"],
+                "user_ids": ["admin"],
+                "node_ids": ["cron-15m", "prompt-agent"],
+            }
+        ],
+    }
+
+    payload["expected_revision"] = _workflow_expected_revision(client)
+    first_save = client.put("/api/workflow-editor/document", json=payload)
+    assert first_save.status_code == 200
+    first_revision = first_save.json()["revision"]
+    assert isinstance(first_revision, str)
+
+    payload["config"]["effects"][0]["display_name"] = "Prompt agent v2"
+    payload["layout"]["nodes"]["prompt-agent"]["x"] = 320
+    payload["expected_revision"] = first_revision
+    second_save = client.put("/api/workflow-editor/document", json=payload)
+
+    assert second_save.status_code == 200
+    assert second_save.json()["revision"] == _workflow_expected_revision(client)
 
 
 def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
@@ -2225,9 +2761,7 @@ def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[st
                     "prompt": prompt,
                 }
             ],
-            "edges": [
-                {"source_id": "trigger-ticket-created-main", "target_id": "prompt-agent"}
-            ],
+            "edges": [{"source_id": "trigger-ticket-created-main", "target_id": "prompt-agent"}],
         },
         "layout": {
             "nodes": {
@@ -2299,6 +2833,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     diagnostics = validate_response.json()["validation_diagnostics"]
     assert {
         "code": "invalid_binding_node",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",
@@ -2410,6 +2945,7 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
     assert response.status_code == 200
     assert {
         "code": "missing_binding_output",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",
@@ -2482,6 +3018,7 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     assert {
         "code": "node_capability",
         "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
+        "severity": "error",
     } in diagnostics
 
 
@@ -2567,9 +3104,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     body = response.json()
     assert body["validation_diagnostics"] == []
     assert body["output_schemas"]["effect-agent-create-1"]["session_id"] == {"type": "string"}
-    assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {
-        "type": "string"
-    }
+    assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {"type": "string"}
 
 
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
@@ -2705,9 +3240,12 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
 
     assert response.status_code == 200
     diagnostics = response.json()["validation_diagnostics"]
-    assert all(diagnostic.get("node_id") != "effect-agent-clone-repo-1" for diagnostic in diagnostics)
+    assert all(
+        diagnostic.get("node_id") != "effect-agent-clone-repo-1" for diagnostic in diagnostics
+    )
     assert {
         "code": "invalid_binding_node",
+        "severity": "error",
         "node_id": "effect-agent-clone-repo-copy",
         "node_type": "effect:agent:clone-repo",
         "field_path": "target",
@@ -2728,6 +3266,7 @@ def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -
     assert response.status_code == 200
     assert {
         "code": "malformed_binding_fallback",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",
@@ -3243,6 +3782,259 @@ def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path)
     assert "gate-review" not in final_response.json()["node_activity"]
 
 
+def test_admin_web_dismisses_workflow_node_failures_with_sqlite_fast_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write_trigger_orchestrator_sqlite_config(tmp_path)
+
+    db_path = runtime_dir / "orchestration.db"
+    effect_store = SqliteExecutionStore(db_path)
+    gate_store = SqliteGateExecutionStore(db_path)
+
+    target_failed_1 = EffectExecutionRecord(
+        execution_id="exec-failed-1",
+        idempotency_key="idem-failed-1",
+        event_id="evt-failed-1",
+        trace_id="trace-failed-1",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=timezone.utc),
+        resolved_config_hash="hash-failed-1",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        error="first failure",
+    )
+    target_failed_2 = EffectExecutionRecord(
+        execution_id="exec-failed-2",
+        idempotency_key="idem-failed-2",
+        event_id="evt-failed-2",
+        trace_id="trace-failed-2",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 2, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 3, tzinfo=timezone.utc),
+        resolved_config_hash="hash-failed-2",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        error="second failure",
+    )
+    target_running = EffectExecutionRecord(
+        execution_id="exec-running",
+        idempotency_key="idem-running",
+        event_id="evt-running",
+        trace_id="trace-running",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="running",
+        started_at=datetime(2026, 4, 23, 12, 4, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 5, tzinfo=timezone.utc),
+        resolved_config_hash="hash-running",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    target_succeeded = EffectExecutionRecord(
+        execution_id="exec-succeeded",
+        idempotency_key="idem-succeeded",
+        event_id="evt-succeeded",
+        trace_id="trace-succeeded",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="succeeded",
+        started_at=datetime(2026, 4, 23, 12, 6, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 7, tzinfo=timezone.utc),
+        resolved_config_hash="hash-succeeded",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    target_dismissed = EffectExecutionRecord(
+        execution_id="exec-dismissed",
+        idempotency_key="idem-dismissed",
+        event_id="evt-dismissed",
+        trace_id="trace-dismissed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 8, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 9, tzinfo=timezone.utc),
+        resolved_config_hash="hash-dismissed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        dismiss_reason="manual_dismiss_errored_workflow_run",
+        dismissed_at=datetime(2026, 4, 23, 12, 10, tzinfo=timezone.utc),
+    )
+    target_gate_failed = GateExecutionRecord(
+        execution_id="gate-failed",
+        idempotency_key="gate-idem-failed",
+        event_id="evt-gate-failed",
+        trace_id="trace-gate-failed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id="gate-review",
+        gate_type="gate:filter",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 11, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 12, tzinfo=timezone.utc),
+        resolved_config_hash="hash-gate-failed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+        error="gate failure",
+    )
+    target_gate_dismissed = GateExecutionRecord(
+        execution_id="gate-dismissed",
+        idempotency_key="gate-idem-dismissed",
+        event_id="evt-gate-dismissed",
+        trace_id="trace-gate-dismissed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id="gate-review",
+        gate_type="gate:filter",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 13, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 14, tzinfo=timezone.utc),
+        resolved_config_hash="hash-gate-dismissed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+        error="already dismissed gate failure",
+        dismiss_reason="manual_dismiss_node_failures",
+        dismissed_at=datetime(2026, 4, 23, 12, 15, tzinfo=timezone.utc),
+    )
+    effect_store.record_execution(target_failed_1)
+    effect_store.record_execution(target_failed_2)
+    effect_store.record_execution(target_running)
+    effect_store.record_execution(target_succeeded)
+    effect_store.record_execution(target_dismissed)
+    gate_store.record_execution(target_gate_failed)
+    gate_store.record_execution(target_gate_dismissed)
+
+    for index in range(180):
+        status = ("failed", "running", "succeeded")[index % 3]
+        record = _effect_execution_record(
+            execution_id=f"exec-unrelated-{index}",
+            idempotency_key=f"idem-unrelated-{index}",
+            event_id=f"evt-unrelated-{index}",
+            effect_id=f"effect-unrelated-{index % 12}",
+            status=status,
+            started_at=datetime(2026, 4, 23, 12, 20, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 4, 23, 12, 21, tzinfo=timezone.utc),
+        )
+        effect_store.record_execution(record)
+    for index in range(120):
+        status = ("failed", "running", "succeeded")[index % 3]
+        record = _gate_execution_record(
+            execution_id=f"gate-unrelated-{index}",
+            idempotency_key=f"gate-idem-unrelated-{index}",
+            event_id=f"evt-gate-unrelated-{index}",
+            gate_id=f"gate-unrelated-{index % 8}",
+            status=status,
+            started_at=datetime(2026, 4, 23, 12, 22, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 4, 23, 12, 23, tzinfo=timezone.utc),
+        )
+        gate_store.record_execution(record)
+
+    effect_before_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+    gate_before_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+    effect_unchanged_before = {
+        execution_id: payload
+        for execution_id, payload in effect_before_payloads.items()
+        if execution_id not in {"exec-failed-1", "exec-failed-2", "exec-dismissed"}
+    }
+    gate_unchanged_before = {
+        execution_id: payload
+        for execution_id, payload in gate_before_payloads.items()
+        if execution_id != "gate-dismissed"
+    }
+
+    def fail_update_all(*_: object, **__: object) -> None:
+        raise AssertionError("SQLite fast path should not call update_all()")
+
+    monkeypatch.setattr(SqliteExecutionStore, "update_all", fail_update_all, raising=False)
+    monkeypatch.setattr(SqliteGateExecutionStore, "update_all", fail_update_all, raising=False)
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    before_response = client.get("/api/workflow-editor/runs")
+    dismiss_response = client.delete("/api/workflow-editor/node-failures/effect-prompt")
+    after_response = client.get("/api/workflow-editor/runs")
+
+    assert before_response.status_code == 200
+    assert before_response.json()["node_activity"]["effect-prompt"] == {
+        "failed": 2,
+        "running": 1,
+    }
+    assert before_response.json()["node_activity"]["gate-review"] == {
+        "failed": 1,
+    }
+    assert dismiss_response.status_code == 200
+    dismiss_payload = dismiss_response.json()
+    assert dismiss_payload["worker_id"] == "trigger-orchestrator"
+    assert dismiss_payload["node_id"] == "effect-prompt"
+    assert dismiss_payload["effect_records_updated"] == 2
+    assert dismiss_payload["gate_records_updated"] == 0
+    assert after_response.status_code == 200
+    assert after_response.json()["node_activity"]["effect-prompt"] == {"running": 1}
+    assert after_response.json()["node_activity"]["gate-review"] == {
+        "failed": 1,
+    }
+    assert after_response.json()["node_activity"]["effect-unrelated-0"] == before_response.json()[
+        "node_activity"
+    ]["effect-unrelated-0"]
+    assert after_response.json()["node_activity"]["gate-unrelated-1"] == before_response.json()[
+        "node_activity"
+    ]["gate-unrelated-1"]
+
+    effect_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+    gate_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+
+    assert effect_after_payloads["exec-failed-1"] != effect_before_payloads["exec-failed-1"]
+    assert effect_after_payloads["exec-failed-2"] != effect_before_payloads["exec-failed-2"]
+    assert gate_after_payloads["gate-failed"] == gate_before_payloads["gate-failed"]
+    assert {
+        execution_id: effect_after_payloads[execution_id]
+        for execution_id in effect_unchanged_before
+    } == effect_unchanged_before
+    assert {
+        execution_id: gate_after_payloads[execution_id]
+        for execution_id in gate_unchanged_before
+    } == gate_unchanged_before
+
+    assert effect_store.get_execution("exec-failed-1").dismissed_at is not None
+    assert effect_store.get_execution("exec-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    assert effect_store.get_execution("exec-running").dismissed_at is None
+    assert effect_store.get_execution("exec-succeeded").dismissed_at is None
+    assert effect_store.get_execution("exec-dismissed").dismiss_reason == "manual_dismiss_errored_workflow_run"
+    assert gate_store.get_execution("gate-failed").dismissed_at is None
+    assert gate_store.get_execution("gate-failed").dismiss_reason is None
+    assert gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+
+
 def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -3271,9 +4063,7 @@ def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Pa
 
     list_response = client.get("/api/admin/artifacts?limit=1")
     detail_response = client.get("/api/admin/artifacts/runs%2Fsession-1%2Freport")
-    filtered_response = client.get(
-        "/api/admin/artifacts?published_after=2026-05-20T08:30:00Z"
-    )
+    filtered_response = client.get("/api/admin/artifacts?published_after=2026-05-20T08:30:00Z")
     download_response = client.get("/api/admin/artifact-downloads/runs%2Fsession-1%2Freport")
 
     assert list_response.status_code == 200
@@ -3284,14 +4074,11 @@ def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Pa
     assert detail_response.json()["key"] == "runs/session-1/report"
     assert detail_response.json()["filename"] == "report.tar.gz"
     assert filtered_response.status_code == 200
-    assert [item["key"] for item in filtered_response.json()["items"]] == [
-        "runs/session-2/report"
-    ]
+    assert [item["key"] for item in filtered_response.json()["items"]] == ["runs/session-2/report"]
     assert download_response.status_code == 200
     assert download_response.content == b"published archive"
     assert (
-        download_response.headers["content-disposition"]
-        == 'attachment; filename="report.tar.gz"'
+        download_response.headers["content-disposition"] == 'attachment; filename="report.tar.gz"'
     )
 
 
@@ -3322,6 +4109,44 @@ def test_admin_web_artifact_key_ending_download_resolves_metadata(
     assert detail_response.json()["key"] == "runs/foo/download"
     assert download_response.status_code == 200
     assert download_response.content == b"published archive"
+
+
+def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.post(
+        "/api/admin/artifacts/uploads",
+        data={"key": "manuals/true-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
+        files={
+            "file": (
+                "reviewed.docx",
+                b"docx bytes",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    duplicate = client.post(
+        "/api/admin/artifacts/uploads",
+        data={"key": "manuals/true-app/reviewed/run-1"},
+        files={"file": ("reviewed.docx", b"again")},
+    )
+    download = client.get("/api/admin/artifact-downloads/manuals%2Ftrue-app%2Freviewed%2Frun-1")
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["key"] == "manuals/true-app/reviewed/run-1"
+    assert payload["session_id"] == "manual-upload"
+    assert payload["source_file_count"] == 1
+    assert payload["metadata"]["source"] == "manual_upload"
+    assert payload["metadata"]["original_filename"] == "reviewed.docx"
+    assert payload["metadata"]["artifact_path"] == "input/reviewed.docx"
+    assert duplicate.status_code == 400
+    assert "already exists" in duplicate.json()["error"]
+    assert download.status_code == 200
+    with tarfile.open(fileobj=io.BytesIO(download.content), mode="r:gz") as archive:
+        member = archive.extractfile("input/reviewed.docx")
+        assert member is not None
+        assert member.read() == b"docx bytes"
 
 
 def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
@@ -3734,15 +4559,9 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                     "vm_name": "vm-detail",
                     "dispatch_id": "dispatch-detail",
                 },
-                "inputs_by_source": {
-                    "effect-prompt": {"issue_number": "99"}
-                },
-                "input_event_ids_by_source": {
-                    "effect-prompt": "evt-detail"
-                },
-                "input_occurred_at_by_source": {
-                    "effect-prompt": "2026-05-01T10:00:00Z"
-                },
+                "inputs_by_source": {"effect-prompt": {"issue_number": "99"}},
+                "input_event_ids_by_source": {"effect-prompt": "evt-detail"},
+                "input_occurred_at_by_source": {"effect-prompt": "2026-05-01T10:00:00Z"},
                 "published_event_id": "evt-detail-gate",
                 "completion_event_enqueued_at": "2026-05-01T10:00:15Z",
                 "config_revision": rich_revision,
@@ -3773,7 +4592,7 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "vm_name": "vm-legacy",
                 "payload": {},
                 "occurred_at": "2026-05-01T09:00:16Z",
-            }
+            },
         },
     )
     (runtime_dir / "providers" / "gates" / "await-agent").mkdir(parents=True, exist_ok=True)
@@ -3988,16 +4807,16 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert artifact_link["metadata"] == {"storage": "host_artifact_store", "source": "fixture"}
     assert rich_node["records"][0]["record_kind"] == "effect_execution"
     assert rich_node["records"][0]["config_revision"] == fixture["rich_revision"]
-    assert rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
+    assert (
+        rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
+    )
 
 
 def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
     _seed_workflow_run_detail_fixture(tmp_path)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    response = client.get(
-        "/api/workflow-editor/run-detail", params={"event_id": "evt-notrace"}
-    )
+    response = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-notrace"})
 
     assert response.status_code == 200
     payload = response.json()
@@ -4905,13 +5724,16 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
         "node_type": "trigger:http:webhook",
     }
     assert response.json()["payload"]["headers"]["content-type"] == "application/json"
-    assert response.json()["payload"]["headers"]["x-agent-sandbox-signature-256"] == headers[
-        "X-Agent-Sandbox-Signature-256"
-    ]
+    assert (
+        response.json()["payload"]["headers"]["x-agent-sandbox-signature-256"]
+        == headers["X-Agent-Sandbox-Signature-256"]
+    )
     assert response.json()["payload"]["slug"] == "build-notify"
     assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
     assert response.json()["payload"]["query"] == {"source": "ci"}
-    assert response.json()["payload"]["signature_header"] == headers["X-Agent-Sandbox-Signature-256"]
+    assert (
+        response.json()["payload"]["signature_header"] == headers["X-Agent-Sandbox-Signature-256"]
+    )
     assert response.json()["payload"]["received_at"].endswith("Z")
     assert response.json()["payload"]["remote_addr"]
 
@@ -4960,7 +5782,7 @@ def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
     )
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    body = b"{\"target\":\"demo\"}"
+    body = b'{"target":"demo"}'
     headers = _signed_webhook_headers(body, secret="webhook-secret")
     build_response = client.post(
         "/api/workflow-webhooks/build-notify",
@@ -5008,7 +5830,7 @@ def test_workflow_webhook_ingress_rejects_missing_or_malformed_signature(
     _write_workflow_webhook_config(tmp_path)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    body = b"{\"target\":\"demo\"}"
+    body = b'{"target":"demo"}'
     headers = {"Content-Type": "application/json"}
     if header_value is not None:
         headers["X-Agent-Sandbox-Signature-256"] = header_value
@@ -5024,7 +5846,7 @@ def test_workflow_webhook_ingress_rejects_bad_hmac(tmp_path: Path, monkeypatch) 
     _write_workflow_webhook_config(tmp_path)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    body = b"{\"target\":\"demo\"}"
+    body = b'{"target":"demo"}'
     response = client.post(
         "/api/workflow-webhooks/build-notify",
         content=body,
@@ -5074,7 +5896,7 @@ def test_workflow_webhook_ingress_rejects_missing_secret_and_unknown_slug(
     _write_workflow_webhook_config(tmp_path, secret_env="MISSING_WEBHOOK_SECRET")
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    body = b"{\"target\":\"demo\"}"
+    body = b'{"target":"demo"}'
     response_missing_secret = client.post(
         "/api/workflow-webhooks/build-notify",
         content=body,
@@ -5095,15 +5917,19 @@ def test_workflow_webhook_ingress_rejects_missing_secret_and_unknown_slug(
     assert response_missing_secret.status_code == 500
     assert "MISSING_WEBHOOK_SECRET" in response_missing_secret.json()["error"]
     assert response_unknown_slug.status_code == 404
-    assert response_unknown_slug.json()["error"] == "Webhook trigger not found for slug: build-notify"
+    assert (
+        response_unknown_slug.json()["error"] == "Webhook trigger not found for slug: build-notify"
+    )
 
 
-def test_workflow_webhook_ingress_rejects_duplicate_active_slug(tmp_path: Path, monkeypatch) -> None:
+def test_workflow_webhook_ingress_rejects_duplicate_active_slug(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
     _write_workflow_webhook_config(tmp_path, duplicate=True)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    body = b"{\"target\":\"demo\"}"
+    body = b'{"target":"demo"}'
     response = client.post(
         "/api/workflow-webhooks/build-notify",
         content=body,
@@ -5111,9 +5937,10 @@ def test_workflow_webhook_ingress_rejects_duplicate_active_slug(tmp_path: Path, 
     )
 
     assert response.status_code == 409
-    assert "Webhook trigger slugs must be globally unique across active config" in response.json()[
-        "error"
-    ]
+    assert (
+        "Webhook trigger slugs must be globally unique across active config"
+        in response.json()["error"]
+    )
 
 
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
@@ -5266,9 +6093,7 @@ def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> 
         "/api/configuration/domains/providers?directory_path=root/ops",
         json={
             "config": {"execution_backend": "container_worker_vm"},
-            "expected_revision": _configuration_expected_revision(
-                client, "root/ops", "providers"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "root/ops", "providers"),
         },
     )
     ops_state = client.get("/api/admin/state?directory_path=root/ops")
@@ -5287,9 +6112,7 @@ def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> 
 
 def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
     client = TestClient(
-        create_app(
-            AdminService(write_config(tmp_path, execution_backend="container_worker_vm"))
-        )
+        create_app(AdminService(write_config(tmp_path, execution_backend="container_worker_vm")))
     )
 
     response = client.get("/api/admin/state")
@@ -5719,9 +6542,10 @@ def test_admin_web_workflow_tutorial_preference_defaults_and_persists(
         "skipped_tutorial_ids": [],
     }
     assert loaded.json() == saved.json()
-    assert app.state.admin_user_store.get_user_preference(
-        "admin", "workflow_tutorial_progress"
-    ) == saved.json()
+    assert (
+        app.state.admin_user_store.get_user_preference("admin", "workflow_tutorial_progress")
+        == saved.json()
+    )
 
 
 def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
@@ -5733,9 +6557,7 @@ def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
     client = TestClient(app)
 
     unauthenticated = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
-    login = client.post(
-        "/api/auth/login", json={"username": "admin", "password": "swordfish"}
-    )
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "swordfish"})
     saved = client.put(
         "/api/admin/user-preferences/workflow-tutorial-progress",
         json={"skippedTutorialIds": ["first-steps"]},
@@ -5748,9 +6570,10 @@ def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
         "completed_tutorial_ids": [],
         "skipped_tutorial_ids": ["first-steps"],
     }
-    assert app.state.admin_user_store.get_user_preference(
-        "admin", "workflow_tutorial_progress"
-    ) == saved.json()
+    assert (
+        app.state.admin_user_store.get_user_preference("admin", "workflow_tutorial_progress")
+        == saved.json()
+    )
 
 
 def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
@@ -5768,9 +6591,12 @@ def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
 
     assert callback.status_code == 303
     assert saved.status_code == 200
-    assert app.state.admin_user_store.get_user_preference(
-        "operator@example.com", "workflow_tutorial_progress"
-    ) == saved.json()
+    assert (
+        app.state.admin_user_store.get_user_preference(
+            "operator@example.com", "workflow_tutorial_progress"
+        )
+        == saved.json()
+    )
     assert (
         app.state.admin_user_store.get_user_preference(
             "other@example.com", "workflow_tutorial_progress"
@@ -5907,9 +6733,7 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert payload["graphs"][0]["directory_paths"] == ["root"]
     assert [node["id"] for node in payload["config"]["triggers"]] == ["schedule"]
     assert [node["id"] for node in payload["config"]["effects"]] == ["emit-summary"]
-    assert payload["config"]["edges"] == [
-        {"source_id": "schedule", "target_id": "emit-summary"}
-    ]
+    assert payload["config"]["edges"] == [{"source_id": "schedule", "target_id": "emit-summary"}]
     assert payload["warnings"] == ["Review placeholder payload values before saving."]
     assert captured_requests
     request_payload = captured_requests[0]["payload"]
@@ -6165,9 +6989,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     capacity_first = client.get("/api/admin/capacity-health?_dashboard=1")
     capacity_second = client.get("/api/admin/capacity-health?_dashboard=1")
     capacity_live = client.get("/api/admin/capacity-health")
-    capacity_refreshed = client.get(
-        "/api/admin/capacity-health?_dashboard=1&_dashboard_refresh=1"
-    )
+    capacity_refreshed = client.get("/api/admin/capacity-health?_dashboard=1&_dashboard_refresh=1")
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -6332,9 +7154,7 @@ def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> N
 
     assert active_response.status_code == 200
     assert all_response.status_code == 200
-    assert [item["issue_id"] for item in active_response.json()["items"]] == [
-        active_issue.issue_id
-    ]
+    assert [item["issue_id"] for item in active_response.json()["items"]] == [active_issue.issue_id]
     assert {item["issue_id"] for item in all_response.json()["items"]} == {
         active_issue.issue_id,
         done_issue.issue_id,
@@ -6382,9 +7202,9 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     assert detail["config"]["exists"] is False
     assert saved.json()["config"]["exists"] is True
     assert saved.json()["config"]["revision"] != detail["config"]["revision"]
-    assert saved.json()["config"]["config"]["poll_interval_seconds"] == config[
-        "poll_interval_seconds"
-    ]
+    assert (
+        saved.json()["config"]["config"]["poll_interval_seconds"] == config["poll_interval_seconds"]
+    )
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
@@ -6519,9 +7339,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     agent_execution = next(
         section for section in providers["sections"] if section["title"] == "Agent execution"
     )
-    agent_execution_fields = {
-        field["field_name"]: field for field in agent_execution["fields"]
-    }
+    agent_execution_fields = {field["field_name"]: field for field in agent_execution["fields"]}
     assert agent_execution_fields["execution_backend"]["label"] == "Execution backend"
     container_worker = next(
         section
@@ -6651,9 +7469,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
         "/api/configuration/domains/providers?directory_path=root/ops",
         json={
             "config": {"github_token_env": "GITHUB_TOKEN_OPS"},
-            "expected_revision": _configuration_expected_revision(
-                client, "root/ops", "providers"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "root/ops", "providers"),
         },
     )
     state_response = client.get("/api/configuration/state?directory_path=root/ops")
@@ -6699,9 +7515,7 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
                 "discord_operator_channel_allowlist": ["chan-1", "chan-2"],
                 "discord_resume_prompt": "Resume this session.",
             },
-            "expected_revision": _configuration_expected_revision(
-                client, "ops", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
         },
     )
 
@@ -6750,9 +7564,9 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
     assert first_save.status_code == 200
     assert first_save.json()["tab_snapshot"]["revision"] != initial_revision
     assert stale.status_code == 409
-    assert stale.json()["details"]["current_revision"] == first_save.json()["tab_snapshot"][
-        "revision"
-    ]
+    assert (
+        stale.json()["details"]["current_revision"] == first_save.json()["tab_snapshot"]["revision"]
+    )
 
 
 def test_admin_web_communications_tab_saves_sqlite_communication_targets(
@@ -6775,9 +7589,7 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
                     }
                 ]
             },
-            "expected_revision": _configuration_expected_revision(
-                client, "root", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
         },
     )
     create_response = client.post(
@@ -6848,9 +7660,7 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
                 "default_profile": "full-admin",
                 "custom_system_instructions": "Use the admin context.",
             },
-            "expected_revision": _configuration_expected_revision(
-                client, "root", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
         },
     )
 
@@ -6891,9 +7701,7 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
                 "discord_operator_channel_allowlist": ["chan-1"],
                 "discord_resume_prompt": "Resume this session.",
             },
-            "expected_revision": _configuration_expected_revision(
-                client, "ops", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
         },
     )
     assert communications_response.status_code == 200
@@ -6905,9 +7713,7 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
         "/api/configuration/domains/communications?directory_path=ops",
         json={
             "config": {"enabled": True, "read_only": True, "default_model": "gpt-test"},
-            "expected_revision": _configuration_expected_revision(
-                client, "ops", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
         },
     )
     assert assistant_response.status_code == 200
@@ -6968,9 +7774,7 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
         "/api/configuration/domains/communications?directory_path=root",
         json={
             "config": {"discord_backend": "stub"},
-            "expected_revision": _configuration_expected_revision(
-                client, "root", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
         },
     )
 
@@ -7038,9 +7842,7 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
         "/api/configuration/domains/communications?directory_path=ops",
         json={
             "config": {"discord_backend": "stub"},
-            "expected_revision": _configuration_expected_revision(
-                client, "ops", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
         },
     )
     assert communications_response.status_code == 200
@@ -7057,9 +7859,7 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
         "/api/configuration/domains/communications?directory_path=ops",
         json={
             "config": {},
-            "expected_revision": _configuration_expected_revision(
-                client, "ops", "communications"
-            ),
+            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
         },
     )
     assert clear_response.status_code == 200
@@ -7416,11 +8216,25 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             mode: str | None = None,
         ) -> str:
             self.logged.append((target, lines, mode))
-            if mode == "session":
-                return "session transcript\n" if target == "exec-1" else ""
-            if mode == "augmented":
-                return "repo line for exec-1\n" if target == "exec-1" else "line 2\n"
-            return "line 2\n"
+            if target == "exec-1":
+                if mode == "execution":
+                    return "session id: thread-a\nrepo execution line for exec-1\n"
+                if mode == "raw":
+                    return "session id: thread-a\nrepo raw line for exec-1\n"
+                if mode == "session":
+                    return "session transcript for exec-1\n"
+                if mode == "augmented":
+                    return "augmented transcript for exec-1\n"
+            if target == "exec-2":
+                if mode == "execution":
+                    return "session id: thread-b\nother execution line for exec-2\n"
+                if mode == "raw":
+                    return "session id: thread-b\nother raw line for exec-2\n"
+                if mode == "session":
+                    return "session transcript for exec-2\n"
+                if mode == "augmented":
+                    return "augmented transcript for exec-2\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
 
         def get_log_page(
             self,
@@ -7479,9 +8293,11 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
 
     client = TestClient(create_app(service))
 
-    log_response = client.get("/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4")
+    log_response = client.get(
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&view=executions&lines=4"
+    )
     paged_response = client.get(
-        "/api/admin/agents/session-1/log?backend=container_worker_vm&limit=3&offset=0&query=repo"
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&view=executions&limit=3&offset=0&query=repo"
     )
     stop_response = client.post(
         "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
@@ -7491,13 +8307,17 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     )
 
     assert log_response.status_code == 200
-    assert "session=session-1 log=codex_transcript" in log_response.json()["text"]
-    assert "session transcript" in log_response.json()["text"]
+    assert log_response.json()["view"] == "executions"
     assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
-    assert "log=raw" in log_response.json()["text"]
+    assert "log=execution" in log_response.json()["text"]
+    assert "repo execution line for exec-1" in log_response.json()["text"]
+    assert "other execution line for exec-2" in log_response.json()["text"]
+    assert "session transcript" not in log_response.json()["text"]
+    assert "augmented transcript" not in log_response.json()["text"]
     assert paged_response.status_code == 200
-    assert paged_response.json()["text"] == "repo line for exec-1\n"
+    assert paged_response.json()["view"] == "executions"
+    assert paged_response.json()["text"] == "repo execution line for exec-1\n"
     assert paged_response.json()["has_more_before"] is False
     assert paged_response.json()["total_lines"] == 1
     assert stop_response.status_code == 200
@@ -7505,16 +8325,134 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert destroy_response.status_code == 200
     assert destroy_response.json()["status"] == "destroyed"
     assert fake_backend.inspected == []
-    assert fake_backend.logged == [
-        ("exec-1", 4, "session"),
-        ("exec-2", 2, "raw"),
-        ("exec-1", 2, "raw"),
-        ("exec-2", 0, "raw"),
-        ("exec-1", 0, "augmented"),
-    ]
+    assert sorted(fake_backend.logged) == sorted(
+        [
+            ("exec-1", 2, "execution"),
+            ("exec-2", 2, "execution"),
+            ("exec-1", 0, "execution"),
+            ("exec-2", 0, "execution"),
+        ]
+    )
     assert fake_backend.paged == []
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
+
+
+def test_admin_web_container_agent_log_threads_view_groups_threads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a2",
+            session_id="session-threads",
+            worker_job_id="job-a2",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 30, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-b1",
+            session_id="session-threads",
+            worker_job_id="job-b1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a1",
+            session_id="session-threads",
+            worker_job_id="job-a1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.logged: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.logged.append((target, lines, mode))
+            if mode == "raw":
+                if target == "exec-b1":
+                    return "session id: thread-b\nraw log for b1\n"
+                if target == "exec-a1":
+                    return "session id: thread-a\nraw log for a1\n"
+                if target == "exec-a2":
+                    return "session id: thread-a\nraw log for a2\n"
+            if mode == "session":
+                if target == "exec-b1":
+                    return "thread-b transcript\n"
+                if target == "exec-a1":
+                    return "thread-a transcript\n"
+                raise AssertionError(f"unexpected session fetch for {target}")
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/agents/session-threads/log?backend=container_worker_vm&view=threads"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["view"] == "threads"
+    assert response.json()["text"].index("thread=thread-b") < response.json()["text"].index(
+        "thread=thread-a"
+    )
+    assert "first_execution=exec-b1" in response.json()["text"]
+    assert "first_execution=exec-a1" in response.json()["text"]
+    assert "executions=2" in response.json()["text"]
+    assert "thread-b transcript" in response.json()["text"]
+    assert "thread-a transcript" in response.json()["text"]
+    assert fake_backend.logged == [
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 0, "raw"),
+        ("exec-a2", 0, "raw"),
+        ("exec-b1", 200, "session"),
+        ("exec-a1", 200, "session"),
+    ]
 
 
 def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
@@ -7811,9 +8749,12 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert response.status_code == 200
     assert rename_response.status_code == 400
     assert response.json()["effective_tool_policy"]["allowed_tools"] == ["run_script"]
-    assert response.json()["effective_tool_policy"]["tool_argument_policies"][
-        "create_ado_backlog_item"
-    ][0]["id"] == "policy"
+    assert (
+        response.json()["effective_tool_policy"]["tool_argument_policies"][
+            "create_ado_backlog_item"
+        ][0]["id"]
+        == "policy"
+    )
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.model == "new-model"

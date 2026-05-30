@@ -17,12 +17,14 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from agent_sandbox.gateway import create_server
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
+    DiscordMessageEnvelope,
     LocalIssueRecord,
     SessionManifest,
     ToolName,
@@ -123,6 +125,11 @@ def set_email_service(context, service) -> None:
 
 def set_pr_reply_service(context, service) -> None:
     context.pr_reply_service = service
+
+
+def _seed_discord_messages(path: Path, messages: list[DiscordMessageEnvelope]) -> None:
+    store = DiscordInboxStore(path)
+    assert store.add_messages_if_new(messages) == len(messages)
 
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:
@@ -249,46 +256,37 @@ def test_list_unread_discord_messages_does_not_apply_read_reactions(tmp_path: Pa
         ),
     )
     inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
-    inbox_store_path.write_text(
-        json.dumps(
-            {
-                "cursors": {},
-                "messages": {
-                    "discord:1": {
-                        "message_id": "discord:1",
-                        "channel_id": "chan-a",
-                        "author_id": "bot-user",
-                        "author_name": "Bot",
-                        "content": "Self echo",
-                        "created_at": "2026-01-01T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api_status", "session_id": "session-1"},
-                    },
-                    "discord:2": {
-                        "message_id": "discord:2",
-                        "channel_id": "chan-a",
-                        "author_id": "user-a",
-                        "author_name": "Alice",
-                        "content": "Human reply",
-                        "created_at": "2026-01-02T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                    "discord:3": {
-                        "message_id": "discord:3",
-                        "channel_id": "chan-a",
-                        "author_id": "user-b",
-                        "author_name": "Bob",
-                        "content": "Another human reply",
-                        "created_at": "2026-01-03T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                },
-                "session_reads": {},
-            }
-        ),
-        encoding="utf-8",
+    _seed_discord_messages(
+        inbox_store_path,
+        [
+            DiscordMessageEnvelope(
+                message_id="discord:1",
+                channel_id="chan-a",
+                author_id="bot-user",
+                author_name="Bot",
+                content="Self echo",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                raw={"source": "discord_bot_api_status", "session_id": "session-1"},
+            ),
+            DiscordMessageEnvelope(
+                message_id="discord:2",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="Alice",
+                content="Human reply",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+            DiscordMessageEnvelope(
+                message_id="discord:3",
+                channel_id="chan-a",
+                author_id="user-b",
+                author_name="Bob",
+                content="Another human reply",
+                created_at=datetime(2026, 1, 3, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+        ],
     )
     fake_discord = FakeDiscordService(commands=[])
     set_discord_service(context, fake_discord)
@@ -389,26 +387,19 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
         ),
     )
     inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
-    inbox_store_path.write_text(
-        json.dumps(
-            {
-                "cursors": {},
-                "messages": {
-                    "discord:2": {
-                        "message_id": "discord:2",
-                        "channel_id": "chan-a",
-                        "author_id": "user-a",
-                        "author_name": "Alice",
-                        "content": "Human reply",
-                        "created_at": "2026-01-02T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                },
-                "session_reads": {},
-            }
-        ),
-        encoding="utf-8",
+    _seed_discord_messages(
+        inbox_store_path,
+        [
+            DiscordMessageEnvelope(
+                message_id="discord:2",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="Alice",
+                content="Human reply",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+        ],
     )
     fake_discord = FakeDiscordService(commands=[])
     request = httpx.Request(
@@ -2700,6 +2691,9 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
 
 
 def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> None:
+    legacy_wake_store_path = tmp_path / "wake-requests-store.json"
+    legacy_wake_store_path.write_text("   \n", encoding="utf-8")
+
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -2731,13 +2725,78 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
         "scheduled": True,
         "request_id": "wake-123",
     }
-    stored = json.loads((tmp_path / "wake-requests-store.json").read_text(encoding="utf-8"))
-    saved_request = stored["requests"]["wake-123"]
-    assert saved_request["session_id"] == "session-1"
-    assert saved_request["schedule"]["resume_at"] == "2026-04-01T10:30:00Z"
-    assert saved_request["resume_prompt"]["prompt"] == "Continue working through unread feedback."
-    assert saved_request["source"] == "wake-worker"
-    assert saved_request["resume_prompt"]["metadata"] == {"trace_id": "trace-1"}
+    saved_request = context.wake_store.get_request("wake-123")
+    assert saved_request is not None
+    assert context.wake_store.path == tmp_path / "wake-requests-store.db"
+    assert legacy_wake_store_path.read_text(encoding="utf-8") == "   \n"
+    assert saved_request.session_id == "session-1"
+    assert saved_request.schedule.resume_at == datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    assert saved_request.resume_prompt.prompt == "Continue working through unread feedback."
+    assert saved_request.source == "wake-worker"
+    assert saved_request.resume_prompt.metadata == {"trace_id": "trace-1"}
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value
+    assert event["decision"] == "allowed"
+    assert event["directory_path"] == "root"
+    assert event["request_id"] == "wake-123"
+    assert event["approval_request_id"] is None
+    assert event["duration_ms"] is not None
+    assert event["args"]["prompt"] == "<redacted>"
+    assert event["result"] == {
+        "session_id": "session-1",
+        "resume_at": "2026-04-01T10:30:00Z",
+        "request_id": "wake-123",
+        "scheduled": True,
+    }
+
+
+def test_schedule_resume_persists_request_for_container_worker_vm_without_vm_binding(
+    tmp_path: Path,
+) -> None:
+    legacy_wake_store_path = tmp_path / "wake-requests-store.json"
+    legacy_wake_store_path.write_text("   \n", encoding="utf-8")
+
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "schedule_resume",
+        {
+            "session_id": "session-1",
+            "resume_at": "2026-04-01T10:30:00Z",
+            "prompt": "Continue working through unread feedback.",
+            "request_id": "wake-123",
+            "source": "wake-worker",
+            "metadata": {"trace_id": "trace-1"},
+        },
+    )
+
+    assert result == {
+        "session_id": "session-1",
+        "resume_at": "2026-04-01T10:30:00Z",
+        "cron": None,
+        "scheduled": True,
+        "request_id": "wake-123",
+    }
+    saved_request = context.wake_store.get_request("wake-123")
+    assert saved_request is not None
+    assert context.wake_store.path == tmp_path / "wake-requests-store.db"
+    assert legacy_wake_store_path.read_text(encoding="utf-8") == "   \n"
+    assert saved_request.session_id == "session-1"
+    assert saved_request.schedule.resume_at == datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    assert saved_request.resume_prompt.prompt == "Continue working through unread feedback."
+    assert saved_request.source == "wake-worker"
+    assert saved_request.resume_prompt.metadata == {"trace_id": "trace-1"}
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value
