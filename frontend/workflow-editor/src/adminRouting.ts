@@ -66,7 +66,7 @@ export function tabsForExecutionBackend(
 export function tabFromHash(hash: string): AdminTab | null {
   const raw = hash.replace(/^#/, "").trim();
   const path = raw.split("?")[0]?.trim() ?? "";
-  const [baseTab = "", subpath = ""] = path.split("/");
+  const [baseTab = ""] = path.split("/");
   if (!baseTab) {
     return null;
   }
@@ -74,7 +74,7 @@ export function tabFromHash(hash: string): AdminTab | null {
   if (resolvedTab === "users") {
     return "users";
   }
-  if (subpath) {
+  if (path.includes("/")) {
     return null;
   }
   return TABS.some((tab) => tab.key === resolvedTab) ? (resolvedTab as AdminTab) : null;

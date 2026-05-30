@@ -39,6 +39,13 @@ test("users hash subpaths resolve to the users admin tab", () => {
   assert.equal(tabFromHash("#workflow/unknown"), null);
 });
 
+test("non-users hash subpaths are rejected", () => {
+  assert.equal(tabFromHash("#workflow/"), null);
+  assert.equal(tabFromHash("#workflow//unknown"), null);
+  assert.equal(tabFromHash("#sessions/"), null);
+  assert.equal(nextPathFromHash("#workflow//unknown"), null);
+});
+
 test("users mode helpers normalize hash subpaths", () => {
   assert.equal(usersModeFromHash(""), "users");
   assert.equal(usersModeFromHash("#users"), "users");
