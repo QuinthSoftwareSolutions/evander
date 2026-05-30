@@ -8,11 +8,19 @@ public enum BridgeAdapterMode
     Graph,
 }
 
+public enum BridgeSpeechMode
+{
+    AzureSpeech,
+    OpenAIRealtime,
+}
+
 public sealed record BridgeOptions(
     BridgeAdapterMode AdapterMode,
+    BridgeSpeechMode SpeechMode,
     string DefaultVoice,
     GraphTeamsMediaOptions? Graph,
-    AzureSpeechOptions? AzureSpeech)
+    AzureSpeechOptions? AzureSpeech,
+    OpenAIRealtimeOptions? OpenAIRealtime)
 {
     public static BridgeOptions FromConfiguration(IConfiguration configuration)
     {
@@ -22,20 +30,33 @@ public sealed record BridgeOptions(
             throw new InvalidOperationException("Bridge:AdapterMode must be InMemory or Graph.");
         }
 
-        var defaultVoice = Value(
-            configuration,
-            "AzureSpeech:DefaultVoice",
-            "AZURE_SPEECH_DEFAULT_VOICE",
-            "en-US-JennyNeural");
+        var speechModeText = Value(configuration, "Bridge:SpeechMode", "BRIDGE_SPEECH_MODE", "AzureSpeech");
+        if (!Enum.TryParse<BridgeSpeechMode>(speechModeText, ignoreCase: true, out var speechMode))
+        {
+            throw new InvalidOperationException("Bridge:SpeechMode must be AzureSpeech or OpenAIRealtime.");
+        }
 
         if (mode == BridgeAdapterMode.InMemory)
         {
-            return new BridgeOptions(mode, defaultVoice, null, null);
+            return new BridgeOptions(
+                mode,
+                BridgeSpeechMode.AzureSpeech,
+                Optional(configuration, "AzureSpeech:DefaultVoice", "AZURE_SPEECH_DEFAULT_VOICE")
+                    ?? "en-US-JennyNeural",
+                null,
+                null,
+                null);
         }
 
         var graph = GraphTeamsMediaOptions.FromConfiguration(configuration);
+        if (speechMode == BridgeSpeechMode.OpenAIRealtime)
+        {
+            var realtime = OpenAIRealtimeOptions.FromConfiguration(configuration);
+            return new BridgeOptions(mode, speechMode, realtime.DefaultVoice, graph, null, realtime);
+        }
+
         var speech = AzureSpeechOptions.FromConfiguration(configuration);
-        return new BridgeOptions(mode, defaultVoice, graph, speech);
+        return new BridgeOptions(mode, speechMode, speech.DefaultVoice, graph, speech, null);
     }
 
     private static string Value(
@@ -45,6 +66,12 @@ public sealed record BridgeOptions(
         string defaultValue)
     {
         return (configuration[configKey] ?? Environment.GetEnvironmentVariable(envKey) ?? defaultValue).Trim();
+    }
+
+    private static string? Optional(IConfiguration configuration, string configKey, string envKey)
+    {
+        var value = configuration[configKey] ?? Environment.GetEnvironmentVariable(envKey);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
 
@@ -161,6 +188,62 @@ public sealed record AzureSpeechOptions(
         }
 
         return value;
+    }
+
+    private static string? Optional(IConfiguration configuration, string configKey, string envKey)
+    {
+        var value = configuration[configKey] ?? Environment.GetEnvironmentVariable(envKey);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+}
+
+public sealed record OpenAIRealtimeOptions(
+    string ApiKey,
+    Uri BaseUrl,
+    string Model,
+    string DefaultVoice,
+    string TurnDetection,
+    string TranscriptionModel)
+{
+    public static OpenAIRealtimeOptions FromConfiguration(IConfiguration configuration)
+    {
+        var apiKey = Optional(configuration, "OpenAIRealtime:ApiKey", "OPENAI_REALTIME_API_KEY")
+            ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new InvalidOperationException(
+                "OPENAI_REALTIME_API_KEY or OPENAI_API_KEY is required for Bridge:SpeechMode=OpenAIRealtime.");
+        }
+
+        var baseUrl = Optional(configuration, "OpenAIRealtime:BaseUrl", "OPENAI_REALTIME_BASE_URL")
+            ?? "wss://api.openai.com/v1/realtime";
+        var uri = new Uri(baseUrl);
+        if (uri.Scheme != Uri.UriSchemeWs && uri.Scheme != Uri.UriSchemeWss)
+        {
+            throw new InvalidOperationException("OPENAI_REALTIME_BASE_URL must use ws:// or wss://.");
+        }
+
+        var turnDetection = Optional(
+            configuration,
+            "OpenAIRealtime:TurnDetection",
+            "OPENAI_REALTIME_TURN_DETECTION") ?? "semantic_vad";
+        if (!string.Equals(turnDetection, "semantic_vad", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(turnDetection, "server_vad", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "OPENAI_REALTIME_TURN_DETECTION must be semantic_vad or server_vad.");
+        }
+
+        return new OpenAIRealtimeOptions(
+            apiKey.Trim(),
+            uri,
+            Optional(configuration, "OpenAIRealtime:Model", "OPENAI_REALTIME_MODEL") ?? "gpt-realtime-2",
+            Optional(configuration, "OpenAIRealtime:Voice", "OPENAI_REALTIME_VOICE") ?? "marin",
+            turnDetection.Trim().ToLowerInvariant(),
+            Optional(
+                configuration,
+                "OpenAIRealtime:TranscriptionModel",
+                "OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-4o-transcribe");
     }
 
     private static string? Optional(IConfiguration configuration, string configKey, string envKey)

@@ -8,31 +8,48 @@ if (bridgeOptions.AdapterMode == BridgeAdapterMode.Graph)
 {
     builder.Services.AddHttpClient<GraphRestMeetingClient>();
     builder.Services.AddSingleton(bridgeOptions.Graph!);
-    builder.Services.AddSingleton(bridgeOptions.AzureSpeech!);
     builder.Services.AddSingleton<IGraphMeetingClient>(sp => sp.GetRequiredService<GraphRestMeetingClient>());
     builder.Services.AddSingleton<GraphApplicationHostedMediaClient>();
     builder.Services.AddSingleton<IApplicationHostedMediaClient>(sp =>
         sp.GetRequiredService<GraphApplicationHostedMediaClient>());
     builder.Services.AddSingleton<IGraphCallNotificationProcessor>(sp =>
         sp.GetRequiredService<GraphApplicationHostedMediaClient>());
-    builder.Services.AddSingleton<IAzureSpeechAdapter>(sp =>
-        new AzureSpeechAdapter(sp.GetRequiredService<AzureSpeechOptions>()));
     builder.Services.AddSingleton<ITeamsMediaAdapter>(sp =>
         new GraphTeamsMediaAdapter(
             sp.GetRequiredService<IGraphMeetingClient>(),
             sp.GetRequiredService<IApplicationHostedMediaClient>()));
+    if (bridgeOptions.SpeechMode == BridgeSpeechMode.OpenAIRealtime)
+    {
+        builder.Services.AddSingleton(bridgeOptions.OpenAIRealtime!);
+        builder.Services.AddSingleton<IRealtimeWebSocketClientFactory, ClientWebSocketRealtimeClientFactory>();
+        builder.Services.AddSingleton<IMeetingSpeechAdapter, OpenAIRealtimeSpeechAdapter>();
+    }
+    else
+    {
+        builder.Services.AddSingleton(bridgeOptions.AzureSpeech!);
+        builder.Services.AddSingleton<IAzureSpeechAdapter>(sp =>
+            new AzureSpeechAdapter(sp.GetRequiredService<AzureSpeechOptions>()));
+        builder.Services.AddSingleton<IMeetingSpeechAdapter>(sp =>
+            new AzureMeetingSpeechAdapter(
+                sp.GetRequiredService<IAzureSpeechAdapter>(),
+                sp.GetRequiredService<ITeamsMediaAdapter>()));
+    }
 }
 else
 {
     builder.Services.AddSingleton<ITeamsMediaAdapter, InMemoryTeamsMediaAdapter>();
     builder.Services.AddSingleton<IAzureSpeechAdapter, DeterministicSpeechAdapter>();
+    builder.Services.AddSingleton<IMeetingSpeechAdapter>(sp =>
+        new AzureMeetingSpeechAdapter(
+            sp.GetRequiredService<IAzureSpeechAdapter>(),
+            sp.GetRequiredService<ITeamsMediaAdapter>()));
 }
 
 builder.Services.AddSingleton(sp =>
 {
     return new MeetingCoordinator(
         sp.GetRequiredService<ITeamsMediaAdapter>(),
-        sp.GetRequiredService<IAzureSpeechAdapter>(),
+        sp.GetRequiredService<IMeetingSpeechAdapter>(),
         sp.GetRequiredService<BridgeOptions>().DefaultVoice);
 });
 

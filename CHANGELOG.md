@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-30 - Realtime Voice Bridge Hardening
+
+- Kept host Realtime API keys and upstream base URLs under bridge-local configuration instead of
+  accepting per-call or per-meeting payload overrides.
+- Updated Teams OpenAI Realtime speech responses to request audio with the current
+  `output_modalities` response shape.
+- Cleared stale voice-call failure fields when retrying a failed request and classified common
+  ARI busy/no-answer hangup causes as failed calls.
+
 ## 2026-05-29 - Workflow Run Snapshot I/O Fix
 
 - Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web
@@ -364,6 +373,50 @@ material. Newer entries are added incrementally as changes land.
 
 - Moved sign-in branding into a top bar with the company logo on the left,
   the theme toggle centered, and a smaller evander logo on the right.
+
+## 2026-05-25 - Hybrid Voice Delegation
+
+- Added durable live voice query records so Realtime phone sessions can delegate
+  file/tool/context questions back to the originating Truman agent without
+  blocking the call.
+- Added the explicit `submit_voice_query_response` tool, voice media controller
+  endpoints, Realtime `query_origin_agent` function-call handling, and
+  same-context wake scheduling for delegated voice queries.
+
+## 2026-05-25 - Teams Meeting OpenAI Realtime Speech Mode
+
+- Added a selectable `OpenAIRealtime` speech mode to the Teams meeting media
+  bridge, keeping the existing Azure Speech mode as the default fallback.
+- Streamed Teams PCM audio through an in-process OpenAI Realtime WebSocket,
+  including projection instructions, input transcription events, Realtime audio
+  playback, interruption handling, and PCM sample-rate conversion.
+- Documented the new bridge environment keys and added focused C# bridge tests
+  for Realtime configuration and WebSocket audio/transcript behavior.
+- Restored configured `AzureSpeech:DefaultVoice` handling for the default
+  InMemory bridge mode.
+
+## 2026-05-25 - DIDWW SIP Realtime Media Bridge
+
+- Added `agent-sandbox-didww-sip-bridge`, a host-side Asterisk ARI bridge that
+  originates DIDWW trunk calls and streams RTP audio to OpenAI Realtime.
+- Added the bridge API, durable call state, RTP packet handling, Realtime event
+  handling, systemd/config examples, and focused contract tests.
+- Kept DIDWW calls in `connecting` until Asterisk reports answer, chunked
+  Realtime audio into correctly timestamped RTP frames, and contained voice
+  query controller failures inside Realtime tool output.
+
+## 2026-05-25 - Projected Realtime Voice Sessions
+
+- Added durable projected voice-session state for OpenAI Realtime-backed phone
+  calls and Teams meetings, including transcript capture and same-context
+  reconciliation wake scheduling for the originating agent.
+- Added a selectable `phone_call_backend` so existing Retell calls remain the
+  default while `openai_realtime_didww` can route directory-contact calls
+  through a host-owned DIDWW SIP bridge.
+- Extended Teams meeting startup with `--origin-session-id` and projection
+  metadata so an existing agent session can be represented in a live meeting.
+- Preserved completed projected-agent Teams speech in voice-session transcripts
+  so reconciliation includes what the live voice agent said.
 
 ## 2026-05-25 - Communication Messages Query
 

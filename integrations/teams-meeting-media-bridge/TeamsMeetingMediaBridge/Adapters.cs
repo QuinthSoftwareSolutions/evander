@@ -42,6 +42,31 @@ public interface IAzureSpeechAdapter
         CancellationToken cancellationToken);
 }
 
+public delegate Task SpeechStatusCallback(
+    string operationId,
+    string status,
+    string? text,
+    Dictionary<string, object>? metadata,
+    CancellationToken cancellationToken);
+
+public interface IMeetingSpeechAdapter
+{
+    Task<IMeetingSpeechSession> StartAsync(
+        MeetingSpeechStartRequest request,
+        CancellationToken cancellationToken);
+}
+
+public interface IMeetingSpeechSession : IAsyncDisposable
+{
+    Task PushAudioAsync(byte[] pcmAudio, CancellationToken cancellationToken);
+
+    Task<SpeechPlaybackResult> SpeakAsync(
+        string text,
+        string? voice,
+        bool interrupt,
+        CancellationToken cancellationToken);
+}
+
 public interface ISpeechRecognitionSession : IAsyncDisposable
 {
     Task PushAudioAsync(byte[] pcmAudio, CancellationToken cancellationToken);

@@ -140,6 +140,8 @@ from agent_sandbox.models import (
     ScheduleResumeRequest,
     ScheduleResumeResponse,
     SubmitPrReviewRequest,
+    SubmitVoiceQueryResponseRequest,
+    SubmitVoiceQueryResponseResponse,
     WakeScheduleDefinition,
     TeamsMessageEnvelope,
     ToolName,
@@ -157,6 +159,8 @@ from agent_sandbox.retell_phone import (
     sanitize_retell_metadata,
     verify_retell_webhook_signature,
 )
+from agent_sandbox.teams_meeting import voice_session_transcript_from_teams_events
+from agent_sandbox.voice_sessions import VoiceQueryDelegator, voice_query_payload
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
@@ -6695,21 +6699,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 resolved_session_id,
                 ToolName.MAKE_PHONE_CALL,
             )
-            record = context.retell_phone_call_service_for_session(
-                resolved_session_id
-            ).make_phone_call(
+            result = context.phone_call_service_for_session(resolved_session_id).make_phone_call(
                 session=session,
                 contact=request.contact,
                 prompt=request.prompt,
                 request_id=request.request_id,
                 metadata=request.metadata,
             )
-            result = MakePhoneCallResponse(
-                request_id=record.request_id,
-                call_id=record.call_id,
-                contact=record.contact_alias,
-                status=record.status or "registered",
-            ).model_dump(mode="json")
+            result = MakePhoneCallResponse.model_validate(result).model_dump(mode="json")
             audit_success(
                 resolved_session_id,
                 ToolName.MAKE_PHONE_CALL,
@@ -6773,7 +6770,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 resolved_session_id,
                 ToolName.GET_PHONE_CALL_RESULT,
             )
-            result = context.retell_phone_call_service_for_session(
+            result = context.phone_call_service_for_session(
                 resolved_session_id
             ).get_phone_call_result(
                 session=session,
@@ -6810,6 +6807,100 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.GET_PHONE_CALL_RESULT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def submit_voice_query_response(
+        query_id: str,
+        answer: str,
+        session_id: str | None = None,
+        status: str = "answered",
+        citations: list[str] | None = None,
+        confidence: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Answer a delegated live voice query for this originating session."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        safe_metadata = sanitize_retell_metadata(metadata or {})
+        args = {
+            "session_id": resolved_session_id,
+            "query_id": query_id,
+            "answer": answer,
+            "status": status,
+            "citations": citations or [],
+            "confidence": confidence,
+            "metadata": safe_metadata,
+        }
+        try:
+            request = SubmitVoiceQueryResponseRequest(
+                session_id=resolved_session_id,
+                query_id=query_id,
+                answer=answer,
+                status=status,
+                citations=citations or [],
+                confidence=confidence,
+                metadata=safe_metadata,
+            )
+            args = request.model_dump(mode="json")
+            context.policy.require_tool(
+                resolved_session_id,
+                ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
+            )
+            query = context.voice_session_store.complete_query(
+                request.query_id,
+                origin_session_id=resolved_session_id,
+                answer=request.answer,
+                status="failed" if request.status == "failed" else "answered",
+                citations=request.citations,
+                confidence=request.confidence,
+                metadata=request.metadata,
+            )
+            result = SubmitVoiceQueryResponseResponse(
+                query_id=query.query_id,
+                voice_session_id=query.voice_session_id,
+                status=query.status,
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
+                args,
+                {
+                    "query_id": result["query_id"],
+                    "voice_session_id": result["voice_session_id"],
+                    "status": result["status"],
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
+                args,
+                str(exc),
+            )
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
                 args,
                 str(exc),
                 decision="error",
@@ -7068,6 +7159,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 speech_status="stopped",
                 metadata={"bridge": bridge_result},
             )
+            voice_session_id = str(binding.metadata.get("voice_session_id") or "").strip()
+            if voice_session_id:
+                meeting_events = context.teams_meeting_store.list_events_for_session(
+                    binding.session_id,
+                    since_sequence=0,
+                    limit=10_000,
+                )
+                transcript = voice_session_transcript_from_teams_events(meeting_events)
+                context.voice_session_store.complete_session(
+                    voice_session_id,
+                    status="ended",
+                    transcript=transcript,
+                    summary=(
+                        "Teams meeting ended; review the transcript for decisions and follow-up."
+                    ),
+                )
+                context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             manifest = context.session_repository.get_session(session_id)
             if manifest is not None:
                 metadata = dict(manifest.metadata or {})
@@ -8791,6 +8899,86 @@ def create_app(context: RuntimeContext) -> Starlette:
             )
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    def voice_controller_auth_error(request: Request, directory_path: str) -> JSONResponse | None:
+        resolved_config = context.provider_config.resolve_for_directory(directory_path)
+        token_env = str(resolved_config.voice_media_controller_token_env or "").strip()
+        token = os.environ.get(token_env, "").strip() if token_env else ""
+        if not token:
+            return JSONResponse(
+                {"error": f"Voice media controller token env var {token_env!r} is not set"},
+                status_code=503,
+            )
+        if request.headers.get("authorization", "") != f"Bearer {token}":
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return None
+
+    async def create_voice_query(request: Request) -> JSONResponse:
+        voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+        record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None:
+            return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+        auth_error = voice_controller_auth_error(request, record.directory_path)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("voice query payload must be an object")
+            query = VoiceQueryDelegator(
+                store=context.voice_session_store,
+                wake_store=context.wake_store,
+            ).create_query_and_wake_origin(
+                voice_session_id,
+                question=str(payload.get("question") or ""),
+                transcript_excerpt=str(payload.get("transcript_excerpt") or "").strip() or None,
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                deadline_seconds=(
+                    int(payload["deadline_seconds"])
+                    if payload.get("deadline_seconds") is not None
+                    else None
+                ),
+            )
+            return JSONResponse(voice_query_payload(query), status_code=201)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    async def get_voice_query(request: Request) -> JSONResponse:
+        voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+        record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None:
+            return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+        auth_error = voice_controller_auth_error(request, record.directory_path)
+        if auth_error is not None:
+            return auth_error
+        query_id = str(request.path_params.get("query_id") or "").strip()
+        query = context.voice_session_store.get_query_for_voice_session(
+            voice_session_id,
+            query_id,
+        )
+        if query is None:
+            return JSONResponse({"error": "Unknown voice query"}, status_code=404)
+        return JSONResponse(voice_query_payload(query))
+
+    async def timeout_voice_query(request: Request) -> JSONResponse:
+        voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+        record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None:
+            return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+        auth_error = voice_controller_auth_error(request, record.directory_path)
+        if auth_error is not None:
+            return auth_error
+        query_id = str(request.path_params.get("query_id") or "").strip()
+        query = context.voice_session_store.get_query_for_voice_session(
+            voice_session_id,
+            query_id,
+        )
+        if query is None:
+            return JSONResponse({"error": "Unknown voice query"}, status_code=404)
+        query = context.voice_session_store.mark_query_timeout(query_id)
+        return JSONResponse(voice_query_payload(query))
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         # Starlette does not automatically run lifespan handlers for mounted sub-apps.
@@ -8804,6 +8992,21 @@ def create_app(context: RuntimeContext) -> Starlette:
         routes=[
             Route("/retell/webhook", retell_webhook, methods=["POST"]),
             Route("/copilot-auth/token", copilot_auth_token, methods=["GET"]),
+            Route(
+                "/voice-sessions/{voice_session_id}/queries",
+                create_voice_query,
+                methods=["POST"],
+            ),
+            Route(
+                "/voice-sessions/{voice_session_id}/queries/{query_id}",
+                get_voice_query,
+                methods=["GET"],
+            ),
+            Route(
+                "/voice-sessions/{voice_session_id}/queries/{query_id}/timeout",
+                timeout_voice_query,
+                methods=["POST"],
+            ),
             Mount("/", app=mcp_app),
         ],
         lifespan=lifespan,

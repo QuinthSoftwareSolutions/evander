@@ -23,9 +23,11 @@ manager environment or optional repo-root `secrets.env`.
 |---|---|---|
 | `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
-Retell phone-call tools also require the configured `retell_api_key_env` value, which defaults to
-`RETELL_API_KEY`, to exist in the host process environment. For systemd deployments, put the actual
-secret value in repo-root `secrets.env` or the service manager environment rather than
+Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
+configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
+backend uses `didww_sip_bridge_token_env`; the DIDWW bridge service uses its own
+`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials. For systemd deployments,
+put actual secret values in repo-root `secrets.env` or the service manager environment rather than
 `config/gateway.env`.
 
 ## `config/openai-relay.env.example`
@@ -33,6 +35,16 @@ secret value in repo-root `secrets.env` or the service manager environment rathe
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` model relay traffic (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
+
+## `config/didww-sip-bridge.env.example`
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` bridge API listener bind. |
+| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
+| `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
+| `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
+| `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
 
 ## `config/nuget-relay.env.example`
 
@@ -951,6 +963,9 @@ root directory-scoped config and host environment:
 | `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
 | `RETELL_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/retell_phone.py` / `src/agent_sandbox/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
+| `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
+| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
+| `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/agent_sandbox/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
 | `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
 | `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
 | `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
@@ -996,8 +1011,8 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py` and `src/agent_sandbox/gateway.py` for host-side Retell phone calls and webhook verification. |
-| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, and the admin Users API for directory-scoped contacts and user attachments. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
+| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
@@ -1049,21 +1064,62 @@ scope. Both nodes require persisted workflow graph metadata at runtime. The work
 `graph_id` from `workflow_graphs` in inline config or `graphs` in workflow packs and does not
 invent fallback graph IDs for state nodes.
 
-### Retell phone-call keys
+### Phone-call keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
+| `phone_call_backend` | provider config overlays | Selects `retell` or `openai_realtime_didww` for `make_phone_call`; defaults to `retell`. |
 | `retell_api_base_url` | provider config overlays | Optional override for Retell create-call, get-call, and webhook signature configuration; defaults to `https://api.retellai.com` and normally does not need to be set. |
 | `retell_api_key_env` | provider config overlays | Host env-var name lookup for the Retell API key; default `RETELL_API_KEY`. |
 | `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
 | `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
+| `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges; defaults to `gpt-realtime-2`. |
+| `openai_realtime_api_key_env` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local API key env configuration instead of accepting per-call env-var names. |
+| `openai_realtime_api_base_url` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local upstream base URL configuration instead of accepting per-call base URL overrides. |
+| `voice_media_controller_url` | provider config overlays | Optional voice media controller URL passed to DIDWW or Teams bridges. |
+| `voice_media_controller_token_env` | provider config overlays | Host env-var name for the voice media controller token. |
+| `voice_media_controller_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for voice media controller and bridge requests. |
+| `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
+| `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
+
+### DIDWW SIP bridge service keys
+
+These keys live in `config/didww-sip-bridge.env` or host environment and are consumed by
+`agent-sandbox-didww-sip-bridge`. They are service-local settings, not directory-scoped provider
+overlays.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | bridge env | HTTP listener bind for the bridge API. |
+| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | bridge env | Env-var name containing the bridge API bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `OPENAI_REALTIME_API_KEY_ENV`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_API_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_IDLE_TIMEOUT_MS`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket configuration. |
+| `ASTERISK_ARI_URL`, `ASTERISK_ARI_USER`, `ASTERISK_ARI_PASSWORD_ENV`, `ASTERISK_ARI_APP` | bridge env | Asterisk ARI HTTP/WebSocket control connection. |
+| `ASTERISK_PJSIP_ENDPOINT`, `ASTERISK_ENDPOINT_TEMPLATE` | bridge env | Asterisk endpoint used to originate DIDWW outbound calls; default template is `PJSIP/{number}@{trunk}`. |
+| `DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST`, `DIDWW_SIP_BRIDGE_RTP_BIND_HOST`, `DIDWW_SIP_BRIDGE_RTP_PORT_MIN`, `DIDWW_SIP_BRIDGE_RTP_PORT_MAX`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | bridge env | Asterisk `ExternalMedia` RTP settings for bidirectional audio between Asterisk and the Python bridge. |
+| `DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS`, `DIDWW_SIP_BRIDGE_REQUEST_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS` | bridge env | Bridge control-plane timeout and concurrency limits. |
+| `DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS`, `DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS` | bridge env | Polling and timeout behavior for async `query_origin_agent` delegation back to the originating session. |
+
+### Teams meeting media bridge service keys
+
+These keys live in the Windows-hosted Teams media bridge process environment and are consumed by the
+C# bridge under `integrations/teams-meeting-media-bridge`.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `TEAMS_BRIDGE_TOKEN`, `TEAMS_MEETING_BRIDGE_TOKEN` | bridge env | Bearer token required by the bridge HTTP API; `TEAMS_MEETING_BRIDGE_TOKEN` remains a compatibility alias. |
+| `BRIDGE_ADAPTER_MODE` | bridge env | Selects `InMemory` or `Graph`; production Teams media uses `Graph`. |
+| `BRIDGE_SPEECH_MODE` | bridge env | Selects `AzureSpeech` or `OpenAIRealtime`; defaults to `AzureSpeech` for Graph mode. |
+| `TEAMS_BOT_APP_ID`, `TEAMS_BOT_APP_SECRET`, `TEAMS_BOT_TENANT_ID`, `TEAMS_BOT_PUBLIC_CALLBACK_BASE_URL`, `TEAMS_BOT_SERVICE_FQDN`, `TEAMS_BOT_PUBLIC_IP`, `TEAMS_BOT_PUBLIC_PORT`, `TEAMS_BOT_INTERNAL_PORT`, `TEAMS_BOT_CERT_THUMBPRINT`, `TEAMS_ONLINE_MEETING_LOOKUP_USER_ID`, `TEAMS_BOT_MEDIA_PORT_RANGE_START`, `TEAMS_BOT_MEDIA_PORT_RANGE_END` | bridge env | Microsoft Graph/application-hosted media setup used to join and exchange PCM audio with Teams meetings. |
+| `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `AZURE_SPEECH_ENDPOINT`, `AZURE_SPEECH_RECOGNITION_LANGUAGE`, `AZURE_SPEECH_DEFAULT_VOICE` | bridge env | Azure Speech recognition/synthesis settings used when `BRIDGE_SPEECH_MODE=AzureSpeech`. |
+| `OPENAI_REALTIME_API_KEY`, `OPENAI_API_KEY`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_TURN_DETECTION`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket settings used when `BRIDGE_SPEECH_MODE=OpenAIRealtime`; `OPENAI_API_KEY` is a fallback for the Realtime API key. |
 
 ### Directory contact keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `contacts` | contact config overlays | Directory-scoped contact map keyed by stable contact id. Entries include `name`, `description`, optional `email_addresses`, and `phone_numbers`; `list_contacts` exposes only safe summaries, and Retell requires exactly one primary phone number on callable contacts. |
+| `contacts` | contact config overlays | Directory-scoped contact map keyed by stable contact id. Entries include `name`, `description`, optional `email_addresses`, and `phone_numbers`; `list_contacts` exposes only safe summaries, and phone-call backends require exactly one primary phone number on callable contacts. |
 | `user_contact_links` | contact config overlays | Directory-scoped mapping from normalized admin user login to one contact id; a `null` value clears an inherited attachment for that directory. |
 
 ### HTTP target relay keys

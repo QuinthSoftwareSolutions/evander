@@ -5,13 +5,21 @@ namespace TeamsMeetingMediaBridge;
 public sealed class MeetingCoordinator
 {
     private readonly ITeamsMediaAdapter mediaAdapter;
-    private readonly IAzureSpeechAdapter speechAdapter;
+    private readonly IMeetingSpeechAdapter speechAdapter;
     private readonly string defaultVoice;
     private readonly ConcurrentDictionary<string, MeetingRuntimeState> meetings = new();
 
     public MeetingCoordinator(
         ITeamsMediaAdapter mediaAdapter,
         IAzureSpeechAdapter speechAdapter,
+        string defaultVoice)
+        : this(mediaAdapter, new AzureMeetingSpeechAdapter(speechAdapter, mediaAdapter), defaultVoice)
+    {
+    }
+
+    public MeetingCoordinator(
+        ITeamsMediaAdapter mediaAdapter,
+        IMeetingSpeechAdapter speechAdapter,
         string defaultVoice)
     {
         this.mediaAdapter = mediaAdapter;
@@ -47,38 +55,6 @@ public sealed class MeetingCoordinator
             request.JoinUrl.Trim(),
             request.ExternalMeetingId.Trim(),
             cancellationToken);
-        ISpeechRecognitionSession? recognitionSession = null;
-        if (mediaJoin.AudioSession is not null)
-        {
-            recognitionSession = await speechAdapter.StartRecognitionAsync(
-                mediaJoin.MeetingId,
-                (text, token) =>
-                {
-                    RecordTranscriptFromMedia(mediaJoin.MeetingId, text);
-                    return Task.CompletedTask;
-                },
-                (error, token) =>
-                {
-                    _ = token;
-                    RecordAdapterError(mediaJoin.MeetingId, error);
-                    return Task.CompletedTask;
-                },
-                cancellationToken);
-            mediaJoin.AudioSession.AudioReceived += (_, audio) =>
-            {
-                _ = recognitionSession.PushAudioAsync(audio, CancellationToken.None)
-                    .ContinueWith(task =>
-                    {
-                        if (task.Exception is not null)
-                        {
-                            RecordAdapterError(
-                                mediaJoin.MeetingId,
-                                task.Exception.GetBaseException().Message);
-                        }
-                    }, TaskScheduler.Default);
-            };
-        }
-
         var now = DateTimeOffset.UtcNow;
         var state = new MeetingRuntimeState(
             new MeetingState(
@@ -88,9 +64,61 @@ public sealed class MeetingCoordinator
                 "active",
                 now,
                 now),
-            mediaJoin.AudioSession,
-            recognitionSession);
+            mediaJoin.AudioSession);
         meetings[mediaJoin.MeetingId] = state;
+        try
+        {
+            var speechSession = await speechAdapter.StartAsync(
+                new MeetingSpeechStartRequest(
+                    mediaJoin.MeetingId,
+                    request.DefaultVoice ?? defaultVoice,
+                    mediaJoin.AudioSession,
+                    request.Metadata,
+                    request.Realtime,
+                    request.Projection,
+                    (text, token) =>
+                    {
+                        RecordTranscriptFromMedia(mediaJoin.MeetingId, text);
+                        return Task.CompletedTask;
+                    },
+                    (error, token) =>
+                    {
+                        _ = token;
+                        RecordAdapterError(mediaJoin.MeetingId, error);
+                        return Task.CompletedTask;
+                    },
+                    (operationId, status, text, metadata, token) =>
+                    {
+                        _ = token;
+                        RecordSpeechStatus(mediaJoin.MeetingId, operationId, status, text, metadata);
+                        return Task.CompletedTask;
+                    }),
+                cancellationToken);
+            state.SetSpeechSession(speechSession);
+            if (mediaJoin.AudioSession is not null)
+            {
+                mediaJoin.AudioSession.AudioReceived += (_, audio) =>
+                {
+                    _ = state.SpeechSession.PushAudioAsync(audio, CancellationToken.None)
+                        .ContinueWith(task =>
+                        {
+                            if (task.Exception is not null)
+                            {
+                                RecordAdapterError(
+                                    mediaJoin.MeetingId,
+                                    task.Exception.GetBaseException().Message);
+                            }
+                        }, TaskScheduler.Default);
+                };
+            }
+        }
+        catch
+        {
+            meetings.TryRemove(mediaJoin.MeetingId, out _);
+            await state.DisposeAsync();
+            throw;
+        }
+
         state.Append(
             "meeting_status",
             text: null,
@@ -138,28 +166,28 @@ public sealed class MeetingCoordinator
         var voice = string.IsNullOrWhiteSpace(request.Voice)
             ? state.State.DefaultVoice ?? defaultVoice
             : request.Voice.Trim();
-        var speech = await speechAdapter.SynthesizeAsync(request.Text.Trim(), voice, cancellationToken);
-        var playback = await mediaAdapter.PlayAudioAsync(
-            meetingId,
-            speech.OperationId,
+        var playback = await state.SpeechSession.SpeakAsync(
             request.Text.Trim(),
-            speech.AudioBytes,
+            voice,
             request.Interrupt,
             cancellationToken);
+        var operationId = string.IsNullOrWhiteSpace(playback.OperationId)
+            ? $"speech-{Guid.NewGuid():N}"
+            : playback.OperationId.Trim();
         var status = string.IsNullOrWhiteSpace(playback.Status) ? "queued" : playback.Status.Trim();
+        var metadata = new Dictionary<string, object>(playback.Metadata ?? [])
+        {
+            ["interrupt"] = request.Interrupt,
+            ["frames_queued"] = playback.FramesQueued,
+        };
         state.Append(
             "speech_status",
             request.Text.Trim(),
-            speech.OperationId,
+            operationId,
             status,
             error: null,
-            metadata: new Dictionary<string, object>
-            {
-                ["voice"] = speech.Voice,
-                ["interrupt"] = request.Interrupt,
-                ["frames_queued"] = playback.FramesQueued,
-            });
-        return new SpeakResponse(speech.OperationId, status, meetingId);
+            metadata);
+        return new SpeakResponse(operationId, status, meetingId);
     }
 
     public async Task<LeaveResponse> LeaveAsync(string meetingId, CancellationToken cancellationToken)
@@ -272,19 +300,29 @@ internal sealed class MeetingRuntimeState : IAsyncDisposable
     private readonly List<MeetingEvent> events = new();
     private long nextSequence = 1;
     private readonly IMeetingAudioSession? audioSession;
-    private readonly ISpeechRecognitionSession? recognitionSession;
+    private IMeetingSpeechSession speechSession;
 
     public MeetingRuntimeState(
         MeetingState state,
         IMeetingAudioSession? audioSession = null,
-        ISpeechRecognitionSession? recognitionSession = null)
+        IMeetingSpeechSession? speechSession = null)
     {
         State = state;
         this.audioSession = audioSession;
-        this.recognitionSession = recognitionSession;
+        this.speechSession = speechSession ?? new NoopMeetingSpeechSession();
     }
 
     public MeetingState State { get; private set; }
+
+    public IMeetingSpeechSession SpeechSession => speechSession;
+
+    public void SetSpeechSession(IMeetingSpeechSession session)
+    {
+        lock (sync)
+        {
+            speechSession = session;
+        }
+    }
 
     public MeetingEvent Append(
         string eventType,
@@ -330,14 +368,36 @@ internal sealed class MeetingRuntimeState : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (recognitionSession is not null)
-        {
-            await recognitionSession.DisposeAsync();
-        }
+        await speechSession.DisposeAsync();
 
         if (audioSession is not null)
         {
             await audioSession.DisposeAsync();
+        }
+    }
+
+    private sealed class NoopMeetingSpeechSession : IMeetingSpeechSession
+    {
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public Task PushAudioAsync(byte[] pcmAudio, CancellationToken cancellationToken)
+        {
+            _ = pcmAudio;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<SpeechPlaybackResult> SpeakAsync(
+            string text,
+            string? voice,
+            bool interrupt,
+            CancellationToken cancellationToken)
+        {
+            _ = text;
+            _ = voice;
+            _ = interrupt;
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("Meeting speech session is not available.");
         }
     }
 }

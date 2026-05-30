@@ -7583,13 +7583,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "semantic_embedding_dimensions",
         "semantic_vector_distance",
     }
-    retell = next(section for section in providers["sections"] if section["title"] == "Retell")
-    assert {field["field_name"] for field in retell["fields"]} == {
+    phone_calls = next(
+        section for section in providers["sections"] if section["title"] == "Phone calls"
+    )
+    assert {field["field_name"] for field in phone_calls["fields"]} == {
+        "phone_call_backend",
         "retell_api_base_url",
         "retell_api_key_env",
         "retell_from_number",
         "retell_default_agent_id",
         "retell_request_timeout_seconds",
+        "didww_sip_bridge_url",
+        "didww_sip_bridge_token_env",
+        "didww_from_number",
     }
     contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
     contact_list = next(
