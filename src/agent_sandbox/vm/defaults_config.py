@@ -48,6 +48,8 @@ class EffectiveVmDefaultsConfig(BaseModel):
     http_target_relay_port: int = 11777
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
+    npm_audit_facade_host: str = "0.0.0.0"
+    npm_audit_facade_port: int = 11881
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
 
@@ -118,6 +120,8 @@ class VmDefaultsConfigResolver:
         payload.setdefault("http_target_relay_port", self.config.http_target_relay_port)
         payload.setdefault("nuget_relay_host", self.config.nuget_relay_host)
         payload.setdefault("nuget_relay_port", self.config.nuget_relay_port)
+        payload.setdefault("npm_audit_facade_host", self.config.npm_audit_facade_host)
+        payload.setdefault("npm_audit_facade_port", self.config.npm_audit_facade_port)
         return EffectiveVmDefaultsConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> EffectiveVmDefaultsConfig:

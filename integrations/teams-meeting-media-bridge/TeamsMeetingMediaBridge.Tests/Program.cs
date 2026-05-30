@@ -1,15 +1,20 @@
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using TeamsMeetingMediaBridge;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("adapter selection defaults to in-memory", AdapterSelectionDefaultsToInMemory),
+    ("in-memory mode honors configured default voice", InMemoryModeHonorsConfiguredDefaultVoice),
     ("graph mode validates required config", GraphModeValidatesRequiredConfig),
+    ("graph mode can select OpenAI Realtime speech", GraphModeCanSelectOpenAIRealtimeSpeech),
+    ("join request accepts projection and realtime metadata", JoinRequestAcceptsProjectionAndRealtimeMetadata),
     ("join records active meeting state", JoinRecordsActiveMeetingState),
     ("transcript events are emitted after cursor", TranscriptEventsAreEmittedAfterCursor),
     ("speak synthesizes and injects audio", SpeakSynthesizesAndInjectsAudio),
     ("interrupt clears pending speech queue", InterruptClearsPendingSpeechQueue),
     ("graph join resolves url and chunks synthesized audio", GraphJoinResolvesUrlAndChunksSynthesizedAudio),
+    ("realtime adapter streams audio and transcripts over websocket", RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket),
     ("recording status failure prevents transcript persistence", RecordingStatusFailurePreventsTranscriptPersistence),
     ("leave marks meeting stopped and disposes live resources", LeaveMarksMeetingStoppedAndDisposesResources),
 };
@@ -22,10 +27,37 @@ foreach (var test in tests)
 
 static Task AdapterSelectionDefaultsToInMemory()
 {
-    var options = BridgeOptions.FromConfiguration(new ConfigurationBuilder().Build());
+    var originalDefaultVoice = Environment.GetEnvironmentVariable("AZURE_SPEECH_DEFAULT_VOICE");
+    Environment.SetEnvironmentVariable("AZURE_SPEECH_DEFAULT_VOICE", null);
+    try
+    {
+        var options = BridgeOptions.FromConfiguration(new ConfigurationBuilder().Build());
+
+        AssertEqual(BridgeAdapterMode.InMemory, options.AdapterMode);
+        AssertEqual("en-US-JennyNeural", options.DefaultVoice);
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("AZURE_SPEECH_DEFAULT_VOICE", originalDefaultVoice);
+    }
+
+    return Task.CompletedTask;
+}
+
+static Task InMemoryModeHonorsConfiguredDefaultVoice()
+{
+    var config = new ConfigurationBuilder()
+        .AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["AzureSpeech:DefaultVoice"] = "en-US-AvaNeural",
+        })
+        .Build();
+
+    var options = BridgeOptions.FromConfiguration(config);
 
     AssertEqual(BridgeAdapterMode.InMemory, options.AdapterMode);
-    AssertEqual("en-US-JennyNeural", options.DefaultVoice);
+    AssertEqual("en-US-AvaNeural", options.DefaultVoice);
+    AssertEqual(null, options.AzureSpeech);
     return Task.CompletedTask;
 }
 
@@ -39,6 +71,48 @@ static Task GraphModeValidatesRequiredConfig()
         .Build();
 
     AssertThrows<InvalidOperationException>(() => BridgeOptions.FromConfiguration(config));
+    return Task.CompletedTask;
+}
+
+static Task GraphModeCanSelectOpenAIRealtimeSpeech()
+{
+    var values = RequiredGraphConfig();
+    values["Bridge:SpeechMode"] = "OpenAIRealtime";
+    values["OpenAIRealtime:ApiKey"] = "sk-test";
+    var config = new ConfigurationBuilder()
+        .AddInMemoryCollection(values)
+        .Build();
+
+    var options = BridgeOptions.FromConfiguration(config);
+
+    AssertEqual(BridgeAdapterMode.Graph, options.AdapterMode);
+    AssertEqual(BridgeSpeechMode.OpenAIRealtime, options.SpeechMode);
+    AssertEqual("gpt-realtime-2", options.OpenAIRealtime?.Model);
+    AssertEqual("marin", options.DefaultVoice);
+    AssertEqual(null, options.AzureSpeech);
+    return Task.CompletedTask;
+}
+
+static Task JoinRequestAcceptsProjectionAndRealtimeMetadata()
+{
+    var request = JsonSerializer.Deserialize<JoinMeetingRequest>(
+        """
+        {
+          "join_url": "https://teams.example/join",
+          "external_meeting_id": "meeting-a",
+          "projection": {"origin_session_id": "origin-a", "prompt": "Represent the agent."},
+          "realtime": {"model": "gpt-realtime-2", "voice": "marin"}
+        }
+        """);
+
+    if (request is null)
+    {
+        throw new InvalidOperationException("Join request did not deserialize.");
+    }
+
+    AssertEqual("origin-a", JsonObjectString(request.Projection, "origin_session_id"));
+    AssertEqual("gpt-realtime-2", JsonObjectString(request.Realtime, "model"));
+    AssertEqual("marin", JsonObjectString(request.Realtime, "voice"));
     return Task.CompletedTask;
 }
 
@@ -140,6 +214,103 @@ static async Task GraphJoinResolvesUrlAndChunksSynthesizedAudio()
     AssertEqual(640, mediaClient.AudioSessions.Single().QueuedFrames.Single().Frames[0].Length);
 }
 
+static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
+{
+    var socket = new FakeRealtimeWebSocketClient();
+    var adapter = new OpenAIRealtimeSpeechAdapter(
+        new OpenAIRealtimeOptions(
+            "sk-test",
+            new Uri("wss://api.openai.test/v1/realtime"),
+            "gpt-realtime-2",
+            "marin",
+            "semantic_vad",
+            "gpt-4o-transcribe"),
+        new FakeRealtimeWebSocketClientFactory(socket));
+    var audioSession = new FakeMeetingAudioSession();
+    var transcripts = new List<string>();
+    var statuses = new List<(string Status, string? Text)>();
+
+    await using var session = await adapter.StartAsync(
+        new MeetingSpeechStartRequest(
+            "meeting-a",
+            null,
+            audioSession,
+            new Dictionary<string, object>(),
+            new Dictionary<string, object>
+            {
+                ["api_base_url"] = "https://attacker.example/v1/realtime",
+                ["model"] = "gpt-realtime-2",
+                ["voice"] = "cedar",
+            },
+            new Dictionary<string, object>
+            {
+                ["prompt"] = "Represent the originating Truman agent.",
+            },
+            (text, token) =>
+            {
+                _ = token;
+                transcripts.Add(text);
+                return Task.CompletedTask;
+            },
+            (error, token) =>
+            {
+                _ = token;
+                throw new InvalidOperationException(error);
+            },
+            (operationId, status, text, metadata, token) =>
+            {
+                _ = operationId;
+                _ = metadata;
+                _ = token;
+                statuses.Add((status, text));
+                return Task.CompletedTask;
+            }),
+        CancellationToken.None);
+
+    AssertEqual("wss://api.openai.test/v1/realtime?model=gpt-realtime-2", socket.ConnectUri?.ToString());
+    AssertEqual("Bearer sk-test", socket.Headers["Authorization"]);
+    AssertContains("\"type\":\"session.update\"", socket.SentMessages[0]);
+    AssertContains("\"voice\":\"cedar\"", socket.SentMessages[0]);
+    AssertContains("Represent the originating Truman agent.", socket.SentMessages[0]);
+
+    await session.PushAudioAsync(new byte[640], CancellationToken.None);
+    var appendEvent = socket.SentMessages.Single(item => item.Contains("input_audio_buffer.append"));
+    var appendedAudio = Base64JsonProperty(appendEvent, "audio");
+    AssertEqual(960, Convert.FromBase64String(appendedAudio).Length);
+
+    var speak = await session.SpeakAsync("hello room", null, false, CancellationToken.None);
+    AssertEqual("queued", speak.Status);
+    AssertContains("conversation.item.create", socket.SentMessages[^2]);
+    AssertContains("response.create", socket.SentMessages[^1]);
+    AssertContains("\"output_modalities\":[\"audio\"]", socket.SentMessages[^1]);
+    AssertDoesNotContain("\"modalities\"", socket.SentMessages[^1]);
+
+    socket.EnqueueIncoming(
+        """
+        {"type":"response.created","response":{"id":"resp_1"}}
+        """);
+    socket.EnqueueIncoming(
+        $$"""
+        {"type":"response.output_audio.delta","response_id":"resp_1","delta":"{{Convert.ToBase64String(new byte[960])}}"}
+        """);
+    socket.EnqueueIncoming(
+        """
+        {"type":"conversation.item.input_audio_transcription.completed","transcript":"hello from meeting"}
+        """);
+    socket.EnqueueIncoming(
+        """
+        {"type":"response.output_audio_transcript.done","response_id":"resp_1","transcript":"hello back"}
+        """);
+
+    await WaitUntil(() => audioSession.QueuedFrames.Count == 1 && transcripts.Count == 1 && statuses.Count > 0);
+
+    AssertEqual(1, audioSession.QueuedFrames.Single().Frames.Count);
+    AssertEqual(640, audioSession.QueuedFrames.Single().Frames[0].Length);
+    AssertEqual("hello from meeting", transcripts.Single());
+    AssertEqual("completed", statuses.Last().Status);
+    AssertEqual("hello back", statuses.Last().Text);
+}
+
 static async Task RecordingStatusFailurePreventsTranscriptPersistence()
 {
     var graph = new FakeGraphMeetingClient { FailRecordingStatus = true };
@@ -189,6 +360,14 @@ static void AssertContains(string expectedSubstring, string? actual)
     }
 }
 
+static void AssertDoesNotContain(string unexpectedSubstring, string? actual)
+{
+    if (actual is not null && actual.Contains(unexpectedSubstring, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException($"Expected '{actual}' not to contain '{unexpectedSubstring}'");
+    }
+}
+
 static void AssertThrows<TException>(Action action)
     where TException : Exception
 {
@@ -202,6 +381,58 @@ static void AssertThrows<TException>(Action action)
     }
 
     throw new InvalidOperationException($"Expected {typeof(TException).Name}");
+}
+
+static async Task WaitUntil(Func<bool> predicate)
+{
+    for (var attempt = 0; attempt < 50; attempt++)
+    {
+        if (predicate())
+        {
+            return;
+        }
+
+        await Task.Delay(20);
+    }
+
+    throw new InvalidOperationException("Timed out waiting for condition.");
+}
+
+static Dictionary<string, string?> RequiredGraphConfig()
+{
+    return new Dictionary<string, string?>
+    {
+        ["Bridge:AdapterMode"] = "Graph",
+        ["Graph:BotAppId"] = "00000000-0000-0000-0000-000000000001",
+        ["Graph:BotAppSecret"] = "secret",
+        ["Graph:TenantId"] = "00000000-0000-0000-0000-000000000002",
+        ["Graph:PublicCallbackBaseUrl"] = "https://bridge.example",
+        ["Graph:ServiceFqdn"] = "bridge.example",
+        ["Graph:PublicIp"] = "203.0.113.10",
+        ["Graph:PublicPort"] = "8445",
+        ["Graph:InternalPort"] = "8445",
+        ["Graph:CertificateThumbprint"] = "thumbprint",
+        ["Graph:OnlineMeetingLookupUserId"] = "lookup@example.com",
+    };
+}
+
+static string? JsonObjectString(Dictionary<string, object>? values, string propertyName)
+{
+    if (values is null || !values.TryGetValue(propertyName, out var value))
+    {
+        return null;
+    }
+
+    return value is JsonElement element && element.ValueKind == JsonValueKind.String
+        ? element.GetString()
+        : Convert.ToString(value);
+}
+
+static string Base64JsonProperty(string json, string propertyName)
+{
+    using var document = JsonDocument.Parse(json);
+    return document.RootElement.GetProperty(propertyName).GetString()
+        ?? throw new InvalidOperationException($"JSON property {propertyName} was missing.");
 }
 
 internal sealed class RecordingMediaAdapter : ITeamsMediaAdapter
@@ -421,4 +652,88 @@ internal sealed class FakeMeetingAudioSession : IMeetingAudioSession
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class FakeRealtimeWebSocketClientFactory : IRealtimeWebSocketClientFactory
+{
+    private readonly FakeRealtimeWebSocketClient client;
+
+    public FakeRealtimeWebSocketClientFactory(FakeRealtimeWebSocketClient client)
+    {
+        this.client = client;
+    }
+
+    public IRealtimeWebSocketClient Create() => client;
+}
+
+internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
+{
+    private readonly object sync = new();
+    private readonly Queue<string?> incoming = new();
+    private readonly SemaphoreSlim incomingSignal = new(0);
+
+    public Uri? ConnectUri { get; private set; }
+
+    public Dictionary<string, string> Headers { get; } = new(StringComparer.Ordinal);
+
+    public List<string> SentMessages { get; } = [];
+
+    public Task ConnectAsync(
+        Uri uri,
+        IReadOnlyDictionary<string, string> headers,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ConnectUri = uri;
+        foreach (var header in headers)
+        {
+            Headers[header.Key] = header.Value;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task SendTextAsync(string text, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        SentMessages.Add(text);
+        return Task.CompletedTask;
+    }
+
+    public async Task<string?> ReceiveTextAsync(CancellationToken cancellationToken)
+    {
+        await incomingSignal.WaitAsync(cancellationToken);
+        lock (sync)
+        {
+            return incoming.Dequeue();
+        }
+    }
+
+    public Task CloseAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (sync)
+        {
+            incoming.Enqueue(null);
+        }
+
+        incomingSignal.Release();
+        return Task.CompletedTask;
+    }
+
+    public void EnqueueIncoming(string message)
+    {
+        lock (sync)
+        {
+            incoming.Enqueue(message);
+        }
+
+        incomingSignal.Release();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        incomingSignal.Dispose();
+        return ValueTask.CompletedTask;
+    }
 }

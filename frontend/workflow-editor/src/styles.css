@@ -1856,12 +1856,56 @@ select {
   margin-top: 0.1rem;
 }
 
+.metadata-rule-editor,
+.metadata-rule-list,
+.metadata-rule-field-modes,
+.metadata-rule-raw-fields {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.metadata-rule-field-modes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metadata-rule-field-mode {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.metadata-rule-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.55rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 248, 236, 0.48);
+}
+
+.metadata-rule-row-exists {
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(0, 1fr) auto;
+}
+
+.metadata-rule-row .field-inline {
+  margin-bottom: 0;
+}
+
+.metadata-rule-remove {
+  align-self: end;
+}
+
 @media (max-width: 720px) {
-  .string-map-row {
+  .string-map-row,
+  .metadata-rule-field-modes,
+  .metadata-rule-row,
+  .metadata-rule-row-exists {
     grid-template-columns: 1fr;
   }
 
-  .string-map-remove {
+  .string-map-remove,
+  .metadata-rule-remove {
     justify-self: start;
   }
 }
@@ -2768,28 +2812,37 @@ select {
   border-top: 1px solid rgba(91, 67, 37, 0.14);
 }
 
-.run-search-header,
-.run-search-form {
+.run-search-header {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  justify-content: space-between;
   flex-wrap: wrap;
 }
 
-.run-search-header {
-  justify-content: space-between;
+.run-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .current-runs-section .run-search-form select {
-  flex: 1 1 14rem;
-  width: auto;
+  grid-column: 1;
+  width: 100%;
   max-width: 100%;
 }
 
 .run-search-checkbox {
-  flex: 0 0 auto;
+  grid-column: 1 / -1;
+  width: 100%;
   margin: 0;
   min-height: var(--workflow-run-control-height);
+}
+
+.current-runs-section .run-search-form .subtle-button {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .run-search-results {
@@ -3464,6 +3517,18 @@ select {
   box-shadow: 0 0 0 3px rgba(178, 59, 26, 0.16), 0 18px 42px rgba(48, 38, 25, 0.18);
 }
 
+.node-card.runtime-pulse::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border: 2px solid rgba(36, 104, 170, 0.62);
+  border-radius: 24px;
+  box-shadow: 0 0 0 0 rgba(36, 104, 170, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  animation: runtime-node-pulse 1400ms ease-out both;
+}
+
 .node-card.unsaved {
   border-color: rgba(122, 74, 0, 0.44);
   box-shadow: 0 0 0 3px rgba(245, 178, 58, 0.18), 0 18px 42px rgba(48, 38, 25, 0.18);
@@ -3485,10 +3550,40 @@ select {
   }
 }
 
+@keyframes runtime-node-pulse {
+  0% {
+    opacity: 0;
+    transform: scale(0.985);
+    box-shadow: 0 0 0 0 rgba(36, 104, 170, 0.24);
+  }
+  18% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.045);
+    box-shadow: 0 0 0 12px rgba(36, 104, 170, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-card.runtime-pulse::before {
+    animation: none;
+    opacity: 0.85;
+    box-shadow: 0 0 0 5px rgba(36, 104, 170, 0.14);
+  }
+}
+
 .status-failed,
 .state-failed {
   background: #ffe4dc;
   color: #9a3412;
+}
+
+.status-error_routed,
+.state-error_routed {
+  background: #ffeecf;
+  color: #8a4b00;
 }
 
 .status-running,
@@ -7504,6 +7599,7 @@ select {
 :root[data-theme="dark"] .option-checkbox-section,
 :root[data-theme="dark"] .option-checkbox-list,
 :root[data-theme="dark"] .string-map-row,
+:root[data-theme="dark"] .metadata-rule-row,
 :root[data-theme="dark"] .object-list-item,
 :root[data-theme="dark"] .runtime-run-card,
 :root[data-theme="dark"] .log-panel {
@@ -7897,6 +7993,11 @@ select {
   color: #b8a386;
 }
 
+:root[data-theme="dark"] .node-card.runtime-pulse::before {
+  border-color: rgba(91, 169, 224, 0.78);
+  box-shadow: 0 0 0 0 rgba(91, 169, 224, 0.24);
+}
+
 :root[data-theme="dark"] .create-group-summary,
 :root[data-theme="dark"] .create-subgroup-summary,
 :root[data-theme="dark"] .create-group-description,
@@ -8272,6 +8373,12 @@ select {
 :root[data-theme="dark"] .state-failed {
   background: #321816;
   color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .status-error_routed,
+:root[data-theme="dark"] .state-error_routed {
+  background: #342412;
+  color: #f0c27b;
 }
 
 :root[data-theme="dark"] .status-running,

@@ -53,6 +53,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'model = "gpt-5.4"' in script
     assert 'model_reasoning_effort = "high"' in script
     assert 'personality = "pragmatic"' in script
+    assert 'web_search = "disabled"' in script
     assert (
         'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"'
         in script
@@ -65,6 +66,12 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'url = "${CODEX_GATEWAY_URL}"' in script
     assert "enabled_tools = %s\\n" not in script
     assert "load_enabled_tools_toml" not in script
+    assert "azure_openai_endpoint" not in script
+    assert "azure_openai_api_key_env" not in script
+    assert "azure_openai_model_deployments" not in script
+    assert "https://example-resource.openai.azure.com" not in script
+    assert "AZURE_OPENAI_API_KEY" not in script
+    assert "deployment-gpt-5-4" not in script
     assert "enabled = true" in script
     assert "if [ -f ~/.agent/config.env ]; then" in script
     assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script

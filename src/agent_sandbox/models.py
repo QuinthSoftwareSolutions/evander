@@ -74,6 +74,7 @@ class ToolName(str, Enum):
     LIST_CONTACTS = "list_contacts"
     MAKE_PHONE_CALL = "make_phone_call"
     GET_PHONE_CALL_RESULT = "get_phone_call_result"
+    SUBMIT_VOICE_QUERY_RESPONSE = "submit_voice_query_response"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
@@ -499,6 +500,7 @@ class SessionManifest(BaseModel):
     communication_file_allowed_extensions: list[str] = Field(default_factory=list)
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
+    web_search_enabled: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
@@ -2515,6 +2517,50 @@ class GetPhoneCallResultRequest(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if not self.request_id and not self.call_id:
             raise ValueError("request_id or call_id is required")
+
+
+class SubmitVoiceQueryResponseRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    query_id: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    status: str = "answered"
+    citations: list[str] = Field(default_factory=list)
+    confidence: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", "query_id", "answer", "status", "confidence", mode="before")
+    @classmethod
+    def normalize_voice_query_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def normalize_voice_query_citations(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("citations must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_voice_query_metadata(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be an object")
+        return value
+
+
+class SubmitVoiceQueryResponseResponse(BaseModel):
+    query_id: str = Field(min_length=1)
+    voice_session_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
 
 
 class ScheduleResumeRequest(BaseModel):

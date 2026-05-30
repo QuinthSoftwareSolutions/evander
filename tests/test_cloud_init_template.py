@@ -14,6 +14,12 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert "AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__" in template
     assert "AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts" in template
     assert "/home/agent/.codex/config.toml" not in template
+    assert "azure_openai_endpoint" not in template
+    assert "azure_openai_api_key_env" not in template
+    assert "azure_openai_model_deployments" not in template
+    assert "https://example-resource.openai.azure.com" not in template
+    assert "AZURE_OPENAI_API_KEY" not in template
+    assert "deployment-gpt-5-4" not in template
     assert 'OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in template
     assert "  - git" in template
     assert "  - ripgrep" in template

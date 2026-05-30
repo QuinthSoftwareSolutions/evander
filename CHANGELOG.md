@@ -5,6 +5,155 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-30 - Effective Azure Provider Validation
+
+- Made effective directory provider validation run full Azure OpenAI required-field
+  checks while keeping partial provider overlay writes permissive.
+
+## 2026-05-30 - Model Usage Docs
+
+- Documented the provider-neutral model usage store, `query:model-usage:list`
+  workflow node, and the privacy-preserving OpenAI relay capture path in the
+  operator-facing docs.
+- Added the durable runtime store location `runtime/model-usage.db` to the
+  troubleshooting guidance so operators can find the persisted usage records.
+- Clarified that persisted usage records are correlation and usage metadata
+  only; prompt and completion text remain unpersisted.
+
+## 2026-05-30 - Realtime Voice Bridge Hardening
+
+- Kept host Realtime API keys and upstream base URLs under bridge-local configuration instead of
+  accepting per-call or per-meeting payload overrides.
+- Updated Teams OpenAI Realtime speech responses to request audio with the current
+  `output_modalities` response shape.
+- Cleared stale voice-call failure fields when retrying a failed request and classified common
+  ARI busy/no-answer hangup causes as failed calls.
+
+## 2026-05-29 - Workflow Run Snapshot I/O Fix
+
+- Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web
+  reads do not initialize runtime store or journal files.
+- Added SQLite activity timestamp indexes for recent workflow run snapshots.
+
+## 2026-05-29 - Prompt Error Route Docs
+
+- Documented the third `error` lifecycle port for `effect:agent:prompt` and
+  `effect:agent:enqueue-prompt` in the configuration reference, operations
+  guide, and README workflow shape notes.
+- Clarified that the `error` route is for supported prompt dispatch failures
+  with an outbound error edge, while successful `started` and `completed`
+  paths stay error-free and unrouted failures still surface as normal prompt
+  failures.
+- Preserved enqueue retry context (`queued`, `queue_key`, and
+  `coalesced_count`) in routed prompt error payloads.
+
+## 2026-05-29 - Live Workflow Node Pulse
+
+- Added `recent_node_activity` to workflow run snapshots so Admin Web can
+  surface recent trigger, effect, and gate activity without changing existing
+  active run cards or node activity counts.
+- Made the workflow editor show a short live-only pulse on visible nodes for
+  newly streamed backend activity keys, while keeping inspect/tutorial views
+  and duplicate keys from replaying.
+- Kept the pulse one-shot and motion-safe, with bounded timers and reduced
+  motion behavior for users who prefer less animation.
+
+## 2026-05-29 - Container NPM Registry URL Validation
+
+- Rejected control characters in container npm registry URLs before generating
+  session `.npmrc` content.
+
+## 2026-05-29 - Session Web Search Policy
+
+- Added a first-class `web_search_enabled` session flag for agent create and
+  policy update flows.
+- Made the OpenAI relay deny hosted Responses web search tool declarations
+  unless the session explicitly enables the flag.
+- Wrote Codex bootstrap, VM resume, and container prompt config with
+  `web_search` set from the session flag so agents default to disabled search.
+- Fixed agent-create upserts so omitting `web_search_enabled` preserves the
+  existing session policy while explicitly setting `false` disables it.
+
+## 2026-05-29 - Agent Create Session Metadata
+
+- Added an optional `metadata` JSON patch to `effect:agent:create` so workflow
+  authors can initialize session metadata without a separate
+  `effect:session:update-metadata` node.
+- Wired the metadata patch through libvirt and container-worker agent creation
+  and exposed it in the workflow editor catalog.
+
+## 2026-05-29 - npm Audit Facade Deployment Wiring
+
+- Added the host-side npm audit facade to the persistent systemd install flow and start list.
+- Rendered the facade's optional env file through Ansible, enabled it in the managed service map,
+  and included its `11881` listener in the control-plane firewall and worker egress allowlists.
+- Documented the facade's health endpoint, upstream routing, and manual smoke checks in the
+  operator guides.
+
+## 2026-05-28 - Workflow Editor Bindable Selectors
+
+- Kept bindable enum workflow fields, including `query:session:list` State,
+  editable through either a finite literal selector or an upstream binding.
+- Kept `query:session:list` metadata filter bindings reachable from the
+  structured metadata rule editor.
+- Exposed PR-feedback agent identity fields in the workflow editor catalog.
+
+## 2026-05-28 - PR Feedback Agent-Directed Metadata
+
+- Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO
+  mention names, plus optional PR-feedback trigger configuration that annotates
+  whether a comment is directed at an agent.
+- Shared agent-directed feedback annotation between the trigger provider and the
+  ADO worker publisher so workflow gates see the same metadata on live ADO
+  feedback events.
+- Added support for ADO compact mention identity IDs, including trigger config
+  fields for matching raw agent author and mention GUIDs.
+
+## 2026-05-28 - Session Metadata Equals Flattening
+
+- Made the workflow-editor `query:session:list` metadata rule editor expand
+  nested `metadata_equals` objects into dot-path Equals rows.
+
+## 2026-05-28 - Existing PR Branch Push Wrapper
+
+- Added a `push_existing_pr_branch.sh` helper that wraps push-only
+  `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
+  branch preflight failures.
+- Normalized ref-prefixed base and source branch names before invoking
+  `open_agent_pr.sh`.
+
+## 2026-05-28 - Session Metadata Rule Editor
+
+- Added a structured workflow-editor metadata rule editor for
+  `query:session:list`, replacing separate raw JSON controls for equals,
+  exists, and prefix filters when the existing configuration can be represented
+  as simple rules.
+
+## 2026-05-28 - Session List State Selector
+
+- Changed the workflow-editor `query:session:list` State field from free text to
+  an enum selector for the accepted state values.
+
+## 2026-05-28 - Session List Field Help
+
+- Added workflow-editor tooltips for every `query:session:list` configuration
+  field.
+
+## 2026-05-28 - Scheduled Wake Queue Failure Fix
+
+- Fixed busy container scheduled wakes so queue write failures record a failed
+  dispatch with the original request id instead of crashing the wake worker.
+
+## 2026-05-28 - Scheduled Wake Container Docs
+
+- Documented that scheduled wakes cover both VM-bound `libvirt_vm` sessions and
+  `container_worker_vm` sessions.
+- Noted that MCP-created scheduled resumes stay `resume_mode=same_context`,
+  which uses Codex resume-last behavior for container workers when no explicit
+  thread id is available.
+- Clarified that busy container wakes queue the prompt, still count as handled,
+  and can advance one-shot or cron schedules accordingly.
+
 ## 2026-05-28 - Container Session Idempotency
 
 - Skipped container-worker file rewrites when the destination content and mode
@@ -239,6 +388,50 @@ material. Newer entries are added incrementally as changes land.
 
 - Moved sign-in branding into a top bar with the company logo on the left,
   the theme toggle centered, and a smaller evander logo on the right.
+
+## 2026-05-25 - Hybrid Voice Delegation
+
+- Added durable live voice query records so Realtime phone sessions can delegate
+  file/tool/context questions back to the originating Truman agent without
+  blocking the call.
+- Added the explicit `submit_voice_query_response` tool, voice media controller
+  endpoints, Realtime `query_origin_agent` function-call handling, and
+  same-context wake scheduling for delegated voice queries.
+
+## 2026-05-25 - Teams Meeting OpenAI Realtime Speech Mode
+
+- Added a selectable `OpenAIRealtime` speech mode to the Teams meeting media
+  bridge, keeping the existing Azure Speech mode as the default fallback.
+- Streamed Teams PCM audio through an in-process OpenAI Realtime WebSocket,
+  including projection instructions, input transcription events, Realtime audio
+  playback, interruption handling, and PCM sample-rate conversion.
+- Documented the new bridge environment keys and added focused C# bridge tests
+  for Realtime configuration and WebSocket audio/transcript behavior.
+- Restored configured `AzureSpeech:DefaultVoice` handling for the default
+  InMemory bridge mode.
+
+## 2026-05-25 - DIDWW SIP Realtime Media Bridge
+
+- Added `agent-sandbox-didww-sip-bridge`, a host-side Asterisk ARI bridge that
+  originates DIDWW trunk calls and streams RTP audio to OpenAI Realtime.
+- Added the bridge API, durable call state, RTP packet handling, Realtime event
+  handling, systemd/config examples, and focused contract tests.
+- Kept DIDWW calls in `connecting` until Asterisk reports answer, chunked
+  Realtime audio into correctly timestamped RTP frames, and contained voice
+  query controller failures inside Realtime tool output.
+
+## 2026-05-25 - Projected Realtime Voice Sessions
+
+- Added durable projected voice-session state for OpenAI Realtime-backed phone
+  calls and Teams meetings, including transcript capture and same-context
+  reconciliation wake scheduling for the originating agent.
+- Added a selectable `phone_call_backend` so existing Retell calls remain the
+  default while `openai_realtime_didww` can route directory-contact calls
+  through a host-owned DIDWW SIP bridge.
+- Extended Teams meeting startup with `--origin-session-id` and projection
+  metadata so an existing agent session can be represented in a live meeting.
+- Preserved completed projected-agent Teams speech in voice-session transcripts
+  so reconciliation includes what the live voice agent said.
 
 ## 2026-05-25 - Communication Messages Query
 

@@ -23,9 +23,11 @@ manager environment or optional repo-root `secrets.env`.
 |---|---|---|
 | `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
-Retell phone-call tools also require the configured `retell_api_key_env` value, which defaults to
-`RETELL_API_KEY`, to exist in the host process environment. For systemd deployments, put the actual
-secret value in repo-root `secrets.env` or the service manager environment rather than
+Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
+configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
+backend uses `didww_sip_bridge_token_env`; the DIDWW bridge service uses its own
+`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials. For systemd deployments,
+put actual secret values in repo-root `secrets.env` or the service manager environment rather than
 `config/gateway.env`.
 
 ## `config/openai-relay.env.example`
@@ -34,17 +36,33 @@ secret value in repo-root `secrets.env` or the service manager environment rathe
 |---|---|---|
 | `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` model relay traffic (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
+## `config/didww-sip-bridge.env.example`
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` bridge API listener bind. |
+| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
+| `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
+| `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
+| `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
+
 ## `config/nuget-relay.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
 
+## `config/npm-audit-facade.env.example`
+
+This host-local env file is optional and may stay empty. The npm audit facade currently reads
+its bind and upstream settings from runtime config, so there are no required env parameters in
+the checked-in example.
+
 ## `config/firewall.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `11881` for the npm audit facade, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
 
 ## `config/ado-worker.env.example`
 
@@ -166,10 +184,11 @@ Type-specific keys:
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
+| `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
 | `trigger:git:push` | `path_to_repo` | — |
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
@@ -241,7 +260,8 @@ Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream 
 reshape or suppress webhook deliveries after the trigger fires.
 
 The current trigger set also includes `trigger:teams:new-message`,
-`trigger:teams:direct-message`, `trigger:review:new-request`, and `trigger:script-run-request`.
+`trigger:teams:direct-message`, `trigger:review:new-request`,
+`trigger:approval:pending-created`, and `trigger:script-run-request`.
 Teams is fed by a host-side ingest worker that reads the same delegated Teams auth settings
 described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
@@ -251,6 +271,12 @@ script name. The checked-in global workflow currently filters that trigger down 
 `provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
 maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
 session after `effect:session:update-metadata` stores that metadata.
+
+`trigger:approval:pending-created` watches the durable approval store for pending requests,
+scopes by `directory_path` with descendant matching, and accepts optional `action_types` and
+`tool_names` filters. Pending approval instances remain eligible until the queued trigger event
+is acknowledged, so a publish retry can replay the same approval without creating a duplicate
+source item.
 
 `trigger:communication:new-message` is a provider-neutral chat trigger over declared
 directory-scoped communication targets. Its `communication_target_ids` list is required and must
@@ -401,7 +427,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -426,8 +452,20 @@ Type-specific keys:
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
-| `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
+| `effect:session:revoke-mcp-tool-approval-lease` | one of `mcp_tool_approval_lease_id` (preferred), `lease_id`; optional `session_id`, `workflow_run_id` | `outputs` |
+| `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
+
+`effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
+runtime deep-merges that patch into the created session manifest after built-in
+create metadata such as labels, model, execution backend, and worker URL are
+assembled.
+
+`web_search_enabled` defaults to `false`. When it is false, the OpenAI relay
+rejects Responses requests that declare hosted web search tools. Set it to
+`true` only for sessions that should be allowed to receive OpenAI-hosted web
+content in model context. Codex VM resume and container-worker prompt commands
+also set Codex `web_search` to `disabled` or `live` from this session flag.
 
 `effect:http:request` performs a host-side raw HTTP or HTTPS request from the
 effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
@@ -465,9 +503,17 @@ keeps retries from mutating the first submission. The trigger orchestrator
 publishes due scheduled events during its normal cycle, so delivery latency is
 bounded by its `poll_interval_seconds`.
 
-`effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
-ports: `started` emits after the prompt is dispatched, and `completed` emits
-after the agent run completes.
+`effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
+outgoing ports: `started` emits after the prompt is dispatched, `completed`
+emits after the agent run completes, and `error` emits only for supported
+prompt dispatch failures when the workflow wires an outbound error edge. Use
+the `error` branch for notification, retry, or cleanup paths that should see a
+redacted failure payload. When no `error` edge exists, the prompt node remains
+failed as before, and successful `started` / `completed` paths do not populate
+error fields.
+For `effect:agent:enqueue-prompt`, routed dispatch failures include the queued
+retry context (`queued`, `queue_key`, and `coalesced_count`) when the prompt was
+written to the durable retry queue before dispatch failed.
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.
@@ -484,16 +530,30 @@ ticket in `runtime/local-issues.json`, writes YAML under
 `runtime/ado-work-items/work-item-*.yaml` by default, and returns `ticket` for a
 single item or `tickets` plus created/updated/skipped counts for batches.
 
-`effect:session:renew-if-expired` resolves a host-side session by `target`,
-`session_id`, or `vm_name`. If the session has already expired, it sets
-`expires_at` to now plus `extend_by` (for example `8h`, `2d`, or `PT8H`);
-active sessions are left unchanged.
+`effect:session:renew-if-expired` resolves a host-side session by exactly one
+of `target`, `session_id`, or `vm_name`, plus optional `directory_path`. If the
+session has already expired, it sets `expires_at` to now plus `extend_by` (for
+example `8h`, `2d`, or `PT8H`). If `renew_if_expires_within` is configured and
+the active session expires within that pre-expiry window, it also renews to now
+plus `extend_by`; otherwise active sessions are left unchanged. For example,
+`extend_by: 2d` with `renew_if_expires_within: 4h` renews active sessions that
+expire in the next four hours. This node is the explicit renewal mechanism
+before `effect:agent:prompt` or `effect:agent:enqueue-prompt`; those nodes do
+not renew sessions on their own.
 
 `effect:session:approve-mcp-tools-for-run` writes a workflow-run-scoped MCP
 tool approval lease for the selected session. The approval is not persisted in
 the session manifest, and `effect:agent:prompt` / `effect:agent:enqueue-prompt`
 carry the lease into the agent invocation through `mcp_tool_approval_lease_id`.
 Direct upstream approval outputs are detected automatically.
+
+`effect:session:revoke-mcp-tool-approval-lease` revokes a previously created
+workflow-run-scoped MCP tool approval lease. Use `mcp_tool_approval_lease_id`
+in workflow bindings when possible; `lease_id` is accepted as an alias. The
+revoke effect is idempotent, preserves the lease record for audit history via
+`revoked_at`, and prevents future tool invocations under that lease without
+undoing any work already performed. Optional `session_id` and
+`workflow_run_id` guards must match the stored lease when supplied.
 
 `effect:artifact:stage` copies a file or directory that resolves under
 `/home/agent` into the session `/artifacts` folder. `destination_path`, when
@@ -865,6 +925,11 @@ Mixed graph:
 }
 ```
 
+MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
+prompt command resumes the last Codex context when no explicit thread id is available. Admin
+created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
+container Codex exec session.
+
 - Recurring cron schedule (host CLI):
 
 ```bash
@@ -876,6 +941,10 @@ agent-sandbox-cli wake-schedules create \
   --mode new_context \
   --source admin_cli
 ```
+
+Busy container-worker wake requests are still treated as handled for one-shot consumption and cron
+advancement after they queue a prompt, so the same schedule rules apply whether the session is
+resumed immediately or deferred by the prompt queue.
 
 ## Root issue setup and git automation config
 
@@ -894,6 +963,9 @@ root directory-scoped config and host environment:
 | `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
 | `RETELL_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/retell_phone.py` / `src/agent_sandbox/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
+| `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
+| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
+| `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/agent_sandbox/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
 | `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
 | `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
 | `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
@@ -939,8 +1011,9 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py` and `src/agent_sandbox/gateway.py` for host-side Retell phone calls and webhook verification. |
-| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, and the admin Users API for directory-scoped contacts and user attachments. |
+| `openai_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. `azure_openai_auth_mode` currently accepts only `api_key`. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
+| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
@@ -992,21 +1065,62 @@ scope. Both nodes require persisted workflow graph metadata at runtime. The work
 `graph_id` from `workflow_graphs` in inline config or `graphs` in workflow packs and does not
 invent fallback graph IDs for state nodes.
 
-### Retell phone-call keys
+### Phone-call keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
+| `phone_call_backend` | provider config overlays | Selects `retell` or `openai_realtime_didww` for `make_phone_call`; defaults to `retell`. |
 | `retell_api_base_url` | provider config overlays | Optional override for Retell create-call, get-call, and webhook signature configuration; defaults to `https://api.retellai.com` and normally does not need to be set. |
 | `retell_api_key_env` | provider config overlays | Host env-var name lookup for the Retell API key; default `RETELL_API_KEY`. |
 | `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
 | `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
+| `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges; defaults to `gpt-realtime-2`. |
+| `openai_realtime_api_key_env` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local API key env configuration instead of accepting per-call env-var names. |
+| `openai_realtime_api_base_url` | provider config overlays | Legacy provider setting. Host-owned Realtime bridges use bridge-local upstream base URL configuration instead of accepting per-call base URL overrides. |
+| `voice_media_controller_url` | provider config overlays | Optional voice media controller URL passed to DIDWW or Teams bridges. |
+| `voice_media_controller_token_env` | provider config overlays | Host env-var name for the voice media controller token. |
+| `voice_media_controller_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for voice media controller and bridge requests. |
+| `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
+| `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
+
+### DIDWW SIP bridge service keys
+
+These keys live in `config/didww-sip-bridge.env` or host environment and are consumed by
+`agent-sandbox-didww-sip-bridge`. They are service-local settings, not directory-scoped provider
+overlays.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | bridge env | HTTP listener bind for the bridge API. |
+| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | bridge env | Env-var name containing the bridge API bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `OPENAI_REALTIME_API_KEY_ENV`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_API_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_IDLE_TIMEOUT_MS`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket configuration. |
+| `ASTERISK_ARI_URL`, `ASTERISK_ARI_USER`, `ASTERISK_ARI_PASSWORD_ENV`, `ASTERISK_ARI_APP` | bridge env | Asterisk ARI HTTP/WebSocket control connection. |
+| `ASTERISK_PJSIP_ENDPOINT`, `ASTERISK_ENDPOINT_TEMPLATE` | bridge env | Asterisk endpoint used to originate DIDWW outbound calls; default template is `PJSIP/{number}@{trunk}`. |
+| `DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST`, `DIDWW_SIP_BRIDGE_RTP_BIND_HOST`, `DIDWW_SIP_BRIDGE_RTP_PORT_MIN`, `DIDWW_SIP_BRIDGE_RTP_PORT_MAX`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | bridge env | Asterisk `ExternalMedia` RTP settings for bidirectional audio between Asterisk and the Python bridge. |
+| `DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS`, `DIDWW_SIP_BRIDGE_REQUEST_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS` | bridge env | Bridge control-plane timeout and concurrency limits. |
+| `DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS`, `DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS` | bridge env | Polling and timeout behavior for async `query_origin_agent` delegation back to the originating session. |
+
+### Teams meeting media bridge service keys
+
+These keys live in the Windows-hosted Teams media bridge process environment and are consumed by the
+C# bridge under `integrations/teams-meeting-media-bridge`.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `TEAMS_BRIDGE_TOKEN`, `TEAMS_MEETING_BRIDGE_TOKEN` | bridge env | Bearer token required by the bridge HTTP API; `TEAMS_MEETING_BRIDGE_TOKEN` remains a compatibility alias. |
+| `BRIDGE_ADAPTER_MODE` | bridge env | Selects `InMemory` or `Graph`; production Teams media uses `Graph`. |
+| `BRIDGE_SPEECH_MODE` | bridge env | Selects `AzureSpeech` or `OpenAIRealtime`; defaults to `AzureSpeech` for Graph mode. |
+| `TEAMS_BOT_APP_ID`, `TEAMS_BOT_APP_SECRET`, `TEAMS_BOT_TENANT_ID`, `TEAMS_BOT_PUBLIC_CALLBACK_BASE_URL`, `TEAMS_BOT_SERVICE_FQDN`, `TEAMS_BOT_PUBLIC_IP`, `TEAMS_BOT_PUBLIC_PORT`, `TEAMS_BOT_INTERNAL_PORT`, `TEAMS_BOT_CERT_THUMBPRINT`, `TEAMS_ONLINE_MEETING_LOOKUP_USER_ID`, `TEAMS_BOT_MEDIA_PORT_RANGE_START`, `TEAMS_BOT_MEDIA_PORT_RANGE_END` | bridge env | Microsoft Graph/application-hosted media setup used to join and exchange PCM audio with Teams meetings. |
+| `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `AZURE_SPEECH_ENDPOINT`, `AZURE_SPEECH_RECOGNITION_LANGUAGE`, `AZURE_SPEECH_DEFAULT_VOICE` | bridge env | Azure Speech recognition/synthesis settings used when `BRIDGE_SPEECH_MODE=AzureSpeech`. |
+| `OPENAI_REALTIME_API_KEY`, `OPENAI_API_KEY`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_TURN_DETECTION`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket settings used when `BRIDGE_SPEECH_MODE=OpenAIRealtime`; `OPENAI_API_KEY` is a fallback for the Realtime API key. |
 
 ### Directory contact keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `contacts` | contact config overlays | Directory-scoped contact map keyed by stable contact id. Entries include `name`, `description`, optional `email_addresses`, and `phone_numbers`; `list_contacts` exposes only safe summaries, and Retell requires exactly one primary phone number on callable contacts. |
+| `contacts` | contact config overlays | Directory-scoped contact map keyed by stable contact id. Entries include `name`, `description`, optional `email_addresses`, and `phone_numbers`; `list_contacts` exposes only safe summaries, and phone-call backends require exactly one primary phone number on callable contacts. |
 | `user_contact_links` | contact config overlays | Directory-scoped mapping from normalized admin user login to one contact id; a `null` value clears an inherited attachment for that directory. |
 
 ### HTTP target relay keys

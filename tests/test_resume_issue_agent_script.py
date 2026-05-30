@@ -154,6 +154,7 @@ exit 0
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
     assert "agent-admin@192.168.122.11" in run_call
     assert "AGENT_MODEL=gpt-5.3-codex" in run_call
+    assert "AGENT_WEB_SEARCH_MODE=disabled" in run_call
     assert "bash -s" in run_call
 
 
@@ -496,6 +497,7 @@ exit 0
     env["USER"] = ""
     env["SUDO_USER"] = ""
     env["AGENT_MODEL"] = "gpt-5.3-codex"
+    env["AGENT_WEB_SEARCH_MODE"] = "live"
 
     result = subprocess.run(
         [
@@ -524,6 +526,7 @@ exit 0
     assert f"UserKnownHostsFile={caller_home}/.ssh/agent-sandbox-known_hosts" in run_call
     assert "SESSION_ID=session-14084" in run_call
     assert "AGENT_BRANCH_SUFFIX=vm-14084" in run_call
+    assert "AGENT_WEB_SEARCH_MODE=live" in run_call
 
     virsh_calls = virsh_log.read_text(encoding="utf-8")
     assert "start vm-14084" in virsh_calls

@@ -260,6 +260,10 @@ run_preflight_checks() {
     "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
     "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \
     "warning"
+  check_file \
+    "${ROOT_DIR}/config/didww-sip-bridge.env" \
+    "Copy config/didww-sip-bridge.env.example to config/didww-sip-bridge.env if you want OpenAI Realtime/DIDWW phone calls." \
+    "warning"
 
   check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
 
@@ -317,12 +321,20 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-openai-relay.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-didww-sip-bridge.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-didww-sip-bridge.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-firewall.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-firewall.service"
 
 render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-nuget-relay.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
+
+render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-npm-audit-facade.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-npm-audit-facade.service"
 
 render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-http-target-relay.service.template" \
@@ -368,8 +380,10 @@ systemctl daemon-reload
 systemctl enable agent-sandbox-gateway.service
 systemctl enable agent-sandbox-admin-web.service
 systemctl enable agent-sandbox-openai-relay.service
+systemctl enable agent-sandbox-didww-sip-bridge.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
+systemctl enable agent-sandbox-npm-audit-facade.service
 systemctl enable agent-sandbox-http-target-relay.service
 systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-proxy-issue-sync.service
@@ -386,8 +400,10 @@ Installed systemd units:
   agent-sandbox-gateway.service
   agent-sandbox-admin-web.service
   agent-sandbox-openai-relay.service
+  agent-sandbox-didww-sip-bridge.service
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
+  agent-sandbox-npm-audit-facade.service
   agent-sandbox-http-target-relay.service
   agent-sandbox-ado-worker.service
   agent-sandbox-proxy-issue-sync.service
@@ -405,15 +421,18 @@ Next steps:
   3. Populate ${ROOT_DIR}/config/teams-ingest/config.json from the example file if you want to override Teams ingest defaults.
   4. Populate ${ROOT_DIR}/config/teams-meeting-ingest/config.json from the example file if you want to override Teams meeting ingest defaults.
   5. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
-  6. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
-  7. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
-  8. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  9. Start services:
+  6. Populate ${ROOT_DIR}/config/didww-sip-bridge.env from the example file if you want OpenAI Realtime/DIDWW phone calls.
+  7. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
+  8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
+  9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  10. Start services:
      sudo systemctl start agent-sandbox-admin-web.service
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
+     sudo systemctl start agent-sandbox-didww-sip-bridge.service
      sudo systemctl start agent-sandbox-nuget-relay.service
+     sudo systemctl start agent-sandbox-npm-audit-facade.service
      sudo systemctl start agent-sandbox-http-target-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
      sudo systemctl start agent-sandbox-proxy-issue-sync.service

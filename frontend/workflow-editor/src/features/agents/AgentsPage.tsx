@@ -38,6 +38,7 @@ type AgentCreateFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -57,6 +58,7 @@ type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
   labels: string;
+  webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
@@ -118,6 +120,7 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -139,6 +142,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     model: "",
     ttlHours: "",
     labels: "",
+    webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
@@ -204,18 +208,52 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function loadAgentList(
+type AgentListLoadOptions = {
+  summaryOnly?: boolean;
+  dashboardCache?: boolean;
+  dashboardRefresh?: boolean;
+  reconcileContainers?: boolean;
+  omitVmState?: boolean;
+};
+
+type AgentListRefreshBehavior = {
+  applyItems?: boolean;
+};
+
+function buildAgentListQuery(
   directoryPath: string,
   directOnly: boolean,
   backend: AgentBackend | "all",
-): Promise<AgentListResponse> {
+  options: AgentListLoadOptions = {},
+): string {
+  const summaryOnly = options.summaryOnly ?? false;
   const query = new URLSearchParams({
     directory_path: directoryPath,
     direct_only: String(directOnly),
     include_inactive: "true",
     backend,
+    summary_only: String(summaryOnly),
+    reconcile_containers: String(options.reconcileContainers ?? !summaryOnly),
+    omit_vm_state: String(options.omitVmState ?? summaryOnly),
   });
-  return fetchJson<AgentListResponse>(`/api/admin/agents?${query.toString()}`);
+  if (options.dashboardRefresh) {
+    query.set("_dashboard", "1");
+    query.set("_dashboard_refresh", "1");
+  } else if (options.dashboardCache) {
+    query.set("_dashboard", "1");
+  }
+  return query.toString();
+}
+
+async function loadAgentList(
+  directoryPath: string,
+  directOnly: boolean,
+  backend: AgentBackend | "all",
+  options: AgentListLoadOptions = {},
+): Promise<AgentListResponse> {
+  return fetchJson<AgentListResponse>(
+    `/api/admin/agents?${buildAgentListQuery(directoryPath, directOnly, backend, options)}`,
+  );
 }
 
 async function loadSkillList(): Promise<SkillLibraryItem[]> {
@@ -398,6 +436,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    web_search_enabled: Boolean(rawPolicy.web_search_enabled),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -421,6 +460,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     model: policy?.model ?? "",
     ttlHours: "",
     labels: formatLabels(labels),
+    webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
@@ -439,6 +479,7 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     model: optionalText(form.model),
     ttl_hours: optionalNumber(form.ttlHours),
     labels,
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -469,6 +510,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
     labels: parseLabels(form.labels),
+    web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
@@ -767,16 +809,44 @@ export function AgentsPage() {
     setAgentPromptResumeThreadId((current) => (current === nextThreadId ? current : nextThreadId));
   }, [selectedAgent, showPromptForm]);
 
-  const refreshAgents = useCallback(async () => {
-    const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter);
-    setItems(payload.items);
+  const refreshAgents = useCallback(async (
+    options: AgentListLoadOptions = {},
+    behavior: AgentListRefreshBehavior = {},
+  ) => {
+    const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter, options);
+    if (behavior.applyItems ?? true) {
+      setItems(payload.items);
+    }
+    return payload;
   }, [backendFilter, selectedDirectoryPath]);
+
+  const refreshSummaryAgents = useCallback(async () => {
+    await refreshAgents({ summaryOnly: true, dashboardCache: true });
+  }, [refreshAgents]);
+
+  const refreshSummaryCache = useCallback(async () => {
+    try {
+      await refreshAgents({ summaryOnly: true, dashboardRefresh: true }, { applyItems: false });
+    } catch {
+      // Summary cache refresh is best-effort; the live read has already updated the page.
+    }
+  }, [refreshAgents]);
+
+  const refreshLiveAgents = useCallback(async () => {
+    const payload = await refreshAgents({
+      summaryOnly: false,
+      reconcileContainers: true,
+      omitVmState: false,
+    });
+    await refreshSummaryCache();
+    return payload;
+  }, [refreshAgents, refreshSummaryCache]);
 
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
       try {
-        await refreshAgents();
+        await refreshSummaryAgents();
         if (!cancelled) setError(null);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -792,7 +862,7 @@ export function AgentsPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshAgents]);
+  }, [refreshSummaryAgents]);
 
   useEffect(() => {
     if (!selectedAgent) {
@@ -880,7 +950,7 @@ export function AgentsPage() {
   async function handleManualRefresh() {
     setLoading(true);
     try {
-      await refreshAgents();
+      await refreshLiveAgents();
       setError(null);
       setStatus("Refreshed agent list.");
     } catch (reason: unknown) {
@@ -984,7 +1054,7 @@ export function AgentsPage() {
         setAgentPromptResumeThreadId("");
         setShowPromptForm(false);
       }
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1013,7 +1083,7 @@ export function AgentsPage() {
       setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
       setStatus(payload.message);
       setError(null);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1080,7 +1150,7 @@ export function AgentsPage() {
       setError(null);
       setShowCreateForm(false);
       setCreateForm(emptyCreateForm(selectedDirectoryPath));
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(`${payload.backend}:${payload.agent_id}`);
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1153,7 +1223,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowSkillInstallForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1188,7 +1258,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowEditForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1215,7 +1285,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowEditForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
@@ -1614,6 +1684,14 @@ export function AgentsPage() {
                       onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
                   </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={createForm.webSearchEnabled}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
+                  </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>
                     <textarea
@@ -1764,6 +1842,14 @@ export function AgentsPage() {
                       value={editForm.allowedTools}
                       onChange={(event) => setEditForm((current) => ({ ...current, allowedTools: event.target.value }))}
                     />
+                  </label>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={editForm.webSearchEnabled}
+                      onChange={(event) => setEditForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
+                    />
+                    <span>Web search</span>
                   </label>
                   <label className="field-stack">
                     <span>Allowed scripts</span>

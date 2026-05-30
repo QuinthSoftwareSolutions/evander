@@ -48,7 +48,9 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "agent-sandbox-teams-ingest.service" in text
     assert "agent-sandbox-trigger-orchestrator.service" in text
     assert "agent-sandbox-http-target-relay.service" in text
+    assert "agent-sandbox-didww-sip-bridge.service" in text
     assert "agent-sandbox-admin-web.service" in text
+    assert "agent-sandbox-npm-audit-facade.service" in text
 
 
 def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
@@ -81,9 +83,15 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     nuget = (repo / "systemd" / "agent-sandbox-nuget-relay.service.template").read_text(
         encoding="utf-8"
     )
+    npm_audit_facade = (
+        repo / "systemd" / "agent-sandbox-npm-audit-facade.service.template"
+    ).read_text(encoding="utf-8")
     http_target = (repo / "systemd" / "agent-sandbox-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
+    didww_sip_bridge = (
+        repo / "systemd" / "agent-sandbox-didww-sip-bridge.service.template"
+    ).read_text(encoding="utf-8")
     discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
         encoding="utf-8"
     )
@@ -119,9 +127,18 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/npm-audit-facade.env" in npm_audit_facade
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in npm_audit_facade
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-npm-audit-facade" in npm_audit_facade
     assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-http-target-relay" in http_target
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/didww-sip-bridge.env" in didww_sip_bridge
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in didww_sip_bridge
+    assert (
+        "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-didww-sip-bridge --runtime-dir __PROJECT_DIR__/runtime"
+        in didww_sip_bridge
+    )
     assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
     assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake

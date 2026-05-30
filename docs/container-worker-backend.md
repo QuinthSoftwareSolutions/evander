@@ -85,6 +85,9 @@ The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before it
 through Nexus on `8081`. The worker host's own `uv pip install -e .` step also uses that Nexus
 PyPI group through `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`, so the worker deploy does not need direct
 `pypi.org` egress.
+The control plane also exposes `agent-sandbox-npm-audit-facade` on `11881` for npm audit POSTs;
+it is separate from the worker registry setting and routes package metadata/tarballs through
+Nexus while sending audit requests to public npm.
 
 For Azure-style deployments that include `agent_sandbox_hosts`, the worker playbook also prepares
 restricted SSH before `repo_checkout` and checks out the deployment repo through a control-plane bare
@@ -239,6 +242,8 @@ Containers are disposable. Continuity comes from mounting the same `agent_home/`
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
 Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports either `session_meta` or the older `thread.started` event, then prints assistant messages from the current `event_msg` / `response_item` stream and the older `item.completed` event. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
+
+Scheduled wake dispatches and queued prompt records follow the same container prompt construction rules. When a wake request is marked `same_context` and no usable explicit thread id is present, the host emits `codex exec resume --last`; when the request is `new_context`, the host emits a fresh `codex exec` run instead. That keeps container wake behavior aligned with the persisted session home while preserving backwards compatibility for older queued prompt records.
 
 If a request includes `repo_source`, the daemon clones it under `/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they are already Git checkouts for the same requested source. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 

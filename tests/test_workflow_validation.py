@@ -166,6 +166,99 @@ def test_issue_list_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_session_renew_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "session-renew-1",
+                "display_name": "Renew session",
+                "type": "effect:session:renew-if-expired",
+                "session_id": "session-1",
+                "extend_by": "6h",
+                "renew_if_expires_within": "30m",
+            }
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "session-renew-1"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["session-renew-1"]["renewed"] == {"type": "boolean"}
+    assert output_schemas["session-renew-1"]["renewal_reason"] == {"type": "string"}
+    assert output_schemas["session-renew-1"]["renew_if_expires_within"] == {
+        "type": ["integer", "null"]
+    }
+    assert diagnostics == []
+
+
+def test_session_revoke_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "session-approve-1",
+                "display_name": "Approve tools",
+                "type": "effect:session:approve-mcp-tools-for-run",
+                "session_id": "session-1",
+                "tools": ["run_script"],
+            },
+            {
+                "id": "session-revoke-1",
+                "display_name": "Revoke lease",
+                "type": "effect:session:revoke-mcp-tool-approval-lease",
+                "mcp_tool_approval_lease_id": "${{session-approve-1.mcp_tool_approval_lease_id}}",
+                "session_id": "${{session-approve-1.session_id}}",
+                "workflow_run_id": "${{session-approve-1.workflow_run_id}}",
+            },
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Revoked ${{session-revoke-1.revoked}} lease "
+                    "${{session-revoke-1.lease_id}} at ${{session-revoke-1.revoked_at}} "
+                    "for ${{session-revoke-1.tools}}"
+                ),
+            },
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "session-approve-1"},
+            {"source_id": "session-approve-1", "target_id": "session-revoke-1"},
+            {"source_id": "session-revoke-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["session-revoke-1"]["lease_id"] == {"type": "string"}
+    assert output_schemas["session-revoke-1"]["revoked"] == {"type": "boolean"}
+    assert output_schemas["session-revoke-1"]["already_revoked"] == {"type": "boolean"}
+    assert output_schemas["session-revoke-1"]["revoked_at"] == {"type": "string"}
+    assert diagnostics == []
+
+
 def test_schedule_event_outputs_are_bindable() -> None:
     config = {
         "triggers": [
@@ -1003,4 +1096,61 @@ def test_pull_request_get_outputs_are_bindable() -> None:
     assert output_schemas["query-pr-get-1"]["reviewers"] == {"type": "array"}
     assert output_schemas["query-pr-get-1"]["commits"] == {"type": "array"}
     assert output_schemas["query-pr-get-1"]["raw"] == {"type": "object"}
+    assert diagnostics == []
+
+
+def test_agent_prompt_outputs_include_error_bindings() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect",
+            },
+            {
+                "id": "enqueue-agent",
+                "display_name": "Enqueue agent",
+                "type": "effect:agent:enqueue-prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect",
+            },
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "prompt-agent"},
+            {"source_id": "prompt-agent", "target_id": "enqueue-agent", "source_port": "started"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["prompt-agent"]["dispatch_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["thread_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["success"] == {"type": "boolean"}
+    assert output_schemas["prompt-agent"]["error_message"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["error_class"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["failed_phase"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["session_id"] == {"type": "string"}
+    assert output_schemas["prompt-agent"]["vm_name"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["dispatch_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["thread_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["success"] == {"type": "boolean"}
+    assert output_schemas["enqueue-agent"]["error_message"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["error_class"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["failed_phase"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["queued"] == {"type": "boolean"}
+    assert output_schemas["enqueue-agent"]["queue_key"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["session_id"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["vm_name"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["coalesced_count"] == {"type": "integer"}
     assert diagnostics == []

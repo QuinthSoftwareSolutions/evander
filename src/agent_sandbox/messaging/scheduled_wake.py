@@ -26,6 +26,7 @@ from agent_sandbox.messaging.wake_dispatch import (
     probe_agent_dispatch_state,
     set_session_cooldown,
 )
+from agent_sandbox.session_backends import session_is_container_worker_vm
 
 logger = logging.getLogger(__name__)
 
@@ -176,55 +177,67 @@ class ScheduledWakeWorker:
             session_id=binding.session_id,
         ):
             return False
-        if not binding.vm_id:
-            return False
-        agent_state = probe_agent_dispatch_state(
-            session_id=binding.session_id,
-            vm_id=binding.vm_id,
-            script_path=scoped_config.host_busy_check_script_path,
-        )
-        if agent_state != "idle":
-            if agent_state == "busy":
-                set_session_cooldown(
-                    path=scoped_config.wake_session_cooldown_path,
-                    session_id=binding.session_id,
-                    cooldown_seconds=scoped_config.wake_cooldown_seconds,
-                )
-            return False
-        dispatch = self.dispatcher.resume_binding(
-            binding,
-            worker_config=scoped_config,
-            prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
-            resume_mode=request.resume_mode,
-            dispatch_source=source,
-            request_id=request.request_id,
-            scheduled_for=request.next_run_at or request.schedule.resume_at,
-            wake_metadata={"schedule_cron": request.schedule.cron},
-        )
-        dispatch_succeeded = bool(dispatch and dispatch.status == "dispatched")
-        if dispatch_succeeded:
+        if session_is_container_worker_vm(session):
+            dispatch = self.dispatcher.resume_container_binding(
+                session,
+                worker_config=scoped_config,
+                prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
+                resume_mode=request.resume_mode,
+                dispatch_source=source,
+                request_id=request.request_id,
+                scheduled_for=request.next_run_at or request.schedule.resume_at,
+                wake_metadata={"schedule_cron": request.schedule.cron},
+            )
+        else:
+            if not binding.vm_id:
+                return False
+            agent_state = probe_agent_dispatch_state(
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                script_path=scoped_config.host_busy_check_script_path,
+            )
+            if agent_state != "idle":
+                if agent_state == "busy":
+                    set_session_cooldown(
+                        path=scoped_config.wake_session_cooldown_path,
+                        session_id=binding.session_id,
+                        cooldown_seconds=scoped_config.wake_cooldown_seconds,
+                    )
+                return False
+            dispatch = self.dispatcher.resume_binding(
+                binding,
+                worker_config=scoped_config,
+                prompt=_build_scheduled_resume_prompt(scoped_config, request.resume_prompt.prompt),
+                resume_mode=request.resume_mode,
+                dispatch_source=source,
+                request_id=request.request_id,
+                scheduled_for=request.next_run_at or request.schedule.resume_at,
+                wake_metadata={"schedule_cron": request.schedule.cron},
+            )
+        dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
+        if dispatch_handled:
             set_session_cooldown(
                 path=scoped_config.wake_session_cooldown_path,
                 session_id=binding.session_id,
                 cooldown_seconds=scoped_config.wake_cooldown_seconds,
             )
-        if (request.schedule.cron or "").strip() and dispatch_succeeded:
+        if (request.schedule.cron or "").strip() and dispatch_handled:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
                 mark_consumed=False,
-                was_dispatched=True,
+                was_handled=True,
             )
-        elif dispatch_succeeded:
+        elif dispatch_handled:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
                 mark_consumed=True,
-                was_dispatched=True,
+                was_handled=True,
             )
-        return dispatch_succeeded
+        return dispatch_handled
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
@@ -331,15 +344,20 @@ def _build_scheduled_resume_prompt(worker_config: GatewayConfig, requested_promp
     return cleaned_requested
 
 
+def _wake_dispatch_counts_as_handled(dispatch: Any | None) -> bool:
+    status = str(getattr(dispatch, "status", "") or "").strip()
+    return status in {"dispatched", "queued"}
+
+
 def _advance_cron_wake_request(
     *,
     wake_store: Any,
     request: WakeScheduledRequest,
     now_utc: datetime,
     mark_consumed: bool,
-    was_dispatched: bool,
+    was_handled: bool,
 ) -> None:
-    request.last_dispatched_at = now_utc if was_dispatched else request.last_dispatched_at
+    request.last_dispatched_at = now_utc if was_handled else request.last_dispatched_at
     request.updated_at = now_utc
     if mark_consumed:
         request.enabled = False

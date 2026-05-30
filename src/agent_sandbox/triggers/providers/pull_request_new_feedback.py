@@ -9,6 +9,7 @@ import httpx
 from agent_sandbox.models import PrFeedbackItem
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.pr_feedback.agent_directed import annotate_agent_directed_feedback
 from agent_sandbox.pr_feedback.providers import (
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
@@ -50,7 +51,9 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             for envelope in feedback_store.list_all_feedback(
                 allowed_providers={"local", "github", "azure_devops"},
             ):
-                item = PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope))
+                item = self._annotate_agent_directed_feedback(
+                    PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope))
+                )
                 stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
                 discovered.append((stream, item))
         else:
@@ -67,14 +70,17 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                         cursor=cursor,
                     )
                     for envelope in result.feedback:
+                        feedback_item = self._annotate_agent_directed_feedback(
+                            PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope))
+                        )
                         discovered.append(
                             (
                                 {
-                                    "provider": envelope.provider,
-                                    "repo": envelope.repo,
-                                    "pr_id": envelope.pr_id,
+                                    "provider": feedback_item.provider,
+                                    "repo": feedback_item.repo,
+                                    "pr_id": feedback_item.pr_id,
                                 },
-                                PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
+                                feedback_item,
                             )
                         )
 
@@ -240,6 +246,16 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 continue
             sessions[(provider, repo, pr_id)] = session_id
         return sessions
+
+    def _annotate_agent_directed_feedback(self, item: PrFeedbackItem) -> PrFeedbackItem:
+        trigger = self._trigger()
+        return annotate_agent_directed_feedback(
+            item,
+            agent_author_names=trigger.agent_author_names,
+            agent_mention_names=trigger.agent_mention_names,
+            agent_author_ids=trigger.agent_author_ids,
+            agent_mention_ids=trigger.agent_mention_ids,
+        )
 
     @staticmethod
     def _provider_name_for_trigger(provider: str) -> str:

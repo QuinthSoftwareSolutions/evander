@@ -39,6 +39,7 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
+from agent_sandbox.worker.security import sanitize_text
 from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
@@ -82,6 +83,7 @@ from agent_sandbox.workflow.graph_metadata import (
     ResolvedWorkflowGraphMetadata,
     resolve_workflow_graph_metadata,
 )
+from agent_sandbox.workflow.migrations import AGENT_PROMPT_ERROR_PORT
 from agent_sandbox.workflow.engine.node_executors import (
     NodeExecutorRegistry,
     ProviderEffectNodeExecutor,
@@ -162,6 +164,42 @@ def _outputs_from_exception(exc: BaseException) -> dict[str, Any]:
     if isinstance(outputs, Mapping):
         return dict(outputs)
     return {}
+
+
+_PROMPT_FAILURE_EFFECT_TYPES = frozenset(
+    {"effect:agent:prompt", "effect:agent:enqueue-prompt"}
+)
+_PROMPT_FAILURE_DEFAULT_PHASE = "dispatch"
+
+
+def _prompt_failure_outputs(exc: BaseException) -> dict[str, Any]:
+    outputs = _outputs_from_exception(exc)
+    outputs["success"] = False
+
+    error_message = _normalize_optional_string(outputs.get("error_message"))
+    if error_message is None:
+        error_message = _normalize_optional_string(sanitize_text(str(exc)))
+    if error_message is None:
+        error_message = type(exc).__name__
+    outputs["error_message"] = sanitize_text(error_message)
+
+    error_class = _normalize_optional_string(outputs.get("error_class"))
+    if error_class is None:
+        error_class = type(exc).__name__
+    outputs["error_class"] = sanitize_text(error_class)
+
+    failed_phase = _normalize_optional_string(outputs.get("failed_phase"))
+    if failed_phase is None:
+        failed_phase = _PROMPT_FAILURE_DEFAULT_PHASE
+    outputs["failed_phase"] = sanitize_text(failed_phase)
+    return outputs
+
+
+def _prompt_error_outbound_edge_exists(*, graph: ExecutionGraph, effect_id: str) -> bool:
+    return any(
+        _edge_source_port(edge) == AGENT_PROMPT_ERROR_PORT
+        for edge in graph.outbound_index.get(effect_id, ())
+    )
 
 
 class EffectExecutionRecord(BaseModel):
@@ -1215,6 +1253,61 @@ class EffectOrchestratorWorker:
             return None
         return completion_event_id
 
+    def _publish_effect_completion_event_or_fail(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        branch_port: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> str | None:
+        resolved_finished_at = finished_at or datetime.now(UTC)
+        try:
+            completion_event, idempotency_key, completion_event_id = (
+                self._build_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Effect completion event build failed "
+                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.effect_id,
+                record.effect_type,
+                branch_port,
+            )
+            self._mark_effect_completion_publication_failed(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+            )
+            return None
+        try:
+            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Effect completion publication failed "
+                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.effect_id,
+                record.effect_type,
+                branch_port,
+            )
+            self._mark_effect_completion_publication_failed(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+            )
+            return None
+        return completion_event_id
+
     def _finalize_effect_completion_publication(
         self,
         *,
@@ -1223,6 +1316,7 @@ class EffectOrchestratorWorker:
         published_event_id: str,
         finished_at: datetime,
         status: str = "succeeded",
+        branch_port: str | None = None,
     ) -> None:
         record.status = str(status or "succeeded").strip() or "succeeded"
         record.outputs = dict(outputs)
@@ -1230,10 +1324,14 @@ class EffectOrchestratorWorker:
         record.completion_event_enqueued_at = finished_at
         record.finished_at = finished_at
         record.error = None
+        if branch_port is not None:
+            record.completion_event_branch_port = branch_port
         if outputs.get("success") is False:
-            message = outputs.get("message")
-            if isinstance(message, str) and message.strip():
-                record.error = message.strip()
+            error_message = _normalize_optional_string(outputs.get("error_message"))
+            if error_message is None:
+                error_message = _normalize_optional_string(outputs.get("message"))
+            if error_message is not None:
+                record.error = error_message
         self.execution_store.record_execution(record)
         self._update_event_delivery_state(record.event_id)
 
@@ -1893,6 +1991,7 @@ class EffectOrchestratorWorker:
     def _reap_completed_futures(self) -> tuple[int, int]:
         completed_count = 0
         published_count = 0
+        graph_for_prompt_error_routing: ExecutionGraph | None = None
         to_finalize: list[tuple[str, Future[dict[str, Any]]]] = []
         with self._inflight_lock:
             for idempotency_key, inflight in list(self._inflight.items()):
@@ -1925,14 +2024,59 @@ class EffectOrchestratorWorker:
                     self._update_event_delivery_state(record.event_id)
                     continue
             except Exception as exc:  # noqa: BLE001
-                outputs = _outputs_from_exception(exc)
-                logger.exception(
-                    "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
-                    record.event_id,
-                    record.trace_id,
-                    record.effect_id,
-                    record.effect_type,
-                )
+                if record.effect_type in _PROMPT_FAILURE_EFFECT_TYPES:
+                    outputs = _prompt_failure_outputs(exc)
+                    if graph_for_prompt_error_routing is None:
+                        graph_for_prompt_error_routing = self._build_execution_graph()
+                    if _prompt_error_outbound_edge_exists(
+                        graph=graph_for_prompt_error_routing,
+                        effect_id=record.effect_id,
+                    ):
+                        logger.info(
+                            "Effect execution routed to error branch "
+                            "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                            record.event_id,
+                            record.trace_id,
+                            record.effect_id,
+                            record.effect_type,
+                            AGENT_PROMPT_ERROR_PORT,
+                        )
+                        published_event_id = (
+                            self._publish_effect_completion_event_or_fail(
+                                record=record,
+                                outputs=outputs,
+                                branch_port=AGENT_PROMPT_ERROR_PORT,
+                                finished_at=finished_at,
+                            )
+                        )
+                        if published_event_id is None:
+                            continue
+                        self._finalize_effect_completion_publication(
+                            record=record,
+                            outputs=outputs,
+                            published_event_id=published_event_id,
+                            finished_at=finished_at,
+                            status="error_routed",
+                            branch_port=AGENT_PROMPT_ERROR_PORT,
+                        )
+                        published_count += 1
+                        continue
+                    logger.exception(
+                        "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
+                        record.event_id,
+                        record.trace_id,
+                        record.effect_id,
+                        record.effect_type,
+                    )
+                else:
+                    outputs = _outputs_from_exception(exc)
+                    logger.exception(
+                        "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
+                        record.event_id,
+                        record.trace_id,
+                        record.effect_id,
+                        record.effect_type,
+                    )
                 record.status = "failed"
                 record.error = str(exc)
                 record.outputs = outputs

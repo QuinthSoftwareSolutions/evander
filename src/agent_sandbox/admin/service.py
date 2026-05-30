@@ -74,6 +74,8 @@ from agent_sandbox.directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
+from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
@@ -145,6 +147,7 @@ from agent_sandbox.workflow.events import (
 )
 from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
     migrate_agent_prompt_lifecycle_ports,
 )
@@ -569,6 +572,19 @@ class WorkflowRunNodeActivityPayload(BaseModel):
     error: str | None = None
 
 
+class WorkflowRunRecentNodeActivityPayload(BaseModel):
+    activity_key: str
+    event_id: str
+    node_id: str
+    status: str
+    source: str
+    activity_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    trace_id: str | None = None
+    error: str | None = None
+
+
 class WorkflowRunSummaryPayload(BaseModel):
     event_id: str
     run_state: str = "active"
@@ -591,6 +607,9 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
+    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(
+        default_factory=list
+    )
 
 
 class WorkflowRunSearchFilterPayload(BaseModel):
@@ -1601,8 +1620,10 @@ def _field(
     )
 
 
-def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
-    return [
+def _pull_request_trigger_fields(
+    *, include_agent_identity_fields: bool = False
+) -> list[WorkflowEditorFieldDefinition]:
+    fields = [
         _field(
             "provider",
             "Provider",
@@ -1649,6 +1670,46 @@ def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
         _field("skip", "Skip", "number"),
         _field("cursor", "Cursor", "string"),
     ]
+    if include_agent_identity_fields:
+        fields.extend(
+            [
+                _field(
+                    "agent_author_names",
+                    "Agent author names",
+                    "string_list",
+                    description=(
+                        "Feedback author display names that should mark a PR feedback event "
+                        "as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_mention_names",
+                    "Agent mention names",
+                    "string_list",
+                    description=(
+                        "Mention display names that should mark a PR feedback event as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_author_ids",
+                    "Agent author IDs",
+                    "string_list",
+                    description=(
+                        "Feedback author identity IDs that should mark same-thread PR feedback "
+                        "as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_mention_ids",
+                    "Agent mention IDs",
+                    "string_list",
+                    description=(
+                        "Mention identity IDs that should mark a PR feedback event as agent-directed."
+                    ),
+                ),
+            ]
+        )
+    return fields
 
 
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
@@ -1687,6 +1748,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start when a CI run completes on GitHub Actions or Azure DevOps."
     ),
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
+    "trigger:approval:pending-created": "Start when a pending approval request is created.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
     "gate:filter": "Allow only matching events to continue downstream.",
@@ -1758,8 +1820,11 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:session:approve-mcp-tools-for-run": (
         "Approve MCP tools for one agent session during the current workflow run."
     ),
+    "effect:session:revoke-mcp-tool-approval-lease": (
+        "Revoke a workflow-run-scoped MCP tool approval lease for one agent session."
+    ),
     "effect:session:renew-if-expired": (
-        "Extend a host-side session only when its expiry has already passed."
+        "Renew an expired or soon-expiring session."
     ),
     "effect:artifact:stage": "Copy a file or directory from /home/agent into the session artifacts folder.",
     "effect:artifact:publish-artifacts": (
@@ -1782,6 +1847,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:session-context": "Read session context and metadata.",
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
+    "query:model-usage:list": (
+        "List persisted model usage events with session, workflow, directory, provider, and time filters."
+    ),
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:issue:list": "List tracked local and proxy issues from the local issue store.",
@@ -2077,7 +2145,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
-        fields=_pull_request_trigger_fields(),
+        fields=_pull_request_trigger_fields(include_agent_identity_fields=True),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -2180,6 +2248,38 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:review:new-request",
         label="Review request",
         fields=[],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:approval:pending-created",
+        label="Pending approval",
+        fields=[
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                placeholder="root",
+                default_value="root",
+            ),
+            _field(
+                "action_types",
+                "Action types",
+                "string_list",
+                default_value=[],
+                description=(
+                    "Optional action type filter. Leave blank to include all pending approvals."
+                ),
+            ),
+            _field(
+                "tool_names",
+                "Tool names",
+                "string_list",
+                default_value=[],
+                description=(
+                    "Optional tool name filter. Leave blank to include all pending approvals."
+                ),
+            ),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -2684,6 +2784,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Model name the agent should use. Leave blank to inherit the directory default.",
             ),
             _field(
+                "npm_registry_url",
+                "NPM registry URL",
+                "string",
+                bindable=True,
+                description="Optional npm registry override for container-backed agent sessions.",
+            ),
+            _field(
                 "vm_user",
                 "VM user",
                 "string",
@@ -2786,6 +2893,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Maximum size in bytes for a single communication file. Leave blank to inherit policy defaults.",
             ),
             _field(
+                "web_search_enabled",
+                "Web search",
+                "boolean",
+                bindable=True,
+                description="Allow the created session to use OpenAI-hosted web_search tools through the OpenAI relay.",
+            ),
+            _field(
                 "dotnet",
                 "Dotnet",
                 "boolean",
@@ -2832,6 +2946,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Directory scope that owns the created session and resolves inherited configuration.",
+            ),
+            _field(
+                "metadata",
+                "Metadata",
+                "json",
+                bindable=True,
+                description="Session metadata patch to merge into the created agent session.",
+                json_value_type="object",
+                default_value={},
             ),
         ],
     ),
@@ -3131,6 +3254,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Completed",
                 description="Emits after the agent run has completed.",
             ),
+            _port(
+                AGENT_PROMPT_ERROR_PORT,
+                "Error",
+                description=(
+                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3180,6 +3310,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_COMPLETED_PORT,
                 "Completed",
                 description="Emits after the dispatched agent run has completed.",
+            ),
+            _port(
+                AGENT_PROMPT_ERROR_PORT,
+                "Error",
+                description=(
+                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                ),
             ),
         ],
     ),
@@ -3796,6 +3933,44 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:session:revoke-mcp-tool-approval-lease",
+        label="Revoke MCP tool approval lease",
+        fields=[
+            _field(
+                "mcp_tool_approval_lease_id",
+                "MCP tool approval lease ID",
+                "string",
+                required=True,
+                bindable=True,
+                description=(
+                    "Preferred lease ID from Approve MCP tools for run. Revokes that lease."
+                ),
+            ),
+            _field(
+                "lease_id",
+                "Lease ID",
+                "string",
+                bindable=True,
+                description="Alias for MCP tool approval lease ID.",
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Optional guard that must match the stored lease.",
+            ),
+            _field(
+                "workflow_run_id",
+                "Workflow run ID",
+                "string",
+                bindable=True,
+                description="Optional guard that must match the stored lease.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:session:renew-if-expired",
         label="Session renew if expired",
         fields=[
@@ -3807,7 +3982,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Extend by",
                 "string",
                 bindable=True,
-                description="Duration from now for renewed expired sessions, such as 8h, 2d, or PT8H.",
+                description="Duration from now for the renewed session, such as 8h, 2d, or PT8H.",
+            ),
+            _field(
+                "renew_if_expires_within",
+                "Renew if expires within",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional pre-expiry window. Renew active sessions that expire within "
+                    "this duration, such as 30m, 4h, or PT30M."
+                ),
             ),
             _field("directory_path", "Directory path", "string", bindable=True),
         ],
@@ -3936,13 +4121,158 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:session:list",
         label="Session list",
         fields=[
-            _field("directory_path", "Directory path", "string", bindable=True),
-            _field("metadata_equals", "Metadata equals", "json", bindable=True),
-            _field("metadata_exists", "Metadata exists", "json", bindable=True),
-            _field("metadata_prefix", "Metadata prefix", "json", bindable=True),
-            _field("state", "State", "string", bindable=True),
-            _field("active_only", "Active only", "boolean", bindable=True),
-            _field("limit", "Limit", "number", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional directory path such as root or root/team. When set, matches "
+                    "sessions in that directory and its descendants."
+                ),
+            ),
+            _field(
+                "metadata_equals",
+                "Metadata equals",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values must match exactly."
+                ),
+            ),
+            _field(
+                "metadata_exists",
+                "Metadata exists",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: metadata selector string, selector array, or JSON object. Object "
+                    "values of true require presence; false requires absence."
+                ),
+            ),
+            _field(
+                "metadata_prefix",
+                "Metadata prefix",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values are required string prefixes. Arrays match when any "
+                    "item starts with the prefix."
+                ),
+            ),
+            _field(
+                "state",
+                "State",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("active", "Active"),
+                    _field_option("expired", "Expired"),
+                    _field_option("inactive", "Inactive"),
+                    _field_option("all", "All"),
+                    _field_option("any", "Any"),
+                ],
+                description=(
+                    "Value: active, expired, inactive, all, or any. Empty behaves like all."
+                ),
+            ),
+            _field(
+                "active_only",
+                "Active only",
+                "boolean",
+                bindable=True,
+                description=(
+                    "Value: boolean. Set true to return only sessions whose expires_at is "
+                    "still in the future."
+                ),
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Value: positive integer maximum number of matched sessions to return.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:model-usage:list",
+        label="Model usage list",
+        fields=[
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("workflow_run_id", "Workflow run ID", "string", bindable=True),
+            _field("effect_id", "Effect ID", "string", bindable=True),
+            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional directory path such as root or root/team. When set, matches "
+                    "events in that directory and, if enabled, its descendants."
+                ),
+            ),
+            _field(
+                "include_directory_descendants",
+                "Include directory descendants",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description="When enabled, include events from descendant directories too.",
+            ),
+            _field("provider", "Provider", "string", bindable=True),
+            _field("model", "Model", "string", bindable=True),
+            _field("agent_harness", "Agent harness", "string", bindable=True),
+            _field("execution_backend", "Execution backend", "string", bindable=True),
+            _field(
+                "normalized_usage_status",
+                "Normalized usage status",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("available", "available"),
+                    _field_option("usage_unavailable", "usage_unavailable"),
+                ],
+            ),
+            _field(
+                "request_status",
+                "Request status",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("success", "success"),
+                    _field_option("failed", "failed"),
+                    _field_option("error", "error"),
+                    _field_option("cancelled", "cancelled"),
+                ],
+            ),
+            _field(
+                "occurred_after",
+                "Occurred after",
+                "string",
+                bindable=True,
+                description="Lower bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                placeholder="2026-05-24T12:00:00Z",
+            ),
+            _field(
+                "occurred_before",
+                "Occurred before",
+                "string",
+                bindable=True,
+                description="Upper bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                placeholder="2026-05-24T13:00:00Z",
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Maximum number of events to return. Must be a positive integer.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -5566,6 +5896,7 @@ def _build_issue_session_manifest(
     communication_file_send_enabled: bool | None = None,
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
+    web_search_enabled: bool = False,
 ) -> SessionManifest:
     resolved_allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
     if discord_channels:
@@ -5660,6 +5991,7 @@ def _build_issue_session_manifest(
             if communication_file_require_approval_for_send is None
             else communication_file_require_approval_for_send
         ),
+        web_search_enabled=web_search_enabled,
         expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
         metadata=metadata,
     )
@@ -5764,6 +6096,8 @@ COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
     "communication_file_require_approval_for_send",
 )
 
+SESSION_BOOL_POLICY_FIELDS: tuple[str, ...] = ("web_search_enabled",)
+
 
 def _normalize_session_policy_bool(value: object, *, field_name: str) -> bool:
     if isinstance(value, bool):
@@ -5826,6 +6160,7 @@ def _session_policy_update_from_payload(
         "teams_chat_allowlist",
         "teams_user_allowlist",
         "metadata",
+        *SESSION_BOOL_POLICY_FIELDS,
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     }
     unsupported = sorted(set(payload) - allowed_fields)
@@ -5899,6 +6234,12 @@ def _session_policy_update_from_payload(
         )
 
     update.update(_communication_file_session_policy_update(payload))
+
+    for field_name in SESSION_BOOL_POLICY_FIELDS:
+        if field_name in payload:
+            update[field_name] = _normalize_session_policy_bool(
+                payload.get(field_name), field_name=field_name
+            )
 
     if "metadata" in payload:
         metadata = payload.get("metadata")
@@ -7651,6 +7992,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         return [self._session_summary_with_container_lifecycle(summary) for summary in summaries]
 
+    def list_model_usage_events(
+        self,
+        *,
+        session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        effect_id: str | None = None,
+        dispatch_id: str | None = None,
+        directory_path: str | None = None,
+        include_directory_descendants: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        agent_harness: str | None = None,
+        execution_backend: str | None = None,
+        normalized_usage_status: str | None = None,
+        request_status: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[ModelInferenceUsageEvent]:
+        return model_usage_store(self.config.runtime_dir).list_events(
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            effect_id=effect_id,
+            dispatch_id=dispatch_id,
+            directory_path=directory_path,
+            include_directory_descendants=include_directory_descendants,
+            provider=provider,
+            model=model,
+            agent_harness=agent_harness,
+            execution_backend=execution_backend,
+            normalized_usage_status=normalized_usage_status,
+            request_status=request_status,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            limit=limit,
+        )
+
     def list_wake_schedules(
         self,
         *,
@@ -8464,6 +8842,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "communication_file_require_approval_for_send": (
                 session.communication_file_require_approval_for_send
             ),
+            "web_search_enabled": session.web_search_enabled,
             "metadata": dict(session.metadata),
             "labels": labels,
         }
@@ -8814,6 +9193,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         direct_only: bool = False,
         include_inactive: bool = True,
         reconcile_containers: bool = True,
+        omit_vm_state: bool = False,
         backend: str | None = None,
         all_directories: bool = False,
     ) -> list[AgentRecord]:
@@ -8827,6 +9207,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             try:
                 vm_summaries = self.list_vms(
                     include_inactive=include_inactive,
+                    omit_state=omit_vm_state,
                     directory_path=None if all_directories else normalized_directory,
                     direct_only=False if all_directories else direct_only,
                 )
@@ -8991,6 +9372,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if "communication_file_require_approval_for_send" in payload
                     else None
                 ),
+                web_search_enabled=(
+                    _normalize_session_policy_bool(
+                        payload.get("web_search_enabled"),
+                        field_name="web_search_enabled",
+                    )
+                    if "web_search_enabled" in payload
+                    else False
+                ),
                 dotnet=bool(payload.get("dotnet", False)),
                 nuget=bool(payload.get("nuget", False)),
                 mssql=bool(payload.get("mssql", False)),
@@ -9103,6 +9492,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if "communication_file_require_approval_for_send" in payload
                 else None
             ),
+            web_search_enabled=(
+                _normalize_session_policy_bool(
+                    payload.get("web_search_enabled"),
+                    field_name="web_search_enabled",
+                )
+                if "web_search_enabled" in payload
+                else False
+            ),
         ).model_copy(
             update={
                 "vm_id": None,
@@ -9133,6 +9530,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     config=backend.config,
                     session_id=session_id,
                     model=model,
+                    web_search_enabled=(
+                        _normalize_session_policy_bool(
+                            payload.get("web_search_enabled"),
+                            field_name="web_search_enabled",
+                        )
+                        if "web_search_enabled" in payload
+                        else False
+                    ),
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
@@ -9456,6 +9861,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "teams_chat_allowlist",
             "teams_user_allowlist",
             "metadata",
+            "web_search_enabled",
             "email_mailboxes",
             "email_folders",
             "labels",
@@ -9499,6 +9905,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "teams_chat_allowlist",
                 "teams_user_allowlist",
                 "metadata",
+                "web_search_enabled",
                 *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
             )
             if key in body
@@ -13350,12 +13757,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()
+        now = _utc_now()
+        lookback_start = now - timedelta(seconds=8)
         runtime_dir = stores["runtime_dir"]
         event_queue_store_path = stores["event_queue_store_path"]
         effect_execution_store_path = stores["effect_execution_store_path"]
         gate_execution_store_path = stores["gate_execution_store_path"]
         runs_by_event: dict[str, dict[str, object]] = {}
         node_activity: dict[str, dict[str, int]] = {}
+        recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = []
 
         def ensure_run(event_id: str) -> dict[str, object]:
             existing = runs_by_event.get(event_id)
@@ -13420,7 +13830,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     run["failed_at"] = latest_activity_at
                     run["error"] = error
                     run["resumable"] = resumable
-            elif run.get("run_state") != "errored":
+            elif status == "error_routed":
+                if run.get("run_state") != "errored":
+                    run["run_state"] = "error_routed"
+                if error is not None and not run.get("error"):
+                    run["error"] = error
+            elif run.get("run_state") not in {"errored", "error_routed"}:
                 run["run_state"] = "active"
             active_nodes = run.setdefault("active_nodes", [])
             assert isinstance(active_nodes, list)
@@ -13438,8 +13853,120 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
             node_status_counts[status] = node_status_counts.get(status, 0) + 1
 
+        def record_value(record: object, key: str) -> object | None:
+            if isinstance(record, Mapping):
+                return record.get(key)
+            return getattr(record, key, None)
+
+        def normalize_activity_text(value: object) -> str | None:
+            return _coerce_optional_string(value)
+
+        def activity_at_from_record(record: object) -> datetime | None:
+            return max(
+                (
+                    timestamp
+                    for timestamp in (
+                        _coerce_optional_datetime(record_value(record, "finished_at")),
+                        _coerce_optional_datetime(record_value(record, "delivered_at")),
+                        _coerce_optional_datetime(record_value(record, "started_at")),
+                        _coerce_optional_datetime(record_value(record, "inflight_at")),
+                        _coerce_optional_datetime(record_value(record, "occurred_at")),
+                    )
+                    if timestamp is not None
+                ),
+                default=None,
+            )
+
+        def register_recent_node_activity(
+            *,
+            source: str,
+            record_id: object,
+            event_id: object,
+            node_id: object,
+            status: object,
+            activity_at: datetime | None,
+            started_at: object = None,
+            finished_at: object = None,
+            trace_id: object = None,
+            error: object = None,
+        ) -> None:
+            normalized_source = normalize_activity_text(source)
+            normalized_record_id = normalize_activity_text(record_id)
+            normalized_event_id = normalize_activity_text(event_id)
+            normalized_node_id = normalize_activity_text(node_id)
+            normalized_status = normalize_activity_text(status)
+            if normalized_source is None or normalized_record_id is None:
+                return
+            if not normalized_event_id or not normalized_node_id:
+                return
+            if normalized_status is None or activity_at is None:
+                return
+            if activity_at < lookback_start or activity_at > now:
+                return
+            recent_node_activity.append(
+                WorkflowRunRecentNodeActivityPayload(
+                    activity_key=(
+                        f"{normalized_source}:{normalized_record_id}:{normalized_node_id}:"
+                        f"{normalized_status}:{activity_at.isoformat()}"
+                    ),
+                    event_id=normalized_event_id,
+                    node_id=normalized_node_id,
+                    status=normalized_status,
+                    source=normalized_source,
+                    activity_at=activity_at,
+                    started_at=_coerce_optional_datetime(started_at),
+                    finished_at=_coerce_optional_datetime(finished_at),
+                    trace_id=normalize_activity_text(trace_id),
+                    error=normalize_activity_text(error),
+                )
+            )
+
+        def collect_recent_activity(
+            records: list[Any],
+            *,
+            source: str,
+            record_id_field: str,
+            event_id_field: str = "event_id",
+            node_id_field: str,
+            status_field: str,
+            started_at_field: str | None = None,
+            finished_at_field: str | None = None,
+            trace_id_field: str | None = None,
+            error_field: str | None = None,
+        ) -> None:
+            for raw_record in records:
+                if not isinstance(raw_record, Mapping) and not isinstance(raw_record, BaseModel):
+                    continue
+                dismissed_at = _coerce_optional_datetime(record_value(raw_record, "dismissed_at"))
+                if dismissed_at is not None:
+                    continue
+                register_recent_node_activity(
+                    source=source,
+                    record_id=record_value(raw_record, record_id_field),
+                    event_id=record_value(raw_record, event_id_field),
+                    node_id=record_value(raw_record, node_id_field),
+                    status=(
+                        record_value(raw_record, status_field)
+                        if source != "trigger_event"
+                        else record_value(raw_record, status_field) or "event"
+                    ),
+                    activity_at=activity_at_from_record(raw_record),
+                    started_at=record_value(raw_record, started_at_field)
+                    if started_at_field is not None
+                    else None,
+                    finished_at=record_value(raw_record, finished_at_field)
+                    if finished_at_field is not None
+                    else None,
+                    trace_id=record_value(raw_record, trace_id_field)
+                    if trace_id_field is not None
+                    else None,
+                    error=record_value(raw_record, error_field)
+                    if error_field is not None
+                    else None,
+                )
+
         if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
             queue_payload = {
                 record.event_id: record.model_dump(mode="json")
                 for record in queue_store.list_active_records()
@@ -13452,10 +13979,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 record.execution_id: record.model_dump(mode="json")
                 for record in gate_store.list_active_records()
             }
+            queue_recent_records = queue_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
+            execution_recent_records = effect_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
+            gate_recent_records = gate_store.list_activity_between(
+                start_at=lookback_start, end_at=now
+            )
         else:
             queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
             execution_payload = _read_json_object(effect_execution_store_path)
             gate_payload = _read_json_object(gate_execution_store_path)
+            queue_recent_records = list(queue_payload.values())
+            execution_recent_records = list(execution_payload.values())
+            gate_recent_records = list(gate_payload.values())
 
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
@@ -13485,7 +14024,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status = str(raw_record.get("status") or "").strip()
             if raw_record.get("dismissed_at"):
                 continue
-            if status not in {"running", "waiting", "failed", "completion_pending"}:
+            if status not in {"running", "waiting", "failed", "completion_pending", "error_routed"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("effect_id") or "").strip()
@@ -13558,6 +14097,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 dispatch_id=dispatch_id,
             )
 
+        collect_recent_activity(
+            queue_recent_records,
+            source="trigger_event",
+            record_id_field="event_id",
+            node_id_field="trigger_id",
+            status_field="delivery_state",
+            started_at_field="inflight_at",
+            finished_at_field="delivered_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        collect_recent_activity(
+            execution_recent_records,
+            source="effect_execution",
+            record_id_field="execution_id",
+            node_id_field="effect_id",
+            status_field="status",
+            started_at_field="started_at",
+            finished_at_field="finished_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        collect_recent_activity(
+            gate_recent_records,
+            source="gate_execution",
+            record_id_field="execution_id",
+            node_id_field="gate_id",
+            status_field="status",
+            started_at_field="started_at",
+            finished_at_field="finished_at",
+            trace_id_field="trace_id",
+            error_field="error",
+        )
+        recent_node_activity.sort(key=lambda item: (item.activity_at, item.activity_key), reverse=True)
+        recent_node_activity = recent_node_activity[:200]
+
         runs = [
             WorkflowRunSummaryPayload.model_validate(
                 {
@@ -13579,12 +14154,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             reverse=True,
         )
         return WorkflowRunSnapshotPayload(
-            generated_at=_utc_now(),
+            generated_at=now,
             runs=runs,
             node_activity={
                 node_id: dict(sorted(counts.items()))
                 for node_id, counts in sorted(node_activity.items())
             },
+            recent_node_activity=recent_node_activity,
         )
 
     def _read_workflow_run_search(
@@ -13915,6 +14491,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status_counts = dict(sorted(group["status_counts"].items()))
             if status_counts.get("failed", 0) > 0:
                 run_state = "errored"
+            elif status_counts.get("error_routed", 0) > 0:
+                run_state = "error_routed"
             elif any(status_counts.get(status, 0) > 0 for status in active_statuses):
                 run_state = "active"
             else:
@@ -16540,6 +17118,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "event_id": selected_event_id,
                 "run_state": "errored"
                 if any(node.status == "failed" for node in node_details)
+                else "error_routed"
+                if any(node.status == "error_routed" for node in node_details)
                 else "active",
                 "trace_id": selected_trace_id,
                 "source_node_id": _coerce_optional_string(
@@ -17374,6 +17954,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         communication_file_send_enabled: bool | None = None,
         communication_file_max_bytes: int | None = None,
         communication_file_require_approval_for_send: bool | None = None,
+        web_search_enabled: bool | None = None,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
@@ -17381,6 +17962,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         playwright: bool = False,
         codex_skills: list[str] | None = None,
         directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
         allow_existing_session: bool = False,
     ) -> VmActionResult:
         payload: dict[str, Any] = {}
@@ -17402,6 +17984,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["communication_file_require_approval_for_send"] = (
                 communication_file_require_approval_for_send
             )
+        if web_search_enabled is not None:
+            payload["web_search_enabled"] = web_search_enabled
+        if metadata is not None:
+            payload["metadata"] = metadata
         return self.vm_agent_admin.create_vm(
             vm_name=vm_name,
             session_id=session_id,

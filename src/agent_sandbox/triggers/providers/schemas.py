@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, TriggerDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
+from agent_sandbox.models import DirectoryPath
 from agent_sandbox.events.provider_types import (
     EmailProvider,
     PrFeedbackProvider,
@@ -416,6 +417,21 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
 
 class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:new-feedback"]
+    agent_author_names: list[str] = Field(default_factory=list)
+    agent_mention_names: list[str] = Field(default_factory=list)
+    agent_author_ids: list[str] = Field(default_factory=list)
+    agent_mention_ids: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "agent_author_names",
+        "agent_mention_names",
+        "agent_author_ids",
+        "agent_mention_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_agent_identities(cls, value: object) -> object:
+        return normalize_string_list(value)
 
 
 class PullRequestCompletedTriggerDefinition(_PullRequestTriggerDefinition):
@@ -497,9 +513,7 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
         canonical = _CI_RUN_COMPLETED_PROVIDER_ALIASES.get(token)
         if canonical is None:
             allowed = ", ".join(sorted(_CI_RUN_COMPLETED_PROVIDER_ALIASES))
-            raise ValueError(
-                f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}"
-            )
+            raise ValueError(f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}")
         return canonical
 
     @field_validator("repo", "workflow", "project", "pipeline_name", mode="before")
@@ -554,6 +568,28 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
 
 class ReviewNewRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:review:new-request"]
+
+
+class ApprovalPendingCreatedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:approval:pending-created"]
+    directory_path: str | None = "root"
+    action_types: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def normalize_directory_path(cls, value: object) -> object:
+        if value is None:
+            return "root"
+        text = str(value).strip()
+        if not text:
+            return "root"
+        return DirectoryPath(segments=text).as_posix()
+
+    @field_validator("action_types", "tool_names", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> object:
+        return normalize_string_list(value)
 
 
 class GitPushTriggerDefinition(TriggerDefinition):

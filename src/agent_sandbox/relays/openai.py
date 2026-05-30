@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
-from contextlib import asynccontextmanager
+import time
+from hashlib import sha256
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -20,6 +24,14 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.model_usage.adapters import (
+    MappingModelUsageExtractor,
+    ModelUsageExtractionRequest,
+)
+from agent_sandbox.model_usage.runtime import (
+    MODEL_USAGE_AGENT_HARNESS,
+    model_usage_store,
+)
 from agent_sandbox.provider_config import ProviderConfigResolver
 
 logger = logging.getLogger(__name__)
@@ -40,6 +52,18 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 
+HOSTED_WEB_SEARCH_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+}
+
+
+@dataclass(frozen=True)
+class RelayRequestContext:
+    session_id: str
+    config: GatewayConfig
+    web_search_enabled: bool
+
 
 class OpenAIRelay:
     def __init__(
@@ -52,6 +76,7 @@ class OpenAIRelay:
         self.config = config
         self.transport = transport
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
+        self.model_usage_store = model_usage_store(config.runtime_dir)
         self.stream_started_count = 0
         self.stream_clean_end_count = 0
         self.stream_transport_terminated_count = 0
@@ -71,27 +96,116 @@ class OpenAIRelay:
 
         async def proxy(request: Request) -> Response:
             try:
-                resolved_config = relay._resolve_request_config(request)
+                request_context = relay._resolve_request_context(request)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-            api_key = os.environ.get(resolved_config.openai_api_key_env)
+            upstream_path = request.path_params["path"]
+            request_body = await request.body()
+            if (
+                not request_context.web_search_enabled
+                and relay._request_body_declares_hosted_web_search(request_body)
+            ):
+                relay._log_hosted_web_search_denied(
+                    session_id=request_context.session_id,
+                    request_kind="http",
+                    path=request.url.path,
+                )
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Hosted web search is disabled for this session. "
+                            "Set session.web_search_enabled=true to allow Responses web_search tools."
+                        )
+                    },
+                    status_code=403,
+                )
+
+            if request_context.config.openai_provider_mode == "azure_openai":
+                if request.method != "POST" or upstream_path != "responses":
+                    return JSONResponse(
+                        {
+                            "error": (
+                                "Azure OpenAI relay currently supports only POST /v1/responses"
+                            )
+                        },
+                        status_code=501,
+                    )
+
+                api_key_env = request_context.config.azure_openai_api_key_env
+                api_key = os.environ.get(api_key_env) if api_key_env else None
+                if not api_key:
+                    return JSONResponse(
+                        {
+                            "error": (
+                                f"Host environment variable {api_key_env} is not set."
+                            )
+                        },
+                        status_code=503,
+                    )
+
+                try:
+                    request_body = relay._rewrite_azure_openai_request_body(
+                        request_body,
+                        model_deployments=request_context.config.azure_openai_model_deployments,
+                    )
+                except ValueError as exc:
+                    return JSONResponse({"error": str(exc)}, status_code=400)
+
+                upstream_url = relay._azure_upstream_http_url(
+                    endpoint=request_context.config.azure_openai_endpoint or "",
+                    upstream_path=upstream_path,
+                    query_items=request.query_params.multi_items(),
+                    api_version=request_context.config.azure_openai_api_version,
+                )
+                headers = {
+                    key: value
+                    for key, value in request.headers.items()
+                    if key.lower() not in HOP_BY_HOP_HEADERS
+                }
+                headers["accept-encoding"] = "identity"
+                headers["api-key"] = api_key
+
+                if "text/event-stream" in request.headers.get("accept", ""):
+                    return await relay._stream_response(
+                        request=request,
+                        upstream_url=upstream_url,
+                        headers=headers,
+                        request_body=request_body,
+                        timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                    )
+
+                async with httpx.AsyncClient(
+                    timeout=request_context.config.openai_relay_timeout_seconds,
+                    transport=relay.transport,
+                ) as client:
+                    upstream_response = await client.request(
+                        method=request.method,
+                        url=upstream_url,
+                        headers=headers,
+                        content=request_body,
+                    )
+                    return Response(
+                        content=upstream_response.content,
+                        status_code=upstream_response.status_code,
+                        headers=relay._response_headers(upstream_response),
+                        media_type=upstream_response.headers.get("content-type"),
+                    )
+
+            api_key = os.environ.get(request_context.config.openai_api_key_env)
             if not api_key:
                 return JSONResponse(
                     {
-                        "error": f"Host environment variable {resolved_config.openai_api_key_env} is not set."
+                        "error": f"Host environment variable {request_context.config.openai_api_key_env} is not set."
                     },
                     status_code=503,
                 )
 
-            upstream_path = request.path_params["path"]
             upstream_url = relay._upstream_http_url(
-                base_url=resolved_config.openai_api_base_url,
+                base_url=request_context.config.openai_api_base_url,
                 upstream_path=upstream_path,
                 query_items=request.query_params.multi_items(),
             )
-            request_body = await request.body()
-
             headers = {
                 key: value
                 for key, value in request.headers.items()
@@ -103,21 +217,31 @@ class OpenAIRelay:
             if "text/event-stream" in request.headers.get("accept", ""):
                 return await relay._stream_response(
                     request=request,
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
                     upstream_url=upstream_url,
                     headers=headers,
                     request_body=request_body,
-                    timeout_seconds=resolved_config.openai_relay_timeout_seconds,
+                    timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                 )
 
             async with httpx.AsyncClient(
-                timeout=resolved_config.openai_relay_timeout_seconds,
+                timeout=request_context.config.openai_relay_timeout_seconds,
                 transport=relay.transport,
             ) as client:
+                started_at = time.perf_counter()
                 upstream_response = await client.request(
                     method=request.method,
                     url=upstream_url,
                     headers=headers,
                     content=request_body,
+                )
+                relay._record_model_usage_event(
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    duration_ms=relay._duration_ms_since(started_at),
                 )
                 return Response(
                     content=upstream_response.content,
@@ -128,19 +252,32 @@ class OpenAIRelay:
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
-                resolved_config = relay._resolve_websocket_config(websocket)
+                request_context = relay._resolve_websocket_context(websocket)
             except ValueError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
 
-            api_key = os.environ.get(resolved_config.openai_api_key_env)
+            if request_context.config.openai_provider_mode == "azure_openai":
+                reason = (
+                    "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
+                )
+                logger.warning(
+                    "relay_rejected_azure_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
+
+            api_key = os.environ.get(request_context.config.openai_api_key_env)
             if not api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")
                 return
 
             upstream_path = websocket.path_params["path"]
             upstream_url = relay._upstream_websocket_url(
-                base_url=resolved_config.openai_api_base_url,
+                base_url=request_context.config.openai_api_base_url,
                 upstream_path=upstream_path,
                 query_items=websocket.query_params.multi_items(),
             )
@@ -155,10 +292,16 @@ class OpenAIRelay:
             async with relay._connect_upstream_websocket(
                 upstream_url,
                 headers=headers,
-                timeout_seconds=resolved_config.openai_relay_timeout_seconds,
+                timeout_seconds=request_context.config.openai_relay_timeout_seconds,
             ) as upstream:
                 await websocket.accept()
-                await relay._proxy_websocket_traffic(websocket, upstream)
+                await relay._proxy_websocket_traffic(
+                    websocket,
+                    upstream,
+                    session_id=request_context.session_id,
+                    path=websocket.url.path,
+                    web_search_enabled=request_context.web_search_enabled,
+                )
 
         return Starlette(
             debug=False,
@@ -178,6 +321,8 @@ class OpenAIRelay:
     async def _stream_response(
         self,
         request: Request,
+        session_id: str,
+        upstream_path: str,
         upstream_url: str,
         headers: dict[str, str],
         request_body: bytes,
@@ -206,6 +351,7 @@ class OpenAIRelay:
             headers=headers,
             content=request_body,
         )
+        started_at = time.perf_counter()
         upstream_response = await upstream_stream.__aenter__()
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
@@ -217,11 +363,20 @@ class OpenAIRelay:
         async def iterator() -> AsyncIterator[bytes]:
             bytes_sent = 0
             chunk_count = 0
+            response_hash = sha256()
+            stream_payload: dict[str, Any] = {}
+            sse_buffer = ""
             try:
                 try:
                     async for chunk in upstream_response.aiter_raw():
                         chunk_count += 1
                         bytes_sent += len(chunk)
+                        response_hash.update(chunk)
+                        sse_buffer = self._capture_stream_usage_payload(
+                            buffer=sse_buffer,
+                            chunk=chunk,
+                            payload=stream_payload,
+                        )
                         yield chunk
                 except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
@@ -251,6 +406,16 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
+                self._record_stream_model_usage_event(
+                    session_id=session_id,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    response_body_bytes=bytes_sent,
+                    response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                    response_payload=stream_payload,
+                    duration_ms=self._duration_ms_since(started_at),
+                )
                 await upstream_stream.__aexit__(None, None, None)
                 await client.aclose()
 
@@ -269,7 +434,177 @@ class OpenAIRelay:
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
 
-    def _resolve_request_config(self, request: Request) -> GatewayConfig:
+    def _record_model_usage_event(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        request_body: bytes,
+        upstream_response: httpx.Response,
+        duration_ms: int | None = None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
+        response_payload = self._json_payload_from_response(upstream_response)
+        request_status = self._request_status_for_response(upstream_response.status_code)
+        request_metadata = {
+            "method": "POST",
+            "path": f"/v1/{upstream_path}",
+        }
+        response_metadata = {
+            "status_code": upstream_response.status_code,
+            "content_type": upstream_response.headers.get("content-type"),
+        }
+        correlation_context = self.model_usage_store.get_active_correlation_context(
+            session_id=session_id,
+            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        )
+        request_hash = sha256(request_body).hexdigest() if request_body else None
+        response_body = upstream_response.content
+        response_hash = sha256(response_body).hexdigest() if response_body else None
+        extractor = MappingModelUsageExtractor(provider_name="openai")
+        result = extractor.extract(
+            ModelUsageExtractionRequest(
+                provider="openai",
+                provider_endpoint_identifier=upstream_path,
+                request_status=request_status,
+                model=response_payload.get("model"),
+                duration_ms=duration_ms,
+                request_body_bytes=len(request_body) if request_body else None,
+                request_body_sha256=request_hash,
+                response_body_bytes=len(response_body) if response_body else None,
+                response_body_sha256=response_hash,
+                response_payload=response_payload,
+                request_metadata=request_metadata,
+                response_metadata=response_metadata,
+                correlation_context=correlation_context,
+            )
+        )
+        self.model_usage_store.upsert_event(result.event)
+
+    def _record_stream_model_usage_event(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        request_body: bytes,
+        upstream_response: httpx.Response,
+        response_body_bytes: int,
+        response_body_sha256: str | None,
+        response_payload: dict[str, Any],
+        duration_ms: int | None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
+        request_status = self._request_status_for_response(upstream_response.status_code)
+        correlation_context = self.model_usage_store.get_active_correlation_context(
+            session_id=session_id,
+            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        )
+        request_hash = sha256(request_body).hexdigest() if request_body else None
+        extractor = MappingModelUsageExtractor(provider_name="openai")
+        result = extractor.extract(
+            ModelUsageExtractionRequest(
+                provider="openai",
+                provider_endpoint_identifier=upstream_path,
+                request_status=request_status,
+                model=response_payload.get("model"),
+                duration_ms=duration_ms,
+                request_body_bytes=len(request_body) if request_body else None,
+                request_body_sha256=request_hash,
+                response_body_bytes=response_body_bytes or None,
+                response_body_sha256=response_body_sha256,
+                response_payload=response_payload,
+                request_metadata={
+                    "method": "POST",
+                    "path": f"/v1/{upstream_path}",
+                    "stream": True,
+                },
+                response_metadata={
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                    "stream": True,
+                },
+                correlation_context=correlation_context,
+            )
+        )
+        self.model_usage_store.upsert_event(result.event)
+
+    @classmethod
+    def _capture_stream_usage_payload(
+        cls, *, buffer: str, chunk: bytes, payload: dict[str, Any]
+    ) -> str:
+        try:
+            buffer += chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            buffer += chunk.decode("utf-8", errors="ignore")
+        while "\n\n" in buffer:
+            event_text, buffer = buffer.split("\n\n", 1)
+            cls._merge_sse_event_payload(event_text, payload)
+        return buffer
+
+    @classmethod
+    def _merge_sse_event_payload(cls, event_text: str, payload: dict[str, Any]) -> None:
+        for raw_line in event_text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                event_payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event_payload, dict):
+                cls._merge_stream_event_dict(event_payload, payload)
+
+    @staticmethod
+    def _merge_stream_event_dict(event_payload: dict[str, Any], payload: dict[str, Any]) -> None:
+        candidate = event_payload.get("response")
+        if not isinstance(candidate, dict):
+            candidate = event_payload
+        for key in ("id", "model", "deployment"):
+            value = candidate.get(key)
+            if value is not None:
+                payload[key] = value
+        event_type = candidate.get("type") or event_payload.get("type")
+        if event_type is not None:
+            payload["type"] = event_type
+        usage = candidate.get("usage")
+        if isinstance(usage, dict):
+            payload["usage"] = dict(usage)
+
+    @staticmethod
+    def _is_model_usage_endpoint(upstream_path: str) -> bool:
+        normalized = upstream_path.lstrip("/")
+        return normalized in {"responses", "chat/completions", "completions"}
+
+    @staticmethod
+    def _json_payload_from_response(response: httpx.Response) -> dict[str, Any]:
+        try:
+            payload = json.loads(response.content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            return {}
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    @staticmethod
+    def _request_status_for_response(status_code: int) -> str:
+        if status_code < 400:
+            return "success"
+        if status_code < 500:
+            return "failed"
+        return "error"
+
+    @staticmethod
+    def _duration_ms_since(started_at: float) -> int:
+        return max(0, int((time.perf_counter() - started_at) * 1000))
+
+    def _resolve_request_context(self, request: Request) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
             request.path_params
         ) or self._require_session_id(request.query_params.multi_items())
@@ -278,11 +613,15 @@ class OpenAIRelay:
             session_id=session_id,
             request_kind="http",
             path=request.url.path,
-            api_key_env=resolved_config.openai_api_key_env,
+            api_key_env=self._resolved_api_key_env(resolved_config),
         )
-        return resolved_config
+        return RelayRequestContext(
+            session_id=session_id,
+            config=resolved_config,
+            web_search_enabled=self._session_web_search_enabled(session_id),
+        )
 
-    def _resolve_websocket_config(self, websocket: WebSocket) -> GatewayConfig:
+    def _resolve_websocket_context(self, websocket: WebSocket) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
             websocket.path_params
         ) or self._require_session_id(websocket.query_params.multi_items())
@@ -291,9 +630,30 @@ class OpenAIRelay:
             session_id=session_id,
             request_kind="websocket",
             path=websocket.url.path,
-            api_key_env=resolved_config.openai_api_key_env,
+            api_key_env=self._resolved_api_key_env(resolved_config),
         )
-        return resolved_config
+        return RelayRequestContext(
+            session_id=session_id,
+            config=resolved_config,
+            web_search_enabled=self._session_web_search_enabled(session_id),
+        )
+
+    def _session_web_search_enabled(self, session_id: str) -> bool:
+        try:
+            session = self.provider_config_resolver.get_session_manifest(session_id)
+        except ValueError:
+            return False
+        return bool(getattr(session, "web_search_enabled", False))
+
+    @staticmethod
+    def _request_body_declares_hosted_web_search(request_body: bytes) -> bool:
+        if not request_body:
+            return False
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return _payload_declares_hosted_web_search(payload)
 
     @staticmethod
     def _log_resolved_api_key_env(
@@ -305,6 +665,21 @@ class OpenAIRelay:
             request_kind,
             path,
             api_key_env,
+        )
+
+    @staticmethod
+    def _resolved_api_key_env(config: GatewayConfig) -> str:
+        if config.openai_provider_mode == "azure_openai":
+            return config.azure_openai_api_key_env or config.openai_api_key_env
+        return config.openai_api_key_env
+
+    @staticmethod
+    def _log_hosted_web_search_denied(*, session_id: str, request_kind: str, path: str) -> None:
+        logger.warning(
+            "relay_denied_hosted_web_search session_id=%s request_kind=%s path=%s",
+            session_id,
+            request_kind,
+            path,
         )
 
     @staticmethod
@@ -347,6 +722,58 @@ class OpenAIRelay:
         return upstream_url
 
     @classmethod
+    def _azure_upstream_http_url(
+        cls,
+        *,
+        endpoint: str,
+        upstream_path: str,
+        query_items: list[tuple[str, str]],
+        api_version: str,
+    ) -> str:
+        filtered_query_items = [
+            (key, value)
+            for key, value in query_items
+            if key not in {"session_id", "api-version"}
+        ]
+        filtered_query_items.append(("api-version", api_version))
+        upstream_url = f"{endpoint.rstrip('/')}/openai/v1/{upstream_path}"
+        filtered_query = urlencode(filtered_query_items, doseq=True)
+        if filtered_query:
+            upstream_url = f"{upstream_url}?{filtered_query}"
+        return upstream_url
+
+    @staticmethod
+    def _rewrite_azure_openai_request_body(
+        request_body: bytes, *, model_deployments: dict[str, str]
+    ) -> bytes:
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Azure OpenAI responses requests must contain valid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Azure OpenAI responses requests must be a JSON object")
+
+        model = payload.get("model")
+        if not isinstance(model, str):
+            raise ValueError("Azure OpenAI responses requests require a top-level string model")
+        logical_model = model.strip()
+        if not logical_model:
+            raise ValueError("Azure OpenAI responses requests require a non-empty model")
+
+        deployment_name = model_deployments.get(logical_model)
+        if deployment_name is None:
+            raise ValueError(
+                f"Azure OpenAI model {logical_model!r} is not configured in "
+                "azure_openai_model_deployments"
+            )
+
+        rewritten_payload = dict(payload)
+        rewritten_payload["model"] = deployment_name
+        return json.dumps(rewritten_payload).encode("utf-8")
+
+    @classmethod
     def _upstream_websocket_url(
         cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]
     ) -> str:
@@ -376,7 +803,15 @@ class OpenAIRelay:
         ) as upstream:
             yield upstream
 
-    async def _proxy_websocket_traffic(self, websocket: WebSocket, upstream: Any) -> None:
+    async def _proxy_websocket_traffic(
+        self,
+        websocket: WebSocket,
+        upstream: Any,
+        *,
+        session_id: str | None = None,
+        path: str = "",
+        web_search_enabled: bool = True,
+    ) -> None:
         try:
             from websockets.exceptions import ConnectionClosedOK
         except ModuleNotFoundError:  # pragma: no cover - guarded earlier
@@ -404,9 +839,39 @@ class OpenAIRelay:
                 if message_type != "websocket.receive":
                     continue
                 if message.get("text") is not None:
+                    text = message["text"]
+                    if not web_search_enabled and _websocket_message_declares_hosted_web_search(
+                        text
+                    ):
+                        self._log_hosted_web_search_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="hosted web search is disabled for this session",
+                        )
+                        return
                     await upstream.send(message["text"])
                     continue
                 if message.get("bytes") is not None:
+                    payload = message["bytes"]
+                    if not web_search_enabled and _websocket_message_declares_hosted_web_search(
+                        payload
+                    ):
+                        self._log_hosted_web_search_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="hosted web search is disabled for this session",
+                        )
+                        return
                     await upstream.send(message["bytes"])
 
         async def upstream_to_client() -> None:
@@ -447,6 +912,52 @@ def create_app(
         transport=transport,
         provider_config_resolver=ProviderConfigResolver(config),
     ).create_app()
+
+
+def _websocket_message_declares_hosted_web_search(message: str | bytes) -> bool:
+    try:
+        if isinstance(message, bytes):
+            payload = json.loads(message.decode("utf-8"))
+        else:
+            payload = json.loads(message)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False
+    return _payload_declares_hosted_web_search(payload)
+
+
+def _payload_declares_hosted_web_search(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return any(_payload_declares_hosted_web_search(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+
+    tools = payload.get("tools")
+    if _tools_declare_hosted_web_search(tools):
+        return True
+    for value in payload.values():
+        if isinstance(value, (dict, list)) and _payload_declares_hosted_web_search(value):
+            return True
+    return False
+
+
+def _tools_declare_hosted_web_search(tools: Any) -> bool:
+    if isinstance(tools, list):
+        return any(_tool_declares_hosted_web_search(tool) for tool in tools)
+    if isinstance(tools, dict):
+        return _tool_declares_hosted_web_search(tools)
+    return False
+
+
+def _tool_declares_hosted_web_search(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    raw_type = str(tool.get("type") or "").strip()
+    if raw_type in HOSTED_WEB_SEARCH_TOOL_TYPES or (
+        raw_type.startswith("web_search_") and raw_type != "web_search_call"
+    ):
+        return True
+    nested_tools = tool.get("tools")
+    return _tools_declare_hosted_web_search(nested_tools)
 
 
 def _project_root() -> Path:

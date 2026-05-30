@@ -70,6 +70,123 @@ _ISSUE_LIST_ITEM_OUTPUT_SCHEMA = {
     "can_create_vm": {"type": "boolean"},
 }
 
+_MODEL_USAGE_EVENT_OUTPUT_SCHEMA = {
+    "event_id": {"type": "string"},
+    "occurred_at": {"type": "string"},
+    "provider": {"type": "string"},
+    "provider_endpoint_identifier": {"type": "string"},
+    "model": {"type": ["string", "null"]},
+    "deployment": {"type": ["string", "null"]},
+    "input_tokens": {"type": ["integer", "null"]},
+    "output_tokens": {"type": ["integer", "null"]},
+    "total_tokens": {"type": ["integer", "null"]},
+    "request_status": {"type": "string"},
+    "duration_ms": {"type": ["integer", "null"]},
+    "normalized_usage_status": {"type": "string"},
+    "raw_usage_metadata": {"type": "object"},
+    "request_body_bytes": {"type": ["integer", "null"]},
+    "request_body_sha256": {"type": ["string", "null"]},
+    "response_body_bytes": {"type": ["integer", "null"]},
+    "response_body_sha256": {"type": ["string", "null"]},
+    "session_id": {"type": ["string", "null"]},
+    "workflow_run_id": {"type": ["string", "null"]},
+    "effect_id": {"type": ["string", "null"]},
+    "node_id": {"type": ["string", "null"]},
+    "dispatch_id": {"type": ["string", "null"]},
+    "agent_harness": {"type": ["string", "null"]},
+    "execution_backend": {"type": ["string", "null"]},
+    "directory_path": {"type": ["string", "null"]},
+    "trace_id": {"type": ["string", "null"]},
+    "request_id": {"type": ["string", "null"]},
+}
+
+_APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "target_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempted_at": {"type": "string"},
+        "provider": {"type": ["string", "null"]},
+        "message_id": {"type": ["string", "null"]},
+        "result_summary": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+}
+
+_APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ttl_seconds": {"type": "integer"},
+        "max_uses": {"type": ["integer", "null"]},
+        "payload_mode": {"type": "string"},
+    },
+}
+
+_APPROVAL_REQUEST_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "request_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "action_type": {"type": "string"},
+        "payload_digest": {"type": "string"},
+        "human_summary": {"type": "string"},
+        "payload": {"type": "object"},
+        "directory_path": {"type": "string"},
+        "vm_id": {"type": ["string", "null"]},
+        "tool_name": {"type": ["string", "null"]},
+        "intended_effect": {"type": ["string", "null"]},
+        "status": {"type": "string"},
+        "approval_settings": {
+            "type": ["object", "null"],
+            "properties": _APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA["properties"],
+        },
+        "used_count": {"type": "integer"},
+        "last_used_at": {"type": ["string", "null"]},
+        "notification_status": {"type": "string"},
+        "notification_target_ids": {"type": "array", "items": {"type": "string"}},
+        "notification_attempted_at": {"type": ["string", "null"]},
+        "notification_error": {"type": ["string", "null"]},
+        "notification_deliveries": {
+            "type": "array",
+            "items": _APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA,
+        },
+        "created_at": {"type": "string"},
+        "expires_at": {"type": "string"},
+        "approver": {"type": ["string", "null"]},
+        "decision_at": {"type": ["string", "null"]},
+        "decision_reason": {"type": ["string", "null"]},
+        "decision_history": {"type": "array"},
+    },
+}
+
+_APPROVAL_PENDING_CREATED_OUTPUT_SCHEMA = {
+    "approval_request_id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "directory_path": {"type": "string"},
+    "action_type": {"type": "string"},
+    "tool_name": {"type": ["string", "null"]},
+    "human_summary": {"type": "string"},
+    "payload_digest": {"type": "string"},
+    "payload": {"type": "object"},
+    "vm_id": {"type": ["string", "null"]},
+    "intended_effect": {"type": ["string", "null"]},
+    "approval_settings": {
+        "type": ["object", "null"],
+        "properties": _APPROVAL_GRANT_SETTINGS_OUTPUT_SCHEMA["properties"],
+    },
+    "notification_status": {"type": "string"},
+    "notification_target_ids": {"type": "array", "items": {"type": "string"}},
+    "notification_attempted_at": {"type": ["string", "null"]},
+    "notification_error": {"type": ["string", "null"]},
+    "notification_deliveries": {
+        "type": "array",
+        "items": _APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA,
+    },
+    "created_at": {"type": "string"},
+    "expires_at": {"type": "string"},
+    "approval_request": _APPROVAL_REQUEST_OUTPUT_SCHEMA,
+}
+
 _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:event": {
         "event_id": {"type": "string"},
@@ -80,6 +197,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "source": {"type": ["object", "null"]},
         "idempotency_key": {"type": ["string", "null"]},
     },
+    "trigger:approval:pending-created": _APPROVAL_PENDING_CREATED_OUTPUT_SCHEMA,
     "trigger:http:webhook": {
         "slug": {"type": "string"},
         "headers": {"type": "object"},
@@ -263,6 +381,21 @@ _TRIGGER_OUTPUT_SCHEMAS = {
                 "created_at": {"type": "string"},
                 "in_reply_to": {"type": "string"},
                 "resolved": {"type": "boolean"},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "prior_thread_comment_author_names": {"type": "array"},
+                        "prior_thread_comment_author_unique_names": {"type": "array"},
+                        "prior_thread_comment_author_ids": {"type": "array"},
+                        "mentioned_names": {"type": "array"},
+                        "mentioned_ids": {"type": "array"},
+                        "thread_comment_count": {"type": "integer"},
+                        "agent_directed": {"type": "boolean"},
+                        "agent_directed_same_thread": {"type": "boolean"},
+                        "agent_directed_mentioned": {"type": "boolean"},
+                        "agent_directed_reason": {"type": "string"},
+                    },
+                },
             },
         },
     },
@@ -551,6 +684,11 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "dispatch_id": {"type": "string"},
         "thread_id": {"type": "string"},
         "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "error_message": {"type": "string"},
+        "error_class": {"type": "string"},
+        "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
         "dispatch_id": {"type": "string"},
@@ -561,6 +699,9 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "vm_name": {"type": "string"},
         "session_id": {"type": "string"},
         "coalesced_count": {"type": "integer"},
+        "error_message": {"type": "string"},
+        "error_class": {"type": "string"},
+        "failed_phase": {"type": "string"},
     },
     "effect:chat-assistant:ensure-session": {
         "success": {"type": "boolean"},
@@ -865,6 +1006,17 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "tools": {"type": "array"},
         "expires_at": {"type": "string"},
     },
+    "effect:session:revoke-mcp-tool-approval-lease": {
+        "success": {"type": "boolean"},
+        "lease_id": {"type": "string"},
+        "mcp_tool_approval_lease_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "workflow_run_id": {"type": "string"},
+        "tools": {"type": "array"},
+        "revoked": {"type": "boolean"},
+        "already_revoked": {"type": "boolean"},
+        "revoked_at": {"type": "string"},
+    },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},
@@ -879,12 +1031,15 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "action": {"type": "string"},
         "status": {"type": "string"},
         "extended": {"type": "boolean"},
+        "renewed": {"type": "boolean"},
         "was_expired": {"type": "boolean"},
+        "renewal_reason": {"type": "string"},
         "target": {"type": "string"},
         "session_id": {"type": "string"},
         "vm_name": {"type": ["string", "null"]},
         "directory_path": {"type": "string"},
         "extend_by": {"type": "integer"},
+        "renew_if_expires_within": {"type": ["integer", "null"]},
         "previous_expires_at": {"type": "string"},
         "new_expires_at": {"type": "string"},
         "expires_at": {"type": "string"},
@@ -973,6 +1128,16 @@ _QUERY_OUTPUT_SCHEMAS = {
     },
     "query:session:list": {
         "sessions": {"type": "array"},
+        "count": {"type": "integer"},
+    },
+    "query:model-usage:list": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": _MODEL_USAGE_EVENT_OUTPUT_SCHEMA,
+            },
+        },
         "count": {"type": "integer"},
     },
     "query:agent:artifact-text": {

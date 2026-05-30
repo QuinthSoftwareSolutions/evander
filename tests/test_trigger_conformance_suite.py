@@ -276,6 +276,18 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "approval-pending",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+                "directory_path": " root/team-a ",
+                "action_types": [" approve ", "deny"],
+                "tool_names": [" email_send_approved "],
+            },
+            "trigger:approval:pending-created",
+            "directory_path",
+        ),
+        (
+            {
                 "id": "git",
                 "display_name": "Git",
                 "type": "trigger:git:push",
@@ -309,6 +321,10 @@ def test_conformance_schema_accepts_required_trigger_shapes(
         assert trigger.provider == "github_actions"
         assert trigger.branches == ["main"]
         assert trigger.conclusions == ["success", "cancelled", "timed_out"]
+    if expected_type == "trigger:approval:pending-created":
+        assert trigger.directory_path == "root/team-a"
+        assert trigger.action_types == ["approve", "deny"]
+        assert trigger.tool_names == ["email_send_approved"]
     _record_result(
         report_collector,
         requirement_id=f"schema:{expected_type}",
@@ -610,9 +626,9 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
         json.dumps(
             {
                 "teams-dm": {
-                    "last_created_at": (
-                        now - timedelta(seconds=1)
-                    ).isoformat().replace("+00:00", "Z"),
+                    "last_created_at": (now - timedelta(seconds=1))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
                     "recent_cursors": [],
                 }
             }
@@ -1115,11 +1131,7 @@ def test_pr_feedback_skips_feedback_older_than_stream_cursor(tmp_path: Path) -> 
     ]
     (runtime_dir / "pr-feedback-store.json").write_text(
         json.dumps(
-            {
-                "feedback": {
-                    item.feedback_id: item.model_dump(mode="json") for item in items
-                }
-            }
+            {"feedback": {item.feedback_id: item.model_dump(mode="json") for item in items}}
         ),
         encoding="utf-8",
     )
@@ -1722,6 +1734,101 @@ def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(
     assert events[0].payload["feedback"]["feedback_id"] == "github:comment:1"
 
 
+def test_pr_feedback_trigger_marks_agent_directed_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-gh",
+                "display_name": "PR GitHub",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+                "agent_author_names": ["evander Bot"],
+                "agent_mention_names": ["Truman Bot"],
+                "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="Can you make this change?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 41, tzinfo=timezone.utc),
+                    metadata={"prior_thread_comment_author_names": ["evander Bot"]},
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:2",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="@Truman Bot can you take this?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 42, tzinfo=timezone.utc),
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:3",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="For human reviewers only.",
+                    created_at=datetime(2026, 4, 8, 5, 33, 43, tzinfo=timezone.utc),
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:4",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="@<C74221CB-EE08-6A83-9055-AF01C3333112> can you take this?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 44, tzinfo=timezone.utc),
+                    metadata={"mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"]},
+                ),
+            ]
+            self.next_cursor = "2026-04-08T05:33:44Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+
+    events = provider.poll()
+
+    metadata_by_id = {
+        event.payload["feedback"]["feedback_id"]: event.payload["feedback"]["metadata"]
+        for event in events
+    }
+    assert metadata_by_id["github:comment:1"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:1"]["agent_directed_same_thread"] is True
+    assert metadata_by_id["github:comment:1"]["agent_directed_reason"] == "same_thread"
+    assert metadata_by_id["github:comment:2"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:2"]["agent_directed_mentioned"] is True
+    assert metadata_by_id["github:comment:2"]["agent_directed_reason"] == "mention"
+    assert metadata_by_id["github:comment:3"]["agent_directed"] is False
+    assert metadata_by_id["github:comment:3"]["agent_directed_reason"] == "not_agent_directed"
+    assert metadata_by_id["github:comment:4"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_mentioned"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_reason"] == "mention"
+
+
 def test_pr_completed_trigger_github_refreshes_status_before_emitting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1954,6 +2061,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:pull-request:completed",
             "schema:trigger:ci:run:completed",
             "schema:trigger:review:new-request",
+            "schema:trigger:approval:pending-created",
             "schema:trigger:git:push",
             "schema:duplicate-ids",
         ],

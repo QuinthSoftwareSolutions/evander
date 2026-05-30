@@ -50,6 +50,7 @@ type SessionRecord = {
   communication_file_allowed_extensions: string[];
   communication_file_blocked_extensions: string[];
   communication_file_require_approval_for_send: boolean;
+  web_search_enabled: boolean;
   expires_at: string;
   created_at: string;
   metadata: Record<string, unknown>;
@@ -138,6 +139,7 @@ type SessionPolicyDraft = {
   communicationFileAllowedExtensions: string;
   communicationFileBlockedExtensions: string;
   communicationFileRequireApprovalForSend: boolean;
+  webSearchEnabled: boolean;
   metadataJson: string;
 };
 
@@ -193,6 +195,9 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   teams_meeting_speak: "Speak into the active Teams meeting through the host-managed meeting bridge.",
   teams_meeting_stop: "Leave the active Teams meeting and close the host-side meeting binding.",
   list_contacts: "List directory contact ids and safe contact summaries without exposing phone numbers or email addresses.",
+  make_phone_call: "Start host-side phone calls to directory-configured contact ids.",
+  get_phone_call_result: "Read phone call status and transcripts for calls owned by the session.",
+  submit_voice_query_response: "Answer delegated live voice questions for phone calls projected from this session.",
   email_list_unread: "List unread email messages available to the session through the host email provider.",
   email_get_message: "Open a specific email message that the session is allowed to inspect.",
   email_create_draft: "Create an email draft on the host without sending it yet.",
@@ -282,6 +287,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     communicationFileAllowedExtensions: formatList(session.communication_file_allowed_extensions),
     communicationFileBlockedExtensions: formatList(session.communication_file_blocked_extensions),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
+    webSearchEnabled: Boolean(session.web_search_enabled),
     metadataJson: JSON.stringify(session.metadata ?? {}, null, 2),
   };
 }
@@ -412,7 +418,9 @@ function groupToolOption(tool: ToolOption): string {
   if (["add_message_reaction"].includes(value)) {
     return "Messaging";
   }
-  if (["list_contacts", "make_phone_call", "get_phone_call_result"].includes(value)) {
+  if (
+    ["list_contacts", "make_phone_call", "get_phone_call_result", "submit_voice_query_response"].includes(value)
+  ) {
     return "Voice calling";
   }
   if (["mssql_provision_database", "mssql_list_databases", "mssql_drop_database"].includes(value)) {
@@ -803,6 +811,7 @@ export function SessionsScreen() {
     communicationFileAllowedExtensions: "",
     communicationFileBlockedExtensions: "",
     communicationFileRequireApprovalForSend: false,
+    webSearchEnabled: false,
     metadataJson: "{}",
   });
   const [policyDirty, setPolicyDirty] = useState(false);
@@ -1316,6 +1325,7 @@ export function SessionsScreen() {
               communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
               communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
+              web_search_enabled: policyDraft.webSearchEnabled,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
               metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
@@ -1733,6 +1743,15 @@ export function SessionsScreen() {
                       placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
                       disabled={mutationLocked}
                     />
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={policyDraft.webSearchEnabled}
+                      onChange={(event) => updatePolicyDraft({ webSearchEnabled: event.target.checked })}
+                      disabled={mutationLocked}
+                    />
+                    <span>Web search</span>
                   </label>
                   <div className="field-stack session-communication-files">
                     <span>Communication files</span>

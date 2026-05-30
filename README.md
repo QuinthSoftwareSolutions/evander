@@ -6,7 +6,11 @@
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected phone calls
+- An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
+- A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message`
@@ -107,6 +111,15 @@ Directory-scoped config is rooted at `root`:
    agent-sandbox-gateway --runtime-dir runtime
    agent-sandbox-openai-relay --runtime-dir runtime
    ```
+
+   Optional DIDWW/OpenAI Realtime phone calls require Asterisk with a DIDWW PJSIP
+   trunk plus `agent-sandbox-didww-sip-bridge --runtime-dir runtime`. The bridge
+   keeps SIP, RTP, and OpenAI credentials on the host and is only reached by the
+   gateway through `phone_call_backend=openai_realtime_didww`.
+
+   Optional Teams meeting voice sessions require the Windows-hosted bridge in
+   `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`
+   and choose `BRIDGE_SPEECH_MODE=AzureSpeech` or `OpenAIRealtime`.
 
 7. Download the base image and launch VMs from a libvirt-accessible storage path:
 
@@ -218,7 +231,9 @@ sudo systemctl start agent-sandbox-admin-web.service
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
+sudo systemctl start agent-sandbox-didww-sip-bridge.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-npm-audit-facade.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl start agent-sandbox-discord-wake.service
@@ -985,9 +1000,12 @@ Response:
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
+- `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
+  bind and upstream settings from runtime config.
 - Keep these values in host-only shell environment or systemd env files such as:
   - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
   - `config/nuget-relay.env`
+  - `config/npm-audit-facade.env`
 - Directory-specific OpenAI model key env vars named by `openai_api_key_env` should be
   available to the relay.
 - Do not place these values in guest images, cloud-init, session manifests, or guest shell
@@ -1153,6 +1171,17 @@ posted text.
 6. `gate:await-agent`
 7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
+
+Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to
+`gate:await-agent` through the prompt's `started` source port. Use the
+prompt's `completed` source port for downstream work that should wait for the
+agent run itself to finish. Use the prompt's `error` source port for
+notification, retry, or cleanup branches that should only fire when a
+supported prompt dispatch failure is routed. If no error edge is wired, the
+prompt still fails normally.
+For `effect:agent:enqueue-prompt`, routed dispatch failures preserve retry
+context such as `queued`, `queue_key`, and `coalesced_count` when the prompt was
+queued before dispatch failed.
 
 ### Review repo prep helper
 

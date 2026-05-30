@@ -51,6 +51,7 @@ import {
   type WorkflowRunSearchItem,
   type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
+  type WorkflowRunRecentNodeActivity,
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
@@ -151,6 +152,7 @@ type GraphNodeData = {
   hasUnsavedChanges: boolean;
   isDisabled: boolean;
   isInspectGhost?: boolean;
+  runtimePulse: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
   tutorialBlocked?: boolean;
@@ -193,6 +195,15 @@ type WorkflowFieldOption = WorkflowEditorFieldDefinition["options"][number];
 
 type StringMapDraftRow = {
   id: string;
+  key: string;
+  value: string;
+};
+
+type SessionListMetadataRuleKind = "equals" | "exists" | "prefix";
+
+type SessionListMetadataRuleDraftRow = {
+  id: string;
+  kind: SessionListMetadataRuleKind;
   key: string;
   value: string;
 };
@@ -286,10 +297,24 @@ type WorkflowValidationCacheEntry = {
   diagnostics: WorkflowValidationDiagnostic[];
 };
 
+type RuntimePulseContext = {
+  isInspectMode: boolean;
+  isTutorialMode: boolean;
+  workflowGeneratorOpen: boolean;
+  visibleGraphNodeIds: ReadonlySet<string>;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
+const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
+const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const SESSION_LIST_METADATA_FIELD_KEYS = [
+  "metadata_equals",
+  "metadata_exists",
+  "metadata_prefix",
+] as const;
 const COMMUNICATION_EFFECT_NODE_TYPES = new Set([
   "effect:communication:send-message",
   "effect:notification:send",
@@ -344,6 +369,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
   "trigger:communication:new-message": "Start from new messages on configured communication targets.",
+  "trigger:approval:pending-created": "Start when a pending approval request is created.",
   "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
@@ -365,6 +391,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
   "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
+  "effect:session:revoke-mcp-tool-approval-lease": "Revoke an MCP tool approval lease for one agent session.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
@@ -386,7 +413,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
-  "effect:session:renew-if-expired": "Extend an expired session from the host.",
+  "effect:session:renew-if-expired": "Renew an expired or soon-expiring session.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
   "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
@@ -411,6 +438,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = [
   "failed",
+  "error_routed",
   "running",
   "waiting",
   "completion_pending",
@@ -528,7 +556,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasErrorDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${nodeData.runtimePulse ? " runtime-pulse" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -840,6 +868,11 @@ function nodeStatusBadges(activity: WorkflowNodeActivityCounts | undefined): Gra
   });
 }
 
+function trimNonEmpty(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized ? normalized : null;
+}
+
 function buildNodes(
   config: WorkflowConfig,
   layout: WorkflowLayout,
@@ -850,6 +883,7 @@ function buildNodes(
   selectedNodeIds: string[] = [],
   dirtyNodeIds: ReadonlySet<string> = new Set<string>(),
   ghostNodeIds: ReadonlySet<string> = new Set<string>(),
+  runtimePulseNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -893,6 +927,7 @@ function buildNodes(
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
+        runtimePulse: runtimePulseNodeIds.has(node.id),
       },
     };
   });
@@ -1536,6 +1571,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       case_sensitive: false,
     };
   }
+  if (kind === "trigger" && type === "trigger:approval:pending-created") {
+    return {
+      id,
+      display_name: "Pending approval",
+      type,
+      directory_path: "root",
+      action_types: [],
+      tool_names: [],
+    };
+  }
   if (kind === "trigger" && type === "trigger:teams:direct-message") {
     return {
       id,
@@ -1835,10 +1880,19 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:session:renew-if-expired") {
     return {
       id,
-      display_name: "Renew expired session",
+      display_name: "Renew expired or soon-expiring session",
       type,
       session_id: "session-id",
       extend_by: "1d",
+      renew_if_expires_within: "2h",
+    };
+  }
+  if (kind === "effect" && type === "effect:session:revoke-mcp-tool-approval-lease") {
+    return {
+      id,
+      display_name: "Revoke MCP tool approval lease",
+      type,
+      mcp_tool_approval_lease_id: "mcp-tool-approval-lease-id",
     };
   }
   if (kind === "effect" && type === "effect:artifact:stage") {
@@ -2337,6 +2391,174 @@ function formatJson(value: unknown, fallback = "{}"): string {
   return JSON.stringify(value, null, 2);
 }
 
+function isSessionListMetadataFieldKey(
+  key: string,
+): key is (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number] {
+  return SESSION_LIST_METADATA_FIELD_KEYS.includes(
+    key as (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number],
+  );
+}
+
+function createSessionListMetadataRuleDraftRow(
+  kind: SessionListMetadataRuleKind = "equals",
+  key = "",
+  value = "",
+): SessionListMetadataRuleDraftRow {
+  const randomSuffix = Math.random().toString(36).slice(2);
+  return {
+    id: `metadata-rule-${Date.now()}-${randomSuffix}`,
+    kind,
+    key,
+    value,
+  };
+}
+
+function sessionListMetadataEqualsRuleValueText(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return JSON.stringify(value);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataPrefixRuleValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataRuleValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function sessionListMetadataExistsFlagIsPresent(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "string") {
+    return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function appendSessionListMetadataEqualsRuleRows(
+  rows: SessionListMetadataRuleDraftRow[],
+  selector: string,
+  value: unknown,
+) {
+  if (isRecord(value) && Object.keys(value).length > 0) {
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      const nestedSelector = selector ? `${selector}.${nestedKey}` : nestedKey;
+      appendSessionListMetadataEqualsRuleRows(rows, nestedSelector, nestedValue);
+    }
+    return;
+  }
+  rows.push(createSessionListMetadataRuleDraftRow(
+    "equals",
+    selector,
+    sessionListMetadataEqualsRuleValueText(value),
+  ));
+}
+
+function sessionListMetadataRuleDraftRowsFromValues(values: Record<string, unknown>): {
+  rows: SessionListMetadataRuleDraftRow[];
+  supported: boolean;
+} {
+  const rows: SessionListMetadataRuleDraftRow[] = [];
+  const metadataEquals = values.metadata_equals;
+  const metadataExists = values.metadata_exists;
+  const metadataPrefix = values.metadata_prefix;
+  if (
+    isExactBindingValue(metadataEquals) ||
+    isExactBindingValue(metadataExists) ||
+    isExactBindingValue(metadataPrefix)
+  ) {
+    return { rows, supported: false };
+  }
+  if (metadataEquals !== undefined && metadataEquals !== null && !isRecord(metadataEquals)) {
+    return { rows, supported: false };
+  }
+  if (metadataPrefix !== undefined && metadataPrefix !== null && !isRecord(metadataPrefix)) {
+    return { rows, supported: false };
+  }
+  if (isRecord(metadataEquals)) {
+    for (const [key, value] of Object.entries(metadataEquals)) {
+      appendSessionListMetadataEqualsRuleRows(rows, key, value);
+    }
+  }
+  if (typeof metadataExists === "string") {
+    const key = metadataExists.trim();
+    if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+  } else if (Array.isArray(metadataExists)) {
+    for (const item of metadataExists) {
+      const key = String(item ?? "").trim();
+      if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (isRecord(metadataExists)) {
+    for (const [key, flag] of Object.entries(metadataExists)) {
+      if (!sessionListMetadataExistsFlagIsPresent(flag)) {
+        return { rows: [], supported: false };
+      }
+      if (key.trim()) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (metadataExists !== undefined && metadataExists !== null) {
+    return { rows: [], supported: false };
+  }
+  if (isRecord(metadataPrefix)) {
+    for (const [key, value] of Object.entries(metadataPrefix)) {
+      rows.push(createSessionListMetadataRuleDraftRow(
+        "prefix",
+        key,
+        sessionListMetadataPrefixRuleValueText(value),
+      ));
+    }
+  }
+  return { rows, supported: true };
+}
+
+function sessionListMetadataRuleValues(rows: SessionListMetadataRuleDraftRow[]): {
+  metadata_equals?: Record<string, unknown>;
+  metadata_exists?: string[];
+  metadata_prefix?: Record<string, string>;
+} {
+  const metadataEquals: Record<string, unknown> = {};
+  const metadataExists: string[] = [];
+  const metadataPrefix: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    if (row.kind === "equals") {
+      metadataEquals[key] = sessionListMetadataRuleValue(row.value);
+    } else if (row.kind === "exists") {
+      metadataExists.push(key);
+    } else if (row.kind === "prefix") {
+      metadataPrefix[key] = row.value;
+    }
+  }
+  return {
+    ...(Object.keys(metadataEquals).length > 0 ? { metadata_equals: metadataEquals } : {}),
+    ...(metadataExists.length > 0 ? { metadata_exists: metadataExists } : {}),
+    ...(Object.keys(metadataPrefix).length > 0 ? { metadata_prefix: metadataPrefix } : {}),
+  };
+}
+
 function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLookupKind): URLSearchParams {
   const normalized = value.trim();
   const query = new URLSearchParams();
@@ -2409,6 +2631,18 @@ function summarizeRunSearchStatuses(counts: Record<string, number>): string {
   return entries.map(([status, count]) => `${status} ${count}`).join(", ");
 }
 
+function workflowRunStateLabel(runState: string | null | undefined, fallbackState: string | null | undefined = null): string {
+  return runState ?? fallbackState ?? "active";
+}
+
+function workflowRunStateClassName(
+  runState: string | null | undefined,
+  fallbackState: string | null | undefined = null,
+): string {
+  const state = workflowRunStateLabel(runState, fallbackState);
+  return state === "errored" ? "failed" : state;
+}
+
 function workflowRunDetailGraphNodes(detail: WorkflowRunDetail): Array<WorkflowNodeConfig & { kind: WorkflowNodeKind }> {
   const snapshot = detail.graph.snapshot;
   const source = snapshot
@@ -2461,12 +2695,12 @@ function workflowRunDetailVisitedNodeIds(detail: WorkflowRunDetail): Set<string>
 }
 
 function workflowRunDetailIsFailed(detail: WorkflowRunDetail): boolean {
+  if (detail.run_state === "error_routed") return false;
   return Boolean(
     detail.run_state === "errored" ||
       detail.delivery_state === "failed" ||
       detail.failed_node_id ||
-      detail.failed_node_status ||
-      detail.error,
+      detail.failed_node_status === "failed",
   );
 }
 
@@ -3185,6 +3419,20 @@ function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "
   return "literal";
 }
 
+function enumOptionValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const stringValue = typeof value === "string" ? value : "";
+  if (!stringValue) return "";
+  return field.options.some((option) => option.value === stringValue) ? stringValue : "";
+}
+
+function enumLiteralFallbackValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const currentValue = enumOptionValue(field, value);
+  if (currentValue) return currentValue;
+  const defaultValue = enumOptionValue(field, field.default_value);
+  if (defaultValue) return defaultValue;
+  return field.required ? field.options[0]?.value ?? "" : "";
+}
+
 function parseJsonDraft(text: string, fallback: unknown): unknown {
   const trimmed = text.trim();
   if (!trimmed) return fallback;
@@ -3346,6 +3594,16 @@ export default function App() {
   const workflowGeneratorRequestIdRef = useRef(0);
   const validationCacheRef = useRef<Map<string, WorkflowValidationCacheEntry>>(new Map());
   const validationRunIdRef = useRef(0);
+  const runtimePulseContextRef = useRef<RuntimePulseContext>({
+    isInspectMode: false,
+    isTutorialMode: false,
+    workflowGeneratorOpen: false,
+    visibleGraphNodeIds: new Set<string>(),
+  });
+  const runtimePulseNodeIdsRef = useRef<Set<string>>(new Set<string>());
+  const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
+  const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
+  const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -3357,6 +3615,7 @@ export default function App() {
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [runtimePulseNodeIds, setRuntimePulseNodeIds] = useState<Set<string>>(() => new Set<string>());
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
   const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
     () => ({ completedTutorialIds: [], skippedTutorialIds: [] }),
@@ -3407,6 +3666,9 @@ export default function App() {
   const [inspectorJsonDisplayModes, setInspectorJsonDisplayModes] = useState<Record<string, JsonDisplayMode>>({});
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
+  const [inspectorSessionListMetadataRules, setInspectorSessionListMetadataRules] = useState<
+    SessionListMetadataRuleDraftRow[]
+  >([]);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
@@ -3431,6 +3693,9 @@ export default function App() {
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
   const workflowRunControlLocked = !canControlWorkflowRuns;
+  useEffect(() => {
+    runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
+  }, [runtimePulseNodeIds]);
   const workflowTutorialProgressSets = useMemo(() => ({
     completed: new Set(workflowTutorialProgress.completedTutorialIds),
     skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
@@ -3452,6 +3717,14 @@ export default function App() {
   );
   const visibleGraphNodeIds = new Set(visibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
   const visibleGraphNodeIdKey = workflowGraphKey([...visibleGraphNodeIds]);
+  useEffect(() => {
+    runtimePulseContextRef.current = {
+      isInspectMode,
+      isTutorialMode,
+      workflowGeneratorOpen,
+      visibleGraphNodeIds: new Set(visibleGraphNodeIds),
+    };
+  }, [isInspectMode, isTutorialMode, visibleGraphNodeIdKey, workflowGeneratorOpen]);
   const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
@@ -3477,6 +3750,7 @@ export default function App() {
         selectedNodeId ? [selectedNodeId] : [],
         new Set<string>(),
         inspectGhostNodeIds,
+        new Set<string>(),
       )
     : [];
   const inspectFlowEdges = inspectConfig
@@ -3506,6 +3780,7 @@ export default function App() {
           [],
           {},
           selectedNodeIds,
+          new Set<string>(),
           new Set<string>(),
           new Set<string>(),
         ),
@@ -3890,7 +4165,7 @@ export default function App() {
           initialGraphDirectoryPathRef.current,
         );
         validationCacheRef.current.clear();
-        setRunSnapshot(runSnapshotPayload);
+        applyWorkflowRunSnapshot(runSnapshotPayload);
         const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
           graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
         );
@@ -3913,6 +4188,76 @@ export default function App() {
     };
   }, []);
 
+  function rememberRuntimePulseSeenActivityKey(activityKey: string) {
+    const seenKeys = runtimePulseSeenActivityKeysRef.current;
+    if (seenKeys.has(activityKey)) {
+      return;
+    }
+    seenKeys.add(activityKey);
+    const keyOrder = runtimePulseSeenActivityKeyOrderRef.current;
+    keyOrder.push(activityKey);
+    while (keyOrder.length > RUNTIME_NODE_PULSE_SEEN_KEY_CAP) {
+      const removedKey = keyOrder.shift();
+      if (removedKey !== undefined) {
+        seenKeys.delete(removedKey);
+      }
+    }
+  }
+
+  function scheduleRuntimePulse(nodeId: string) {
+    const existingTimeout = runtimePulseTimeoutsRef.current.get(nodeId);
+    if (existingTimeout !== undefined) {
+      clearTimeout(existingTimeout);
+    }
+    setRuntimePulseNodeIds((current) => {
+      if (current.has(nodeId)) return current;
+      const next = new Set(current);
+      next.add(nodeId);
+      return next;
+    });
+    const timeout = setTimeout(() => {
+      if (runtimePulseTimeoutsRef.current.get(nodeId) !== timeout) {
+        return;
+      }
+      runtimePulseTimeoutsRef.current.delete(nodeId);
+      setRuntimePulseNodeIds((current) => {
+        if (!current.has(nodeId)) return current;
+        const next = new Set(current);
+        next.delete(nodeId);
+        return next;
+      });
+    }, RUNTIME_NODE_PULSE_DURATION_MS);
+    runtimePulseTimeoutsRef.current.set(nodeId, timeout);
+  }
+
+  function applyWorkflowRunSnapshot(payload: WorkflowRunSnapshot) {
+    setRunSnapshot(payload);
+    const recentNodeActivity = payload.recent_node_activity ?? [];
+    if (recentNodeActivity.length === 0) {
+      return;
+    }
+    const context = runtimePulseContextRef.current;
+    const latestUnseenNodeActivity = new Map<string, WorkflowRunRecentNodeActivity>();
+    for (const activity of recentNodeActivity) {
+      const activityKey = trimNonEmpty(activity.activity_key);
+      if (!activityKey) continue;
+      const wasSeen = runtimePulseSeenActivityKeysRef.current.has(activityKey);
+      rememberRuntimePulseSeenActivityKey(activityKey);
+      const nodeId = trimNonEmpty(activity.node_id);
+      const activityAt = trimNonEmpty(activity.activity_at);
+      if (!nodeId || !activityAt) continue;
+      if (wasSeen || latestUnseenNodeActivity.has(nodeId)) continue;
+      latestUnseenNodeActivity.set(nodeId, activity);
+    }
+    if (context.isInspectMode || context.isTutorialMode || context.workflowGeneratorOpen) {
+      return;
+    }
+    for (const [nodeId] of latestUnseenNodeActivity) {
+      if (!context.visibleGraphNodeIds.has(nodeId)) continue;
+      scheduleRuntimePulse(nodeId);
+    }
+  }
+
   const documentLoaded = document !== null;
 
   useEffect(() => {
@@ -3923,6 +4268,7 @@ export default function App() {
         if (cancelled) return;
         setCatalog(catalogPayload);
         setError(null);
+        const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIdsRef.current;
         setFlowNodes((currentNodes) =>
           buildNodes(
             document.config,
@@ -3933,6 +4279,8 @@ export default function App() {
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
             dirtyNodeIdSet,
+            new Set<string>(),
+            pulseNodeIds,
           ),
         );
         setFlowEdges(buildEdges(document.config, catalogPayload));
@@ -4012,7 +4360,7 @@ export default function App() {
       if (!(event instanceof MessageEvent)) return;
       try {
         const payload = JSON.parse(event.data) as WorkflowRunSnapshot;
-        setRunSnapshot(payload);
+        applyWorkflowRunSnapshot(payload);
       } catch {
         // Ignore malformed event payloads and keep last known snapshot.
       }
@@ -4022,7 +4370,13 @@ export default function App() {
       // Keep the last snapshot visible when the stream reports an error.
     });
 
-    return () => stream.close();
+    return () => {
+      stream.close();
+      for (const timeout of runtimePulseTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      runtimePulseTimeoutsRef.current.clear();
+    };
   }, []);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
@@ -4069,7 +4423,7 @@ export default function App() {
         method: "DELETE",
       });
       const nextSnapshot = await fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs");
-      setRunSnapshot(nextSnapshot);
+      applyWorkflowRunSnapshot(nextSnapshot);
       setNodeConnectionMenu(null);
       setPendingConnection(null);
       setError(null);
@@ -4443,6 +4797,8 @@ export default function App() {
           currentPositionsFromNodes(currentNodes),
           restoredSelectedNodeIds,
           new Set(restoredDirtyNodeIds),
+          new Set<string>(),
+          workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
         ),
       );
       setFlowEdges(buildEdges(document.config, catalog));
@@ -4688,6 +5044,7 @@ export default function App() {
   useEffect(() => {
     if (!document) return;
     setFlowNodes((currentNodes) => {
+      const pulseNodeIds = workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds;
       return buildNodes(
         document.config,
         document.layout,
@@ -4697,10 +5054,12 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
         dirtyNodeIdSet,
+        new Set<string>(),
+        pulseNodeIds,
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics, workflowGeneratorOpen]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, runtimePulseNodeIds, validationDiagnostics, workflowGeneratorOpen]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -4805,6 +5164,7 @@ export default function App() {
       setInspectorJsonDisplayModes({});
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
+      setInspectorSessionListMetadataRules([]);
       setInspectorFieldModes({});
       setRawJsonDraft("{}");
       return;
@@ -4822,6 +5182,9 @@ export default function App() {
     const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
+    const nextSessionListMetadataRules = nextNode.type === "query:session:list"
+      ? sessionListMetadataRuleDraftRowsFromValues(nextKnownValues).rows
+      : [];
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
@@ -4891,6 +5254,7 @@ export default function App() {
     setInspectorJsonDisplayModes(nextJsonDisplayModes);
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
+    setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
     setInspectorDraftError(null);
@@ -4958,6 +5322,8 @@ export default function App() {
         currentPositionsFromNodes(currentNodes),
         nextSelectedNodeIds,
         new Set(nextDirtyNodeIds),
+        new Set<string>(),
+        workflowGeneratorOpen ? new Set<string>() : runtimePulseNodeIds,
       ),
     );
     setFlowEdges(buildEdges(normalizedDocument.config, catalog));
@@ -6325,6 +6691,32 @@ export default function App() {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
   }
 
+  function updateBindableEnumFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else {
+      updateKnownField(field.key, enumLiteralFallbackValue(field, value));
+    }
+  }
+
+  function updateMetadataFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else if (isExactBindingValue(value)) {
+      updateKnownField(field.key, undefined);
+    }
+  }
+
   async function copyBindingExpression(bindingExpression: string) {
     try {
       if (!navigator.clipboard?.writeText) {
@@ -7342,11 +7734,261 @@ export default function App() {
     stageInspectorDraft({ knownValues: next });
   }
 
+  function updateSessionListMetadataRuleRows(nextRows: SessionListMetadataRuleDraftRow[]) {
+    const metadataValues = sessionListMetadataRuleValues(nextRows);
+    const nextKnownValues = { ...inspectorKnownValues };
+    const nextJsonDrafts = { ...inspectorJsonDrafts };
+    for (const key of SESSION_LIST_METADATA_FIELD_KEYS) {
+      delete nextKnownValues[key];
+      const value = metadataValues[key];
+      nextJsonDrafts[key] = value === undefined ? "" : JSON.stringify(value, null, 2);
+      if (value !== undefined) {
+        nextKnownValues[key] = value;
+      }
+    }
+    setInspectorSessionListMetadataRules(nextRows);
+    setInspectorKnownValues(nextKnownValues);
+    setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorFieldModes((current) => ({
+      ...current,
+      metadata_equals: "literal",
+      metadata_exists: "literal",
+      metadata_prefix: "literal",
+    }));
+    stageInspectorDraft({
+      knownValues: nextKnownValues,
+      jsonDrafts: nextJsonDrafts,
+    });
+  }
+
+  function mutateSessionListMetadataRuleRows(
+    updater: (rows: SessionListMetadataRuleDraftRow[]) => SessionListMetadataRuleDraftRow[],
+  ) {
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const currentRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    updateSessionListMetadataRuleRows(updater(currentRows));
+  }
+
+  function renderGenericJsonField(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    mode: "literal" | "bind" | "template",
+    isDisabled: boolean,
+  ) {
+    return (
+      <div key={field.key} className="inspector-field">
+        <div className="field-toolbar">
+          {renderFieldHeader(field)}
+          {renderModeSelect(field, mode, (nextMode) => {
+            updateFieldMode(field.key, nextMode);
+            if (nextMode === "bind") {
+              updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+            } else {
+              updateKnownField(field.key, undefined);
+            }
+          }, isDisabled)}
+        </div>
+        {mode === "bind"
+          ? renderBindingSelect(
+            field,
+            selectedNodeBindingOptions,
+            value,
+            (nextValue) => updateKnownField(field.key, nextValue),
+          )
+          : (
+            <textarea
+              value={inspectorJsonDrafts[field.key] ?? ""}
+              rows={field.key === "outputs" ? 5 : 8}
+              onChange={(event) => {
+                const nextText = event.target.value;
+                const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                setInspectorJsonDrafts(next);
+                stageInspectorDraft({ jsonDrafts: next });
+              }}
+              disabled={isDisabled}
+            />
+          )}
+      </div>
+    );
+  }
+
+  function renderSessionListMetadataRules(isDisabled: boolean) {
+    const metadataFields = SESSION_LIST_METADATA_FIELD_KEYS
+      .map((fieldKey) => selectedCatalogEntry?.fields.find((field) => field.key === fieldKey))
+      .filter((field): field is WorkflowEditorFieldDefinition => Boolean(field));
+    const unsupportedByMode = metadataFields.some((field) => {
+      const value = inspectorKnownValues[field.key];
+      return (inspectorFieldModes[field.key] ?? fieldValueMode(field, value)) !== "literal";
+    });
+    const supportedByValues = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).supported;
+    const structured = !unsupportedByMode && supportedByValues;
+    const headerField: WorkflowEditorFieldDefinition = {
+      key: "metadata_rules",
+      label: "Metadata rules",
+      kind: "json",
+      required: false,
+      bindable: false,
+      read_only: false,
+      multiline: false,
+      description: "Rules that match session metadata with exact values, key presence, or string prefixes.",
+      placeholder: null,
+      json_value_type: "object",
+      default_value: null,
+      options: [],
+      item_fields: [],
+    };
+
+    if (!structured) {
+      return (
+        <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+          <div className="field-toolbar">
+            {renderFieldHeader(headerField)}
+          </div>
+          <div className="metadata-rule-raw-fields">
+            {metadataFields.map((field) => {
+              const value = inspectorKnownValues[field.key];
+              const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
+              const rawFieldDisabled = field.read_only
+                || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+              return renderGenericJsonField(field, value, mode, rawFieldDisabled);
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const metadataRuleRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    return (
+      <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+        <div className="field-toolbar">
+          {renderFieldHeader(headerField)}
+        </div>
+        <div className="metadata-rule-field-modes">
+          {metadataFields.map((field) => {
+            const fieldValue = inspectorKnownValues[field.key];
+            const fieldMode = inspectorFieldModes[field.key] ?? fieldValueMode(field, fieldValue);
+            return (
+              <div key={`${field.key}-mode`} className="metadata-rule-field-mode">
+                {renderFieldHeader(field)}
+                {renderModeSelect(
+                  field,
+                  fieldMode,
+                  (nextMode) => updateMetadataFieldMode(field, fieldValue, nextMode),
+                  isDisabled,
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="metadata-rule-list">
+          {metadataRuleRows.map((row, index) => {
+            const rowClassName = row.kind === "exists"
+              ? "metadata-rule-row metadata-rule-row-exists"
+              : "metadata-rule-row";
+            return (
+              <div key={row.id} className={rowClassName}>
+                <label className="field-inline">
+                  <span>Rule</span>
+                  <select
+                    value={row.kind}
+                    onChange={(event) => {
+                      const nextKind = event.target.value as SessionListMetadataRuleKind;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, kind: nextKind } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  >
+                    <option value="equals">Equals</option>
+                    <option value="exists">Exists</option>
+                    <option value="prefix">Prefix</option>
+                  </select>
+                </label>
+                <label className="field-inline">
+                  <span>Metadata key</span>
+                  <input
+                    value={row.key}
+                    placeholder="user.name"
+                    onChange={(event) => {
+                      const nextKey = event.target.value;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, key: nextKey } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  />
+                </label>
+                {row.kind !== "exists" ? (
+                  <label className="field-inline">
+                    <span>{row.kind === "prefix" ? "Prefix" : "Exact value"}</span>
+                    <input
+                      value={row.value}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        mutateSessionListMetadataRuleRows((currentRows) =>
+                          currentRows.map((currentRow) =>
+                            currentRow.id === row.id
+                              ? { ...currentRow, value: nextValue }
+                              : currentRow,
+                          ),
+                        );
+                      }}
+                      disabled={isDisabled}
+                    />
+                  </label>
+                ) : null}
+                <button
+                  type="button"
+                  className="subtle-button metadata-rule-remove"
+                  onClick={() =>
+                    mutateSessionListMetadataRuleRows((currentRows) =>
+                      currentRows.filter((currentRow) => currentRow.id !== row.id),
+                    )
+                  }
+                  disabled={isDisabled}
+                  aria-label={`Remove metadata rule ${index + 1}`}
+                >
+                  Remove
+                </button>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() =>
+              mutateSessionListMetadataRuleRows((currentRows) => [
+                ...currentRows,
+                createSessionListMetadataRuleDraftRow(),
+              ])
+            }
+            disabled={isDisabled}
+          >
+            Add metadata rule
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
+
+    if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
+      return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;
+    }
 
     if (field.kind === "string") {
       const communicationState = field.key === "thread_id" && isCommunicationEffectNodeType(selectedNodeType)
@@ -7545,23 +8187,33 @@ export default function App() {
         );
       }
       return (
-        <label key={field.key} className="inspector-field">
+        <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
             {renderFieldHeader(field)}
+            {renderModeSelect(
+              field,
+              mode,
+              (nextMode) => updateBindableEnumFieldMode(field, value, nextMode),
+              isDisabled,
+            )}
           </div>
-          <select
-            value={typeof value === "string" ? value : ""}
-            onChange={(event) => updateKnownField(field.key, event.target.value)}
-            disabled={isDisabled}
-          >
-            <option value="">Select</option>
-            {field.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <select
+                value={enumOptionValue(field, value)}
+                onChange={(event) => updateKnownField(field.key, event.target.value || undefined)}
+                disabled={isDisabled}
+              >
+                <option value="">Select</option>
+                {field.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
+        </div>
       );
     }
 
@@ -7653,36 +8305,7 @@ export default function App() {
     }
 
     if (field.kind === "json") {
-      return (
-        <div key={field.key} className="inspector-field">
-          <div className="field-toolbar">
-            {renderFieldHeader(field)}
-            {renderModeSelect(field, mode, (nextMode) => {
-              updateFieldMode(field.key, nextMode);
-              if (nextMode === "bind") {
-                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
-              } else {
-                updateKnownField(field.key, undefined);
-              }
-            }, isDisabled)}
-          </div>
-          {mode === "bind"
-            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
-            : (
-              <textarea
-                value={inspectorJsonDrafts[field.key] ?? ""}
-                rows={field.key === "outputs" ? 5 : 8}
-                onChange={(event) => {
-                  const nextText = event.target.value;
-                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
-                  setInspectorJsonDrafts(next);
-                  stageInspectorDraft({ jsonDrafts: next });
-                }}
-                disabled={isDisabled}
-              />
-            )}
-        </div>
-      );
+      return renderGenericJsonField(field, value, mode, isDisabled);
     }
 
     if (field.kind === "object_list") {
@@ -8222,8 +8845,10 @@ export default function App() {
             <div className="section-label">Inspected run</div>
             <div className="runtime-run-event">{runDetail.event_id}</div>
           </div>
-          <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
-            {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
+          <span
+            className={`runtime-run-state state-${workflowRunStateClassName(runDetail.run_state, runDetail.delivery_state)}`}
+          >
+            {workflowRunStateLabel(runDetail.run_state, runDetail.delivery_state)}
           </span>
         </div>
         <div className="run-detail-meta-grid">
@@ -8384,7 +9009,7 @@ export default function App() {
   }
 
   function renderRunSearchResult(run: WorkflowRunSearchItem) {
-    const stateClass = run.run_state === "errored" ? "failed" : run.run_state || "active";
+    const stateClass = workflowRunStateClassName(run.run_state, run.delivery_state);
     const sessionLabel = run.has_agent_session
       ? `Session ${run.session_ids.slice(0, 2).join(", ")}${run.session_ids.length > 2 ? ` +${run.session_ids.length - 2}` : ""}`
       : "No agent session";
@@ -8392,7 +9017,7 @@ export default function App() {
       <div key={run.event_id} className="runtime-run-card run-search-card">
         <div className="runtime-run-header">
           <div className="runtime-run-event">{run.event_id}</div>
-          <div className={`runtime-run-state state-${stateClass}`}>{run.run_state}</div>
+          <div className={`runtime-run-state state-${stateClass}`}>{workflowRunStateLabel(run.run_state, run.delivery_state)}</div>
         </div>
         <div className="runtime-run-meta">
           Latest {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
@@ -8681,10 +9306,12 @@ export default function App() {
                 <div className="runtime-runs">
                   {visibleRuns.map((run: WorkflowRunSummary) => (
                     <div key={run.event_id} className="runtime-run-card">
-                      <div className="runtime-run-header">
-                        <div className="runtime-run-event">{run.event_id}</div>
-                        <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
-                          {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                <div className="runtime-run-header">
+                  <div className="runtime-run-event">{run.event_id}</div>
+                        <div
+                          className={`runtime-run-state state-${workflowRunStateClassName(run.run_state, run.delivery_state)}`}
+                        >
+                          {workflowRunStateLabel(run.run_state, run.delivery_state)}
                         </div>
                       </div>
                       <div className="runtime-run-meta">

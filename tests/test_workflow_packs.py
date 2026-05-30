@@ -573,6 +573,14 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "container_worker_vm"
     )
     assert (
+        container_effects["effect-agent-create-2"]["config"]["npm_registry_url"]
+        == "http://10.0.0.4:11881/"
+    )
+    assert "npm_registry_url" not in container_effects["effect-agent-create-1"]["config"]
+    assert "npm_registry_url" not in container_effects[
+        "effect-agent-create-auto-dev-approval-caller-1"
+    ]["config"]
+    assert (
         container_effects["effect-agent-clone-repo-2"]["type"] == "effect:agent:clone-repo"
     )
     assert (

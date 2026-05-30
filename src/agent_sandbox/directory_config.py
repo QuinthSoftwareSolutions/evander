@@ -112,9 +112,18 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "nuget_azure_pat_env",
             "nuget_public_feed_base_url",
             "nuget_relay_timeout_seconds",
+            "npm_audit_facade_audit_registry_url",
+            "npm_audit_facade_package_registry_url",
+            "npm_audit_facade_timeout_seconds",
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
+            "openai_provider_mode",
+            "azure_openai_endpoint",
+            "azure_openai_auth_mode",
+            "azure_openai_api_key_env",
+            "azure_openai_api_version",
+            "azure_openai_model_deployments",
             "openai_relay_timeout_seconds",
             "qdrant_api_key_env",
             "qdrant_base_url",
@@ -123,6 +132,16 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "retell_default_agent_id",
             "retell_from_number",
             "retell_request_timeout_seconds",
+            "phone_call_backend",
+            "openai_realtime_model",
+            "openai_realtime_api_key_env",
+            "openai_realtime_api_base_url",
+            "voice_media_controller_url",
+            "voice_media_controller_token_env",
+            "voice_media_controller_request_timeout_seconds",
+            "didww_sip_bridge_url",
+            "didww_sip_bridge_token_env",
+            "didww_from_number",
             "semantic_embedding_dimensions",
             "semantic_embedding_model",
             "semantic_embedding_provider",
@@ -177,6 +196,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_port",
             "nuget_relay_host",
             "nuget_relay_port",
+            "npm_audit_facade_host",
+            "npm_audit_facade_port",
             "openai_relay_host",
             "openai_relay_port",
         }
@@ -470,6 +491,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
             "http_target_relay_port": config.http_target_relay_port,
             "nuget_relay_host": config.nuget_relay_host,
             "nuget_relay_port": config.nuget_relay_port,
+            "npm_audit_facade_host": config.npm_audit_facade_host,
+            "npm_audit_facade_port": config.npm_audit_facade_port,
             "openai_relay_host": config.openai_relay_host,
             "openai_relay_port": config.openai_relay_port,
         }
@@ -484,6 +507,11 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
     if domain == "gateway":
         validated = GatewayConfig.model_validate(payload)
         return validated.model_dump(mode="json")
+    if domain == "providers":
+        return DirectoryConfigStore._validate_provider_domain_payload(
+            payload,
+            validation_scope="effective",
+        )
     if domain == "automation":
         validated = EffectiveAutomationDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
@@ -624,16 +652,10 @@ class DirectoryConfigStore:
             validated = GatewayConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
-            compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
-            legacy_fields = {"openai_costs_api_key_env"}
-            unknown_fields = sorted(set(payload) - compatible_fields - legacy_fields)
-            if unknown_fields:
-                raise ValueError(
-                    f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
-                )
-            payload = {key: value for key, value in payload.items() if key in allowed_fields}
-            validated = GatewayConfig.model_validate(payload)
-            return validated.model_dump(mode="json", include=set(payload))
+            return cls._validate_provider_domain_payload(
+                payload,
+                validation_scope="overlay",
+            )
         if domain == "ado_worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
@@ -661,6 +683,31 @@ class DirectoryConfigStore:
             )
         validated = GatewayConfig.model_validate(payload)
         return validated.model_dump(mode="json", include=set(payload))
+
+    @staticmethod
+    def _validate_provider_domain_payload(
+        payload: dict[str, Any], *, validation_scope: str
+    ) -> dict[str, Any]:
+        allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+        compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+        legacy_fields = {"openai_costs_api_key_env"}
+        unknown_fields = sorted(set(payload) - compatible_fields - legacy_fields)
+        if unknown_fields:
+            raise ValueError(
+                "directory config domain 'providers' does not allow fields: "
+                + ", ".join(unknown_fields)
+            )
+        provider_payload = {
+            key: value for key, value in payload.items() if key in allowed_fields
+        }
+        validated = GatewayConfig.model_validate(
+            provider_payload,
+            context={
+                "directory_config_domain": "providers",
+                "validation_scope": validation_scope,
+            },
+        )
+        return validated.model_dump(mode="json", include=set(provider_payload))
 
     @classmethod
     def _validate_domain_name(cls, domain: str) -> None:

@@ -212,6 +212,7 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "name: control-plane openai relay" in defaults
     assert "name: control-plane nuget relay" in defaults
     assert "name: control-plane http target relay" in defaults
+    assert "name: control-plane npm audit facade" in defaults
     assert "name: control-plane nexus package cache" in defaults
     assert "name: control-plane apt-cacher-ng" in defaults
     assert "port: 22" in defaults
@@ -219,6 +220,7 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "port: 11434" in defaults
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
+    assert "port: 11881" in defaults
     assert 'port: "{{ agent_sandbox_nexus_port }}"' in defaults
     assert 'port: "{{ agent_sandbox_apt_cache_port }}"' in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
@@ -564,6 +566,9 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "container_worker_guest_http_target_relay_base_url" in ansible_docs
     assert "container_worker_guest_pypi_index_url" in ansible_docs
     assert "container_worker_guest_npm_registry_url" in ansible_docs
+    assert "agent_sandbox_npm_audit_facade_port" in ansible_docs
+    assert "agent_sandbox_services.npm_audit_facade" in ansible_docs
+    assert "config/npm-audit-facade.env" in ansible_docs
     assert "local playbook commit" in ansible_docs
     assert "agent_sandbox_worker_enforce_revision_match: false" in ansible_docs
     assert "Worker outbound rules should still deny direct access" in ansible_docs
@@ -581,5 +586,6 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "Phase 5 first slice" in worker_docs
     assert "single-worker" in worker_docs
     assert "DOCKER-USER" in worker_docs
+    assert "agent-sandbox-npm-audit-facade" in worker_docs
     assert "dedicated container-worker VM playbook" in readme
     assert "dedicated container-worker VM playbook" in operations

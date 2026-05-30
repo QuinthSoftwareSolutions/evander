@@ -317,6 +317,9 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
                 FROM sqlite_master
                 WHERE type = 'index'
                   AND name IN (
+                      'idx_trigger_events_activity',
+                      'idx_effect_executions_activity',
+                      'idx_gate_executions_activity',
                       'idx_effect_executions_node_failed_dismissed',
                       'idx_gate_executions_node_failed_dismissed'
                   )
@@ -325,6 +328,9 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
         }
 
     assert index_names == {
+        "idx_trigger_events_activity",
+        "idx_effect_executions_activity",
+        "idx_gate_executions_activity",
         "idx_effect_executions_node_failed_dismissed",
         "idx_gate_executions_node_failed_dismissed",
     }

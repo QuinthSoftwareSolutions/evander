@@ -55,6 +55,9 @@ from agent_sandbox.effects.providers.session_update_metadata import (
 from agent_sandbox.effects.providers.session_approve_mcp_tools import (
     SessionApproveMcpToolsForRunEffectProvider,
 )
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+)
 from agent_sandbox.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
 )
@@ -85,6 +88,7 @@ from agent_sandbox.queries.providers.communication_messages import (
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
+from agent_sandbox.queries.providers.model_usage_list import ModelUsageListQueryProvider
 from agent_sandbox.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
@@ -101,6 +105,9 @@ from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTrig
 from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
+)
+from agent_sandbox.triggers.providers.approval_pending_created import (
+    ApprovalPendingCreatedTriggerProvider,
 )
 from agent_sandbox.triggers.providers.communication_new_message import (
     CommunicationNewMessageTriggerProvider,
@@ -152,6 +159,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
             "trigger:pull-request:completed": PullRequestCompletedTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
+            "trigger:approval:pending-created": ApprovalPendingCreatedTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
             "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
@@ -206,6 +214,9 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:session:approve-mcp-tools-for-run": (
                 SessionApproveMcpToolsForRunEffectProvider
             ),
+            "effect:session:revoke-mcp-tool-approval-lease": (
+                SessionRevokeMcpToolApprovalLeaseEffectProvider
+            ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
@@ -221,6 +232,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
             "query:session:list": SessionListQueryProvider,
+            "query:model-usage:list": ModelUsageListQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:issue:list": IssueListQueryProvider,

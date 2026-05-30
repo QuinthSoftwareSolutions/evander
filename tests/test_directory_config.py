@@ -214,7 +214,7 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
     assert resolution.validation_errors == []
 
 
-def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) -> None:
+def test_directory_config_store_allows_phone_provider_fields(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -231,6 +231,11 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
             "retell_from_number": "+15550000001",
             "retell_default_agent_id": "agent-default",
             "retell_request_timeout_seconds": 12.5,
+            "phone_call_backend": "openai_realtime_didww",
+            "openai_realtime_model": "gpt-realtime-2",
+            "didww_sip_bridge_url": "https://voice-bridge.test",
+            "didww_sip_bridge_token_env": "TEAM_DIDWW_TOKEN",
+            "didww_from_number": "+15550000009",
         },
     )
 
@@ -243,7 +248,194 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
 
     assert resolution.effective_config["retell_api_base_url"] == "https://retell.test"
     assert resolution.effective_config["retell_api_key_env"] == "TEAM_RETELL_API_KEY"
+    assert resolution.effective_config["phone_call_backend"] == "openai_realtime_didww"
+    assert resolution.effective_config["didww_sip_bridge_url"] == "https://voice-bridge.test"
     assert "retell_phonebook" not in resolution.effective_config
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-root",
+                "gpt-4.1-mini": "deployment-root-mini",
+            },
+        },
+    )
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-team",
+            }
+        },
+    )
+
+    assert written == {
+        "azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["openai_provider_mode"] == "azure_openai"
+    assert resolution.effective_config["azure_openai_endpoint"] == (
+        "https://example-resource.openai.azure.com"
+    )
+    assert resolution.effective_config["azure_openai_api_key_env"] == "AZURE_OPENAI_API_KEY"
+    assert resolution.effective_config["azure_openai_model_deployments"] == {
+        "gpt-5.4": "deployment-team",
+        "gpt-4.1-mini": "deployment-root-mini",
+    }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_resolver_reports_incomplete_effective_azure_openai_config(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"openai_provider_mode": "azure_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["openai_provider_mode"] == "azure_openai"
+    assert resolution.validation_errors
+    message = resolution.validation_errors[0]
+    assert "azure_openai_endpoint" in message
+    assert "azure_openai_api_key_env" in message
+    assert "azure_openai_model_deployments" in message
+
+
+def test_directory_config_store_allows_npm_audit_facade_provider_fields(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "npm_audit_facade_timeout_seconds": 12.5,
+            "npm_audit_facade_audit_registry_url": "https://registry.npmjs.org/",
+            "npm_audit_facade_package_registry_url": "http://nexus.test:8081/repository/npm-all/",
+        },
+    )
+
+    assert written == {
+        "npm_audit_facade_timeout_seconds": 12.5,
+        "npm_audit_facade_audit_registry_url": "https://registry.npmjs.org",
+        "npm_audit_facade_package_registry_url": "http://nexus.test:8081/repository/npm-all",
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["npm_audit_facade_timeout_seconds"] == 12.5
+    assert (
+        resolution.effective_config["npm_audit_facade_audit_registry_url"]
+        == "https://registry.npmjs.org"
+    )
+    assert (
+        resolution.effective_config["npm_audit_facade_package_registry_url"]
+        == "http://nexus.test:8081/repository/npm-all"
+    )
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_rejects_npm_audit_facade_host_fields_in_providers_domain(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    try:
+        config_store.write(
+            team.path,
+            domain="providers",
+            payload={"npm_audit_facade_host": "127.0.0.1", "npm_audit_facade_port": 18181},
+        )
+    except ValueError as exc:
+        assert "does not allow fields" in str(exc)
+    else:
+        raise AssertionError("expected write() to reject npm audit facade host fields")
+
+
+def test_directory_config_store_allows_npm_audit_facade_vm_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="vm",
+        payload={"npm_audit_facade_host": "127.0.0.1", "npm_audit_facade_port": 18181},
+    )
+
+    assert written == {
+        "npm_audit_facade_host": "127.0.0.1",
+        "npm_audit_facade_port": 18181,
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert resolution.effective_config["npm_audit_facade_host"] == "127.0.0.1"
+    assert resolution.effective_config["npm_audit_facade_port"] == 18181
     assert resolution.validation_errors == []
 
 
