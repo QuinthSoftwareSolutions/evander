@@ -6,6 +6,7 @@
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests

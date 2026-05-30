@@ -14,6 +14,10 @@ from agent_sandbox.effects.providers.agent_session import (
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
+from agent_sandbox.model_usage.runtime import (
+    register_model_usage_correlation_context,
+    resolve_runtime_dir,
+)
 from agent_sandbox.effects.providers.resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
@@ -402,6 +406,24 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record_execution(execution_record)
         except Exception:
             return False
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is not None:
+            record_metadata = getattr(record, "metadata", {})
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=(
+                    str(record_metadata.get("workflow_run_id") or "").strip()
+                    if isinstance(record_metadata, dict)
+                    else None
+                ),
+                effect_id=record.effect_id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=execution_record.trace_id,
+            )
         self._publish_started_event_for_waiting_record(
             worker=worker,
             execution_record=execution_record,
@@ -439,10 +461,24 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return True
 
         now = datetime.now(UTC)
+        session_id, session = self._session_context_for_libvirt_record(
+            worker=worker,
+            record=record,
+        )
         vm_user = str(getattr(record, "vm_user", None) or "agent")
-        session_id = str(getattr(record, "session_id", None) or "").strip() or None
         thread_id = str(getattr(result, "thread_id", "") or "").strip()
         effective_thread_id = thread_id or str(effective_resume_thread_id or "").strip()
+        model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
+        record_metadata = getattr(record, "metadata", {})
+        directory_path = (
+            str(getattr(session, "directory_path", None) or "").strip()
+            or (
+                str(record_metadata.get("directory_path") or "").strip()
+                if isinstance(record_metadata, dict)
+                else ""
+            )
+            or "root"
+        )
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -505,6 +541,23 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record_execution(execution_record)
         except Exception:
             return False
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=(
+                    str(record_metadata.get("workflow_run_id") or "").strip()
+                    if isinstance(record_metadata, dict)
+                    else None
+                ),
+                effect_id=record.effect_id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=execution_record.trace_id,
+            )
         self._publish_started_event_for_waiting_record(
             worker=worker,
             execution_record=execution_record,

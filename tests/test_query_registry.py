@@ -13,6 +13,7 @@ from agent_sandbox.events.provider_models import (
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     IssueListQueryDefinition,
+    ModelUsageListQueryDefinition,
     PullRequestGetQueryDefinition,
     PullRequestListQueryDefinition,
     SessionContextQueryDefinition,
@@ -88,6 +89,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:git:pr-note",
         "query:session-context",
         "query:session:list",
+        "query:model-usage:list",
         "query:agent:artifact-text",
         "query:issue:get",
         "query:issue:list",
@@ -121,6 +123,24 @@ def test_pull_request_get_query_definition_materializes_and_normalizes_provider(
     assert materialized.provider == "azure_devops"
     assert materialized.repo == "repo-1"
     assert materialized.pr_id == "17"
+
+
+def test_model_usage_list_query_definition_materializes() -> None:
+    node = WorkflowNodeEnvelope(
+        id="query-model-usage-1",
+        display_name="Model usage",
+        type="query:model-usage:list",
+        config={
+            "session_id": "session-1",
+            "provider": "openai",
+        },
+    )
+
+    materialized = materialize_node_definition(node)
+
+    assert isinstance(materialized, ModelUsageListQueryDefinition)
+    assert materialized.session_id == "session-1"
+    assert materialized.provider == "openai"
 
 
 def test_factory_initializes_query_provider_with_runtime_context() -> None:

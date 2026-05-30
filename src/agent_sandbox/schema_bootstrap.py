@@ -70,6 +70,36 @@ _ISSUE_LIST_ITEM_OUTPUT_SCHEMA = {
     "can_create_vm": {"type": "boolean"},
 }
 
+_MODEL_USAGE_EVENT_OUTPUT_SCHEMA = {
+    "event_id": {"type": "string"},
+    "occurred_at": {"type": "string"},
+    "provider": {"type": "string"},
+    "provider_endpoint_identifier": {"type": "string"},
+    "model": {"type": ["string", "null"]},
+    "deployment": {"type": ["string", "null"]},
+    "input_tokens": {"type": ["integer", "null"]},
+    "output_tokens": {"type": ["integer", "null"]},
+    "total_tokens": {"type": ["integer", "null"]},
+    "request_status": {"type": "string"},
+    "duration_ms": {"type": ["integer", "null"]},
+    "normalized_usage_status": {"type": "string"},
+    "raw_usage_metadata": {"type": "object"},
+    "request_body_bytes": {"type": ["integer", "null"]},
+    "request_body_sha256": {"type": ["string", "null"]},
+    "response_body_bytes": {"type": ["integer", "null"]},
+    "response_body_sha256": {"type": ["string", "null"]},
+    "session_id": {"type": ["string", "null"]},
+    "workflow_run_id": {"type": ["string", "null"]},
+    "effect_id": {"type": ["string", "null"]},
+    "node_id": {"type": ["string", "null"]},
+    "dispatch_id": {"type": ["string", "null"]},
+    "agent_harness": {"type": ["string", "null"]},
+    "execution_backend": {"type": ["string", "null"]},
+    "directory_path": {"type": ["string", "null"]},
+    "trace_id": {"type": ["string", "null"]},
+    "request_id": {"type": ["string", "null"]},
+}
+
 _APPROVAL_NOTIFICATION_DELIVERY_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1098,6 +1128,16 @@ _QUERY_OUTPUT_SCHEMAS = {
     },
     "query:session:list": {
         "sessions": {"type": "array"},
+        "count": {"type": "integer"},
+    },
+    "query:model-usage:list": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": _MODEL_USAGE_EVENT_OUTPUT_SCHEMA,
+            },
+        },
         "count": {"type": "integer"},
     },
     "query:agent:artifact-text": {

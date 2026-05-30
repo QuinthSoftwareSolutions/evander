@@ -56,9 +56,11 @@ from agent_sandbox.events.provider_types import (
 from agent_sandbox.queries.providers.schemas import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
+    CommunicationMessagesQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     IssueListQueryDefinition,
+    ModelUsageListQueryDefinition,
     PullRequestFeedbackQueryDefinition,
     PullRequestGetQueryDefinition,
     PullRequestListQueryDefinition,
@@ -69,7 +71,6 @@ from agent_sandbox.queries.providers.schemas import (
     SessionContextQueryDefinition,
     SessionListQueryDefinition,
     VmRunStateQueryDefinition,
-    CommunicationMessagesQueryDefinition,
 )
 from agent_sandbox.triggers.providers.schemas import (
     AdoWorkItemMatchingTriggerDefinition,
@@ -146,6 +147,7 @@ __all__ = [
     "NotificationSendEffectDefinition",
     "PrCreateEffectDefinition",
     "PrFeedbackProvider",
+    "ModelUsageListQueryDefinition",
     "PullRequestFeedbackQueryDefinition",
     "PullRequestGetQueryDefinition",
     "PullRequestListQueryDefinition",

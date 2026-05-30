@@ -70,6 +70,9 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
 - `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
+- `model-usage.db`: durable provider-neutral model usage store queried by
+  `query:model-usage:list`; it records only usage/provider/correlation metadata
+  and does not persist prompt or completion text.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
@@ -98,6 +101,7 @@ Troubleshooting checklist:
    - Remember that `gate:merge` follows Reactive Extensions `merge` semantics: each inbound event
      is forwarded as it arrives, and the execution record snapshots the latest payload per source
      for inspection.
+
 4. **Merge output looks incomplete or wrong**
    - Inspect `gate-orchestrator-executions.json` for the recorded `resolved_config`, the latest
      inbound payload remembered for each source, and the emitted `outputs` for the specific event.
@@ -117,6 +121,23 @@ Troubleshooting checklist:
 8. **Cycle-like configs**
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
      the edge wiring between nodes.
+
+## Model Usage Querying
+
+Use `query:model-usage:list` in Admin Web when you need to inspect persisted
+model inference activity. The node returns JSON with `items` and `count`, and
+supports filters for:
+
+- `session_id`, `workflow_run_id`, `effect_id`, and `dispatch_id`
+- `directory_path` with optional descendant matching
+- `provider`, `model`, `agent_harness`, and `execution_backend`
+- `normalized_usage_status` and `request_status`
+- `occurred_after`, `occurred_before`, and `limit`
+
+Each item includes the normalized token fields, correlation fields, and the raw
+usage metadata envelope. The store intentionally excludes request and response
+text, so it is safe to inspect for operational attribution without exposing
+prompt content.
 
 ### Workflow pack operations
 

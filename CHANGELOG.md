@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-30 - Model Usage Docs
+
+- Documented the provider-neutral model usage store, `query:model-usage:list`
+  workflow node, and the privacy-preserving OpenAI relay capture path in the
+  operator-facing docs.
+- Added the durable runtime store location `runtime/model-usage.db` to the
+  troubleshooting guidance so operators can find the persisted usage records.
+- Clarified that persisted usage records are correlation and usage metadata
+  only; prompt and completion text remain unpersisted.
+
 ## 2026-05-30 - Realtime Voice Bridge Hardening
 
 - Kept host Realtime API keys and upstream base URLs under bridge-local configuration instead of
