@@ -377,6 +377,100 @@ def test_relay_returns_400_when_azure_openai_model_mapping_is_missing(tmp_path: 
     assert called is False
 
 
+def test_relay_rejects_azure_hosted_web_search_before_forwarding(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    response = client.post(
+        "/v1/session/session-azure/responses",
+        json={
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Hosted web search is disabled" in response.text
+    assert called is False
+
+
+def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["api-key"] = request.headers.get("api-key", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-azure/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.4", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert b"data: second" in body
+    assert captured["url"] == (
+        "https://example-resource.openai.azure.com/openai/v1/responses"
+        "?api-version=preview"
+    )
+    assert captured["api-key"] == "azure-key"
+    assert captured["payload"] == {
+        "model": "deployment-root",
+        "input": "hello",
+    }
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+
+
 def test_relay_ignores_unknown_allowed_tools_when_resolving_session(tmp_path: Path) -> None:
     captured: dict[str, str] = {}
     config = make_config(tmp_path)
