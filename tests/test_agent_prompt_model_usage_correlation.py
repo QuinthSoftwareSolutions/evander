@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,7 +37,7 @@ def _session_repository(config: GatewayConfig, *, vm_provider: str = "libvirt_vm
             model="gpt-5.2-codex",
             directory_path="root/team-a",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
-            expires_at=datetime(2026, 5, 24, 13, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
     return repository

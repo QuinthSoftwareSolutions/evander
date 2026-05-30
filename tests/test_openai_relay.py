@@ -50,6 +50,7 @@ def write_session(
     session_id: str,
     directory_path: str = "root",
     web_search_enabled: bool = False,
+    expires_at: datetime | None = None,
 ) -> None:
     store = JsonSessionManifestRepository(config.session_store_path)
     store.upsert_session(
@@ -58,7 +59,7 @@ def write_session(
             directory_path=directory_path,
             allowed_tools=[],
             web_search_enabled=web_search_enabled,
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
         ),
     )
 
@@ -87,6 +88,69 @@ def test_relay_rejects_missing_session_id(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert response.json() == {"error": "session_id query parameter is required"}
+
+
+def test_relay_rejects_expired_session_by_path_without_invoking_transport(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0),
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "session expired: session_id=session-1 expires_at=2020-01-01T00:00:00Z"
+    }
+    assert called is False
+
+
+def test_relay_rejects_expired_session_by_query_without_invoking_transport(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/responses?session_id=session-1",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "session expired: session_id=session-1 expires_at=2020-01-01T00:00:00Z"
+    }
+    assert called is False
 
 
 def test_relay_injects_authorization_header(tmp_path: Path) -> None:
@@ -733,6 +797,39 @@ def test_relay_proxies_websocket_messages_and_injects_auth(tmp_path: Path) -> No
     assert isinstance(headers, dict)
     assert headers["authorization"] == "Bearer test-key"
     assert all(not key.lower().startswith("sec-websocket-") for key in headers)
+
+
+def test_relay_rejects_expired_websocket_session_without_upstream_connection(
+    tmp_path: Path,
+) -> None:
+    connected = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
+    )
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        del url, headers, timeout_seconds
+        connected = True
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-1/responses"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert connected is False
+    assert upstream.sent_messages == []
 
 
 def test_relay_rejects_websocket_hosted_web_search_without_session_flag(

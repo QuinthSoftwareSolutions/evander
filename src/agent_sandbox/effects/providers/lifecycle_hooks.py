@@ -31,6 +31,11 @@ from agent_sandbox.orchestration.effect_extensions import (
 )
 from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
+from agent_sandbox.session_expiry import (
+    SessionExpiredError,
+    ensure_session_not_expired,
+    session_expired_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +126,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 worker=worker,
                 record=record,
             )
+            if session is not None and self._queued_prompt_session_is_expired(
+                queue_key=queue_key,
+                session=session,
+            ):
+                continue
             effective_resume_thread_id = self._effective_record_resume_thread_id(
                 record=record,
                 session=session,
@@ -207,7 +217,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
     def _container_queue_keys(self, *, worker: Any, records: dict[str, Any]) -> set[str]:
         keys: set[str] = set()
         for queue_key, record in records.items():
-            if self._container_record_context(worker=worker, record=record) is not None:
+            if self._container_record_session_context(worker=worker, record=record) is not None:
                 keys.add(queue_key)
         return keys
 
@@ -219,13 +229,28 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         queue_key: str,
         record: Any,
     ) -> bool:
-        context = self._container_record_context(worker=worker, record=record)
+        context = self._container_record_session_context(worker=worker, record=record)
         if context is None:
             return False
-        session_id, session, config, backend = context
+        session_id, session, config = context
+
+        if self._queued_prompt_session_is_expired(queue_key=queue_key, session=session):
+            return False
+
         from agent_sandbox.effects.providers.agent_enqueue_prompt import (
             AgentEnqueuePromptEffectProvider,
         )
+
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        try:
+            backend = build_execution_backend(
+                config.model_copy(
+                    update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+                ),
+                admin_service=admin_service,
+            )
+        except Exception:
+            return False
 
         if AgentEnqueuePromptEffectProvider.container_session_is_busy_for_backend(
             backend=backend,
@@ -779,7 +804,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
-    def _container_record_context(self, *, worker: Any, record: Any) -> tuple[Any, ...] | None:
+    def _container_record_session_context(
+        self, *, worker: Any, record: Any
+    ) -> tuple[str, Any, Any] | None:
         session_id = str(getattr(record, "session_id", "") or "").strip()
         if not session_id:
             return None
@@ -807,16 +834,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         )
         if config is None:
             return None
+        return session_id, session, config
+
+    @staticmethod
+    def _queued_prompt_session_is_expired(*, queue_key: str, session: Any) -> bool:
         try:
-            backend = build_execution_backend(
-                config.model_copy(
-                    update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
-                ),
-                admin_service=admin_service,
+            ensure_session_not_expired(session)
+        except SessionExpiredError:
+            logger.warning(
+                "AgentEnqueuePromptQueueDispatchHook skipped expired queued prompt "
+                "queue_key=%s %s",
+                queue_key,
+                session_expired_message(session),
             )
-        except Exception:
-            return None
-        return session_id, session, config, backend
+            return True
+        return False
 
     def _config_for_container_record(
         self,

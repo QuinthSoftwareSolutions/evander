@@ -29,6 +29,17 @@ material. Newer entries are added incrementally as changes land.
 - Cleared stale voice-call failure fields when retrying a failed request and classified common
   ARI busy/no-answer hangup causes as failed calls.
 
+## 2026-05-29 - Session Expiry Execution Gates
+
+- Added a shared UTC-normalizing expiry guard so expired sessions cannot start
+  or continue agent execution through admin resume, workflow prompt effects,
+  queued prompt replay, wake dispatch, or the OpenAI relay.
+- Wake dispatches for expired sessions now record failed dispatch history instead
+  of silently starting work; scheduled requests remain retryable until the
+  session is renewed.
+- Kept host-local Git SSH pull/push access available for expired sessions so
+  recovery work can continue without re-enabling agent execution.
+
 ## 2026-05-29 - Workflow Run Snapshot I/O Fix
 
 - Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web

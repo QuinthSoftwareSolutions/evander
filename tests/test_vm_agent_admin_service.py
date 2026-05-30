@@ -124,6 +124,9 @@ class FakeManifest:
     directory_path: str
     issue_id: str = "local-1"
     issue_number: str = "1"
+    expires_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc) + timedelta(days=30)
+    )
     metadata: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
     yaml_path: str = "/tmp/local-issue.yaml"
@@ -134,6 +137,7 @@ class FakeManifest:
             "directory_path": self.directory_path,
             "issue_id": self.issue_id,
             "issue_number": self.issue_number,
+            "expires_at": self.expires_at,
             "metadata": dict(self.metadata),
             "model": self.model,
             "yaml_path": self.yaml_path,
@@ -1246,6 +1250,42 @@ def test_vm_agent_admin_service_resume_agent_can_skip_thread_id_persistence(
     assert result.success is True
     assert result.thread_id == "thread-123"
     assert sessions.put_records == []
+
+
+def test_vm_agent_admin_service_resume_agent_rejects_expired_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = FakeAdmin()
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    expired_session = SimpleNamespace(
+        session_id="session-1",
+        expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        directory_path="root/team",
+    )
+
+    monkeypatch.setattr(
+        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+    )
+    monkeypatch.setattr(
+        admin_service_module,
+        "_resolve_session_target",
+        lambda target, sessions: ("session-1", expired_session),
+    )
+    monkeypatch.setattr(
+        admin_service_module,
+        "_run_subprocess",
+        lambda *args, **kwargs: pytest.fail("resume subprocess must not run for expired sessions"),
+    )
+
+    result = service.resume_agent("target", "Resume now", dispatch_id="dispatch-1")
+
+    assert result.success is False
+    assert result.action == "resume_issue_agent"
+    assert result.vm_name == "vm-1"
+    assert result.message == (
+        "session expired: session_id=session-1 expires_at="
+        + (expired_session.expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"))
+    )
 
 
 def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(

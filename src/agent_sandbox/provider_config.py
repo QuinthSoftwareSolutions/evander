@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -89,6 +90,8 @@ class GateProviderConfig(BaseModel):
 class ProviderSessionManifest(BaseModel):
     session_id: str
     directory_path: str = "root"
+    web_search_enabled: bool = False
+    expires_at: datetime | None = None
 
 
 class ProviderConfigResolver:

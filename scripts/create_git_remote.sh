@@ -37,7 +37,11 @@ load_issue_setup_config
 
 GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
-GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
+DEFAULT_GIT_USER="${USER:-}"
+if [[ -z "${DEFAULT_GIT_USER}" ]]; then
+  DEFAULT_GIT_USER="$(id -un 2>/dev/null || echo root)"
+fi
+GIT_USER="${AGENT_SANDBOX_GIT_USER:-${DEFAULT_GIT_USER}}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 TRIGGER_HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_git_push_trigger.sh"
 

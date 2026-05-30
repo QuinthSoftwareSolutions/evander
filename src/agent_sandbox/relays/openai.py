@@ -33,6 +33,7 @@ from agent_sandbox.model_usage.runtime import (
     model_usage_store,
 )
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.session_expiry import SessionExpiredError, ensure_session_not_expired
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,8 @@ class OpenAIRelay:
         async def proxy(request: Request) -> Response:
             try:
                 request_context = relay._resolve_request_context(request)
+            except SessionExpiredError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=403)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -169,6 +172,8 @@ class OpenAIRelay:
                 if "text/event-stream" in request.headers.get("accept", ""):
                     return await relay._stream_response(
                         request=request,
+                        session_id=request_context.session_id,
+                        upstream_path=upstream_path,
                         upstream_url=upstream_url,
                         headers=headers,
                         request_body=request_body,
@@ -253,6 +258,9 @@ class OpenAIRelay:
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
                 request_context = relay._resolve_websocket_context(websocket)
+            except SessionExpiredError as exc:
+                await websocket.close(code=1008, reason=str(exc))
+                return
             except ValueError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
@@ -608,7 +616,9 @@ class OpenAIRelay:
         session_id = self._session_id_from_path_params(
             request.path_params
         ) or self._require_session_id(request.query_params.multi_items())
-        resolved_config = self.provider_config_resolver.resolve_for_session_id(session_id)
+        session = self._session_for_request_context(session_id)
+        ensure_session_not_expired(session)
+        resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         self._log_resolved_api_key_env(
             session_id=session_id,
             request_kind="http",
@@ -618,14 +628,16 @@ class OpenAIRelay:
         return RelayRequestContext(
             session_id=session_id,
             config=resolved_config,
-            web_search_enabled=self._session_web_search_enabled(session_id),
+            web_search_enabled=bool(session.web_search_enabled),
         )
 
     def _resolve_websocket_context(self, websocket: WebSocket) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
             websocket.path_params
         ) or self._require_session_id(websocket.query_params.multi_items())
-        resolved_config = self.provider_config_resolver.resolve_for_session_id(session_id)
+        session = self._session_for_request_context(session_id)
+        ensure_session_not_expired(session)
+        resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         self._log_resolved_api_key_env(
             session_id=session_id,
             request_kind="websocket",
@@ -635,15 +647,8 @@ class OpenAIRelay:
         return RelayRequestContext(
             session_id=session_id,
             config=resolved_config,
-            web_search_enabled=self._session_web_search_enabled(session_id),
+            web_search_enabled=bool(session.web_search_enabled),
         )
-
-    def _session_web_search_enabled(self, session_id: str) -> bool:
-        try:
-            session = self.provider_config_resolver.get_session_manifest(session_id)
-        except ValueError:
-            return False
-        return bool(getattr(session, "web_search_enabled", False))
 
     @staticmethod
     def _request_body_declares_hosted_web_search(request_body: bytes) -> bool:
@@ -654,6 +659,14 @@ class OpenAIRelay:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return False
         return _payload_declares_hosted_web_search(payload)
+
+    def _session_for_request_context(self, session_id: str):
+        session = self.provider_config_resolver.session_store.get_session(session_id)
+        if session is None:
+            session = self.provider_config_resolver.provider_session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        return session
 
     @staticmethod
     def _log_resolved_api_key_env(

@@ -41,14 +41,19 @@ def _build_worker(
     return build_scheduled_wake_worker(config, project_dir=project_dir)
 
 
-def _register_session(worker, *, session_id: str = "session-a") -> None:
+def _register_session(
+    worker,
+    *,
+    session_id: str = "session-a",
+    expires_at: datetime | None = None,
+) -> None:
     worker.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id=session_id,
             vm_id="vm-a",
             directory_path="root/team-a",
             allowed_tools=[ToolName.APPROVAL_CHECK],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
         ),
     )
 
@@ -279,6 +284,42 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert refreshed.next_run_at is None
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
     assert "session-a" in cooldown_payload
+
+
+def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_session(worker, expires_at=datetime.now(UTC) - timedelta(minutes=5))
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_cron_request(
+        worker, request_id="wake-expired", session_id="session-a", due_at=due_at
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume script must not run for expired wake sessions")
+        ),
+    )
+
+    result = worker.run_once()
+
+    refreshed = worker.runtime.wake_store.get_request("wake-expired")
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 0
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at == due_at
+    assert refreshed.last_dispatched_at is None
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-expired"]
+    assert latest.status == "failed"
+    assert latest.error is not None
+    assert "session expired: session_id=session-a expires_at=" in latest.error
+    assert not worker.worker_config.session_cooldown_path.exists()
 
 
 def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_binding(

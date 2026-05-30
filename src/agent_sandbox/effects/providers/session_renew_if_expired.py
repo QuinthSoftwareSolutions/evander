@@ -7,6 +7,7 @@ from typing import Any
 
 from agent_sandbox.events.provider_models import SessionRenewIfExpiredEffectDefinition
 from agent_sandbox.gate_runtime import GateRuntimeError, parse_iso8601_duration
+from agent_sandbox.session_expiry import ensure_utc_datetime
 
 from .agent_session import (
     effective_config_for_directory,
@@ -46,7 +47,7 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
             raise ValueError(f"Unknown session target: {target}")
 
         now = datetime.now(UTC)
-        previous_expires_at = _ensure_utc(session.expires_at)
+        previous_expires_at = ensure_utc_datetime(session.expires_at)
         duration = parse_session_extend_by(payload.get("extend_by"))
         renew_if_expires_within = parse_session_renew_if_expires_within(
             payload.get("renew_if_expires_within")
@@ -187,12 +188,6 @@ def _parse_session_duration(
             f"effect:session:renew-if-expired {field_name} must be greater than zero"
         )
     return duration
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def _duration_to_seconds(value: timedelta) -> int:

@@ -1451,6 +1451,10 @@ live provider APIs.
 - For `container_worker_vm` sessions, that same-context dispatch uses Codex resume-last behavior when a worker prompt does not already carry an explicit thread id.
 - Admin-created recurring wake schedules can still request `resume_mode=new_context`, which starts a fresh Codex exec session on container workers.
 - Busy container wakes queue the prompt for later dispatch and still count as handled for schedule advancement.
+- Expired sessions do not dispatch wakes. The wake history records a failed
+  dispatch with the session-expired message, and cron or one-time requests stay
+  due until `effect:session:renew-if-expired` or an operator renewal extends the
+  session.
 - Recurring cron wake schedules are consumed only after a successful host resume dispatch. Failed, timed-out, or missing-script attempts stay due/retryable and remain visible through wake dispatch history.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`

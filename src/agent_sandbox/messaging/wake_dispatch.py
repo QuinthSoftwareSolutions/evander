@@ -35,6 +35,7 @@ from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload
 from agent_sandbox.orchestration.host_polling import single_instance_lock
 from agent_sandbox.runtime import RuntimeContext
+from agent_sandbox.session_expiry import SessionExpiredError, ensure_session_not_expired
 from agent_sandbox.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,30 @@ class HostWakeDispatcher:
         if not binding.vm_id:
             return None
         wake_store = getattr(self.runtime, "wake_store", None)
+        session = self.runtime.session_repository.get_session(binding.session_id)
+        if session is not None:
+            try:
+                ensure_session_not_expired(session)
+            except SessionExpiredError as exc:
+                dispatch_record = WakeDispatchRecord(
+                    dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                    request_id=request_id,
+                    session_id=binding.session_id,
+                    status="failed",
+                    resume_prompt=WakeResumePromptPayload(prompt=prompt),
+                    resume_mode=resume_mode,
+                    scheduled_for=scheduled_for,
+                    source=dispatch_source,
+                    metadata={
+                        "vm_id": binding.vm_id,
+                        "source": binding.source,
+                        **(wake_metadata or {}),
+                    },
+                    error=str(exc),
+                )
+                if wake_store is not None:
+                    wake_store.record_dispatch(dispatch_record)
+                return dispatch_record
         script_path = worker_config.host_resume_script_path
         if not script_path.exists():
             logger.warning(
@@ -298,6 +323,26 @@ class HostWakeDispatcher:
         target_name = self._container_target_name(session=session, session_id=session_id)
         effective_resume_mode = normalize_optional_string(resume_mode) or "same_context"
         dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{session_id}"
+        try:
+            ensure_session_not_expired(session)
+        except SessionExpiredError as exc:
+            dispatch_record = self._build_container_dispatch_record(
+                dispatch_id=dispatch_id,
+                session_id=session_id,
+                request_id=request_id,
+                prompt=prompt,
+                resume_mode=effective_resume_mode,
+                scheduled_for=scheduled_for,
+                dispatch_source=dispatch_source,
+                wake_metadata=wake_metadata,
+                status="failed",
+                target_name=target_name,
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                error=str(exc),
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
         base_config = worker_config.model_copy(
             update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
         )

@@ -245,6 +245,11 @@ Prompt effects invoke Codex with `codex exec --json` and translate the JSONL eve
 
 Scheduled wake dispatches and queued prompt records follow the same container prompt construction rules. When a wake request is marked `same_context` and no usable explicit thread id is present, the host emits `codex exec resume --last`; when the request is `new_context`, the host emits a fresh `codex exec` run instead. That keeps container wake behavior aligned with the persisted session home while preserving backwards compatibility for older queued prompt records.
 
+Expired container sessions are not queued or started. Wake dispatch records a
+failed session-expired result, and queued prompt replay leaves the queued record
+in place until the session is renewed. Git SSH access to host-local remotes
+remains available for recovery even while execution is blocked.
+
 If a request includes `repo_source`, the daemon clones it under `/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they are already Git checkouts for the same requested source. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 
 The worker API also exposes a session-preparation surface used by portable

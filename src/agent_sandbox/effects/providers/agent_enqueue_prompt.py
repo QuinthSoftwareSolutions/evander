@@ -32,6 +32,7 @@ from .agent_session import (
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
+    resolve_active_session_if_available,
     safe_effect_execution_id,
     selected_execution_backend_for_target,
 )
@@ -167,13 +168,19 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
         vm_name = self._resolve_vm_name(target)
         session_id = self._resolve_session_id(target)
+        active_session_id, active_session = resolve_active_session_if_available(
+            context,
+            target,
+            config=config,
+        )
+        effective_session_id = active_session_id or session_id
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
             target=target,
-            session_id=session_id,
-            session=None,
+            session_id=effective_session_id,
+            session=active_session,
         )
 
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
@@ -184,7 +191,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             record = self._queue_prompt(
                 target=target,
                 vm_name=vm_name,
-                session_id=session_id,
+                session_id=effective_session_id,
                 prompt=prompt,
                 model=model,
                 vm_user=vm_user,
@@ -202,7 +209,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "queued": True,
                 "queue_key": record.queue_key,
                 "vm_name": vm_name,
-                "session_id": session_id,
+                "session_id": effective_session_id,
                 "coalesced_count": record.coalesced_count,
             }
 
@@ -226,7 +233,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             record = self._queue_prompt(
                 target=target,
                 vm_name=vm_name,
-                session_id=session_id,
+                session_id=effective_session_id,
                 prompt=prompt,
                 model=model,
                 vm_user=vm_user,
@@ -242,7 +249,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             error_message = (
                 "effect:agent:enqueue-prompt resume_agent failed; queued prompt for retry "
-                f"(vm_name={vm_name}, session_id={session_id or '<none>'}, queue_key={record.queue_key}, "
+                f"(vm_name={vm_name}, session_id={effective_session_id or '<none>'}, queue_key={record.queue_key}, "
                 f"coalesced_count={record.coalesced_count}, message={message})"
             )
             raise EffectProviderExecutionError(
@@ -294,14 +301,14 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 trace_id=self._trace_id(execution_context),
             )
         self._persist_chat_assistant_thread_id(
-            session_id=session_id,
+            session_id=effective_session_id,
             thread_id=thread_id,
             queue_key=queue_key,
             backend=ExecutionBackendKind.LIBVIRT_VM.value,
         )
         self._persist_resume_thread_metadata_key(
             target=target,
-            session_id=session_id,
+            session_id=effective_session_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
             thread_id=thread_id,
@@ -312,7 +319,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "success": bool(result.success),
             "queued": False,
             "vm_name": vm_name,
-            "session_id": session_id,
+            "session_id": effective_session_id,
         }
 
     def _execute_container(

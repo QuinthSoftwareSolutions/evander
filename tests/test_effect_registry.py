@@ -1324,6 +1324,65 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     assert "agent_sandbox_latest_codex_session_entry" not in command
 
 
+def test_agent_enqueue_prompt_provider_rejects_expired_container_session_before_backend_start(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) - timedelta(minutes=5),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("expired container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend_calls: list[object] = []
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend_calls.append((context, config)) or _FakeContainerBackend(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"session expired: session_id=session-1 expires_at=.*Z",
+    ):
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt="check teams",
+            )
+        ).execute()
+
+    assert backend_calls == []
+    assert not (tmp_path / "queued-agent-prompts.json").exists()
+
+
 def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> None:
     command = container_prompt_command(
         prompt="check teams",
@@ -1923,6 +1982,79 @@ def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing()
     assert admin_service.resume_calls[0]["resume_thread_id"] is None
 
 
+def test_agent_prompt_provider_rejects_expired_session_before_resume_agent() -> None:
+    effect = AgentPromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:prompt",
+        prompt="continue",
+        session_id="session-42",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    expired_expires_at = datetime.now(UTC) - timedelta(minutes=5)
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={"expires_at": expired_expires_at}
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"session expired: session_id=session-42 expires_at=.*Z",
+    ):
+        factory.build(effect).execute()
+
+    assert admin_service.resume_calls == []
+
+
+def test_agent_enqueue_prompt_provider_rejects_expired_session_before_resume_agent() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    expired_expires_at = datetime.now(UTC) - timedelta(minutes=5)
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={"expires_at": expired_expires_at}
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=admin_service,
+        provider_runtime=SimpleNamespace(
+            session_lookup=SimpleNamespace(
+                read_all_sessions=lambda: dict(admin_service._sessions)
+            )
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"session expired: session_id=session-42 expires_at=.*Z",
+    ):
+        factory.build(effect).execute()
+
+    assert admin_service.resume_calls == []
+
+
 def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2174,6 +2306,61 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
     assert 'web_search="live"' in str(backend.started_specs[-1].command)
+
+
+def test_agent_prompt_provider_rejects_expired_container_session_before_backend_start(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) - timedelta(minutes=5),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+    )
+    backend_calls: list[object] = []
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        lambda context, config: backend_calls.append((context, config)) or _FakeContainerBackend(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"session expired: session_id=session-1 expires_at=.*Z",
+    ):
+        factory.build(
+            AgentPromptEffectDefinition(
+                id="agent-prompt",
+                display_name="Prompt",
+                type="effect:agent:prompt",
+                session_id="session-1",
+                prompt="continue",
+            )
+        ).execute()
+
+    assert backend_calls == []
 
 
 def test_agent_create_container_can_override_npm_registry_url(

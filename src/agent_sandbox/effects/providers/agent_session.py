@@ -29,6 +29,7 @@ from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     as_session_manifest_repository,
 )
+from agent_sandbox.session_expiry import ensure_session_not_expired
 
 from .base import EffectRuntimeContext
 from .vm_targeting import (
@@ -292,6 +293,31 @@ def require_container_session_id(
     session = repository.get_session(session_id)
     if session is None:
         raise ValueError(f"Unknown session: {session_id}")
+    ensure_session_not_expired(session)
+    return session_id, session
+
+
+def resolve_active_session_if_available(
+    context: EffectRuntimeContext,
+    target: str,
+    *,
+    config: GatewayConfig,
+) -> tuple[str | None, SessionManifest | None]:
+    repository = runtime_session_repository(context, config)
+    normalized_target = normalize_optional_string(target)
+    if normalized_target is None:
+        return None, None
+
+    session = repository.get_session(normalized_target)
+    if session is None:
+        try:
+            session = repository.resolve_session_target(normalized_target)
+        except Exception:
+            session = None
+    if session is None:
+        return None, None
+    ensure_session_not_expired(session)
+    session_id = normalize_optional_string(getattr(session, "session_id", None)) or normalized_target
     return session_id, session
 
 

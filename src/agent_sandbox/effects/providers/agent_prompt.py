@@ -39,6 +39,7 @@ from .agent_session import (
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
+    resolve_active_session_if_available,
     safe_effect_execution_id,
     selected_execution_backend_for_target,
 )
@@ -184,6 +185,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
 
+        active_session_id, active_session = resolve_active_session_if_available(
+            context,
+            target,
+            config=config,
+        )
+        session_id = active_session_id or self._resolve_session_id_if_available(target)
         if context.agent_resumer is None:
             message = "effect:agent:prompt agent_resumer is not available"
             raise EffectProviderExecutionError(
@@ -193,7 +200,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     error_class="RuntimeError",
                     failed_phase="runtime_services",
                     dispatch_id=dispatch_id,
-                    session_id=self._resolve_session_id_if_available(target),
+                    session_id=session_id,
                     vm_name=self._normalize_optional_string(payload.get("vm_name")),
                 ),
             )
@@ -202,8 +209,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
             target=target,
-            session_id=self._resolve_session_id_if_available(target),
-            session=None,
+            session_id=session_id,
+            session=active_session,
         )
         result = context.agent_resumer.resume_agent(
             target=target,
@@ -235,7 +242,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     error_class="RuntimeError",
                     failed_phase="dispatch",
                     dispatch_id=dispatch_id,
-                    session_id=self._resolve_session_id_if_available(target),
+                    session_id=session_id,
                     vm_name=self._normalize_optional_string(payload.get("vm_name")),
                 ),
             )
@@ -252,12 +259,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     error_class="RuntimeError",
                     failed_phase="response_validation",
                     dispatch_id=dispatch_id,
-                    session_id=self._resolve_session_id_if_available(target),
+                    session_id=session_id,
                     vm_name=self._normalize_optional_string(payload.get("vm_name")),
                 ),
             )
-        session_id = self._resolve_session_id_if_available(target)
-        session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        session = active_session or self._session_for_metadata_lookup(
+            target=target, session_id=session_id
+        )
         directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
         if directory_path is None:
             directory_path = str(self._context().metadata.get("directory_path") or "root")
@@ -276,7 +284,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             )
         self._persist_resume_thread_metadata_key(
             target=target,
-            session_id=self._resolve_session_id_if_available(target),
+            session_id=session_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
             thread_id=thread_id,
