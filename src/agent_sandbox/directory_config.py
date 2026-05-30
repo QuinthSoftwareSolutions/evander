@@ -118,6 +118,12 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
+            "openai_provider_mode",
+            "azure_openai_endpoint",
+            "azure_openai_auth_mode",
+            "azure_openai_api_key_env",
+            "azure_openai_api_version",
+            "azure_openai_model_deployments",
             "openai_relay_timeout_seconds",
             "qdrant_api_key_env",
             "qdrant_base_url",
@@ -639,7 +645,13 @@ class DirectoryConfigStore:
                     f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
                 )
             payload = {key: value for key, value in payload.items() if key in allowed_fields}
-            validated = GatewayConfig.model_validate(payload)
+            validated = GatewayConfig.model_validate(
+                payload,
+                context={
+                    "directory_config_domain": "providers",
+                    "validation_scope": "overlay",
+                },
+            )
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "ado_worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
