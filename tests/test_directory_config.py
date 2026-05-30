@@ -304,6 +304,37 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
     assert resolution.validation_errors == []
 
 
+def test_directory_config_resolver_reports_incomplete_effective_azure_openai_config(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"openai_provider_mode": "azure_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["openai_provider_mode"] == "azure_openai"
+    assert resolution.validation_errors
+    message = resolution.validation_errors[0]
+    assert "azure_openai_endpoint" in message
+    assert "azure_openai_api_key_env" in message
+    assert "azure_openai_model_deployments" in message
+
+
 def test_directory_config_store_allows_npm_audit_facade_provider_fields(
     tmp_path: Path,
 ) -> None:

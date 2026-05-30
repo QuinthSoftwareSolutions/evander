@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-30 - Effective Azure Provider Validation
+
+- Made effective directory provider validation run full Azure OpenAI required-field
+  checks while keeping partial provider overlay writes permissive.
+
 ## 2026-05-29 - Workflow Run Snapshot I/O Fix
 
 - Kept JSON-backed workflow run snapshots on the raw-file read path so Admin Web

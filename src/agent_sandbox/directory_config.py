@@ -497,6 +497,11 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
     if domain == "gateway":
         validated = GatewayConfig.model_validate(payload)
         return validated.model_dump(mode="json")
+    if domain == "providers":
+        return DirectoryConfigStore._validate_provider_domain_payload(
+            payload,
+            validation_scope="effective",
+        )
     if domain == "automation":
         validated = EffectiveAutomationDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
@@ -637,22 +642,10 @@ class DirectoryConfigStore:
             validated = GatewayConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
-            compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
-            legacy_fields = {"openai_costs_api_key_env"}
-            unknown_fields = sorted(set(payload) - compatible_fields - legacy_fields)
-            if unknown_fields:
-                raise ValueError(
-                    f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
-                )
-            payload = {key: value for key, value in payload.items() if key in allowed_fields}
-            validated = GatewayConfig.model_validate(
+            return cls._validate_provider_domain_payload(
                 payload,
-                context={
-                    "directory_config_domain": "providers",
-                    "validation_scope": "overlay",
-                },
+                validation_scope="overlay",
             )
-            return validated.model_dump(mode="json", include=set(payload))
         if domain == "ado_worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
@@ -680,6 +673,31 @@ class DirectoryConfigStore:
             )
         validated = GatewayConfig.model_validate(payload)
         return validated.model_dump(mode="json", include=set(payload))
+
+    @staticmethod
+    def _validate_provider_domain_payload(
+        payload: dict[str, Any], *, validation_scope: str
+    ) -> dict[str, Any]:
+        allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+        compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+        legacy_fields = {"openai_costs_api_key_env"}
+        unknown_fields = sorted(set(payload) - compatible_fields - legacy_fields)
+        if unknown_fields:
+            raise ValueError(
+                "directory config domain 'providers' does not allow fields: "
+                + ", ".join(unknown_fields)
+            )
+        provider_payload = {
+            key: value for key, value in payload.items() if key in allowed_fields
+        }
+        validated = GatewayConfig.model_validate(
+            provider_payload,
+            context={
+                "directory_config_domain": "providers",
+                "validation_scope": validation_scope,
+            },
+        )
+        return validated.model_dump(mode="json", include=set(provider_payload))
 
     @classmethod
     def _validate_domain_name(cls, domain: str) -> None:
