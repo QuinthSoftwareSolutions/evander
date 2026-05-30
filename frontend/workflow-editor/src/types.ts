@@ -42,7 +42,8 @@ export type WorkflowGraphMetadata = {
   id: string;
   name: string;
   description?: string | null;
-  directory_paths: string[];
+  directory_path: string;
+  directory_paths?: string[];
   user_ids: string[];
   node_ids: string[];
 };

@@ -29,6 +29,11 @@ def test_admin_web_user_store_initializes_sqlite_schema(tmp_path: Path) -> None:
 
     assert "admin_web_users" in tables
     assert "admin_web_user_preferences" in tables
+    assert "admin_web_groups" in tables
+    assert "admin_web_group_permissions" in tables
+    assert "admin_web_user_group_assignments" in tables
+    assert "admin_web_user_workflow_grants" in tables
+    assert "admin_web_rbac_migrations" in tables
 
 
 def test_admin_web_user_store_mutations_use_sqlite(tmp_path: Path) -> None:

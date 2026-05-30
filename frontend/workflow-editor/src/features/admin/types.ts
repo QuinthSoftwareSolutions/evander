@@ -12,12 +12,39 @@ export type AdminView =
 
 export type AdminWebUserRole = "admin" | "regular";
 
+export type AdminWebGroupRecord = {
+  group_id: string;
+  display_name: string;
+  description: string | null;
+  is_required: boolean;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminWebUserGroupAssignmentRecord = {
+  login: string;
+  group_id: string;
+  directory_path: string;
+  created_at?: string;
+};
+
+export type AdminWebWorkflowGrantRecord = {
+  login: string;
+  permission: "workflows.read" | "workflows.write";
+  directory_path: string;
+  created_at?: string;
+};
+
 export type AdminWebUserRecord = {
   login: string;
   role: AdminWebUserRole;
   display_name: string | null;
   contact_id: string | null;
   contact: AdminContactSummary | null;
+  group_assignments: AdminWebUserGroupAssignmentRecord[];
+  workflow_grants: AdminWebWorkflowGrantRecord[];
+  effective_permissions: string[];
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -36,11 +63,17 @@ export type AdminUserListResponse = {
   directory_path: string;
   directory_scoped_config_enabled: boolean;
   contacts: AdminContactSummary[];
+  groups: AdminWebGroupRecord[];
+  permission_catalog: string[];
   users: AdminWebUserRecord[];
 };
 
 export type AdminUserMutationResponse = {
   user: AdminWebUserRecord;
+};
+
+export type AdminGroupMutationResponse = {
+  group: AdminWebGroupRecord;
 };
 
 export type AgentBackend = "libvirt_vm" | "container_worker_vm";

@@ -321,11 +321,12 @@ Azure SSO is optional and disabled by default. To enable it:
 4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
 5. For the first startup, set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the initial admin UPN/email-style identities.
 
-Azure SSO users are then managed in `runtime/admin-web.db` through the Admin Web Users tab.
-The env list is only read when the SQLite user table is empty, and imported users receive the
-`admin` role. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
-empty. Removing a user from the store invalidates their existing local admin session on the next
-authenticated request.
+Azure SSO users are then managed in `runtime/admin-web.db` through the Admin Web Users & Groups
+tab. The env list is only read when the SQLite user table is empty, and imported users receive the
+seeded Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite
+table is empty; legacy `admin` and `regular` roles are preserved for compatibility and mapped to
+Owner and Operator group assignments. Removing a user from the store invalidates their existing
+local admin session on the next authenticated request.
 
 The admin web only trusts a sign-in when both checks pass:
 

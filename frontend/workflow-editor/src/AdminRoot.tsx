@@ -34,6 +34,8 @@ type AdminSession = {
   display_name: string | null;
   role: "admin" | "regular" | null;
   can_manage_users: boolean;
+  permissions?: string[];
+  effective_permissions?: string[];
   session_id: string | null;
   available_login_methods: string[];
   azure_sso_login_url: string | null;
@@ -48,6 +50,8 @@ type AdminState = {
   execution_backend: AdminExecutionBackend;
   role: "admin" | "regular" | null;
   can_manage_users: boolean;
+  permissions?: string[];
+  effective_permissions?: string[];
   privileged_operations: {
     unlocked: boolean;
   };
@@ -84,6 +88,24 @@ type DirectoryStateResponse = {
 type DirectoryMutationResult = AdminResult<unknown>;
 
 type AdminExecutionBackend = "libvirt_vm" | "container_worker_vm";
+
+const WORKFLOW_READ_PERMISSIONS = new Set(["workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"]);
+const WORKFLOW_WRITE_PERMISSION = "workflows.write";
+const WORKFLOW_RUN_CONTROL_PERMISSION = "workflow_runs.control";
+const USER_MANAGEMENT_PERMISSIONS = new Set(["users.manage"]);
+
+function normalizePermissionList(...values: Array<ReadonlyArray<string> | string[] | undefined>): string[] {
+  const permissions = new Set<string>();
+  for (const value of values) {
+    for (const permission of value ?? []) {
+      const normalized = permission.trim();
+      if (normalized) {
+        permissions.add(normalized);
+      }
+    }
+  }
+  return [...permissions].sort((left, right) => left.localeCompare(right));
+}
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
@@ -1398,7 +1420,22 @@ export default function AdminRoot() {
   const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
   const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session?.privileged_operations.unlocked ?? false;
   const currentUserRole = adminState?.role ?? session?.role ?? null;
-  const canManageUsers = adminState?.can_manage_users ?? session?.can_manage_users ?? false;
+  const currentUserPermissions = normalizePermissionList(session?.permissions, adminState?.permissions);
+  const currentUserEffectivePermissions = normalizePermissionList(
+    session?.effective_permissions,
+    adminState?.effective_permissions,
+    currentUserPermissions,
+  );
+  const currentUserPermissionSet = new Set(currentUserEffectivePermissions);
+  const isOwner = currentUserRole === "admin" || currentUserPermissionSet.has("admin.owner");
+  const hasPermission = (permission: string) => isOwner || currentUserPermissionSet.has(permission);
+  const canReadWorkflows = isOwner || [...WORKFLOW_READ_PERMISSIONS].some((permission) => hasPermission(permission));
+  const canWriteWorkflows = hasPermission(WORKFLOW_WRITE_PERMISSION);
+  const canControlWorkflowRuns = hasPermission(WORKFLOW_RUN_CONTROL_PERMISSION);
+  const canManageUsers =
+    isOwner ||
+    [...USER_MANAGEMENT_PERMISSIONS].some((permission) => hasPermission(permission)) ||
+    Boolean(adminState?.can_manage_users ?? session?.can_manage_users);
   const workflowFocus = renderedTab === "workflow";
   const currentUserId = (
     session?.username?.trim()
@@ -1447,6 +1484,11 @@ export default function AdminRoot() {
     currentUserId,
     currentUserLabel,
     currentUserRole,
+    currentUserPermissions,
+    currentUserEffectivePermissions,
+    canReadWorkflows,
+    canWriteWorkflows,
+    canControlWorkflowRuns,
     canManageUsers,
     selectedDirectoryPath,
     selectedDirectoryParentPath,

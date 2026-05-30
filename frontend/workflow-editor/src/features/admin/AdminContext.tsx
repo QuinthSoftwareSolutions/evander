@@ -32,6 +32,11 @@ export type AdminUiState = {
   currentUserId: string;
   currentUserLabel: string;
   currentUserRole: "admin" | "regular" | null;
+  currentUserPermissions: string[];
+  currentUserEffectivePermissions: string[];
+  canReadWorkflows: boolean;
+  canWriteWorkflows: boolean;
+  canControlWorkflowRuns: boolean;
   canManageUsers: boolean;
   selectedDirectoryPath: string;
   selectedDirectoryParentPath: string | null;
@@ -58,6 +63,11 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   currentUserId: "anonymous",
   currentUserLabel: "anonymous",
   currentUserRole: null,
+  currentUserPermissions: [],
+  currentUserEffectivePermissions: [],
+  canReadWorkflows: false,
+  canWriteWorkflows: false,
+  canControlWorkflowRuns: false,
   canManageUsers: false,
   selectedDirectoryPath: "root",
   selectedDirectoryParentPath: null,

@@ -37,6 +37,14 @@ from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
+from agent_sandbox.admin.web.rbac import (
+    ADMIN_OWNER_PERMISSION,
+    GROUPS_MANAGE_PERMISSION,
+    WORKFLOWS_READ_PERMISSION,
+    WORKFLOWS_WRITE_PERMISSION,
+    WORKFLOW_RUNS_CONTROL_PERMISSION,
+    WORKFLOW_RUNS_READ_PERMISSION,
+)
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.capacity_health import (
     DiskThresholds,
@@ -233,6 +241,11 @@ def _workflow_expected_revision(client: TestClient) -> str:
     revision = response.json()["revision"]
     assert isinstance(revision, str)
     return revision
+
+
+def _unlock_privileged_operations(client: TestClient) -> None:
+    response = client.post("/api/admin/privileged/unlock")
+    assert response.status_code == 200
 
 
 def _snapshot_runtime_files(runtime_dir: Path) -> dict[str, bytes]:
@@ -1779,7 +1792,7 @@ def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> N
 
 
 def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     status_path = service.config.runtime_dir / "deployment-status.json"
     status_path.write_text(
         json.dumps(
@@ -1810,7 +1823,7 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
 ) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps({"active": True, "message": "Deploying", "ttl_seconds": 3600}),
         encoding="utf-8",
@@ -2671,6 +2684,7 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     }
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2688,7 +2702,9 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
 def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    client = TestClient(create_app(service))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -2728,6 +2744,7 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
         ],
     }
 
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     first_save = client.put("/api/workflow-editor/document", json=payload)
     assert first_save.status_code == 200
@@ -2774,6 +2791,7 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
         },
     }
 
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2783,6 +2801,7 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
 
 def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    _unlock_privileged_operations(client)
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -2811,6 +2830,673 @@ def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Pat
     assert stale.json()["details"]["current_revision"] == current_revision
     assert saved.status_code == 200
     assert saved.json()["revision"] == _workflow_expected_revision(client)
+
+
+def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_directory_child("root", "ops")
+    service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "root-start",
+                    "display_name": "Root start",
+                    "type": "trigger:cron",
+                    "expression": "0 * * * *",
+                },
+                {
+                    "id": "ops-start",
+                    "display_name": "Ops start",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "root-filter",
+                    "display_name": "Root filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "root", "equals": "root"}]},
+                },
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                },
+            ],
+            "effects": [],
+            "queries": [],
+            "edges": [
+                {"source_id": "root-start", "target_id": "root-filter"},
+                {"source_id": "ops-start", "target_id": "ops-filter"},
+            ],
+        },
+        layout={
+            "nodes": {
+                "root-start": {"x": 100, "y": 50},
+                "root-filter": {"x": 320, "y": 50},
+                "ops-start": {"x": 100, "y": 250},
+                "ops-filter": {"x": 320, "y": 250},
+            }
+        },
+        graphs=[
+            {
+                "id": "graph-root",
+                "name": "Root workflow",
+                "directory_paths": ["root"],
+                "user_ids": ["owner@example.com"],
+                "node_ids": ["root-start", "root-filter"],
+            },
+            {
+                "id": "graph-ops",
+                "name": "Ops workflow",
+                "directory_paths": ["root/ops"],
+                "user_ids": ["viewer@example.com"],
+                "node_ids": ["ops-start", "ops-filter"],
+            },
+        ],
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app, client, login="viewer@example.com", display_name="Viewer"
+    )
+    response = client.get("/api/workflow-editor/document")
+    payload = response.json()
+    full_revision = service.read_workflow_editor_document().revision
+
+    assert callback.status_code == 303
+    assert response.status_code == 200
+    assert payload["revision"] == full_revision
+    assert [graph["id"] for graph in payload["graphs"]] == ["graph-ops"]
+    assert [node["id"] for node in payload["config"]["triggers"]] == ["ops-start"]
+    assert [node["id"] for node in payload["config"]["gates"]] == ["ops-filter"]
+    assert [edge["source_id"] for edge in payload["config"]["edges"]] == ["ops-start"]
+    assert set(payload["layout"]["nodes"]) == {"ops-start", "ops-filter"}
+    assert set(payload["output_schemas"]) == {"ops-start", "ops-filter"}
+    assert payload["config"]["workflow_graphs"] == [
+        {
+            "id": "graph-ops",
+            "name": "Ops workflow",
+            "directory_path": "root/ops",
+            "directory_paths": ["root/ops"],
+            "user_ids": ["viewer@example.com"],
+            "node_ids": ["ops-start", "ops-filter"],
+        }
+    ]
+
+
+def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    service.write_directory_domain_config(
+        "root",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "root-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/root",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+    service.write_directory_domain_config(
+        "root/ops",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "ops-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/ops",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+    service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "root-start",
+                    "display_name": "Root start",
+                    "type": "trigger:cron",
+                    "expression": "0 * * * *",
+                },
+                {
+                    "id": "ops-start",
+                    "display_name": "Ops start",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "root-filter",
+                    "display_name": "Root filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "root", "equals": "root"}]},
+                },
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                },
+            ],
+            "effects": [],
+            "queries": [],
+            "edges": [
+                {"source_id": "root-start", "target_id": "root-filter"},
+                {"source_id": "ops-start", "target_id": "ops-filter"},
+            ],
+        },
+        layout={
+            "nodes": {
+                "root-start": {"x": 100, "y": 50},
+                "root-filter": {"x": 320, "y": 50},
+                "ops-start": {"x": 100, "y": 250},
+                "ops-filter": {"x": 320, "y": 250},
+            }
+        },
+        graphs=[
+            {
+                "id": "graph-root",
+                "name": "Root workflow",
+                "directory_paths": ["root"],
+                "user_ids": ["owner@example.com"],
+                "node_ids": ["root-start", "root-filter"],
+            },
+            {
+                "id": "graph-ops",
+                "name": "Ops workflow",
+                "directory_paths": ["root/ops"],
+                "user_ids": ["viewer@example.com"],
+                "node_ids": ["ops-start", "ops-filter"],
+            },
+        ],
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    document_response = client.get("/api/workflow-editor/document")
+    validate_response = client.post(
+        "/api/workflow-editor/validate",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    }
+                ],
+                "gates": [
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                }
+                ],
+                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+            },
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 250},
+                    "ops-filter": {"x": 320, "y": 250},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_paths": ["root/ops"],
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-start", "ops-filter"],
+                }
+            ],
+        },
+    )
+    catalog_allowed = client.get("/api/workflow-editor/catalog?directory_path=root/ops")
+    catalog_denied = client.get("/api/workflow-editor/catalog?directory_path=root")
+    generate_denied = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Draft ops workflow", "directory_path": "root/ops"},
+    )
+    save_denied = client.put(
+        "/api/workflow-editor/document",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    }
+                ],
+                "gates": [
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                }
+                ],
+                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+            },
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 250},
+                    "ops-filter": {"x": 320, "y": 250},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_paths": ["root/ops"],
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-start", "ops-filter"],
+                }
+            ],
+            "expected_revision": document_response.json()["revision"],
+        },
+    )
+
+    assert document_response.status_code == 200
+    assert validate_response.status_code == 200
+    assert catalog_allowed.status_code == 200
+    assert catalog_denied.status_code == 403
+    assert generate_denied.status_code == 403
+    assert generate_denied.json()["error"] == "Permission required: workflows.write"
+    assert save_denied.status_code == 403
+    assert save_denied.json()["error"] == "Permission required: workflows.write"
+
+
+def test_admin_web_workflow_run_routes_enforce_directory_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        config_root / "config.json",
+        {
+            "runtime_dir": str(runtime_dir),
+            "triggers": [
+                {
+                    "id": "root-trigger",
+                    "display_name": "Root trigger",
+                    "type": "trigger:cron",
+                    "expression": "0 * * * *",
+                },
+                {
+                    "id": "ops-trigger",
+                    "display_name": "Ops trigger",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                },
+            ],
+            "effects": [
+                {
+                    "id": "root-effect",
+                    "display_name": "Root effect",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-root",
+                    "prompt": "root",
+                },
+                {
+                    "id": "ops-effect",
+                    "display_name": "Ops effect",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-ops",
+                    "prompt": "ops",
+                },
+            ],
+            "gates": [],
+            "queries": [],
+            "edges": [
+                {"source_id": "root-trigger", "target_id": "root-effect"},
+                {"source_id": "ops-trigger", "target_id": "ops-effect"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-root",
+                    "name": "Root workflow",
+                    "directory_path": "root",
+                    "user_ids": ["owner@example.com"],
+                    "node_ids": ["root-trigger", "root-effect"],
+                },
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_path": "root/ops",
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-trigger", "ops-effect"],
+                },
+            ],
+        },
+    )
+    _write_json_payload(
+        config_root / "layout.json",
+        {
+            "nodes": {
+                "root-trigger": {"x": 100, "y": 50},
+                "root-effect": {"x": 320, "y": 50},
+                "ops-trigger": {"x": 100, "y": 250},
+                "ops-effect": {"x": 320, "y": 250},
+            }
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "trigger-orchestrator-events.json",
+        {
+            "evt-root": {
+                "event_id": "evt-root",
+                "trigger_id": "root-trigger",
+                "trigger_type": "trigger:cron",
+                "trace_id": "trace-root",
+                "occurred_at": "2026-05-24T10:00:00Z",
+                "payload": {"scope": "root"},
+                "delivery_state": "inflight",
+                "inflight_at": "2026-05-24T10:00:05Z",
+                "delivered_at": None,
+                "idempotency_key": None,
+            },
+            "evt-ops": {
+                "event_id": "evt-ops",
+                "trigger_id": "ops-trigger",
+                "trigger_type": "trigger:cron",
+                "trace_id": "trace-ops",
+                "occurred_at": "2026-05-24T11:00:00Z",
+                "payload": {"scope": "ops"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-24T11:00:05Z",
+                "delivered_at": "2026-05-24T11:00:06Z",
+                "idempotency_key": None,
+            },
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "effect-orchestrator-executions.json",
+        {
+            "exec-root": {
+                "execution_id": "exec-root",
+                "idempotency_key": "evt-root::root-effect",
+                "event_id": "evt-root",
+                "trace_id": "trace-root",
+                "source_node_id": "root-trigger",
+                "source_trigger_type": "trigger:cron",
+                "effect_id": "root-effect",
+                "effect_type": "effect:agent:prompt",
+                "status": "running",
+                "started_at": "2026-05-24T10:01:00Z",
+                "finished_at": "2026-05-24T10:01:01Z",
+                "resolved_config_hash": "hash-root",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+            },
+            "exec-ops": {
+                "execution_id": "exec-ops",
+                "idempotency_key": "evt-ops::ops-effect",
+                "event_id": "evt-ops",
+                "trace_id": "trace-ops",
+                "source_node_id": "ops-trigger",
+                "source_trigger_type": "trigger:cron",
+                "effect_id": "ops-effect",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-05-24T11:01:00Z",
+                "finished_at": "2026-05-24T11:01:01Z",
+                "resolved_config_hash": "hash-ops",
+                "resolved_config": {},
+                "input_payload": {"issue_number": "77"},
+                "outputs": {},
+                "error": "ops failed",
+            },
+        },
+    )
+    _write_json_payload(runtime_dir / "await-agent-pending.json", {})
+
+    _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,viewer@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.update_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    definition_allowed = client.get("/api/workflow-editor/document")
+    runs_without_run_read = client.get("/api/workflow-editor/runs")
+    detail_without_run_read = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-ops"}
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="auditor", directory_path="root/ops"
+    )
+    runs_response = client.get("/api/workflow-editor/runs")
+    graph_allowed = client.get(
+        "/api/workflow-editor/run-search", params={"graph_id": "graph-ops", "limit": "5"}
+    )
+    node_allowed = client.get(
+        "/api/workflow-editor/run-search", params={"node_id": "ops-effect", "limit": "5"}
+    )
+    detail_allowed = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-ops"}
+    )
+    graph_denied = client.get(
+        "/api/workflow-editor/run-search", params={"graph_id": "graph-root", "limit": "5"}
+    )
+    detail_denied = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-root"}
+    )
+
+    assert definition_allowed.status_code == 200
+    assert [graph["id"] for graph in definition_allowed.json()["graphs"]] == ["graph-ops"]
+    assert runs_without_run_read.status_code == 403
+    assert runs_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
+    assert detail_without_run_read.status_code == 403
+    assert (
+        detail_without_run_read.json()["error"]
+        == "Permission required: workflow_runs.read"
+    )
+    assert runs_response.status_code == 200
+    runs_payload = runs_response.json()
+    assert [run["event_id"] for run in runs_payload["runs"]] == ["evt-ops"]
+    assert runs_payload["node_activity"] == {"ops-effect": {"failed": 1}}
+    assert graph_allowed.status_code == 200
+    assert graph_allowed.json()["filters"]["graph_id"] == "graph-ops"
+    assert [run["event_id"] for run in graph_allowed.json()["runs"]] == ["evt-ops"]
+    assert node_allowed.status_code == 200
+    assert node_allowed.json()["filters"]["node_id"] == "ops-effect"
+    assert [run["event_id"] for run in node_allowed.json()["runs"]] == ["evt-ops"]
+    assert detail_allowed.status_code == 200
+    assert detail_allowed.json()["event_id"] == "evt-ops"
+    assert detail_allowed.json()["nodes"][0]["node_id"] in {"ops-effect", "ops-trigger"}
+    assert graph_denied.status_code == 403
+    assert graph_denied.json()["error"] == "Permission required: workflow_runs.read"
+    assert detail_denied.status_code == 403
+    assert detail_denied.json()["error"] == "Permission required: workflow_runs.read"
+
+
+def test_admin_web_workflow_run_controls_require_workflow_runs_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        config_root / "config.json",
+        {
+            "runtime_dir": str(runtime_dir),
+            "triggers": [
+                {
+                    "id": "ops-trigger",
+                    "display_name": "Ops trigger",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "ops-effect",
+                    "display_name": "Ops effect",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-ops",
+                    "prompt": "ops",
+                }
+            ],
+            "gates": [],
+            "queries": [],
+            "edges": [{"source_id": "ops-trigger", "target_id": "ops-effect"}],
+            "workflow_graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_path": "root/ops",
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-trigger", "ops-effect"],
+                }
+            ],
+        },
+    )
+    _write_json_payload(
+        config_root / "layout.json",
+        {
+            "nodes": {
+                "ops-trigger": {"x": 100, "y": 50},
+                "ops-effect": {"x": 320, "y": 50},
+            }
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "trigger-orchestrator-events.json",
+        {
+            "evt-ops": {
+                "event_id": "evt-ops",
+                "trigger_id": "ops-trigger",
+                "trigger_type": "trigger:cron",
+                "trace_id": "trace-ops",
+                "occurred_at": "2026-05-24T11:00:00Z",
+                "payload": {"scope": "ops"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-24T11:00:05Z",
+                "delivered_at": "2026-05-24T11:00:06Z",
+                "idempotency_key": None,
+            }
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "effect-orchestrator-executions.json",
+        {
+            "exec-ops": {
+                "execution_id": "exec-ops",
+                "idempotency_key": "evt-ops::ops-effect",
+                "event_id": "evt-ops",
+                "trace_id": "trace-ops",
+                "source_node_id": "ops-trigger",
+                "source_trigger_type": "trigger:cron",
+                "effect_id": "ops-effect",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-05-24T11:01:00Z",
+                "finished_at": "2026-05-24T11:01:01Z",
+                "resolved_config_hash": "hash-ops",
+                "resolved_config": {},
+                "input_payload": {"issue_number": "77"},
+                "outputs": {},
+                "error": "ops failed",
+            }
+        },
+    )
+    _write_json_payload(runtime_dir / "await-agent-pending.json", {})
+
+    _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,viewer@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.update_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="auditor", directory_path="root/ops"
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    before_snapshot = _snapshot_runtime_files(runtime_dir)
+    clear_denied = client.delete("/api/workflow-editor/runs/evt-ops")
+    resume_denied = client.post("/api/workflow-editor/runs/evt-ops/resume")
+    dismiss_denied = client.delete("/api/workflow-editor/node-failures/ops-effect")
+    after_snapshot = _snapshot_runtime_files(runtime_dir)
+    relevant_keys = {
+        "trigger-orchestrator-events.json",
+        "effect-orchestrator-executions.json",
+        "await-agent-pending.json",
+    }
+    relevant_before = {
+        path: payload for path, payload in before_snapshot.items() if path in relevant_keys
+    }
+    relevant_after = {
+        path: payload for path, payload in after_snapshot.items() if path in relevant_keys
+    }
+
+    assert clear_denied.status_code == 403
+    assert clear_denied.json()["error"] == "Permission required: workflow_runs.control"
+    assert resume_denied.status_code == 403
+    assert resume_denied.json()["error"] == "Permission required: workflow_runs.control"
+    assert dismiss_denied.status_code == 403
+    assert dismiss_denied.json()["error"] == "Permission required: workflow_runs.control"
+    assert relevant_after == relevant_before
 
 
 def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[str, object]:
@@ -2898,6 +3584,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     )
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2983,6 +3670,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
         "id": "ticket-copy",
         "display_name": "Ticket created Copy",
     }
+    _unlock_privileged_operations(client)
     response = client.put(
         "/api/workflow-editor/document",
         json={
@@ -5667,6 +6355,8 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["authenticated"] is True
     assert response.json()["role"] == "admin"
     assert response.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in response.json()["permissions"]
+    assert response.json()["permissions"] == response.json()["effective_permissions"]
 
 
 def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monkeypatch) -> None:
@@ -5685,6 +6375,8 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert login.json()["authenticated"] is True
     assert login.json()["role"] == "admin"
     assert login.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in login.json()["permissions"]
+    assert login.json()["permissions"] == login.json()["effective_permissions"]
     assert authorized.status_code == 200
 
 
@@ -6259,6 +6951,8 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
     assert response.json()["authenticated"] is False
     assert response.json()["role"] is None
     assert response.json()["can_manage_users"] is False
+    assert response.json()["permissions"] == []
+    assert response.json()["effective_permissions"] == []
     assert response.json()["available_login_methods"] == ["password"]
 
 
@@ -6282,6 +6976,8 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     assert response.json()["authenticated"] is False
     assert response.json()["role"] is None
     assert response.json()["can_manage_users"] is False
+    assert response.json()["permissions"] == []
+    assert response.json()["effective_permissions"] == []
     assert response.json()["available_login_methods"] == ["azure_sso"]
     assert response.json()["azure_sso_login_url"] == "/api/auth/azure-sso/start"
 
@@ -6335,10 +7031,54 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
     assert session.json()["authenticated"] is True
     assert session.json()["role"] == "admin"
     assert session.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
     assert session.json()["display_name"] == "Runtime Operator"
     assert admin_state.json()["role"] == "admin"
     assert admin_state.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in admin_state.json()["permissions"]
+    assert admin_state.json()["permissions"] == admin_state.json()["effective_permissions"]
     assert app.state.admin_user_store.get_user("operator@example.com").last_login_at is not None
+
+
+def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="admin@example.com", role="admin")
+    store.upsert_user(login="regular@example.com", role="regular")
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app, client, login="regular@example.com", display_name="Regular User"
+    )
+    session = client.get("/api/auth/session")
+    admin_state = client.get("/api/admin/state")
+
+    assert callback.status_code == 303
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is True
+    assert session.json()["role"] == "regular"
+    assert session.json()["can_manage_users"] is False
+    assert set(session.json()["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+        WORKFLOW_RUNS_CONTROL_PERMISSION,
+    }
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
+    assert admin_state.status_code == 200
+    assert admin_state.json()["role"] == "regular"
+    assert admin_state.json()["can_manage_users"] is False
+    assert set(admin_state.json()["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+        WORKFLOW_RUNS_CONTROL_PERMISSION,
+    }
 
 
 def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> None:
@@ -6576,6 +7316,8 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     assert session.json()["display_name"] == "Operator"
     assert session.json()["role"] == "admin"
     assert session.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
 
 
 def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monkeypatch) -> None:
@@ -6635,6 +7377,8 @@ def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, mon
     assert session.status_code == 200
     assert session.json()["authenticated"] is False
     assert session.json()["role"] is None
+    assert session.json()["permissions"] == []
+    assert session.json()["effective_permissions"] == []
     assert after_removal.status_code == 401
 
 
@@ -6753,6 +7497,139 @@ def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -
     assert cleared.status_code == 200
     assert cleared.json()["user"]["contact_id"] is None
     assert listed.json()["users"][0]["contact_id"] is None
+
+
+def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grants(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    client = TestClient(create_app(service))
+
+    owner = client.post(
+        "/api/admin/users",
+        json={"login": "owner@example.com", "role": "admin", "display_name": "Owner"},
+    )
+    group = client.post(
+        "/api/admin/groups",
+        json={
+            "group_id": "ops-reviewers",
+            "display_name": "Ops Reviewers",
+            "description": "Review workflow changes for ops.",
+            "permissions": [WORKFLOWS_READ_PERMISSION, WORKFLOW_RUNS_READ_PERMISSION],
+        },
+    )
+    member = client.post(
+        "/api/admin/users?directory_path=root/ops",
+        json={
+            "login": "member@example.com",
+            "role": "regular",
+            "display_name": "Member",
+            "group_assignments": [
+                {"group_id": "ops-reviewers", "directory_path": "root/ops"}
+            ],
+            "workflow_grants": [
+                {"permission": WORKFLOWS_WRITE_PERMISSION, "directory_path": "root/ops"}
+            ],
+        },
+    )
+    listed = client.get("/api/admin/users?directory_path=root/ops")
+    updated_group = client.patch(
+        "/api/admin/groups/ops-reviewers",
+        json={
+            "display_name": "Ops Workflow Reviewers",
+            "permissions": [WORKFLOWS_READ_PERMISSION],
+        },
+    )
+
+    assert owner.status_code == 200
+    assert group.status_code == 200
+    assert set(group.json()["group"]["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+    }
+    assert member.status_code == 200
+    member_payload = member.json()["user"]
+    assert member_payload["group_assignments"] == [
+        {
+            "login": "member@example.com",
+            "group_id": "ops-reviewers",
+            "directory_path": "root/ops",
+            "created_at": member_payload["group_assignments"][0]["created_at"],
+        }
+    ]
+    assert member_payload["workflow_grants"] == [
+        {
+            "login": "member@example.com",
+            "permission": WORKFLOWS_WRITE_PERMISSION,
+            "directory_path": "root/ops",
+            "created_at": member_payload["workflow_grants"][0]["created_at"],
+        }
+    ]
+    assert WORKFLOWS_WRITE_PERMISSION in member_payload["effective_permissions"]
+    assert listed.status_code == 200
+    assert "ops-reviewers" in {group["group_id"] for group in listed.json()["groups"]}
+    assert WORKFLOWS_WRITE_PERMISSION in listed.json()["permission_catalog"]
+    assert updated_group.status_code == 200
+    assert updated_group.json()["group"]["display_name"] == "Ops Workflow Reviewers"
+    assert updated_group.json()["group"]["permissions"] == [WORKFLOWS_READ_PERMISSION]
+
+
+def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="group-manager@example.com", role="regular")
+    store.upsert_group(
+        group_id="group-managers",
+        display_name="Group Managers",
+        description="Can edit groups only.",
+    )
+    store.set_group_permissions("group-managers", [GROUPS_MANAGE_PERMISSION])
+    store.set_user_group_assignments(
+        login="group-manager@example.com",
+        assignments=[{"group_id": "group-managers", "directory_path": "root"}],
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app,
+        client,
+        login="group-manager@example.com",
+        display_name="Group Manager",
+    )
+    list_users = client.get("/api/admin/users")
+    create_user = client.post(
+        "/api/admin/users",
+        json={
+            "login": "other@example.com",
+            "role": "regular",
+            "group_assignments": [
+                {"group_id": "owner", "directory_path": "root"}
+            ],
+        },
+    )
+    list_groups = client.get("/api/admin/groups")
+    create_group = client.post(
+        "/api/admin/groups",
+        json={
+            "group_id": "ops-readers",
+            "display_name": "Ops Readers",
+            "permissions": [WORKFLOWS_READ_PERMISSION],
+        },
+    )
+
+    assert callback.status_code == 303
+    assert list_users.status_code == 403
+    assert create_user.status_code == 403
+    assert create_user.json()["error"] == "Permission required: users.manage"
+    assert list_groups.status_code == 200
+    assert create_group.status_code == 200
+    assert create_group.json()["group"]["group_id"] == "ops-readers"
 
 
 def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:

@@ -118,6 +118,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     display_name: "Admin Operator",
     role: "admin",
     can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
     session_id: "session-123",
     available_login_methods: [],
     azure_sso_login_url: null,
@@ -131,6 +133,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     execution_backend: "libvirt_vm",
     role: "admin",
     can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
     privileged_operations: {
       unlocked: true,
     },
@@ -202,7 +206,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
         id: "graph-1",
         name: "Unsaved changes smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "effect-1"],
       },
@@ -489,7 +493,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   if (await expandSectionsButton.count()) {
     await expandSectionsButton.click();
   }
-  const usersTab = page.locator(".admin-shell-tab").filter({ hasText: "Users" });
+  const usersTab = page.locator(".admin-shell-tab").filter({ hasText: "Users & Groups" });
   await usersTab.click();
   assert.deepEqual(tabConfirmMessages, ["Workflow has unsaved changes. Discard them and continue?"]);
   await page.waitForFunction(() => window.location.hash === "#workflow");

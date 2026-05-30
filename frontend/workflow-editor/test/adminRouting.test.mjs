@@ -49,3 +49,11 @@ test("dashboard is the first visible tab and vms stay backend-gated", () => {
   assert.equal(tabsForExecutionBackend("container_worker_vm").some((tab) => tab.key === "vms"), false);
   assert.equal(tabsForExecutionBackend("libvirt_vm").some((tab) => tab.key === "vms"), true);
 });
+
+test("users tab is labeled users and groups", () => {
+  const usersTab = tabsForExecutionBackend("libvirt_vm").find((tab) => tab.key === "users");
+  assert.ok(usersTab);
+  assert.equal(usersTab?.label, "Users & Groups");
+  assert.equal(usersTab?.shortLabel, "Users");
+  assert.equal(usersTab?.description, "Azure SSO users, groups, and permissions.");
+});

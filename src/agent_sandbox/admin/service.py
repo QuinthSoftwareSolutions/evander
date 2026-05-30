@@ -24,7 +24,15 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 import yaml
 
 from agent_sandbox.agent_control import AgentControlStore
@@ -432,11 +440,57 @@ class WorkflowEditorGraphMetadata(BaseModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str | None = None
-    directory_paths: list[str] = Field(default_factory=lambda: ["root"])
+    directory_path: str = "root"
     user_ids: list[str] = Field(default_factory=list)
     node_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("directory_paths", "user_ids", "node_ids", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_directory_paths(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "directory_path" in payload:
+            payload.pop("directory_paths", None)
+            return payload
+
+        legacy_directory_paths = payload.pop("directory_paths", None)
+        if legacy_directory_paths is None:
+            payload["directory_path"] = "root"
+            return payload
+
+        if isinstance(legacy_directory_paths, str):
+            raw_directory_paths = [legacy_directory_paths]
+        elif isinstance(legacy_directory_paths, list):
+            raw_directory_paths = legacy_directory_paths
+        else:
+            raw_directory_paths = [legacy_directory_paths]
+
+        normalized_directory_paths: list[str] = []
+        seen_directory_paths: set[str] = set()
+        for raw_directory_path in raw_directory_paths:
+            directory_path = str(raw_directory_path or "").strip()
+            if not directory_path:
+                continue
+            try:
+                normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
+            except ValueError as exc:
+                raise ValueError(
+                    f"Workflow graph has invalid directory path: {directory_path}"
+                ) from exc
+            if normalized_directory_path in seen_directory_paths:
+                continue
+            seen_directory_paths.add(normalized_directory_path)
+            normalized_directory_paths.append(normalized_directory_path)
+
+        if len(normalized_directory_paths) > 1:
+            raise ValueError("Workflow graph directory_paths must contain at most one directory.")
+        payload["directory_path"] = (
+            normalized_directory_paths[0] if normalized_directory_paths else "root"
+        )
+        return payload
+
+    @field_validator("user_ids", "node_ids", mode="before")
     @classmethod
     def _normalize_string_lists(cls, value: object) -> object:
         if value is None:
@@ -444,6 +498,20 @@ class WorkflowEditorGraphMetadata(BaseModel):
         if isinstance(value, str):
             return [value]
         return value
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _normalize_directory_path(cls, value: object) -> str:
+        directory_path = str(value or "").strip() or "root"
+        try:
+            return DirectoryPath(segments=directory_path).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Workflow graph has invalid directory path: {directory_path}") from exc
+
+    @computed_field(return_type=list[str])
+    @property
+    def directory_paths(self) -> list[str]:
+        return [self.directory_path]
 
 
 class WorkflowEditorDocumentPayload(BaseModel):
@@ -12516,26 +12584,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     raise ValueError("Workflow graph id and name are required.")
                 continue
             description = graph.description.strip() if graph.description else None
-            directory_paths: list[str] = []
-            seen_directory_paths: set[str] = set()
-            for raw_directory_path in graph.directory_paths:
-                directory_path = str(raw_directory_path or "").strip()
-                if not directory_path:
-                    continue
-                try:
-                    normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
-                except ValueError as exc:
-                    if strict:
-                        raise ValueError(
-                            f"Workflow graph {graph_id} has invalid directory path: {directory_path}"
-                        ) from exc
-                    continue
-                if normalized_directory_path in seen_directory_paths:
-                    continue
-                seen_directory_paths.add(normalized_directory_path)
-                directory_paths.append(normalized_directory_path)
-            if not directory_paths:
-                directory_paths = ["root"]
             user_ids: list[str] = []
             seen_user_ids: set[str] = set()
             for raw_user_id in graph.user_ids:
@@ -12549,7 +12597,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     id=graph_id,
                     name=graph_name,
                     description=description or None,
-                    directory_paths=directory_paths,
+                    directory_path=graph.directory_path,
                     user_ids=user_ids,
                     node_ids=node_ids,
                 )
@@ -12628,7 +12676,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 graph_id = matched.id
                 graph_name = matched.name
                 graph_description = matched.description
-                graph_directory_paths = matched.directory_paths or ["root"]
+                graph_directory_path = matched.directory_path
                 graph_user_ids = matched.user_ids
             else:
                 graph_id = self._workflow_editor_graph_id_base(
@@ -12638,7 +12686,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     component=component, nodes_by_id=nodes_by_id, index=index
                 )
                 graph_description = None
-                graph_directory_paths = ["root"]
+                graph_directory_path = "root"
                 graph_user_ids = []
             unique_id = graph_id
             suffix = 2
@@ -12651,7 +12699,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     id=unique_id,
                     name=graph_name,
                     description=graph_description,
-                    directory_paths=graph_directory_paths,
+                    directory_path=graph_directory_path,
                     user_ids=graph_user_ids,
                     node_ids=component,
                 )
@@ -12964,18 +13012,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "graph": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": [
-                        "id",
-                        "name",
-                        "description",
-                        "directory_paths",
-                        "user_ids",
-                    ],
+                    "required": ["id", "name", "description", "directory_path", "user_ids"],
                     "properties": {
                         "id": {"type": "string"},
                         "name": {"type": "string"},
                         "description": {"type": ["string", "null"]},
-                        "directory_paths": {"type": "array", "items": {"type": "string"}},
+                        "directory_path": {"type": "string"},
+                        "directory_paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Legacy compatibility field; one directory only.",
+                        },
                         "user_ids": {"type": "array", "items": {"type": "string"}},
                     },
                 },
@@ -13264,31 +13311,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError("Generated workflow graph metadata is required.")
         graph_id = str(graph_payload.get("id") or "").strip() or "generated-workflow"
         graph_name = str(graph_payload.get("name") or "").strip() or "Generated workflow"
-        raw_directory_paths = graph_payload.get("directory_paths")
-        directory_paths = (
-            [
-                DirectoryPath(segments=str(path).strip()).as_posix()
-                for path in raw_directory_paths
-                if str(path).strip()
-            ]
-            if isinstance(raw_directory_paths, list)
-            else []
-        )
-        if directory_path not in directory_paths:
-            directory_paths = [directory_path]
-        raw_user_ids = graph_payload.get("user_ids")
-        user_ids = (
-            [str(user_id).strip() for user_id in raw_user_ids if str(user_id).strip()]
-            if isinstance(raw_user_ids, list)
-            else []
-        )
-        graph = WorkflowEditorGraphMetadata(
-            id=graph_id,
-            name=graph_name,
-            description=str(graph_payload.get("description") or "").strip() or None,
-            directory_paths=directory_paths,
-            user_ids=user_ids,
-            node_ids=ordered_generated_node_ids,
+        graph_input = dict(graph_payload)
+        if "directory_path" not in graph_input and "directory_paths" not in graph_input:
+            graph_input["directory_path"] = directory_path
+        graph_input["node_ids"] = ordered_generated_node_ids
+        graph = WorkflowEditorGraphMetadata.model_validate(
+            {
+                "id": graph_id,
+                "name": graph_name,
+                "description": str(graph_payload.get("description") or "").strip() or None,
+                **graph_input,
+            }
         )
         warnings_payload = payload.get("warnings")
         warnings = (

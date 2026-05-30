@@ -54,7 +54,7 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
             {
                 "id": "graph-demo",
                 "name": "Demo",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["admin"],
                 "node_ids": [],
             }
@@ -72,7 +72,7 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
             {
                 "id": "graph-demo",
                 "name": "Demo",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["admin"],
                 "node_ids": [],
             }
@@ -96,7 +96,7 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
                     {
                         "id": "graph-demo",
                         "name": "Demo",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["admin"],
                         "node_ids": [],
                     }

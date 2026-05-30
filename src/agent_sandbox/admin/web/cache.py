@@ -163,7 +163,14 @@ def _cache_key(request: Request, namespace: str) -> tuple[Any, ...]:
         if key not in {DASHBOARD_CACHE_PARAM, DASHBOARD_REFRESH_PARAM}
     ]
     query_items.sort()
-    return (namespace, request.method, request.url.path, tuple(query_items))
+    session_token = request.cookies.get("agent_sandbox_admin_session", "")
+    return (
+        namespace,
+        request.method,
+        request.url.path,
+        session_token,
+        tuple(query_items),
+    )
 
 
 __all__ = [
