@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { usersModeFromHash, usersModeHash, type AdminUsersMode } from "../../adminRouting";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
@@ -131,6 +132,9 @@ export function UsersPage() {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeMode, setActiveMode] = useState<AdminUsersMode>(() =>
+    typeof window === "undefined" ? "users" : usersModeFromHash(window.location.hash),
+  );
 
   const sortedUsers = useMemo(
     () =>
@@ -168,6 +172,7 @@ export function UsersPage() {
     () => sortedGroups.find((group) => group.group_id === selectedGroupId) ?? null,
     [selectedGroupId, sortedGroups],
   );
+  const isUsersMode = activeMode === "users";
 
   async function loadUsers() {
     if (!canManageUsers) {
@@ -231,7 +236,30 @@ export function UsersPage() {
     });
   }, [selectedGroup]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    function handleHashChange() {
+      setActiveMode(usersModeFromHash(window.location.hash));
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  function selectMode(mode: AdminUsersMode) {
+    setActiveMode(mode);
+    if (typeof window === "undefined") {
+      return;
+    }
+    const nextHash = usersModeHash(mode);
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }
+
   function beginNewUser() {
+    selectMode("users");
     setSelectedLogin(null);
     setForm(EMPTY_FORM);
     setStatus(null);
@@ -239,6 +267,7 @@ export function UsersPage() {
   }
 
   function beginNewGroup() {
+    selectMode("groups");
     setSelectedGroupId(null);
     setGroupForm(EMPTY_GROUP_FORM);
     setStatus(null);
@@ -401,6 +430,406 @@ export function UsersPage() {
 
   return (
     <div className="feature-page users-page">
+      <section className="feature-content">
+        {status ? <div className="callout success-callout">{status}</div> : null}
+        {error ? <div className="callout error-callout">{error}</div> : null}
+
+        {activeMode === "users" ? (
+          <>
+            <div className="feature-toolbar">
+              <div>
+                <h2>{selectedTitle}</h2>
+                <p className="muted-text">
+                  {selectedUser ? selectedUser.login : "Create an Azure SSO user record."}
+                </p>
+                <p className="muted-text">Directory: {selectedDirectoryPath}</p>
+              </div>
+              {selectedUser ? (
+                <div className="feature-toolbar-actions">
+                  <span className={`status-pill state-${selectedUser.role === "admin" ? "running" : "idle"}`}>
+                    {selectedUser.role}
+                  </span>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void deleteUser(selectedUser.login)}
+                    disabled={actionDisabled}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>{selectedUser ? "Edit user" : "Add user"}</h3>
+                <span className="panel-meta">{currentUserId}</span>
+              </div>
+              <div className="config-field-grid">
+                <label className="field-stack">
+                  <span>Login</span>
+                  <input
+                    value={form.login}
+                    onChange={(event) => setForm((current) => ({ ...current, login: event.target.value }))}
+                    disabled={actionDisabled || Boolean(selectedUser)}
+                    placeholder="operator@example.com"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Display name</span>
+                  <input
+                    value={form.displayName}
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, displayName: event.target.value }))
+                    }
+                    disabled={actionDisabled}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Role</span>
+                  <select
+                    value={form.role}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        role: event.target.value as AdminWebUserRole,
+                      }))
+                    }
+                    disabled={actionDisabled}
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="regular">Regular</option>
+                  </select>
+                </label>
+                <label className="field-stack">
+                  <span>Contact</span>
+                  <select
+                    value={form.contactId}
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, contactId: event.target.value }))
+                    }
+                    disabled={actionDisabled || !directoryScopedConfigEnabled}
+                  >
+                    <option value="">None</option>
+                    {contacts.map((contact) => (
+                      <option key={contact.id} value={contact.id}>
+                        {contact.name} ({contact.id})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="inline-actions">
+                <button type="button" className="primary" onClick={() => void saveUser()} disabled={actionDisabled}>
+                  {saving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Access assignments</h3>
+                <span className="panel-meta">{selectedDirectoryPath}</span>
+              </div>
+              <div className="config-field-grid">
+                <div className="field-stack">
+                  <span>Group assignments</span>
+                  <div className="stacked-list">
+                    {form.groupAssignments.map((assignment, index) => (
+                      <div className="inline-actions" key={`${assignment.groupId}-${assignment.directoryPath}-${index}`}>
+                        <select
+                          value={assignment.groupId}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              groupAssignments: current.groupAssignments.map((item, itemIndex) =>
+                                itemIndex === index ? { ...item, groupId: event.target.value } : item,
+                              ),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                        >
+                          <option value="">Select group</option>
+                          {sortedGroups.map((group) => (
+                            <option key={group.group_id} value={group.group_id}>
+                              {group.display_name} ({group.group_id})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          value={assignment.directoryPath}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              groupAssignments: current.groupAssignments.map((item, itemIndex) =>
+                                itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
+                              ),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                          placeholder="root/ops"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              groupAssignments: current.groupAssignments.filter((_, itemIndex) => itemIndex !== index),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          groupAssignments: [
+                            ...current.groupAssignments,
+                            { groupId: sortedGroups[0]?.group_id ?? "", directoryPath: selectedDirectoryPath },
+                          ],
+                        }))
+                      }
+                      disabled={actionDisabled || sortedGroups.length === 0}
+                    >
+                      Add group
+                    </button>
+                  </div>
+                </div>
+                <div className="field-stack">
+                  <span>Direct workflow grants</span>
+                  <div className="stacked-list">
+                    {form.workflowGrants.map((grant, index) => (
+                      <div className="inline-actions" key={`${grant.permission}-${grant.directoryPath}-${index}`}>
+                        <select
+                          value={grant.permission}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              workflowGrants: current.workflowGrants.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? { ...item, permission: event.target.value as WorkflowGrantFormState["permission"] }
+                                  : item,
+                              ),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                        >
+                          <option value="workflows.read">Workflow read</option>
+                          <option value="workflows.write">Workflow write</option>
+                        </select>
+                        <input
+                          value={grant.directoryPath}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              workflowGrants: current.workflowGrants.map((item, itemIndex) =>
+                                itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
+                              ),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                          placeholder="root/ops"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              workflowGrants: current.workflowGrants.filter((_, itemIndex) => itemIndex !== index),
+                            }))
+                          }
+                          disabled={actionDisabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          workflowGrants: [
+                            ...current.workflowGrants,
+                            { permission: "workflows.read", directoryPath: selectedDirectoryPath },
+                          ],
+                        }))
+                      }
+                      disabled={actionDisabled}
+                    >
+                      Add grant
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {selectedUser ? (
+                <div className="users-effective-permissions">
+                  <span className="muted-text">Effective here:</span>
+                  <div className="permission-chip-list" aria-label="Effective permissions in this directory">
+                    {(selectedUser.effective_permissions ?? []).length > 0 ? (
+                      [...selectedUser.effective_permissions].sort().map((permission) => (
+                        <span className="permission-chip" key={permission}>
+                          <PermissionTooltip permission={permission} focusable />
+                        </span>
+                      ))
+                    ) : (
+                      <span className="muted-text">none</span>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>User records</h3>
+                <span className="panel-meta">{users.length} total</span>
+              </div>
+              <div className="table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Login</th>
+                      <th>Role</th>
+                      <th>Display name</th>
+                      <th>Contact</th>
+                      <th>Last login</th>
+                      <th>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedUsers.map((user) => (
+                      <tr
+                        key={user.login}
+                        className={selectedLogin === user.login ? "selected" : ""}
+                        onClick={() => setSelectedLogin(user.login)}
+                      >
+                        <td>{user.login}</td>
+                        <td>
+                          <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
+                            {user.role}
+                          </span>
+                        </td>
+                        <td>{user.display_name || "None"}</td>
+                        <td>{user.contact ? user.contact.name : "None"}</td>
+                        <td>{formatTimestamp(user.last_login_at)}</td>
+                        <td>{formatTimestamp(user.updated_at)}</td>
+                      </tr>
+                    ))}
+                    {sortedUsers.length === 0 ? (
+                      <tr>
+                        <td className="empty-state-cell" colSpan={6}>
+                          No user records.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </>
+        ) : null}
+
+        {activeMode === "groups" ? (
+          <>
+            <div className="feature-toolbar">
+              <div>
+                <h2>{selectedGroupTitle}</h2>
+                <p className="muted-text">
+                  {selectedGroup ? selectedGroup.group_id : "Create a reusable permission group."}
+                </p>
+                <p className="muted-text">Permission catalog: {permissionCatalog.length} entries</p>
+              </div>
+              {selectedGroup && !selectedGroup.is_required ? (
+                <div className="feature-toolbar-actions">
+                  <span className="status-pill state-idle">custom</span>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void deleteGroup(selectedGroup.group_id)}
+                    disabled={actionDisabled}
+                  >
+                    Delete group
+                  </button>
+                </div>
+              ) : selectedGroup ? (
+                <div className="feature-toolbar-actions">
+                  <span className="status-pill state-running">required</span>
+                </div>
+              ) : null}
+            </div>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>{selectedGroupTitle}</h3>
+                <span className="panel-meta">{selectedGroup?.group_id ?? "new"}</span>
+              </div>
+              <div className="config-field-grid">
+                <label className="field-stack">
+                  <span>Group ID</span>
+                  <input
+                    value={groupForm.groupId}
+                    onChange={(event) => setGroupForm((current) => ({ ...current, groupId: event.target.value }))}
+                    disabled={actionDisabled || Boolean(selectedGroup)}
+                    placeholder="ops-reviewers"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Name</span>
+                  <input
+                    value={groupForm.displayName}
+                    onChange={(event) => setGroupForm((current) => ({ ...current, displayName: event.target.value }))}
+                    disabled={actionDisabled}
+                    placeholder="Ops Reviewers"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Description</span>
+                  <input
+                    value={groupForm.description}
+                    onChange={(event) => setGroupForm((current) => ({ ...current, description: event.target.value }))}
+                    disabled={actionDisabled}
+                    placeholder="Optional"
+                  />
+                </label>
+              </div>
+              <div className="config-field-grid">
+                {permissionCatalog.map((permission) => (
+                  <label className="checkbox-row" key={permission}>
+                    <input
+                      type="checkbox"
+                      checked={groupForm.permissions.includes(permission)}
+                      onChange={(event) =>
+                        setGroupForm((current) => ({
+                          ...current,
+                          permissions: event.target.checked
+                            ? [...new Set([...current.permissions, permission])].sort()
+                            : current.permissions.filter((candidate) => candidate !== permission),
+                        }))
+                      }
+                      disabled={actionDisabled}
+                    />
+                    <PermissionTooltip permission={permission} />
+                  </label>
+                ))}
+              </div>
+              <div className="inline-actions">
+                <button type="button" className="primary" onClick={() => void saveGroup()} disabled={actionDisabled}>
+                  {saving ? "Saving..." : "Save group"}
+                </button>
+              </div>
+            </article>
+          </>
+        ) : null}
+      </section>
+
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
@@ -411,454 +840,100 @@ export function UsersPage() {
             <button type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
               Refresh
             </button>
-            <button type="button" className="primary" onClick={beginNewUser} disabled={!canManageUsers}>
-              New user
+            <button
+              type="button"
+              className="primary"
+              onClick={isUsersMode ? beginNewUser : beginNewGroup}
+              disabled={!canManageUsers}
+            >
+              {isUsersMode ? "New user" : "New group"}
             </button>
           </div>
         </div>
         {!canManageUsers ? (
           <div className="callout warning-callout">Admin role is required to manage users and groups.</div>
         ) : null}
-        <div className="feature-list user-list">
-          {sortedUsers.map((user) => (
-            <button
-              key={user.login}
-              type="button"
-              className={`feature-list-item user-list-item${selectedLogin === user.login ? " selected" : ""}`}
-              onClick={() => {
-                setSelectedLogin(user.login);
-                setStatus(null);
-                setError(null);
-              }}
-              disabled={!canManageUsers}
-            >
-              <div className="feature-list-title-row user-list-item-row">
-                <strong>{userLabel(user)}</strong>
-                <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                  {user.role}
-                </span>
-              </div>
-              <div className="feature-list-meta">{user.login}</div>
-              <div className="feature-list-meta">
-                {(user.group_assignments ?? [])
-                  .map((assignment) =>
-                    groupLabel(groupsById.get(assignment.group_id), assignment.group_id),
-                  )
-                  .join(", ") || "No groups"}
-              </div>
-            </button>
-          ))}
-          {canManageUsers && loading && users.length === 0 ? <div className="empty-state">Loading users...</div> : null}
-          {canManageUsers && !loading && users.length === 0 ? <div className="empty-state">No users are configured.</div> : null}
-        </div>
-        <div className="feature-sidebar-header compact-header">
-          <div>
-            <div className="eyebrow">Groups</div>
-            <h2>Permission Groups</h2>
-          </div>
-          <button type="button" onClick={beginNewGroup} disabled={!canManageUsers}>
-            New group
+        <div className="users-page-mode-tabs" role="tablist" aria-label="Users and groups mode">
+          <button
+            type="button"
+            role="tab"
+            className={`users-page-mode-tab${activeMode === "users" ? " active" : ""}`}
+            aria-selected={activeMode === "users"}
+            onClick={() => selectMode("users")}
+          >
+            Users
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className={`users-page-mode-tab${activeMode === "groups" ? " active" : ""}`}
+            aria-selected={activeMode === "groups"}
+            onClick={() => selectMode("groups")}
+          >
+            Groups
           </button>
         </div>
-        <div className="feature-list user-list">
-          {sortedGroups.map((group) => (
-            <button
-              key={group.group_id}
-              type="button"
-              className={`feature-list-item user-list-item${selectedGroupId === group.group_id ? " selected" : ""}`}
-              onClick={() => {
-                setSelectedGroupId(group.group_id);
-                setStatus(null);
-                setError(null);
-              }}
-              disabled={!canManageUsers}
-            >
-              <div className="feature-list-title-row user-list-item-row">
-                <strong>{group.display_name}</strong>
-                <span className={`status-pill state-${group.is_required ? "running" : "idle"}`}>
-                  {group.is_required ? "required" : "custom"}
-                </span>
-              </div>
-              <div className="feature-list-meta">{group.group_id}</div>
-              <div className="feature-list-meta">{group.permissions.length} permissions</div>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedTitle}</h2>
-            <p className="muted-text">
-              {selectedUser ? selectedUser.login : "Create an Azure SSO user record."}
-            </p>
-            <p className="muted-text">Directory: {selectedDirectoryPath}</p>
-          </div>
-          {selectedUser ? (
-            <div className="feature-toolbar-actions">
-              <span className={`status-pill state-${selectedUser.role === "admin" ? "running" : "idle"}`}>
-                {selectedUser.role}
-              </span>
+        {isUsersMode ? (
+          <div className="feature-list user-list">
+            {sortedUsers.map((user) => (
               <button
+                key={user.login}
                 type="button"
-                className="danger"
-                onClick={() => void deleteUser(selectedUser.login)}
-                disabled={actionDisabled}
+                className={`feature-list-item user-list-item${selectedLogin === user.login ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedLogin(user.login);
+                  setStatus(null);
+                  setError(null);
+                }}
+                disabled={!canManageUsers}
               >
-                Delete
+                <div className="feature-list-title-row user-list-item-row">
+                  <strong>{userLabel(user)}</strong>
+                  <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
+                    {user.role}
+                  </span>
+                </div>
+                <div className="feature-list-meta">{user.login}</div>
+                <div className="feature-list-meta">
+                  {(user.group_assignments ?? [])
+                    .map((assignment) =>
+                      groupLabel(groupsById.get(assignment.group_id), assignment.group_id),
+                    )
+                    .join(", ") || "No groups"}
+                </div>
               </button>
-            </div>
-          ) : null}
-        </div>
-
-        {status ? <div className="callout success-callout">{status}</div> : null}
-        {error ? <div className="callout error-callout">{error}</div> : null}
-
-        <article className="panel">
-          <div className="panel-header">
-            <h3>{selectedUser ? "Edit user" : "Add user"}</h3>
-            <span className="panel-meta">{currentUserId}</span>
-          </div>
-          <div className="config-field-grid">
-            <label className="field-stack">
-              <span>Login</span>
-              <input
-                value={form.login}
-                onChange={(event) => setForm((current) => ({ ...current, login: event.target.value }))}
-                disabled={actionDisabled || Boolean(selectedUser)}
-                placeholder="operator@example.com"
-              />
-            </label>
-            <label className="field-stack">
-              <span>Display name</span>
-              <input
-                value={form.displayName}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, displayName: event.target.value }))
-                }
-                disabled={actionDisabled}
-                placeholder="Optional"
-              />
-            </label>
-            <label className="field-stack">
-              <span>Role</span>
-              <select
-                value={form.role}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    role: event.target.value as AdminWebUserRole,
-                  }))
-                }
-                disabled={actionDisabled}
-              >
-                <option value="admin">Admin</option>
-                <option value="regular">Regular</option>
-              </select>
-            </label>
-            <label className="field-stack">
-              <span>Contact</span>
-              <select
-                value={form.contactId}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, contactId: event.target.value }))
-                }
-                disabled={actionDisabled || !directoryScopedConfigEnabled}
-              >
-                <option value="">None</option>
-                {contacts.map((contact) => (
-                  <option key={contact.id} value={contact.id}>
-                    {contact.name} ({contact.id})
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="inline-actions">
-            <button type="button" className="primary" onClick={() => void saveUser()} disabled={actionDisabled}>
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <h3>Access assignments</h3>
-            <span className="panel-meta">{selectedDirectoryPath}</span>
-          </div>
-          <div className="config-field-grid">
-            <div className="field-stack">
-              <span>Group assignments</span>
-              <div className="stacked-list">
-                {form.groupAssignments.map((assignment, index) => (
-                  <div className="inline-actions" key={`${assignment.groupId}-${assignment.directoryPath}-${index}`}>
-                    <select
-                      value={assignment.groupId}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          groupAssignments: current.groupAssignments.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, groupId: event.target.value } : item,
-                          ),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                    >
-                      <option value="">Select group</option>
-                      {sortedGroups.map((group) => (
-                        <option key={group.group_id} value={group.group_id}>
-                          {group.display_name} ({group.group_id})
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      value={assignment.directoryPath}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          groupAssignments: current.groupAssignments.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
-                          ),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                      placeholder="root/ops"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm((current) => ({
-                          ...current,
-                          groupAssignments: current.groupAssignments.filter((_, itemIndex) => itemIndex !== index),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setForm((current) => ({
-                      ...current,
-                      groupAssignments: [
-                        ...current.groupAssignments,
-                        { groupId: sortedGroups[0]?.group_id ?? "", directoryPath: selectedDirectoryPath },
-                      ],
-                    }))
-                  }
-                  disabled={actionDisabled || sortedGroups.length === 0}
-                >
-                  Add group
-                </button>
-              </div>
-            </div>
-            <div className="field-stack">
-              <span>Direct workflow grants</span>
-              <div className="stacked-list">
-                {form.workflowGrants.map((grant, index) => (
-                  <div className="inline-actions" key={`${grant.permission}-${grant.directoryPath}-${index}`}>
-                    <select
-                      value={grant.permission}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          workflowGrants: current.workflowGrants.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, permission: event.target.value as WorkflowGrantFormState["permission"] }
-                              : item,
-                          ),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                    >
-                      <option value="workflows.read">Workflow read</option>
-                      <option value="workflows.write">Workflow write</option>
-                    </select>
-                    <input
-                      value={grant.directoryPath}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          workflowGrants: current.workflowGrants.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
-                          ),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                      placeholder="root/ops"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm((current) => ({
-                          ...current,
-                          workflowGrants: current.workflowGrants.filter((_, itemIndex) => itemIndex !== index),
-                        }))
-                      }
-                      disabled={actionDisabled}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setForm((current) => ({
-                      ...current,
-                      workflowGrants: [
-                        ...current.workflowGrants,
-                        { permission: "workflows.read", directoryPath: selectedDirectoryPath },
-                      ],
-                    }))
-                  }
-                  disabled={actionDisabled}
-                >
-                  Add grant
-                </button>
-              </div>
-            </div>
-          </div>
-          {selectedUser ? (
-            <div className="users-effective-permissions">
-              <span className="muted-text">Effective here:</span>
-              <div className="permission-chip-list" aria-label="Effective permissions in this directory">
-                {(selectedUser.effective_permissions ?? []).length > 0 ? (
-                  [...selectedUser.effective_permissions].sort().map((permission) => (
-                    <span className="permission-chip" key={permission}>
-                      <PermissionTooltip permission={permission} focusable />
-                    </span>
-                  ))
-                ) : (
-                  <span className="muted-text">none</span>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <h3>{selectedGroupTitle}</h3>
-            <span className="panel-meta">{selectedGroup?.group_id ?? "new"}</span>
-          </div>
-          <div className="config-field-grid">
-            <label className="field-stack">
-              <span>Group ID</span>
-              <input
-                value={groupForm.groupId}
-                onChange={(event) => setGroupForm((current) => ({ ...current, groupId: event.target.value }))}
-                disabled={actionDisabled || Boolean(selectedGroup)}
-                placeholder="ops-reviewers"
-              />
-            </label>
-            <label className="field-stack">
-              <span>Name</span>
-              <input
-                value={groupForm.displayName}
-                onChange={(event) => setGroupForm((current) => ({ ...current, displayName: event.target.value }))}
-                disabled={actionDisabled}
-                placeholder="Ops Reviewers"
-              />
-            </label>
-            <label className="field-stack">
-              <span>Description</span>
-              <input
-                value={groupForm.description}
-                onChange={(event) => setGroupForm((current) => ({ ...current, description: event.target.value }))}
-                disabled={actionDisabled}
-                placeholder="Optional"
-              />
-            </label>
-          </div>
-          <div className="config-field-grid">
-            {permissionCatalog.map((permission) => (
-              <label className="checkbox-row" key={permission}>
-                <input
-                  type="checkbox"
-                  checked={groupForm.permissions.includes(permission)}
-                  onChange={(event) =>
-                    setGroupForm((current) => ({
-                      ...current,
-                      permissions: event.target.checked
-                        ? [...new Set([...current.permissions, permission])].sort()
-                        : current.permissions.filter((candidate) => candidate !== permission),
-                    }))
-                  }
-                  disabled={actionDisabled}
-                />
-                <PermissionTooltip permission={permission} />
-              </label>
             ))}
+            {canManageUsers && loading && users.length === 0 ? <div className="empty-state">Loading users...</div> : null}
+            {canManageUsers && !loading && users.length === 0 ? <div className="empty-state">No users are configured.</div> : null}
           </div>
-          <div className="inline-actions">
-            <button type="button" className="primary" onClick={() => void saveGroup()} disabled={actionDisabled}>
-              {saving ? "Saving..." : "Save group"}
-            </button>
-            {selectedGroup && !selectedGroup.is_required ? (
+        ) : (
+          <div className="feature-list user-list">
+            {sortedGroups.map((group) => (
               <button
+                key={group.group_id}
                 type="button"
-                className="danger"
-                onClick={() => void deleteGroup(selectedGroup.group_id)}
-                disabled={actionDisabled}
+                className={`feature-list-item user-list-item${selectedGroupId === group.group_id ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedGroupId(group.group_id);
+                  setStatus(null);
+                  setError(null);
+                }}
+                disabled={!canManageUsers}
               >
-                Delete group
+                <div className="feature-list-title-row user-list-item-row">
+                  <strong>{group.display_name}</strong>
+                  <span className={`status-pill state-${group.is_required ? "running" : "idle"}`}>
+                    {group.is_required ? "required" : "custom"}
+                  </span>
+                </div>
+                <div className="feature-list-meta">{group.group_id}</div>
+                <div className="feature-list-meta">{group.permissions.length} permissions</div>
               </button>
-            ) : null}
+            ))}
+            {canManageUsers && loading && groups.length === 0 ? <div className="empty-state">Loading groups...</div> : null}
+            {canManageUsers && !loading && groups.length === 0 ? <div className="empty-state">No groups are configured.</div> : null}
           </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <h3>User records</h3>
-            <span className="panel-meta">{users.length} total</span>
-          </div>
-          <div className="table-wrap">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Login</th>
-                  <th>Role</th>
-                  <th>Display name</th>
-                  <th>Contact</th>
-                  <th>Last login</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedUsers.map((user) => (
-                  <tr
-                    key={user.login}
-                    className={selectedLogin === user.login ? "selected" : ""}
-                    onClick={() => setSelectedLogin(user.login)}
-                  >
-                    <td>{user.login}</td>
-                    <td>
-                      <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                        {user.role}
-                      </span>
-                    </td>
-                    <td>{user.display_name || "None"}</td>
-                    <td>{user.contact ? user.contact.name : "None"}</td>
-                    <td>{formatTimestamp(user.last_login_at)}</td>
-                    <td>{formatTimestamp(user.updated_at)}</td>
-                  </tr>
-                ))}
-                {sortedUsers.length === 0 ? (
-                  <tr>
-                    <td className="empty-state-cell" colSpan={6}>
-                      No user records.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </article>
+        )}
       </section>
     </div>
   );

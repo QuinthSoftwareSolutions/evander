@@ -4003,6 +4003,51 @@ select {
   min-width: 0;
 }
 
+.users-page .feature-sidebar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.users-page .feature-content {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.users-page-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem;
+  margin: 0.85rem 0 1rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(71, 56, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(242, 236, 226, 0.72);
+}
+
+.users-page-mode-tab {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f6f75;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.users-page-mode-tab.active,
+.users-page-mode-tab[aria-selected="true"] {
+  border-color: rgba(32, 69, 78, 0.16);
+  background: rgba(255, 255, 255, 0.8);
+  color: #20454e;
+  box-shadow: 0 8px 18px rgba(56, 43, 27, 0.08);
+}
+
+.users-page-mode-tab:focus-visible {
+  outline: 2px solid rgba(45, 95, 168, 0.55);
+  outline-offset: 2px;
+}
+
 .users-page .feature-toolbar h2,
 .users-page .feature-toolbar .muted-text,
 .users-page .panel-meta,
