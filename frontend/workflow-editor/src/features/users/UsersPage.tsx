@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import { usersModeFromHash, usersModeHash, type AdminUsersMode } from "../../adminRouting";
 import { fetchJson, formatTimestamp } from "../admin/api";
@@ -258,6 +258,30 @@ export function UsersPage() {
     }
   }
 
+  function handleModeTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    let nextMode: AdminUsersMode | null = null;
+    switch (event.key) {
+      case "ArrowLeft":
+      case "Left":
+        nextMode = activeMode === "users" ? "groups" : "users";
+        break;
+      case "ArrowRight":
+      case "Right":
+        nextMode = activeMode === "users" ? "groups" : "users";
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    selectMode(nextMode);
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(nextMode === "users" ? "users-page-users-tab" : "users-page-groups-tab")?.focus();
+    });
+  }
+
   function beginNewUser() {
     selectMode("users");
     setSelectedLogin(null);
@@ -430,12 +454,131 @@ export function UsersPage() {
 
   return (
     <div className="feature-page users-page">
+      <section className="feature-sidebar">
+        <div className="feature-sidebar-header">
+          <div>
+            <div className="eyebrow">Access</div>
+            <h1>Users &amp; Groups</h1>
+          </div>
+          <div className="inline-actions compact-actions">
+            <button type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
+              Refresh
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={isUsersMode ? beginNewUser : beginNewGroup}
+              disabled={!canManageUsers}
+            >
+              {isUsersMode ? "New user" : "New group"}
+            </button>
+          </div>
+        </div>
+        {!canManageUsers ? (
+          <div className="callout warning-callout">Admin role is required to manage users and groups.</div>
+        ) : null}
+        <div className="users-page-mode-tabs" role="tablist" aria-label="Users and groups mode">
+          <button
+            id="users-page-users-tab"
+            type="button"
+            role="tab"
+            className={`users-page-mode-tab${activeMode === "users" ? " active" : ""}`}
+            aria-controls="users-page-users-panel"
+            aria-selected={activeMode === "users"}
+            onClick={() => selectMode("users")}
+            onKeyDown={handleModeTabKeyDown}
+          >
+            Users
+          </button>
+          <button
+            id="users-page-groups-tab"
+            type="button"
+            role="tab"
+            className={`users-page-mode-tab${activeMode === "groups" ? " active" : ""}`}
+            aria-controls="users-page-groups-panel"
+            aria-selected={activeMode === "groups"}
+            onClick={() => selectMode("groups")}
+            onKeyDown={handleModeTabKeyDown}
+          >
+            Groups
+          </button>
+        </div>
+        {isUsersMode ? (
+          <div className="feature-list user-list">
+            {sortedUsers.map((user) => (
+              <button
+                key={user.login}
+                type="button"
+                className={`feature-list-item user-list-item${selectedLogin === user.login ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedLogin(user.login);
+                  setStatus(null);
+                  setError(null);
+                }}
+                disabled={!canManageUsers}
+              >
+                <div className="feature-list-title-row user-list-item-row">
+                  <strong>{userLabel(user)}</strong>
+                  <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
+                    {user.role}
+                  </span>
+                </div>
+                <div className="feature-list-meta">{user.login}</div>
+                <div className="feature-list-meta">
+                  {(user.group_assignments ?? [])
+                    .map((assignment) =>
+                      groupLabel(groupsById.get(assignment.group_id), assignment.group_id),
+                    )
+                    .join(", ") || "No groups"}
+                </div>
+              </button>
+            ))}
+            {canManageUsers && loading && users.length === 0 ? <div className="empty-state">Loading users...</div> : null}
+            {canManageUsers && !loading && users.length === 0 ? <div className="empty-state">No users are configured.</div> : null}
+          </div>
+        ) : (
+          <div className="feature-list user-list">
+            {sortedGroups.map((group) => (
+              <button
+                key={group.group_id}
+                type="button"
+                className={`feature-list-item user-list-item${selectedGroupId === group.group_id ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedGroupId(group.group_id);
+                  setStatus(null);
+                  setError(null);
+                }}
+                disabled={!canManageUsers}
+              >
+                <div className="feature-list-title-row user-list-item-row">
+                  <strong>{group.display_name}</strong>
+                  <span className={`status-pill state-${group.is_required ? "running" : "idle"}`}>
+                    {group.is_required ? "required" : "custom"}
+                  </span>
+                </div>
+                <div className="feature-list-meta">{group.group_id}</div>
+                <div className="feature-list-meta">{group.permissions.length} permissions</div>
+              </button>
+            ))}
+            {canManageUsers && loading && groups.length === 0 ? <div className="empty-state">Loading groups...</div> : null}
+            {canManageUsers && !loading && groups.length === 0 ? <div className="empty-state">No groups are configured.</div> : null}
+          </div>
+        )}
+      </section>
+
       <section className="feature-content">
         {status ? <div className="callout success-callout">{status}</div> : null}
         {error ? <div className="callout error-callout">{error}</div> : null}
 
-        {activeMode === "users" ? (
-          <>
+        <div
+          id="users-page-users-panel"
+          role="tabpanel"
+          className="users-page-mode-panel"
+          aria-labelledby="users-page-users-tab"
+          hidden={activeMode !== "users"}
+        >
+          {activeMode === "users" ? (
+            <>
             <div className="feature-toolbar">
               <div>
                 <h2>{selectedTitle}</h2>
@@ -734,11 +877,19 @@ export function UsersPage() {
                 </table>
               </div>
             </article>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
 
-        {activeMode === "groups" ? (
-          <>
+        <div
+          id="users-page-groups-panel"
+          role="tabpanel"
+          className="users-page-mode-panel"
+          aria-labelledby="users-page-groups-tab"
+          hidden={activeMode !== "groups"}
+        >
+          {activeMode === "groups" ? (
+            <>
             <div className="feature-toolbar">
               <div>
                 <h2>{selectedGroupTitle}</h2>
@@ -826,115 +977,11 @@ export function UsersPage() {
                 </button>
               </div>
             </article>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
       </section>
 
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Access</div>
-            <h1>Users &amp; Groups</h1>
-          </div>
-          <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
-              Refresh
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={isUsersMode ? beginNewUser : beginNewGroup}
-              disabled={!canManageUsers}
-            >
-              {isUsersMode ? "New user" : "New group"}
-            </button>
-          </div>
-        </div>
-        {!canManageUsers ? (
-          <div className="callout warning-callout">Admin role is required to manage users and groups.</div>
-        ) : null}
-        <div className="users-page-mode-tabs" role="tablist" aria-label="Users and groups mode">
-          <button
-            type="button"
-            role="tab"
-            className={`users-page-mode-tab${activeMode === "users" ? " active" : ""}`}
-            aria-selected={activeMode === "users"}
-            onClick={() => selectMode("users")}
-          >
-            Users
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={`users-page-mode-tab${activeMode === "groups" ? " active" : ""}`}
-            aria-selected={activeMode === "groups"}
-            onClick={() => selectMode("groups")}
-          >
-            Groups
-          </button>
-        </div>
-        {isUsersMode ? (
-          <div className="feature-list user-list">
-            {sortedUsers.map((user) => (
-              <button
-                key={user.login}
-                type="button"
-                className={`feature-list-item user-list-item${selectedLogin === user.login ? " selected" : ""}`}
-                onClick={() => {
-                  setSelectedLogin(user.login);
-                  setStatus(null);
-                  setError(null);
-                }}
-                disabled={!canManageUsers}
-              >
-                <div className="feature-list-title-row user-list-item-row">
-                  <strong>{userLabel(user)}</strong>
-                  <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                    {user.role}
-                  </span>
-                </div>
-                <div className="feature-list-meta">{user.login}</div>
-                <div className="feature-list-meta">
-                  {(user.group_assignments ?? [])
-                    .map((assignment) =>
-                      groupLabel(groupsById.get(assignment.group_id), assignment.group_id),
-                    )
-                    .join(", ") || "No groups"}
-                </div>
-              </button>
-            ))}
-            {canManageUsers && loading && users.length === 0 ? <div className="empty-state">Loading users...</div> : null}
-            {canManageUsers && !loading && users.length === 0 ? <div className="empty-state">No users are configured.</div> : null}
-          </div>
-        ) : (
-          <div className="feature-list user-list">
-            {sortedGroups.map((group) => (
-              <button
-                key={group.group_id}
-                type="button"
-                className={`feature-list-item user-list-item${selectedGroupId === group.group_id ? " selected" : ""}`}
-                onClick={() => {
-                  setSelectedGroupId(group.group_id);
-                  setStatus(null);
-                  setError(null);
-                }}
-                disabled={!canManageUsers}
-              >
-                <div className="feature-list-title-row user-list-item-row">
-                  <strong>{group.display_name}</strong>
-                  <span className={`status-pill state-${group.is_required ? "running" : "idle"}`}>
-                    {group.is_required ? "required" : "custom"}
-                  </span>
-                </div>
-                <div className="feature-list-meta">{group.group_id}</div>
-                <div className="feature-list-meta">{group.permissions.length} permissions</div>
-              </button>
-            ))}
-            {canManageUsers && loading && groups.length === 0 ? <div className="empty-state">Loading groups...</div> : null}
-            {canManageUsers && !loading && groups.length === 0 ? <div className="empty-state">No groups are configured.</div> : null}
-          </div>
-        )}
-      </section>
     </div>
   );
 }

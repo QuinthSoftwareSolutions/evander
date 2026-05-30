@@ -30,10 +30,23 @@ test("users page separates users and groups into URL-backed modes", () => {
     "usersModeFromHash(window.location.hash)",
     'window.addEventListener("hashchange", handleHashChange)',
     "usersModeHash(mode)",
+    "function handleModeTabKeyDown",
+    'case "ArrowLeft":',
+    'case "ArrowRight":',
     'role="tablist"',
     'aria-label="Users and groups mode"',
+    'id="users-page-users-tab"',
+    'id="users-page-groups-tab"',
+    'aria-controls="users-page-users-panel"',
+    'aria-controls="users-page-groups-panel"',
     'aria-selected={activeMode === "users"}',
     'aria-selected={activeMode === "groups"}',
+    'onKeyDown={handleModeTabKeyDown}',
+    'id="users-page-users-panel"',
+    'id="users-page-groups-panel"',
+    'role="tabpanel"',
+    'aria-labelledby="users-page-users-tab"',
+    'aria-labelledby="users-page-groups-tab"',
     'activeMode === "users"',
     'activeMode === "groups"',
   ];
@@ -42,13 +55,18 @@ test("users page separates users and groups into URL-backed modes", () => {
     assert.ok(usersPage.includes(snippet), `missing mode split snippet: ${snippet}`);
   }
 
-  const usersBranch = usersPage.indexOf('activeMode === "users"');
-  const groupsBranch = usersPage.indexOf('activeMode === "groups"', usersBranch + 1);
+  const sidebar = usersPage.indexOf('<section className="feature-sidebar">');
+  const content = usersPage.indexOf('<section className="feature-content">');
+  const usersBranch = usersPage.indexOf('id="users-page-users-panel"');
+  const groupsBranch = usersPage.indexOf('id="users-page-groups-panel"');
   const userEditor = usersPage.indexOf('selectedUser ? "Edit user" : "Add user"');
   const groupEditor = usersPage.indexOf("<h3>{selectedGroupTitle}</h3>");
   const userRecords = usersPage.indexOf("<h3>User records</h3>");
 
-  assert.ok(usersBranch >= 0, "missing users branch");
+  assert.ok(sidebar >= 0, "missing sidebar section");
+  assert.ok(content >= 0, "missing content section");
+  assert.ok(sidebar < content, "mode sidebar should appear before content in DOM order");
+  assert.ok(usersBranch >= 0, "missing users tab panel");
   assert.ok(groupsBranch > usersBranch, "missing groups branch after users branch");
   assert.ok(userEditor > usersBranch && userEditor < groupsBranch, "user editor should be inside users mode");
   assert.ok(userRecords > usersBranch && userRecords < groupsBranch, "user records should be inside users mode");
