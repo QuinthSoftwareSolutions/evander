@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from agent_sandbox.model_usage.adapters import (
+    MappingModelUsageExtractor,
+    ModelUsageExtractionRequest,
+)
+from agent_sandbox.model_usage.models import ModelUsageCorrelationContext
+
+
+def test_mapping_model_usage_extractor_normalizes_provider_neutral_usage() -> None:
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    context = ModelUsageCorrelationContext(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        workflow_run_id="workflow-1",
+        effect_id="effect-1",
+        node_id="node-1",
+        agent_harness="codex",
+        execution_backend="libvirt_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+        trace_id="trace-1",
+        started_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    extractor = MappingModelUsageExtractor(provider_name="anthropic")
+    request = ModelUsageExtractionRequest(
+        provider="anthropic",
+        provider_endpoint_identifier="messages",
+        request_status="success",
+        occurred_at=now,
+        duration_ms=120,
+        model="claude-3-7-sonnet",
+        request_body_bytes=512,
+        request_body_sha256="req-sha",
+        response_body_bytes=2048,
+        response_body_sha256="resp-sha",
+        response_payload={
+            "id": "resp-1",
+            "type": "message",
+            "model": "claude-3-7-sonnet",
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 22,
+                "total_tokens": 33,
+            },
+        },
+        request_metadata={"body_bytes": 512},
+        response_metadata={"status_code": 200},
+        correlation_context=context,
+        trace_id="override-trace",
+        request_id="req-1",
+    )
+
+    result = extractor.extract(request)
+
+    assert result.event.event_id == "resp-1"
+    assert result.event.provider == "anthropic"
+    assert result.event.provider_endpoint_identifier == "messages"
+    assert result.event.model == "claude-3-7-sonnet"
+    assert result.event.input_tokens == 11
+    assert result.event.output_tokens == 22
+    assert result.event.total_tokens == 33
+    assert result.event.normalized_usage_status == "available"
+    assert result.event.raw_usage_metadata == {
+        "provider_response_kind": "message",
+        "usage": {
+            "input_tokens": 11,
+            "output_tokens": 22,
+            "total_tokens": 33,
+        },
+        "response_metadata": {"status_code": 200},
+        "request_metadata": {"body_bytes": 512},
+    }
+    assert result.event.request_body_sha256 == "req-sha"
+    assert result.event.response_body_sha256 == "resp-sha"
+    assert result.event.session_id == "session-1"
+    assert result.event.dispatch_id == "dispatch-1"
+    assert result.event.workflow_run_id == "workflow-1"
+    assert result.event.effect_id == "effect-1"
+    assert result.event.node_id == "node-1"
+    assert result.event.execution_backend == "libvirt_vm"
+    assert result.event.directory_path == "root/team-a"
+    assert result.event.trace_id == "override-trace"
+    assert result.event.request_id == "req-1"
+    assert result.event.model_dump(mode="json")["occurred_at"].endswith("Z")
+
+
+def test_mapping_model_usage_extractor_marks_missing_usage_as_unavailable() -> None:
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    extractor = MappingModelUsageExtractor(provider_name="fake-provider")
+    request = ModelUsageExtractionRequest(
+        provider="fake-provider",
+        provider_endpoint_identifier="completions",
+        request_status="failed",
+        occurred_at=now,
+        duration_ms=5,
+        response_payload={
+            "id": "resp-2",
+            "type": "completion",
+            "model": "fake-model",
+        },
+    )
+
+    result = extractor.extract(request)
+
+    assert result.event.normalized_usage_status == "usage_unavailable"
+    assert result.event.input_tokens is None
+    assert result.event.output_tokens is None
+    assert result.event.total_tokens is None
+    assert result.event.raw_usage_metadata == {
+        "provider_response_kind": "completion",
+        "usage": {},
+        "response_metadata": {},
+        "request_metadata": {},
+    }
