@@ -17,7 +17,11 @@ from agent_sandbox.orchestration.kernels import (
     compute_next_sleep_seconds,
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
-from agent_sandbox.teams_meeting import TeamsMeetingBridgeEvent, TeamsMeetingStore
+from agent_sandbox.teams_meeting import (
+    TeamsMeetingBridgeEvent,
+    TeamsMeetingStore,
+    voice_session_transcript_entries_from_teams_events,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +111,7 @@ class TeamsMeetingIngestWorker:
                     for event in bridge_events
                 ],
             )
+            self._append_voice_transcript_events(binding, appended)
             events_ingested += len(appended)
         return TeamsMeetingIngestCycleResult(
             meetings_polled=meetings_polled,
@@ -144,6 +149,27 @@ class TeamsMeetingIngestWorker:
 
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Teams meeting ingest worker cycle failed")
+
+    def _append_voice_transcript_events(self, binding, events) -> None:
+        voice_session_id = str(binding.metadata.get("voice_session_id") or "").strip()
+        if not voice_session_id:
+            return
+        voice_store = getattr(self.runtime, "voice_session_store", None)
+        if voice_store is None:
+            return
+        for event, speaker, text in voice_session_transcript_entries_from_teams_events(events):
+            voice_store.append_transcript_event(
+                voice_session_id,
+                text=text,
+                speaker=speaker,
+                occurred_at=event.occurred_at,
+                metadata={
+                    "source": "teams_meeting_ingest",
+                    "meeting_id": event.meeting_id,
+                    "meeting_sequence": event.sequence,
+                    "bridge_sequence": event.bridge_sequence,
+                },
+            )
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:

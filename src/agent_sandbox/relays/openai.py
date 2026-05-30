@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from hashlib import sha256
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -22,6 +24,14 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.model_usage.adapters import (
+    MappingModelUsageExtractor,
+    ModelUsageExtractionRequest,
+)
+from agent_sandbox.model_usage.runtime import (
+    MODEL_USAGE_AGENT_HARNESS,
+    model_usage_store,
+)
 from agent_sandbox.provider_config import ProviderConfigResolver
 
 logger = logging.getLogger(__name__)
@@ -66,6 +76,7 @@ class OpenAIRelay:
         self.config = config
         self.transport = transport
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
+        self.model_usage_store = model_usage_store(config.runtime_dir)
         self.stream_started_count = 0
         self.stream_clean_end_count = 0
         self.stream_transport_terminated_count = 0
@@ -206,6 +217,8 @@ class OpenAIRelay:
             if "text/event-stream" in request.headers.get("accept", ""):
                 return await relay._stream_response(
                     request=request,
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
                     upstream_url=upstream_url,
                     headers=headers,
                     request_body=request_body,
@@ -216,11 +229,19 @@ class OpenAIRelay:
                 timeout=request_context.config.openai_relay_timeout_seconds,
                 transport=relay.transport,
             ) as client:
+                started_at = time.perf_counter()
                 upstream_response = await client.request(
                     method=request.method,
                     url=upstream_url,
                     headers=headers,
                     content=request_body,
+                )
+                relay._record_model_usage_event(
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    duration_ms=relay._duration_ms_since(started_at),
                 )
                 return Response(
                     content=upstream_response.content,
@@ -300,6 +321,8 @@ class OpenAIRelay:
     async def _stream_response(
         self,
         request: Request,
+        session_id: str,
+        upstream_path: str,
         upstream_url: str,
         headers: dict[str, str],
         request_body: bytes,
@@ -328,6 +351,7 @@ class OpenAIRelay:
             headers=headers,
             content=request_body,
         )
+        started_at = time.perf_counter()
         upstream_response = await upstream_stream.__aenter__()
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
@@ -339,11 +363,20 @@ class OpenAIRelay:
         async def iterator() -> AsyncIterator[bytes]:
             bytes_sent = 0
             chunk_count = 0
+            response_hash = sha256()
+            stream_payload: dict[str, Any] = {}
+            sse_buffer = ""
             try:
                 try:
                     async for chunk in upstream_response.aiter_raw():
                         chunk_count += 1
                         bytes_sent += len(chunk)
+                        response_hash.update(chunk)
+                        sse_buffer = self._capture_stream_usage_payload(
+                            buffer=sse_buffer,
+                            chunk=chunk,
+                            payload=stream_payload,
+                        )
                         yield chunk
                 except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
@@ -373,6 +406,16 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
+                self._record_stream_model_usage_event(
+                    session_id=session_id,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    response_body_bytes=bytes_sent,
+                    response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                    response_payload=stream_payload,
+                    duration_ms=self._duration_ms_since(started_at),
+                )
                 await upstream_stream.__aexit__(None, None, None)
                 await client.aclose()
 
@@ -390,6 +433,176 @@ class OpenAIRelay:
             for key, value in response.headers.items()
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
+
+    def _record_model_usage_event(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        request_body: bytes,
+        upstream_response: httpx.Response,
+        duration_ms: int | None = None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
+        response_payload = self._json_payload_from_response(upstream_response)
+        request_status = self._request_status_for_response(upstream_response.status_code)
+        request_metadata = {
+            "method": "POST",
+            "path": f"/v1/{upstream_path}",
+        }
+        response_metadata = {
+            "status_code": upstream_response.status_code,
+            "content_type": upstream_response.headers.get("content-type"),
+        }
+        correlation_context = self.model_usage_store.get_active_correlation_context(
+            session_id=session_id,
+            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        )
+        request_hash = sha256(request_body).hexdigest() if request_body else None
+        response_body = upstream_response.content
+        response_hash = sha256(response_body).hexdigest() if response_body else None
+        extractor = MappingModelUsageExtractor(provider_name="openai")
+        result = extractor.extract(
+            ModelUsageExtractionRequest(
+                provider="openai",
+                provider_endpoint_identifier=upstream_path,
+                request_status=request_status,
+                model=response_payload.get("model"),
+                duration_ms=duration_ms,
+                request_body_bytes=len(request_body) if request_body else None,
+                request_body_sha256=request_hash,
+                response_body_bytes=len(response_body) if response_body else None,
+                response_body_sha256=response_hash,
+                response_payload=response_payload,
+                request_metadata=request_metadata,
+                response_metadata=response_metadata,
+                correlation_context=correlation_context,
+            )
+        )
+        self.model_usage_store.upsert_event(result.event)
+
+    def _record_stream_model_usage_event(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        request_body: bytes,
+        upstream_response: httpx.Response,
+        response_body_bytes: int,
+        response_body_sha256: str | None,
+        response_payload: dict[str, Any],
+        duration_ms: int | None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
+        request_status = self._request_status_for_response(upstream_response.status_code)
+        correlation_context = self.model_usage_store.get_active_correlation_context(
+            session_id=session_id,
+            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        )
+        request_hash = sha256(request_body).hexdigest() if request_body else None
+        extractor = MappingModelUsageExtractor(provider_name="openai")
+        result = extractor.extract(
+            ModelUsageExtractionRequest(
+                provider="openai",
+                provider_endpoint_identifier=upstream_path,
+                request_status=request_status,
+                model=response_payload.get("model"),
+                duration_ms=duration_ms,
+                request_body_bytes=len(request_body) if request_body else None,
+                request_body_sha256=request_hash,
+                response_body_bytes=response_body_bytes or None,
+                response_body_sha256=response_body_sha256,
+                response_payload=response_payload,
+                request_metadata={
+                    "method": "POST",
+                    "path": f"/v1/{upstream_path}",
+                    "stream": True,
+                },
+                response_metadata={
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                    "stream": True,
+                },
+                correlation_context=correlation_context,
+            )
+        )
+        self.model_usage_store.upsert_event(result.event)
+
+    @classmethod
+    def _capture_stream_usage_payload(
+        cls, *, buffer: str, chunk: bytes, payload: dict[str, Any]
+    ) -> str:
+        try:
+            buffer += chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            buffer += chunk.decode("utf-8", errors="ignore")
+        while "\n\n" in buffer:
+            event_text, buffer = buffer.split("\n\n", 1)
+            cls._merge_sse_event_payload(event_text, payload)
+        return buffer
+
+    @classmethod
+    def _merge_sse_event_payload(cls, event_text: str, payload: dict[str, Any]) -> None:
+        for raw_line in event_text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                event_payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event_payload, dict):
+                cls._merge_stream_event_dict(event_payload, payload)
+
+    @staticmethod
+    def _merge_stream_event_dict(event_payload: dict[str, Any], payload: dict[str, Any]) -> None:
+        candidate = event_payload.get("response")
+        if not isinstance(candidate, dict):
+            candidate = event_payload
+        for key in ("id", "model", "deployment"):
+            value = candidate.get(key)
+            if value is not None:
+                payload[key] = value
+        event_type = candidate.get("type") or event_payload.get("type")
+        if event_type is not None:
+            payload["type"] = event_type
+        usage = candidate.get("usage")
+        if isinstance(usage, dict):
+            payload["usage"] = dict(usage)
+
+    @staticmethod
+    def _is_model_usage_endpoint(upstream_path: str) -> bool:
+        normalized = upstream_path.lstrip("/")
+        return normalized in {"responses", "chat/completions", "completions"}
+
+    @staticmethod
+    def _json_payload_from_response(response: httpx.Response) -> dict[str, Any]:
+        try:
+            payload = json.loads(response.content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            return {}
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    @staticmethod
+    def _request_status_for_response(status_code: int) -> str:
+        if status_code < 400:
+            return "success"
+        if status_code < 500:
+            return "failed"
+        return "error"
+
+    @staticmethod
+    def _duration_ms_since(started_at: float) -> int:
+        return max(0, int((time.perf_counter() - started_at) * 1000))
 
     def _resolve_request_context(self, request: Request) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(

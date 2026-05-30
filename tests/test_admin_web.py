@@ -1163,6 +1163,45 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert "active, expired, inactive, all, or any" in session_list_fields["state"]["description"]
     assert "expires_at" in session_list_fields["active_only"]["description"]
     assert "positive integer" in session_list_fields["limit"]["description"]
+    model_usage_list = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:model-usage:list"
+    )
+    assert [field["key"] for field in model_usage_list["fields"]] == [
+        "session_id",
+        "workflow_run_id",
+        "effect_id",
+        "dispatch_id",
+        "directory_path",
+        "include_directory_descendants",
+        "provider",
+        "model",
+        "agent_harness",
+        "execution_backend",
+        "normalized_usage_status",
+        "request_status",
+        "occurred_after",
+        "occurred_before",
+        "limit",
+    ]
+    model_usage_list_fields = {field["key"]: field for field in model_usage_list["fields"]}
+    assert model_usage_list_fields["directory_path"]["description"]
+    assert "descendants" in model_usage_list_fields["directory_path"]["description"]
+    assert model_usage_list_fields["include_directory_descendants"]["kind"] == "boolean"
+    assert model_usage_list_fields["include_directory_descendants"]["default_value"] is False
+    assert model_usage_list_fields["normalized_usage_status"]["kind"] == "enum"
+    assert [option["value"] for option in model_usage_list_fields["normalized_usage_status"]["options"]] == [
+        "available",
+        "usage_unavailable",
+    ]
+    assert model_usage_list_fields["request_status"]["kind"] == "enum"
+    assert [option["value"] for option in model_usage_list_fields["request_status"]["options"]] == [
+        "success",
+        "failed",
+        "error",
+        "cancelled",
+    ]
+    assert "ISO-8601" in model_usage_list_fields["occurred_after"]["description"]
+    assert "positive integer" in model_usage_list_fields["limit"]["description"]
     pr_feedback = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )
@@ -7602,13 +7641,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "semantic_embedding_dimensions",
         "semantic_vector_distance",
     }
-    retell = next(section for section in providers["sections"] if section["title"] == "Retell")
-    assert {field["field_name"] for field in retell["fields"]} == {
+    phone_calls = next(
+        section for section in providers["sections"] if section["title"] == "Phone calls"
+    )
+    assert {field["field_name"] for field in phone_calls["fields"]} == {
+        "phone_call_backend",
         "retell_api_base_url",
         "retell_api_key_env",
         "retell_from_number",
         "retell_default_agent_id",
         "retell_request_timeout_seconds",
+        "didww_sip_bridge_url",
+        "didww_sip_bridge_token_env",
+        "didww_from_number",
     }
     contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
     contact_list = next(

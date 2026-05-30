@@ -195,6 +195,18 @@ class GatewayConfig(BaseModel):
     retell_from_number: str | None = None
     retell_default_agent_id: str | None = None
     retell_request_timeout_seconds: float = Field(default=30.0, gt=0)
+    phone_call_backend: Literal["retell", "openai_realtime_didww"] = "retell"
+    openai_realtime_model: str = Field(default="gpt-realtime-2", min_length=1)
+    openai_realtime_api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
+    openai_realtime_api_base_url: str = "https://api.openai.com/v1"
+    voice_media_controller_url: str | None = None
+    voice_media_controller_token_env: str = Field(
+        default="VOICE_MEDIA_CONTROLLER_TOKEN", min_length=1
+    )
+    voice_media_controller_request_timeout_seconds: float = Field(default=30.0, gt=0)
+    didww_sip_bridge_url: str | None = None
+    didww_sip_bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
+    didww_from_number: str | None = None
     discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
@@ -340,6 +352,9 @@ class GatewayConfig(BaseModel):
         "npm_audit_facade_audit_registry_url",
         "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
+        "openai_realtime_api_base_url",
+        "voice_media_controller_url",
+        "didww_sip_bridge_url",
         mode="before",
     )
     @classmethod
@@ -398,6 +413,9 @@ class GatewayConfig(BaseModel):
         "npm_audit_facade_audit_registry_url",
         "npm_audit_facade_package_registry_url",
         "retell_api_base_url",
+        "openai_realtime_api_base_url",
+        "voice_media_controller_url",
+        "didww_sip_bridge_url",
     )
     @classmethod
     def validate_http_url_fields(cls, value: str | None, info) -> str | None:
@@ -507,7 +525,12 @@ class GatewayConfig(BaseModel):
             normalized[model_name] = deployment_name
         return normalized
 
-    @field_validator("retell_from_number", "retell_default_agent_id", mode="before")
+    @field_validator(
+        "retell_from_number",
+        "retell_default_agent_id",
+        "didww_from_number",
+        mode="before",
+    )
     @classmethod
     def normalize_retell_optional_strings(cls, value: object) -> object:
         if value is None:

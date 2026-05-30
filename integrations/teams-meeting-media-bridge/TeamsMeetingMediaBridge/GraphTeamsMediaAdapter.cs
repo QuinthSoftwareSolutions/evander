@@ -52,8 +52,6 @@ public sealed record ApplicationHostedMediaSession(
 
 public sealed class GraphTeamsMediaAdapter : ITeamsMediaAdapter
 {
-    private const int Pcm16k20MsFrameBytes = 640;
-
     private readonly IGraphMeetingClient graphClient;
     private readonly IApplicationHostedMediaClient mediaClient;
     private readonly ConcurrentDictionary<string, GraphMeetingRuntime> meetings = new(StringComparer.Ordinal);
@@ -107,7 +105,7 @@ public sealed class GraphTeamsMediaAdapter : ITeamsMediaAdapter
                 new MediaSpeechStatusEvent(meetingId, operationId, "interrupted", text));
         }
 
-        var frames = ChunkPcm16kAudio(audioBytes);
+        var frames = PcmAudio.ChunkTeamsFrames(audioBytes);
         await runtime.AudioSession.EnqueueAudioAsync(operationId, frames, cancellationToken);
         SpeechStatusChanged?.Invoke(
             this,
@@ -153,25 +151,6 @@ public sealed class GraphTeamsMediaAdapter : ITeamsMediaAdapter
     public void EmitError(string meetingId, string error)
     {
         ErrorReceived?.Invoke(this, new MediaErrorReceivedEvent(meetingId, error));
-    }
-
-    private static IReadOnlyList<byte[]> ChunkPcm16kAudio(byte[] audioBytes)
-    {
-        if (audioBytes.Length == 0)
-        {
-            return [];
-        }
-
-        var frames = new List<byte[]>((audioBytes.Length + Pcm16k20MsFrameBytes - 1) / Pcm16k20MsFrameBytes);
-        for (var offset = 0; offset < audioBytes.Length; offset += Pcm16k20MsFrameBytes)
-        {
-            var frame = new byte[Pcm16k20MsFrameBytes];
-            var count = Math.Min(Pcm16k20MsFrameBytes, audioBytes.Length - offset);
-            Buffer.BlockCopy(audioBytes, offset, frame, 0, count);
-            frames.Add(frame);
-        }
-
-        return frames;
     }
 
     private sealed record GraphMeetingRuntime(

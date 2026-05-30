@@ -276,6 +276,24 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "azure_openai_model_deployments": (
         "JSON object mapping logical model names to Azure deployment names used by the relay."
     ),
+    "openai_realtime_model": (
+        "OpenAI Realtime model used for projected live voice sessions."
+    ),
+    "openai_realtime_api_key_env": (
+        "Legacy provider setting; Realtime voice bridges use bridge-local API key configuration."
+    ),
+    "openai_realtime_api_base_url": (
+        "Legacy provider setting; Realtime voice bridges use bridge-local upstream URL configuration."
+    ),
+    "voice_media_controller_url": (
+        "Optional host-owned voice media controller URL passed to phone or meeting bridges."
+    ),
+    "voice_media_controller_token_env": (
+        "Name of the host environment variable that holds the voice media controller token."
+    ),
+    "voice_media_controller_request_timeout_seconds": (
+        "HTTP timeout in seconds for voice media controller and bridge requests."
+    ),
     "semantic_store_provider": (
         "Semantic store backend used by workflow semantic primitives. Currently only qdrant is supported."
     ),
@@ -313,6 +331,18 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "retell_request_timeout_seconds": (
         "HTTP timeout in seconds for host-side Retell create-call and get-call requests."
+    ),
+    "phone_call_backend": (
+        "Phone backend used by make_phone_call: existing Retell calls or OpenAI Realtime via DIDWW bridge."
+    ),
+    "didww_sip_bridge_url": (
+        "Host-owned DIDWW SIP bridge URL for OpenAI Realtime phone calls."
+    ),
+    "didww_sip_bridge_token_env": (
+        "Name of the host environment variable containing the DIDWW SIP bridge bearer token."
+    ),
+    "didww_from_number": (
+        "Optional caller ID passed to the DIDWW SIP bridge. Stored host-side only."
     ),
     "contacts": (
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "

@@ -66,6 +66,8 @@ from agent_sandbox.directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
+from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
@@ -1777,6 +1779,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:session-context": "Read session context and metadata.",
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
+    "query:model-usage:list": (
+        "List persisted model usage events with session, workflow, directory, provider, and time filters."
+    ),
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:issue:list": "List tracked local and proxy issues from the local issue store.",
@@ -4121,6 +4126,84 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "number",
                 bindable=True,
                 description="Value: positive integer maximum number of matched sessions to return.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:model-usage:list",
+        label="Model usage list",
+        fields=[
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("workflow_run_id", "Workflow run ID", "string", bindable=True),
+            _field("effect_id", "Effect ID", "string", bindable=True),
+            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional directory path such as root or root/team. When set, matches "
+                    "events in that directory and, if enabled, its descendants."
+                ),
+            ),
+            _field(
+                "include_directory_descendants",
+                "Include directory descendants",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description="When enabled, include events from descendant directories too.",
+            ),
+            _field("provider", "Provider", "string", bindable=True),
+            _field("model", "Model", "string", bindable=True),
+            _field("agent_harness", "Agent harness", "string", bindable=True),
+            _field("execution_backend", "Execution backend", "string", bindable=True),
+            _field(
+                "normalized_usage_status",
+                "Normalized usage status",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("available", "available"),
+                    _field_option("usage_unavailable", "usage_unavailable"),
+                ],
+            ),
+            _field(
+                "request_status",
+                "Request status",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("success", "success"),
+                    _field_option("failed", "failed"),
+                    _field_option("error", "error"),
+                    _field_option("cancelled", "cancelled"),
+                ],
+            ),
+            _field(
+                "occurred_after",
+                "Occurred after",
+                "string",
+                bindable=True,
+                description="Lower bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                placeholder="2026-05-24T12:00:00Z",
+            ),
+            _field(
+                "occurred_before",
+                "Occurred before",
+                "string",
+                bindable=True,
+                description="Upper bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                placeholder="2026-05-24T13:00:00Z",
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Maximum number of events to return. Must be a positive integer.",
             ),
         ],
     ),
@@ -7840,6 +7923,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             direct_only=direct_only,
         )
         return [self._session_summary_with_container_lifecycle(summary) for summary in summaries]
+
+    def list_model_usage_events(
+        self,
+        *,
+        session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        effect_id: str | None = None,
+        dispatch_id: str | None = None,
+        directory_path: str | None = None,
+        include_directory_descendants: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        agent_harness: str | None = None,
+        execution_backend: str | None = None,
+        normalized_usage_status: str | None = None,
+        request_status: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[ModelInferenceUsageEvent]:
+        return model_usage_store(self.config.runtime_dir).list_events(
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            effect_id=effect_id,
+            dispatch_id=dispatch_id,
+            directory_path=directory_path,
+            include_directory_descendants=include_directory_descendants,
+            provider=provider,
+            model=model,
+            agent_harness=agent_harness,
+            execution_backend=execution_backend,
+            normalized_usage_status=normalized_usage_status,
+            request_status=request_status,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            limit=limit,
+        )
 
     def list_wake_schedules(
         self,
