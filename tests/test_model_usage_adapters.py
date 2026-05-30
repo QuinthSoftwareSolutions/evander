@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from agent_sandbox.model_usage.adapters import (
@@ -41,6 +42,8 @@ def test_mapping_model_usage_extractor_normalizes_provider_neutral_usage() -> No
             "id": "resp-1",
             "type": "message",
             "model": "claude-3-7-sonnet",
+            "prompt": "secret prompt text",
+            "output_text": "secret completion text",
             "usage": {
                 "input_tokens": 11,
                 "output_tokens": 22,
@@ -86,6 +89,12 @@ def test_mapping_model_usage_extractor_normalizes_provider_neutral_usage() -> No
     assert result.event.trace_id == "override-trace"
     assert result.event.request_id == "req-1"
     assert result.event.model_dump(mode="json")["occurred_at"].endswith("Z")
+    assert "secret prompt text" not in json.dumps(
+        result.event.model_dump(mode="json"), sort_keys=True
+    )
+    assert "secret completion text" not in json.dumps(
+        result.event.model_dump(mode="json"), sort_keys=True
+    )
 
 
 def test_mapping_model_usage_extractor_marks_missing_usage_as_unavailable() -> None:
