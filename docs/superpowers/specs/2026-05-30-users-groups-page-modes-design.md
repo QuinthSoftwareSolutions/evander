@@ -26,6 +26,15 @@ Add a top-level tab control inside `UsersPage` with two modes:
 This keeps the global Admin tab count stable and avoids a route/API reshuffle, while still giving
 operators a clear page-level separation between user management and group management.
 
+The selected mode must also be addressable from the URL. The Admin shell currently uses hash-based
+navigation, so the mode should be represented as a path-like hash segment:
+
+- `/#users` or `/#users/users` opens Users mode
+- `/#users/groups` opens Groups mode
+
+This gives operators a direct link to Groups mode without promoting Groups to a separate global
+Admin navigation item.
+
 ## Users Mode
 
 Users mode owns all user-focused UI:
@@ -59,14 +68,25 @@ User-specific panels and the user records table are hidden in this mode.
 
 Keep state local to `UsersPage`.
 
-- Add `activeMode` state with values `"users"` and `"groups"`.
+- Add `activeMode` state with values `"users"` and `"groups"`, initialized from the Users hash
+  subpath.
 - Preserve `selectedLogin` and `selectedGroupId` independently so switching modes does not discard
   the operator's current selection.
 - Keep using the existing `/api/admin/users?directory_path=...` load because it already returns
   users, groups, contacts, and permission catalog data needed by both modes.
 - Keep existing user and group mutation APIs unchanged.
-- `beginNewUser()` should switch to Users mode.
-- `beginNewGroup()` should switch to Groups mode.
+- `beginNewUser()` should switch to Users mode and update the hash to the Users-mode URL.
+- `beginNewGroup()` should switch to Groups mode and update the hash to `#users/groups`.
+- Changing the in-page Users/Groups tabs should update `window.location.hash` so the browser URL,
+  back/forward behavior, and reload behavior all preserve the chosen mode.
+
+## Routing
+
+Update Admin hash parsing so `#users/groups` still resolves to the existing global `users` Admin
+tab. Invalid Users subpaths should fall back to Users mode rather than showing a blank or unknown
+Admin tab.
+
+Do not add a separate global Admin navigation entry for Groups.
 
 ## Error Handling
 
@@ -83,6 +103,8 @@ Add a focused frontend test for the structural split. The test should verify:
 
 - Users mode contains user-facing controls and does not render the group editor.
 - Groups mode contains group-facing controls and does not render user edit panels.
+- `#users/groups` resolves to the Users & Groups Admin tab with Groups mode selected.
+- Switching modes updates the hash so reloads and direct links preserve the selected mode.
 - Existing permission help tooltip usage remains present for group permissions and effective user
   permissions.
 
@@ -94,6 +116,6 @@ already exists nearby.
 
 - API schema changes
 - RBAC semantics changes
-- new Admin navigation routes
+- separate global Admin navigation entries for Users and Groups
 - permission catalog content changes beyond preserving existing help text
 - broad visual restyling outside the Users & Groups page
