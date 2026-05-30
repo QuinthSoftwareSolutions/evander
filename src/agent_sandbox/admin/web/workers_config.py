@@ -309,9 +309,15 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         (
             "OpenAI",
             (
+                ("providers", "openai_provider_mode"),
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
+                ("providers", "azure_openai_endpoint"),
+                ("providers", "azure_openai_auth_mode"),
+                ("providers", "azure_openai_api_key_env"),
+                ("providers", "azure_openai_api_version"),
+                ("providers", "azure_openai_model_deployments"),
             ),
             ("openai_",),
         ),
