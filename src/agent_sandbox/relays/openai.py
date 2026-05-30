@@ -236,6 +236,19 @@ class OpenAIRelay:
                 await websocket.close(code=1008, reason=str(exc))
                 return
 
+            if request_context.config.openai_provider_mode == "azure_openai":
+                reason = (
+                    "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
+                )
+                logger.warning(
+                    "relay_rejected_azure_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
+
             api_key = os.environ.get(request_context.config.openai_api_key_env)
             if not api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")

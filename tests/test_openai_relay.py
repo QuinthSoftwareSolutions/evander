@@ -676,6 +676,85 @@ def test_relay_rejects_websocket_hosted_web_search_without_session_flag(
     assert upstream.closed is True
 
 
+def test_relay_rejects_azure_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal called
+        called = True
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-azure/responses") as websocket:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert (
+        exc_info.value.reason
+        == "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
+    )
+    assert called is False
+    assert upstream.sent_messages == []
+    assert upstream.closed is False
+
+
+def test_relay_rejects_unsupported_azure_http_endpoints_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-azure/chat/completions",
+        json={"model": "gpt-5.4", "input": "hello"},
+    )
+
+    assert response.status_code == 501
+    assert "only POST /v1/responses" in response.text
+    assert called is False
+
+
 def test_relay_allows_websocket_hosted_web_search_with_session_flag(tmp_path: Path) -> None:
     upstream = _FakeUpstreamWebSocket()
     config = make_config(tmp_path)
