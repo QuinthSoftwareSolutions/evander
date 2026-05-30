@@ -66,6 +66,25 @@ class SessionListQueryDefinition(QueryDefinition):
         raise ValueError("query:session:list metadata_exists must be a string, array, or object")
 
 
+class ModelUsageListQueryDefinition(QueryDefinition):
+    type: Literal["query:model-usage:list"]
+    session_id: ConfigValue | None = None
+    workflow_run_id: ConfigValue | None = None
+    effect_id: ConfigValue | None = None
+    dispatch_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    include_directory_descendants: ConfigValue | None = None
+    provider: ConfigValue | None = None
+    model: ConfigValue | None = None
+    agent_harness: ConfigValue | None = None
+    execution_backend: ConfigValue | None = None
+    normalized_usage_status: ConfigValue | None = None
+    request_status: ConfigValue | None = None
+    occurred_after: ConfigValue | None = None
+    occurred_before: ConfigValue | None = None
+    limit: ConfigValue | None = None
+
+
 class IssueListQueryDefinition(QueryDefinition):
     type: Literal["query:issue:list"]
     directory_path: ConfigValue | None = None
