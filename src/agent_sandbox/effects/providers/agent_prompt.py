@@ -15,6 +15,11 @@ from agent_sandbox.execution import (
 )
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
+from agent_sandbox.model_usage.runtime import (
+    clear_model_usage_correlation_context,
+    register_model_usage_correlation_context,
+    resolve_runtime_dir,
+)
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.workflow.migrations import (
@@ -174,6 +179,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 config=config,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                execution_context=execution_context,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -250,6 +256,24 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     vm_name=self._normalize_optional_string(payload.get("vm_name")),
                 ),
             )
+        session_id = self._resolve_session_id_if_available(target)
+        session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
+        if directory_path is None:
+            directory_path = str(self._context().metadata.get("directory_path") or "root")
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect.id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=self._trace_id(execution_context),
+            )
         self._persist_resume_thread_metadata_key(
             target=target,
             session_id=self._resolve_session_id_if_available(target),
@@ -276,6 +300,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         config: GatewayConfig,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
+        execution_context: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -346,6 +371,19 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 ),
             ) from exc
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=self._effect().id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=str(getattr(session, "directory_path", None) or "root"),
+                model=resolved_model,
+                trace_id=self._trace_id(execution_context),
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -954,6 +992,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record.finished_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        runtime_dir = getattr(getattr(worker, "config", None), "runtime_dir", None)
+        if runtime_dir is not None and dispatch_id:
+            clear_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                dispatch_id=dispatch_id,
+            )
 
     @classmethod
     def _build_completion_queue_record_for_waiting_record(
@@ -1160,6 +1205,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not isinstance(execution_context, Mapping):
             return None
         for key in ("workflow_run_id", "workflow_trace_id", "trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None
+
+    def _trace_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("trace_id", "workflow_trace_id"):
             text = self._normalize_optional_string(execution_context.get(key))
             if text:
                 return text

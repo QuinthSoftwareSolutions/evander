@@ -9,6 +9,10 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, Executi
 from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
+from agent_sandbox.model_usage.runtime import (
+    register_model_usage_correlation_context,
+    resolve_runtime_dir,
+)
 from agent_sandbox.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
@@ -150,6 +154,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_context=workflow_context,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                execution_context=execution_context,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -271,6 +276,23 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     queued=False,
                 ),
             )
+        session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
+        if directory_path is None:
+            directory_path = str(self._context().metadata.get("directory_path") or "root")
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect.id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                directory_path=directory_path,
+                model=model,
+                trace_id=self._trace_id(execution_context),
+            )
         self._persist_chat_assistant_thread_id(
             session_id=session_id,
             thread_id=thread_id,
@@ -309,6 +331,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         workflow_context: dict[str, dict[str, Any]] | None,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
+        execution_context: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -436,6 +459,19 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 ),
             ) from exc
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None:
+            register_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                workflow_run_id=workflow_run_id,
+                effect_id=effect_id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                directory_path=str(getattr(session, "directory_path", None) or "root"),
+                model=resolved_model,
+                trace_id=self._trace_id(execution_context),
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -930,3 +966,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     @staticmethod
     def _make_dispatch_id(*, effect_id: str) -> str:
         return f"dispatch-{effect_id}-{uuid4().hex[:12]}"
+
+    def _trace_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("trace_id", "workflow_trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None
