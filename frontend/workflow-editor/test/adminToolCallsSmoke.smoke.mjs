@@ -38,7 +38,6 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   const toolCallsResponse = {
     items: [
       {
-        event_id: "tool-call-1",
         tool_name: "email_send_approved",
         created_at: "2026-05-18T10:00:00Z",
         status: "success",
@@ -87,6 +86,7 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
         duration_ms: 1050,
         role: "automation",
         actor_user_id: "user-2",
+        request_id: "request-1",
         correlation_id: "correlation-2",
         approval_request_id: "approval-2",
         workflow_run_id: "run-2",
@@ -280,6 +280,7 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
 
   await rows.nth(1).click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "make_phone_call" }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".tool-calls-table tbody tr.selected").count(), 1);
   await assert.doesNotReject(() => page.getByRole("button", { name: "Session: session-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Approval: approval-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Workflow run: run-2" }).waitFor({ state: "visible" }));
