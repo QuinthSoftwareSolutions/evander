@@ -156,6 +156,88 @@ def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -
     assert requests[4].url.path == "/ari/bridges/bridge-didww-test/addChannel"
 
 
+def test_asterisk_ari_client_waits_for_stasis_before_bridge_add(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    events_seen: list[str] = []
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "media-didww-test"},
+                },
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "call-didww-test"},
+                },
+            ]
+
+        async def recv(self) -> str:
+            event = self.events.pop(0)
+            events_seen.append(str(event["channel"]["id"]))
+            return json.dumps(event)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/addChannel"):
+            assert events_seen == ["media-didww-test", "call-didww-test"]
+        return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[-1]})
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            ari = AsteriskAriClient(_config(tmp_path), http_client=client)
+            await ari.start_external_media_call(
+                call_id="didww-test",
+                to_number="+15551234567",
+                from_number="+15550000001",
+                external_host="127.0.0.1:49000",
+                event_websocket=FakeWebSocket(),
+            )
+
+    asyncio.run(run())
+
+
+def test_asterisk_ari_client_reports_hangup_before_stasis(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+
+    class FakeWebSocket:
+        async def recv(self) -> str:
+            return json.dumps(
+                {
+                    "type": "ChannelDestroyed",
+                    "channel": {"id": "call-didww-test"},
+                    "cause_txt": "busy",
+                }
+            )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[-1]})
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            ari = AsteriskAriClient(_config(tmp_path), http_client=client)
+            await ari.start_external_media_call(
+                call_id="didww-test",
+                to_number="+15551234567",
+                from_number="+15550000001",
+                external_host="127.0.0.1:49000",
+                event_websocket=FakeWebSocket(),
+            )
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as exc:
+        assert "ended before entering Stasis: busy" in str(exc)
+    else:  # pragma: no cover - defensive assertion clarity
+        raise AssertionError("expected RuntimeError")
+
+
 def test_rtp_packet_roundtrip() -> None:
     packet = RtpPacket(
         sequence=42,
@@ -451,6 +533,7 @@ def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) 
 
         async def start_external_media_call(self, **_: Any) -> AsteriskCallHandles:
             assert app_registered
+            assert _.get("event_websocket") is not None
             order.append("start_external_media_call")
             return AsteriskCallHandles(
                 call_channel_id="call-didww-test",

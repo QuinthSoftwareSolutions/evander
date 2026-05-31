@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - DIDWW Bridge Stasis Readiness
+
+- Waited for outbound and ExternalMedia Asterisk channels to enter the ARI
+  Stasis app before adding them to the DIDWW bridge, avoiding early
+  `addChannel` failures while a call is still being originated.
+
 ## 2026-05-31 - DIDWW Bridge ARI Registration
 
 - Opened the Asterisk ARI event stream before originating DIDWW call channels so

@@ -425,6 +425,7 @@ class AsteriskAriClient:
         to_number: str,
         from_number: str | None,
         external_host: str,
+        event_websocket: Any | None = None,
     ) -> AsteriskCallHandles:
         call_channel_id = _ari_id("call", call_id)
         bridge_id = _ari_id("bridge", call_id)
@@ -460,6 +461,12 @@ class AsteriskAriClient:
                     "direction": "both",
                 },
             )
+            if event_websocket is not None:
+                await self._wait_for_stasis_channels(
+                    event_websocket,
+                    {call_channel_id, external_media_channel_id},
+                    timeout_seconds=self.config.call_timeout_seconds,
+                )
             await self._request(
                 "POST",
                 f"/bridges/{bridge_id}/addChannel",
@@ -548,6 +555,40 @@ class AsteriskAriClient:
             number=number,
             trunk=self.config.asterisk_pjsip_endpoint,
         )
+
+    async def _wait_for_stasis_channels(
+        self,
+        websocket: Any,
+        channel_ids: set[str],
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        pending = set(channel_ids)
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while pending:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "Timed out waiting for Asterisk channels to enter Stasis: "
+                    + ", ".join(sorted(pending))
+                )
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=min(0.5, remaining))
+            except TimeoutError:
+                continue
+            event = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            channel_id = _ari_event_channel_id(event)
+            if channel_id not in pending:
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type == "StasisStart":
+                pending.remove(channel_id)
+                continue
+            if event_type in {"ChannelHangupRequest", "ChannelDestroyed", "StasisEnd"}:
+                cause = event.get("cause_txt") or event.get("cause") or event_type
+                raise RuntimeError(
+                    f"Asterisk channel {channel_id} ended before entering Stasis: {cause}"
+                )
 
     def _http_auth(self) -> httpx.BasicAuth:
         return httpx.BasicAuth(self.config.asterisk_ari_user, self._password())
@@ -1105,6 +1146,7 @@ class DidwwSipBridgeService:
                             to_number=payload.to_number,
                             from_number=payload.from_number,
                             external_host=external_host,
+                            event_websocket=ari_events,
                         )
                         self.store.attach_asterisk(
                             record.voice_session_id,
