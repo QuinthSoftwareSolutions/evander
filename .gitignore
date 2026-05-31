@@ -5,6 +5,7 @@ runtime/
 *.pyc
 *.egg-info/
 .codex
+.worktrees/
 /.agent-sandbox/review-context.env
 git-remotes/
 /azure-pipelines.yml

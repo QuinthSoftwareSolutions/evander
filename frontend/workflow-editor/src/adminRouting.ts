@@ -23,6 +23,7 @@ export type AdminTabDefinition = {
 };
 
 export type AdminHashParamValue = string | number | boolean | null | undefined;
+export type AdminUsersMode = "users" | "groups";
 
 export const TABS: ReadonlyArray<AdminTabDefinition> = [
   {
@@ -64,11 +65,18 @@ export function tabsForExecutionBackend(
 
 export function tabFromHash(hash: string): AdminTab | null {
   const raw = hash.replace(/^#/, "").trim();
-  const tabName = raw.split("?")[0]?.trim() ?? "";
-  if (!tabName) {
+  const path = raw.split("?")[0]?.trim() ?? "";
+  const [baseTab = ""] = path.split("/");
+  if (!baseTab) {
     return null;
   }
-  const resolvedTab = TAB_ALIASES[tabName] ?? tabName;
+  const resolvedTab = TAB_ALIASES[baseTab] ?? baseTab;
+  if (resolvedTab === "users") {
+    return "users";
+  }
+  if (path.includes("/")) {
+    return null;
+  }
   return TABS.some((tab) => tab.key === resolvedTab) ? (resolvedTab as AdminTab) : null;
 }
 
@@ -94,6 +102,21 @@ export function adminHash(tab: AdminTab, params: Record<string, AdminHashParamVa
   }
   const queryText = query.toString();
   return `#${tab}${queryText ? `?${queryText}` : ""}`;
+}
+
+export function usersModeFromHash(hash: string): AdminUsersMode {
+  const raw = hash.replace(/^#/, "").trim();
+  const path = raw.split("?")[0]?.trim() ?? "";
+  const [baseTab = "", mode = ""] = path.split("/");
+  const resolvedTab = TAB_ALIASES[baseTab] ?? baseTab;
+  if (resolvedTab !== "users") {
+    return "users";
+  }
+  return mode === "groups" ? "groups" : "users";
+}
+
+export function usersModeHash(mode: AdminUsersMode): string {
+  return mode === "groups" ? "#users/groups" : "#users/users";
 }
 
 export function hashQuery(hash: string): URLSearchParams {

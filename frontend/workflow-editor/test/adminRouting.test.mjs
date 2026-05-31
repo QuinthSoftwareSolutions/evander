@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adminHash, currentTab, hashQueryParam, nextPathFromHash, tabFromHash, tabsForExecutionBackend } from "../src/adminRouting.ts";
+import {
+  adminHash,
+  currentTab,
+  hashQueryParam,
+  nextPathFromHash,
+  tabFromHash,
+  tabsForExecutionBackend,
+  usersModeFromHash,
+  usersModeHash,
+} from "../src/adminRouting.ts";
 
 test("empty and unknown hashes default to the dashboard tab", () => {
   assert.equal(tabFromHash(""), null);
@@ -20,6 +29,35 @@ test("known admin hashes resolve to their matching tabs", () => {
   assert.equal(tabFromHash("#configuration"), "configuration");
 });
 
+test("users hash subpaths resolve to the users admin tab", () => {
+  assert.equal(tabFromHash("#users"), "users");
+  assert.equal(tabFromHash("#users/users"), "users");
+  assert.equal(tabFromHash("#users/groups"), "users");
+  assert.equal(tabFromHash("#users/groups?ignored=1"), "users");
+  assert.equal(tabFromHash("#users/unknown"), "users");
+  assert.equal(currentTab("#users/groups"), "users");
+  assert.equal(tabFromHash("#workflow/unknown"), null);
+});
+
+test("non-users hash subpaths are rejected", () => {
+  assert.equal(tabFromHash("#workflow/"), null);
+  assert.equal(tabFromHash("#workflow//unknown"), null);
+  assert.equal(tabFromHash("#sessions/"), null);
+  assert.equal(nextPathFromHash("#workflow//unknown"), null);
+});
+
+test("users mode helpers normalize hash subpaths", () => {
+  assert.equal(usersModeFromHash(""), "users");
+  assert.equal(usersModeFromHash("#users"), "users");
+  assert.equal(usersModeFromHash("#users/users"), "users");
+  assert.equal(usersModeFromHash("#users/groups"), "groups");
+  assert.equal(usersModeFromHash("#users/groups?ignored=1"), "groups");
+  assert.equal(usersModeFromHash("#users/unknown"), "users");
+  assert.equal(usersModeFromHash("#workflow"), "users");
+  assert.equal(usersModeHash("users"), "#users/users");
+  assert.equal(usersModeHash("groups"), "#users/groups");
+});
+
 test("settings remains a compatibility alias for configuration", () => {
   assert.equal(tabFromHash("#settings"), "configuration");
   assert.equal(currentTab("#settings"), "configuration");
@@ -31,6 +69,7 @@ test("hashes for valid tabs translate into safe Azure post-login next paths", ()
   assert.equal(nextPathFromHash("#missing"), null);
   assert.equal(nextPathFromHash("#workflow"), "/#workflow");
   assert.equal(nextPathFromHash("#workflow?trace_id=trace-1"), "/#workflow?trace_id=trace-1");
+  assert.equal(nextPathFromHash("#users/groups"), "/#users/groups");
   assert.equal(nextPathFromHash("#settings"), "/#settings");
 });
 
