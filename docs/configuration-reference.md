@@ -351,7 +351,10 @@ Type-specific keys:
 |---|---|---|
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:switch` | `cases` | `default_port`, `outputs` |
+| `gate:for` | `items` | `outputs` |
+| `gate:while` | `when`, `max_iterations` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
+| `gate:aggregate` | `items`, `metrics` | `outputs` |
 | `gate:deserialize` | `content` | `format`, `outputs` |
 | `gate:serialize` | `value` | `format`, `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
@@ -373,6 +376,17 @@ to the same downstream branch. When no case matches, `default_port` receives the
 is present; otherwise the gate records the activation as dropped. The runtime passes through the
 upstream payload unchanged apart from runtime-only bookkeeping fields, and branch selection is
 published downstream through `source_port`.
+
+`gate:while` evaluates its `when` predicate on each activation and routes to `body` while the
+predicate is true and `max_iterations` has not been reached. It routes to `done` when the predicate
+is false, and to `exhausted` when the predicate remains true after the iteration cap. Body paths
+that return to the while gate must use an `allow_cycle` edge back to the gate.
+
+`gate:aggregate` resolves `items` to an array and emits `count` plus one flat output for each
+configured metric. `metrics` is an object keyed by output name; each metric sets `operation` to
+`sum`, `min`, `max`, or `avg` and `path` to a dotted field inside each item. Missing or null values
+are ignored, non-numeric values fail the gate, `sum` returns `0` when no numeric values are present,
+and `min`, `max`, and `avg` return `null` in that case.
 
 `gate:deserialize` resolves `content` with workflow bindings, parses it as JSON or YAML
 (`format` defaults to `auto`), and emits the decoded object's top-level keys as downstream

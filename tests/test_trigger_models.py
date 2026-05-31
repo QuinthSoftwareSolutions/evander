@@ -823,6 +823,31 @@ def test_await_agent_gate_accepts_single_selector() -> None:
     assert gate.vm_name is None
 
 
+def test_aggregate_gate_derives_metric_outputs() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    gate = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "g-aggregate",
+                "display_name": "Aggregate usage",
+                "type": "gate:aggregate",
+                "items": "${{query-usage.items}}",
+                "metrics": {
+                    "total_tokens": {"operation": "sum", "path": "total_tokens"},
+                    "average_tokens": {"operation": "avg", "path": "total_tokens"},
+                },
+            }
+        )
+    )
+
+    assert gate.outputs == {
+        "count": {"type": "integer"},
+        "total_tokens": {"type": "number"},
+        "average_tokens": {"type": ["number", "null"]},
+    }
+
+
 def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     event = TriggerEvent.model_validate(
         {

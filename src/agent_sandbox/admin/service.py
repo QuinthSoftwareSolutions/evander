@@ -1755,6 +1755,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:map": "Project upstream outputs into a new payload shape.",
+    "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
     "gate:deserialize": (
         "Parse a JSON or YAML string into object properties for downstream bindings."
     ),
@@ -1763,6 +1764,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:merge": "Merge compatible inbound event streams into one downstream path.",
     "gate:await-agent": "Pause the workflow until a selected agent session completes.",
     "gate:for": "Iterate over an array and run the body branch for each item.",
+    "gate:while": "Repeat a body branch while a bounded predicate remains true.",
     "effect:vm:create": "Create a dedicated libvirt VM and session record.",
     "effect:vm:clone-repo": "Clone a repository into a VM-backed agent workspace.",
     "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -2439,6 +2441,44 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="gate",
+        type="gate:aggregate",
+        label="Aggregate",
+        fields=[
+            _field(
+                "items",
+                "Items",
+                "json",
+                required=True,
+                bindable=True,
+                description="Array to aggregate. Use an exact binding to pass through an upstream array.",
+                json_value_type="array",
+                default_value=[],
+                placeholder="${{query-model-usage.items}}",
+            ),
+            _field(
+                "metrics",
+                "Metrics",
+                "json",
+                required=True,
+                description=(
+                    "Object keyed by output name. Each value defines operation "
+                    "sum, min, max, or avg and a dotted item path."
+                ),
+                json_value_type="object",
+                default_value={"total": {"operation": "sum", "path": "value"}},
+                placeholder='{"total_tokens":{"operation":"sum","path":"total_tokens"}}',
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Emits count plus one flat output for each configured metric.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
         type="gate:deserialize",
         label="Deserialize",
         fields=[
@@ -2615,6 +2655,46 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         output_ports=[
             _port("body", "Body", description="Loop body path while items remain."),
             _port("done", "Done", description="Exit path after the final item."),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:while",
+        label="While",
+        fields=[
+            _field(
+                "when",
+                "When",
+                "json",
+                required=True,
+                bindable=True,
+                description='Structured predicate using bindings, for example {"left":"${{parse-tests.failure_count}}","greater_than":0}.',
+            ),
+            _field(
+                "max_iterations",
+                "Max iterations",
+                "number",
+                required=True,
+                bindable=True,
+                description="Positive integer cap for body iterations before routing to Exhausted.",
+                default_value=3,
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from while-loop runtime outputs.",
+            ),
+        ],
+        output_ports=[
+            _port("body", "Body", description="Loop body path while the predicate is true."),
+            _port("done", "Done", description="Exit path when the predicate is false."),
+            _port(
+                "exhausted",
+                "Exhausted",
+                description="Exit path when Max iterations is reached while the predicate is still true.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4202,18 +4282,57 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:model-usage:list",
         label="Model usage list",
         fields=[
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("workflow_run_id", "Workflow run ID", "string", bindable=True),
-            _field("effect_id", "Effect ID", "string", bindable=True),
-            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional session filter. Leave blank to include usage from every session "
+                    "that matches the other filters."
+                ),
+            ),
+            _field(
+                "workflow_run_id",
+                "Workflow run ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional workflow run filter. To scope the query to the current run, bind "
+                    "this to ${{system.execution.trace_id}}. Leave blank to include every run "
+                    "that matches the other filters."
+                ),
+            ),
+            _field(
+                "effect_id",
+                "Effect ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional effect node ID filter, for example effect-agent-prompt-1. Leave "
+                    "blank to include usage from all effects in the selected run, session, or "
+                    "directory scope."
+                ),
+            ),
+            _field(
+                "dispatch_id",
+                "Dispatch ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional prompt dispatch ID filter. Use this only when narrowing to one "
+                    "agent prompt dispatch; leave blank for all dispatches in scope."
+                ),
+            ),
             _field(
                 "directory_path",
                 "Directory path",
                 "string",
                 bindable=True,
                 description=(
-                    "Optional directory path such as root or root/team. When set, matches "
-                    "events in that directory and, if enabled, its descendants."
+                    "Optional directory filter such as root or root/team. Leave blank to include "
+                    "all directories. When set, matches only that directory unless matching "
+                    "descendants is enabled."
                 ),
             ),
             _field(
@@ -4222,17 +4341,67 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "boolean",
                 bindable=True,
                 default_value=False,
-                description="When enabled, include events from descendant directories too.",
+                description=(
+                    "Only applies when Directory path is set. When enabled, a filter such as "
+                    "root/team also includes usage from root/team/subteam."
+                ),
             ),
-            _field("provider", "Provider", "string", bindable=True),
-            _field("model", "Model", "string", bindable=True),
-            _field("agent_harness", "Agent harness", "string", bindable=True),
-            _field("execution_backend", "Execution backend", "string", bindable=True),
+            _field(
+                "provider",
+                "Provider",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional provider filter. The built-in relay currently records OpenAI "
+                    "usage as openai; leave blank for all providers."
+                ),
+                options=[_field_option("openai", "openai")],
+            ),
+            _field(
+                "model",
+                "Model",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional exact model filter using the provider response or correlated "
+                    "session model value. Leave blank for all models."
+                ),
+            ),
+            _field(
+                "agent_harness",
+                "Agent harness",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional harness filter. Prompt effects currently record Codex requests as "
+                    "codex; leave blank for every harness."
+                ),
+                options=[_field_option("codex", "codex")],
+            ),
+            _field(
+                "execution_backend",
+                "Execution backend",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional execution backend filter. Use libvirt_vm for VM-backed agents or "
+                    "container_worker_vm for container worker sessions; leave blank for both."
+                ),
+                options=[
+                    _field_option("libvirt_vm", "libvirt_vm"),
+                    _field_option("container_worker_vm", "container_worker_vm"),
+                ],
+            ),
             _field(
                 "normalized_usage_status",
                 "Normalized usage status",
                 "enum",
                 bindable=True,
+                description=(
+                    "Optional usage parsing filter. available means token usage was parsed from "
+                    "the provider response; usage_unavailable means the request was recorded "
+                    "without token usage."
+                ),
                 options=[
                     _field_option("available", "available"),
                     _field_option("usage_unavailable", "usage_unavailable"),
@@ -4243,6 +4412,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Request status",
                 "enum",
                 bindable=True,
+                description=(
+                    "Optional request outcome filter recorded by the relay. Leave blank to "
+                    "include every request status."
+                ),
                 options=[
                     _field_option("success", "success"),
                     _field_option("failed", "failed"),
@@ -4255,7 +4428,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Occurred after",
                 "string",
                 bindable=True,
-                description="Lower bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                description=(
+                    "Optional lower bound for occurred_at, expressed as an ISO-8601 timestamp. "
+                    "Leave blank for no start time filter."
+                ),
                 placeholder="2026-05-24T12:00:00Z",
             ),
             _field(
@@ -4263,7 +4439,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Occurred before",
                 "string",
                 bindable=True,
-                description="Upper bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                description=(
+                    "Optional upper bound for occurred_at, expressed as an ISO-8601 timestamp. "
+                    "Leave blank for no end time filter."
+                ),
                 placeholder="2026-05-24T13:00:00Z",
             ),
             _field(
@@ -4271,7 +4450,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Limit",
                 "number",
                 bindable=True,
-                description="Maximum number of events to return. Must be a positive integer.",
+                description=(
+                    "Optional maximum number of events to return. Must be a positive integer; "
+                    "results are ordered from oldest to newest."
+                ),
             ),
         ],
     ),
@@ -14194,14 +14376,35 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError("Workflow run search requires node_id or graph_id.")
 
         stores = self._workflow_run_store_paths()
-        _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
-        queue_records = self._workflow_run_event_records(stores)
-        effect_records = effect_store.read_all()
-        gate_records = gate_store.read_all()
         await_agent_payload = _read_merged_json_objects(
             stores["legacy_await_agent_store_path"],
             stores["await_agent_store_path"],
         )
+        sqlite_matched_count: int | None = None
+        sqlite_has_more_candidates = False
+        if self._workflow_uses_sqlite_store(stores):
+            (
+                sqlite_event_ids,
+                sqlite_matched_count,
+                sqlite_has_more_candidates,
+            ) = self._workflow_run_search_sqlite_event_ids(
+                stores,
+                target_node_ids=target_node_ids,
+                include_completed=include_completed,
+                limit=normalized_limit,
+                without_session=without_session,
+            )
+            queue_records, effect_records, gate_records = (
+                self._workflow_run_sqlite_records_for_event_ids(
+                    stores,
+                    event_ids=sqlite_event_ids,
+                )
+            )
+        else:
+            _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
+            queue_records = self._workflow_run_event_records(stores)
+            effect_records = effect_store.read_all()
+            gate_records = gate_store.read_all()
         approval_requests = self.runtime.approvals.read_all()
         artifact_store = self._communication_artifact_store()
 
@@ -14211,6 +14414,41 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if isinstance(record, dict):
                 return dict(record)
             return {}
+
+        def record_event_id(record: dict[str, Any], fallback: object) -> str:
+            return _coerce_optional_string(record.get("event_id")) or str(fallback)
+
+        def collect_json_candidate_event_ids() -> set[str] | None:
+            if self._workflow_uses_sqlite_store(stores) or without_session:
+                return None
+            event_ids: set[str] = set()
+            for record_key, record in queue_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("trigger_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, record_key))
+            for execution_id, record in effect_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("effect_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, execution_id))
+            for execution_id, record in gate_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, execution_id))
+            for record_key, raw_record in await_agent_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
+                    event_ids.add(
+                        _coerce_optional_string(raw_record.get("prompt_event_id"))
+                        or str(record_key)
+                    )
+            return event_ids
 
         def latest_of(*values: object) -> datetime | None:
             parsed = [
@@ -14349,11 +14587,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
 
         groups: dict[str, dict[str, Any]] = {}
+        candidate_event_ids = collect_json_candidate_event_ids()
         for record_key, record in queue_records.items():
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(record_key)
+            event_id = record_event_id(raw_record, record_key)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             occurred_at = _coerce_optional_datetime(raw_record.get("occurred_at"))
             register_activity(
                 groups,
@@ -14383,7 +14624,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            event_id = record_event_id(raw_record, execution_id)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             payload_sources = [
                 raw_record.get("resolved_config"),
                 raw_record.get("input_payload"),
@@ -14410,7 +14653,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            event_id = record_event_id(raw_record, execution_id)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             payload_sources = [
                 raw_record.get("resolved_config"),
                 raw_record.get("input_payload"),
@@ -14528,6 +14773,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             reverse=True,
         )
         limited_runs = matched_runs[:normalized_limit]
+        matched_count = (
+            max(sqlite_matched_count, len(matched_runs))
+            if sqlite_matched_count is not None and not without_session
+            else len(matched_runs)
+        )
         return WorkflowRunSearchPayload(
             generated_at=_utc_now(),
             filters=WorkflowRunSearchFilterPayload(
@@ -14538,10 +14788,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 include_completed=include_completed,
             ),
             runs=limited_runs,
-            matched=len(matched_runs),
+            matched=matched_count,
             returned=len(limited_runs),
             limit=normalized_limit,
-            has_more=len(matched_runs) > normalized_limit,
+            has_more=matched_count > len(limited_runs)
+            or (sqlite_has_more_candidates and not without_session),
         )
 
     def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
@@ -15599,6 +15850,203 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 for record in queue_store.read_all().values()
             }
         return JsonTriggerEventRepository().read_events(stores["event_queue_store_path"])
+
+    def _workflow_run_search_sqlite_event_ids(
+        self,
+        stores: Mapping[str, Any],
+        *,
+        target_node_ids: set[str],
+        include_completed: bool,
+        limit: int,
+        without_session: bool,
+    ) -> tuple[list[str], int, bool]:
+        node_ids = sorted(node_id for node_id in target_node_ids if node_id)
+        if not node_ids:
+            return [], 0, False
+
+        node_value_placeholders = ", ".join("(?)" for _ in node_ids)
+        target_params = node_ids
+        candidate_conditions: list[str] = []
+        non_completed_cte = ""
+        if not include_completed:
+            candidate_conditions.append("event_id IN (SELECT event_id FROM non_completed_events)")
+            non_completed_cte = """
+            ,
+            non_completed_events AS (
+                SELECT event_id
+                FROM trigger_events
+                WHERE delivery_state IN ('pending', 'inflight')
+                UNION
+                SELECT event_id
+                FROM effect_executions
+                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending', 'error_routed')
+                UNION
+                SELECT event_id
+                FROM gate_executions
+                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending')
+            )
+            """
+        no_session_cte = ""
+        if without_session:
+            candidate_conditions.append("event_id NOT IN (SELECT event_id FROM session_events)")
+            session_id_value_predicate = """
+                LOWER(CAST(session_value.key AS TEXT)) LIKE '%session_id'
+                AND session_value.type = 'text'
+                AND TRIM(CAST(session_value.value AS TEXT)) <> ''
+            """
+            no_session_cte = f"""
+            ,
+            session_events AS (
+                SELECT trigger_events.event_id
+                FROM trigger_events
+                JOIN candidate_events ON candidate_events.event_id = trigger_events.event_id
+                CROSS JOIN json_tree(trigger_events.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+                UNION
+                SELECT effect_executions.event_id
+                FROM effect_executions
+                JOIN candidate_events ON candidate_events.event_id = effect_executions.event_id
+                CROSS JOIN json_tree(effect_executions.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+                UNION
+                SELECT gate_executions.event_id
+                FROM gate_executions
+                JOIN candidate_events ON candidate_events.event_id = gate_executions.event_id
+                CROSS JOIN json_tree(gate_executions.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+            )
+            """
+        candidate_filter = (
+            "WHERE " + " AND ".join(candidate_conditions) if candidate_conditions else ""
+        )
+        cte = f"""
+            WITH target_nodes(node_id) AS (
+                VALUES {node_value_placeholders}
+            ),
+            target_activity AS (
+                SELECT event_id, COALESCE(delivered_at, inflight_at, occurred_at) AS activity_at
+                FROM trigger_events
+                WHERE trigger_id IN (SELECT node_id FROM target_nodes)
+                UNION ALL
+                SELECT event_id, COALESCE(finished_at, started_at) AS activity_at
+                FROM effect_executions
+                WHERE effect_id IN (SELECT node_id FROM target_nodes)
+                UNION ALL
+                SELECT event_id, COALESCE(finished_at, started_at) AS activity_at
+                FROM gate_executions
+                WHERE gate_id IN (SELECT node_id FROM target_nodes)
+            ),
+            candidate_events AS (
+                SELECT event_id, MAX(activity_at) AS latest_activity_at
+                FROM target_activity
+                GROUP BY event_id
+            )
+            {non_completed_cte}
+            {no_session_cte}
+        """
+        db_path = Path(stores["orchestration_store_path"])
+        ensure_orchestration_schema(db_path)
+        with connect_orchestration_db(db_path) as connection:
+            count_row = connection.execute(
+                f"{cte} SELECT COUNT(*) AS matched FROM candidate_events {candidate_filter}",
+                target_params,
+            ).fetchone()
+            matched_count = int(count_row["matched"] if count_row is not None else 0)
+            fetch_limit = matched_count if without_session else min(500, limit + 1)
+            if fetch_limit <= 0:
+                return [], matched_count, False
+            rows = connection.execute(
+                f"""
+                {cte}
+                SELECT event_id
+                FROM candidate_events
+                {candidate_filter}
+                ORDER BY latest_activity_at DESC, event_id DESC
+                LIMIT ?
+                """,
+                [*target_params, fetch_limit],
+            ).fetchall()
+        event_ids = [
+            event_id
+            for row in rows
+            for event_id in [_coerce_optional_string(row["event_id"])]
+            if event_id
+        ]
+        return event_ids, matched_count, matched_count > len(event_ids)
+
+    def _workflow_run_sqlite_records_for_event_ids(
+        self,
+        stores: Mapping[str, Any],
+        *,
+        event_ids: list[str],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        normalized_event_ids = [
+            event_id.strip()
+            for event_id in dict.fromkeys(event_ids)
+            if event_id and event_id.strip()
+        ]
+        if not normalized_event_ids:
+            return {}, {}, {}
+
+        db_path = Path(stores["orchestration_store_path"])
+        ensure_orchestration_schema(db_path)
+        queue_records: dict[str, Any] = {}
+        effect_records: dict[str, Any] = {}
+        gate_records: dict[str, Any] = {}
+
+        def add_payload(
+            target: dict[str, Any],
+            row: Any,
+            *,
+            key_field: str,
+        ) -> None:
+            payload = json_loads_object(row["payload_json"])
+            key = _coerce_optional_string(payload.get(key_field)) or _coerce_optional_string(
+                row[key_field]
+            )
+            if key:
+                target[key] = payload
+
+        def event_id_batches() -> Iterator[list[str]]:
+            batch_size = 500
+            for index in range(0, len(normalized_event_ids), batch_size):
+                yield normalized_event_ids[index : index + batch_size]
+
+        with connect_orchestration_db(db_path) as connection:
+            for event_id_batch in event_id_batches():
+                placeholders = ", ".join("?" for _ in event_id_batch)
+                for row in connection.execute(
+                    f"""
+                    SELECT event_id, payload_json
+                    FROM trigger_events
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(queue_records, row, key_field="event_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM effect_executions
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(effect_records, row, key_field="execution_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM gate_executions
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(gate_records, row, key_field="execution_id")
+
+        return queue_records, effect_records, gate_records
 
     def _workflow_run_detail_sqlite_records(
         self,
@@ -17282,10 +17730,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "gate:deserialize",
                 "gate:serialize",
                 "gate:map",
+                "gate:aggregate",
                 "gate:dedupe",
                 "gate:switch",
                 "gate:await-agent",
                 "gate:for",
+                "gate:while",
                 "gate:merge",
             }:
                 gate["outputs"] = output_schemas.get(gate_id, {})

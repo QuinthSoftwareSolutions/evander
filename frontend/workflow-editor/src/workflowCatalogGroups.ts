@@ -74,14 +74,14 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "data-shaping",
       label: "Data shaping",
-      description: "Map, parse, or serialize workflow payloads.",
-      types: ["gate:map", "gate:deserialize", "gate:serialize"],
+      description: "Map, aggregate, parse, or serialize workflow payloads.",
+      types: ["gate:map", "gate:aggregate", "gate:deserialize", "gate:serialize"],
     },
     {
       key: "flow-control",
       label: "Flow control",
       description: "Join, branch, pause, or loop workflow paths.",
-      types: ["gate:merge", "gate:switch", "gate:await-agent", "gate:for"],
+      types: ["gate:merge", "gate:switch", "gate:await-agent", "gate:for", "gate:while"],
     },
     {
       key: "timing",

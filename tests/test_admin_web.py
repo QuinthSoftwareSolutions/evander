@@ -1011,6 +1011,26 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "json",
         "yaml",
     ]
+    aggregate_gate = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "gate:aggregate"
+    )
+    aggregate_fields = {field["key"]: field for field in aggregate_gate["fields"]}
+    assert [field["key"] for field in aggregate_gate["fields"]] == [
+        "items",
+        "metrics",
+        "outputs",
+    ]
+    assert aggregate_fields["items"]["kind"] == "json"
+    assert aggregate_fields["items"]["required"]
+    assert aggregate_fields["items"]["bindable"]
+    assert aggregate_fields["items"]["json_value_type"] == "array"
+    assert aggregate_fields["metrics"]["kind"] == "json"
+    assert aggregate_fields["metrics"]["required"]
+    assert aggregate_fields["metrics"]["json_value_type"] == "object"
+    assert aggregate_fields["metrics"]["default_value"] == {
+        "total": {"operation": "sum", "path": "value"}
+    }
+    assert aggregate_fields["outputs"]["read_only"]
     await_agent = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent"
     )
@@ -1026,6 +1046,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert for_gate["output_ports"] == [
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
+    ]
+    while_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:while")
+    while_gate_fields = {field["key"]: field for field in while_gate["fields"]}
+    assert while_gate_fields["when"]["kind"] == "json"
+    assert while_gate_fields["when"]["required"]
+    assert while_gate_fields["when"]["bindable"]
+    assert while_gate_fields["max_iterations"]["kind"] == "number"
+    assert while_gate_fields["max_iterations"]["required"]
+    assert while_gate_fields["max_iterations"]["bindable"]
+    assert while_gate_fields["max_iterations"]["default_value"] == 3
+    assert while_gate["output_ports"] == [
+        {"key": "body", "label": "Body", "description": "Loop body path while the predicate is true."},
+        {"key": "done", "label": "Done", "description": "Exit path when the predicate is false."},
+        {
+            "key": "exhausted",
+            "label": "Exhausted",
+            "description": "Exit path when Max iterations is reached while the predicate is still true.",
+        },
     ]
     switch_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:switch")
     assert switch_gate["output_ports"] == []
@@ -1197,10 +1235,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "limit",
     ]
     model_usage_list_fields = {field["key"]: field for field in model_usage_list["fields"]}
+    assert all(field["description"] for field in model_usage_list_fields.values())
+    assert "system.execution.trace_id" in model_usage_list_fields["workflow_run_id"]["description"]
+    assert "every run" in model_usage_list_fields["workflow_run_id"]["description"]
+    assert "all effects" in model_usage_list_fields["effect_id"]["description"]
+    assert "all dispatches" in model_usage_list_fields["dispatch_id"]["description"]
     assert model_usage_list_fields["directory_path"]["description"]
+    assert "Leave blank to include all directories" in model_usage_list_fields["directory_path"]["description"]
     assert "descendants" in model_usage_list_fields["directory_path"]["description"]
     assert model_usage_list_fields["include_directory_descendants"]["kind"] == "boolean"
     assert model_usage_list_fields["include_directory_descendants"]["default_value"] is False
+    assert [option["value"] for option in model_usage_list_fields["provider"]["options"]] == ["openai"]
+    assert [option["value"] for option in model_usage_list_fields["agent_harness"]["options"]] == [
+        "codex"
+    ]
+    assert [option["value"] for option in model_usage_list_fields["execution_backend"]["options"]] == [
+        "libvirt_vm",
+        "container_worker_vm",
+    ]
     assert model_usage_list_fields["normalized_usage_status"]["kind"] == "enum"
     assert [option["value"] for option in model_usage_list_fields["normalized_usage_status"]["options"]] == [
         "available",
@@ -3779,6 +3831,68 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     assert {
         "code": "node_capability",
         "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
+        "severity": "error",
+    } in diagnostics
+
+
+def test_admin_web_validate_requires_while_body_loopback(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Cron",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": 1, "equals": 1},
+                    "max_iterations": 3,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body-1",
+                    "display_name": "Body",
+                    "type": "effect:event:emit",
+                    "event_type": "while_body",
+                    "payload": {},
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "gate-while-1"},
+                {
+                    "source_id": "gate-while-1",
+                    "source_port": "body",
+                    "target_id": "effect-body-1",
+                },
+            ],
+        },
+        "layout": {"nodes": {}},
+        "graphs": [],
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    diagnostics = response.json()["validation_diagnostics"]
+    assert {
+        "code": "node_capability",
+        "message": (
+            "gate:while gate-while-1 body branch must have an allow_cycle path back "
+            "to gate-while-1"
+        ),
+        "node_id": "gate-while-1",
+        "node_type": "gate:while",
         "severity": "error",
     } in diagnostics
 
@@ -8532,6 +8646,11 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "didww_sip_bridge_token_env",
         "didww_from_number",
     }
+    phone_call_fields = {field["field_name"]: field for field in phone_calls["fields"]}
+    assert phone_call_fields["phone_call_backend"]["label"] == "Phone call backend"
+    assert phone_call_fields["retell_from_number"]["label"] == "Retell from number"
+    assert phone_call_fields["didww_from_number"]["label"] == "DIDWW from number"
+    assert phone_call_fields["didww_sip_bridge_url"]["label"] == "DIDWW SIP bridge URL"
     contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
     contact_list = next(
         section for section in contacts["sections"] if section["title"] == "Contact list"

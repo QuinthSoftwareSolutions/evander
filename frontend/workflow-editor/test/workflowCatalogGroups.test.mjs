@@ -191,6 +191,7 @@ test("groups switch gate types with flow control", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("gate", "gate:await-agent", "Await agent"),
     catalogNode("gate", "gate:for", "For each item"),
+    catalogNode("gate", "gate:while", "While"),
     catalogNode("gate", "gate:merge", "Merge"),
     catalogNode("gate", "gate:switch", "Switch"),
   ], "gate");
@@ -202,6 +203,25 @@ test("groups switch gate types with flow control", () => {
     "gate:for",
     "gate:merge",
     "gate:switch",
+    "gate:while",
+  ]);
+});
+
+test("groups aggregate gate with data shaping", () => {
+  const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("gate", "gate:map", "Map"),
+    catalogNode("gate", "gate:aggregate", "Aggregate"),
+    catalogNode("gate", "gate:deserialize", "Deserialize"),
+    catalogNode("gate", "gate:serialize", "Serialize"),
+  ], "gate");
+
+  const dataShaping = groups.find((group) => group.label === "Data shaping");
+  assert.ok(dataShaping);
+  assert.deepEqual(dataShaping.entries.map((entry) => entry.type), [
+    "gate:aggregate",
+    "gate:deserialize",
+    "gate:map",
+    "gate:serialize",
   ]);
 });
 

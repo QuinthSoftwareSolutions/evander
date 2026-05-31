@@ -558,11 +558,21 @@ _TRIGGER_OUTPUT_SCHEMAS = {
 }
 
 _GATE_OUTPUT_SCHEMAS = {
+    "gate:aggregate": {
+        "count": {"type": "integer"},
+    },
     "gate:for": {
         "current_element": {"type": "object"},
         "current_index": {"type": "integer"},
         "item_count": {"type": "integer"},
         "is_done": {"type": "boolean"},
+    },
+    "gate:while": {
+        "iteration_index": {"type": "integer"},
+        "iteration_count": {"type": "integer"},
+        "remaining_iterations": {"type": "integer"},
+        "is_done": {"type": "boolean"},
+        "is_exhausted": {"type": "boolean"},
     },
     "gate:serialize": {
         "content": {"type": "string"},

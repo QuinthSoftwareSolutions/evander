@@ -196,6 +196,38 @@ test("builds a selected-node output contract for map templates", () => {
   ]);
 });
 
+test("aggregate gate derives flat metric output schemas", () => {
+  const config = createWorkflowConfig();
+  config.gates.push({
+    id: "gate-aggregate-1",
+    display_name: "Aggregate usage",
+    type: "gate:aggregate",
+    items: "${{trigger-1.items}}",
+    metrics: {
+      total_tokens: { operation: "sum", path: "total_tokens" },
+      average_tokens: { operation: "avg", path: "total_tokens" },
+      minimum_tokens: { operation: "min", path: "total_tokens" },
+      maximum_tokens: { operation: "max", path: "total_tokens" },
+    },
+  });
+
+  const outputSchemas = deriveWorkflowOutputSchemas(config);
+
+  assert.deepEqual(outputSchemas["gate-aggregate-1"], {
+    count: { type: "integer" },
+    total_tokens: { type: "number" },
+    average_tokens: { type: ["number", "null"] },
+    minimum_tokens: { type: ["number", "null"] },
+    maximum_tokens: { type: ["number", "null"] },
+  });
+  const contract = selectedNodeOutputContract(config, "gate-aggregate-1", outputSchemas);
+  assert.equal(
+    contract.note,
+    "Aggregate gate: outputs are count plus one output per configured metric.",
+  );
+  assert.ok(contract.rows.some((row) => row.bindingExpression === "${{gate-aggregate-1.total_tokens}}"));
+});
+
 test("returns empty contract states for missing or undeclared outputs", () => {
   const config = {
     triggers: [

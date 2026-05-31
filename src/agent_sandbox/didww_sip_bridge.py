@@ -1099,26 +1099,28 @@ class DidwwSipBridgeService:
                         self.config,
                         payload.realtime,
                     )
-                    handles = await self.ari_client.start_external_media_call(
-                        call_id=record.call_id,
-                        to_number=payload.to_number,
-                        from_number=payload.from_number,
-                        external_host=external_host,
-                    )
-                    self.store.attach_asterisk(
-                        record.voice_session_id,
-                        ari_channel_id=handles.call_channel_id,
-                        ari_bridge_id=handles.bridge_id,
-                        ari_external_media_channel_id=handles.external_media_channel_id,
-                        rtp_port=rtp.port,
-                    )
-                    await self._bridge_media_until_done(
-                        record.voice_session_id,
-                        handles,
-                        rtp,
-                        realtime,
-                        media_controller,
-                    )
+                    async with self.ari_client.event_stream() as ari_events:
+                        handles = await self.ari_client.start_external_media_call(
+                            call_id=record.call_id,
+                            to_number=payload.to_number,
+                            from_number=payload.from_number,
+                            external_host=external_host,
+                        )
+                        self.store.attach_asterisk(
+                            record.voice_session_id,
+                            ari_channel_id=handles.call_channel_id,
+                            ari_bridge_id=handles.bridge_id,
+                            ari_external_media_channel_id=handles.external_media_channel_id,
+                            rtp_port=rtp.port,
+                        )
+                        await self._bridge_media_until_done(
+                            record.voice_session_id,
+                            handles,
+                            rtp,
+                            realtime,
+                            media_controller,
+                            ari_events=ari_events,
+                        )
             except Exception as exc:
                 logger.exception("didww_bridge_call_failed voice_session_id=%s", record.voice_session_id)
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
@@ -1135,6 +1137,7 @@ class DidwwSipBridgeService:
         rtp: RtpUdpEndpoint,
         realtime: OpenAIRealtimeSession,
         media_controller: VoiceMediaControllerClient,
+        ari_events: Any | None = None,
     ) -> None:
         stop_event = asyncio.Event()
         tasks = [
@@ -1148,7 +1151,14 @@ class DidwwSipBridgeService:
                     stop_event,
                 )
             ),
-            asyncio.create_task(self._wait_for_asterisk_end(voice_session_id, handles, stop_event)),
+            asyncio.create_task(
+                self._wait_for_asterisk_end(
+                    voice_session_id,
+                    handles,
+                    stop_event,
+                    websocket=ari_events,
+                )
+            ),
         ]
         try:
             done, pending = await asyncio.wait(
@@ -1367,29 +1377,53 @@ class DidwwSipBridgeService:
         voice_session_id: str,
         handles: AsteriskCallHandles,
         stop_event: asyncio.Event,
+        *,
+        websocket: Any | None = None,
     ) -> None:
-        async with self.ari_client.event_stream() as websocket:
-            while not stop_event.is_set():
-                try:
-                    raw = await asyncio.wait_for(websocket.recv(), timeout=0.5)
-                except TimeoutError:
-                    continue
-                event = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-                event_type = str(event.get("type") or "")
-                channel_id = _ari_event_channel_id(event)
-                if channel_id != handles.call_channel_id:
-                    continue
-                if event_type == "ChannelStateChange" and _ari_channel_state(event) == "Up":
-                    self.store.update_status(voice_session_id, "active")
-                if event_type in {"ChannelHangupRequest", "ChannelDestroyed", "StasisEnd"}:
-                    cause = event.get("cause_txt") or event.get("cause") or "hangup"
-                    self.store.complete(
-                        voice_session_id,
-                        status=_ari_hangup_status(event),
-                        summary=f"Call ended: {cause}",
-                    )
-                    stop_event.set()
-                    return
+        if websocket is not None:
+            await self._consume_asterisk_events(
+                voice_session_id,
+                handles,
+                stop_event,
+                websocket,
+            )
+            return
+        async with self.ari_client.event_stream() as event_websocket:
+            await self._consume_asterisk_events(
+                voice_session_id,
+                handles,
+                stop_event,
+                event_websocket,
+            )
+
+    async def _consume_asterisk_events(
+        self,
+        voice_session_id: str,
+        handles: AsteriskCallHandles,
+        stop_event: asyncio.Event,
+        websocket: Any,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=0.5)
+            except TimeoutError:
+                continue
+            event = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            event_type = str(event.get("type") or "")
+            channel_id = _ari_event_channel_id(event)
+            if channel_id != handles.call_channel_id:
+                continue
+            if event_type == "ChannelStateChange" and _ari_channel_state(event) == "Up":
+                self.store.update_status(voice_session_id, "active")
+            if event_type in {"ChannelHangupRequest", "ChannelDestroyed", "StasisEnd"}:
+                cause = event.get("cause_txt") or event.get("cause") or "hangup"
+                self.store.complete(
+                    voice_session_id,
+                    status=_ari_hangup_status(event),
+                    summary=f"Call ended: {cause}",
+                )
+                stop_event.set()
+                return
 
     async def _cleanup_asterisk(self, record: DidwwBridgeCallRecord) -> None:
         await self.ari_client.hangup_channel(record.ari_external_media_channel_id)

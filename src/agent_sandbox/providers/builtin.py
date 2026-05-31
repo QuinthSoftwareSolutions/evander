@@ -71,6 +71,7 @@ from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
 from agent_sandbox.effects.providers.vm_start import VmStartEffectProvider
 from agent_sandbox.effects.providers.vm_stop import VmStopEffectProvider
 from agent_sandbox.gates.providers.await_agent import AwaitAgentGateProvider
+from agent_sandbox.gates.providers.aggregate_gate import AggregateGateProvider
 from agent_sandbox.gates.providers.debounce_gate import DebounceGateProvider
 from agent_sandbox.gates.providers.deserialize_gate import DeserializeGateProvider
 from agent_sandbox.gates.providers.dedupe_gate import DedupeGateProvider
@@ -80,6 +81,7 @@ from agent_sandbox.gates.providers.map_gate import MapGateProvider
 from agent_sandbox.gates.providers.merge_gate import MergeGateProvider
 from agent_sandbox.gates.providers.serialize_gate import SerializeGateProvider
 from agent_sandbox.gates.providers.switch_gate import SwitchGateProvider
+from agent_sandbox.gates.providers.while_gate import WhileGateProvider
 from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.communication_messages import (
@@ -166,6 +168,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
         },
         gate_providers={
+            "gate:aggregate": AggregateGateProvider,
             "gate:await-agent": AwaitAgentGateProvider,
             "gate:debounce": DebounceGateProvider,
             "gate:deserialize": DeserializeGateProvider,
@@ -176,6 +179,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:merge": MergeGateProvider,
             "gate:serialize": SerializeGateProvider,
             "gate:switch": SwitchGateProvider,
+            "gate:while": WhileGateProvider,
         },
         effect_providers={
             "effect:event:emit": EventEmitEffectProvider,

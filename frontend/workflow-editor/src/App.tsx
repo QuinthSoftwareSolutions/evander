@@ -387,7 +387,9 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
+  "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
   "gate:for": "Iterate over an array and execute the body branch for each item.",
+  "gate:while": "Repeat a body branch while a bounded predicate remains true.",
   "effect:agent:prompt": "Send a prompt to an agent session.",
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
@@ -820,7 +822,9 @@ function kindCollectionKey(kind: WorkflowNodeKind): "triggers" | "gates" | "effe
 function inboundLimit(node: WorkflowNodeConfig): number | null {
   const kind = nodeKindFromType(node.type);
   if (kind === "trigger") return 0;
-  if (node.type === "gate:merge" || node.type === "gate:for") return null;
+  if (node.type === "gate:merge" || node.type === "gate:for" || node.type === "gate:while") {
+    return null;
+  }
   return 1;
 }
 
@@ -994,6 +998,9 @@ function renderStringInput(
   disabled: boolean,
   fallbackPlaceholder: string,
 ) {
+  const optionListId = field.options.length > 0
+    ? `workflow-field-options-${field.key.replace(/[^A-Za-z0-9_-]/g, "-")}`
+    : null;
   if (field.multiline) {
     return (
       <textarea
@@ -1006,12 +1013,22 @@ function renderStringInput(
     );
   }
   return (
-    <input
-      value={typeof value === "string" ? value : ""}
-      placeholder={field.placeholder ?? fallbackPlaceholder}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={disabled}
-    />
+    <>
+      <input
+        value={typeof value === "string" ? value : ""}
+        list={optionListId ?? undefined}
+        placeholder={field.placeholder ?? fallbackPlaceholder}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      />
+      {optionListId ? (
+        <datalist id={optionListId}>
+          {field.options.map((option) => (
+            <option key={`${field.key}-${option.value}`} value={option.value} label={option.label} />
+          ))}
+        </datalist>
+      ) : null}
+    </>
   );
 }
 
@@ -1624,6 +1641,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:map") {
     return { id, display_name: "New map", type, outputs: {}, template: {} };
   }
+  if (kind === "gate" && type === "gate:aggregate") {
+    return {
+      id,
+      display_name: "Aggregate",
+      type,
+      items: [],
+      metrics: { total: { operation: "sum", path: "value" } },
+      outputs: { count: { type: "integer" }, total: { type: "number" } },
+    };
+  }
   if (kind === "gate" && type === "gate:deserialize") {
     return {
       id,
@@ -1689,6 +1716,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "gate" && type === "gate:for") {
     return { id, display_name: "For each item", type, items: [] };
+  }
+  if (kind === "gate" && type === "gate:while") {
+    return {
+      id,
+      display_name: "While",
+      type,
+      when: { left: 0, greater_than: 0 },
+      max_iterations: 3,
+    };
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
@@ -2117,8 +2153,11 @@ function validateConnection(
     return `Node ${targetId} already has the maximum supported inbound connections.`;
   }
   if (wouldCreateCycle(config, sourceId, targetId)) {
-    if (sourceNode.type === "gate:for" && sourcePort === "body") return null;
-    if (targetNode.type === "gate:for") return null;
+    if (
+      (sourceNode.type === "gate:for" || sourceNode.type === "gate:while")
+      && sourcePort === "body"
+    ) return null;
+    if (targetNode.type === "gate:for" || targetNode.type === "gate:while") return null;
     return "That edge would create a cycle.";
   }
   return null;
@@ -2997,6 +3036,8 @@ function normalizeDerivedNodeFields(
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:aggregate") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:deserialize") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:serialize") {
@@ -3007,6 +3048,8 @@ function normalizeDerivedNodeFields(
       delete gate.completion_trigger_id;
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:for") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:while") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:merge") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
@@ -3625,7 +3668,7 @@ export default function App() {
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [runSearchScope, setRunSearchScope] = useState("");
-  const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(true);
+  const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(false);
   const [runSearchIncludeCompleted, setRunSearchIncludeCompleted] = useState(true);
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);
@@ -5574,7 +5617,9 @@ export default function App() {
       return false;
     }
     const targetNode = nodeById(workflowDocument.config, targetId);
-    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(workflowDocument.config, sourceId, targetId);
+    const allowCycle = (
+      targetNode?.type === "gate:for" || targetNode?.type === "gate:while"
+    ) && wouldCreateCycle(workflowDocument.config, sourceId, targetId);
     const nextConfig = cloneConfig(workflowDocument.config);
     const nextEdge: WorkflowEdge = {
       source_id: sourceId,

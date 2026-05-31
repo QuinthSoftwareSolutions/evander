@@ -5,6 +5,49 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - DIDWW Bridge ARI Registration
+
+- Opened the Asterisk ARI event stream before originating DIDWW call channels so
+  Asterisk registers the `agent_sandbox_didww` Stasis app before channels enter
+  it.
+
+## 2026-05-31 - Phone Config Labels
+
+- Clarified Admin Web phone-call configuration labels so Retell and DIDWW
+  settings no longer collapse to duplicate names like `from number`.
+
+## 2026-05-31 - Workflow Aggregate Gate
+
+- Added `gate:aggregate` for deriving flat `count`, `sum`, `min`, `max`, and
+  `avg` outputs from an array of workflow items.
+- Registered aggregate gate runtime wiring, editor catalog metadata, output
+  schema derivation, docs, and tests.
+
+## 2026-05-31 - Workflow While Gate
+
+- Added a bounded `gate:while` workflow gate with `body`, `done`, and
+  `exhausted` routes for deterministic retry loops.
+- Registered while-loop catalog metadata, validation, output schemas, and
+  workflow editor cycle handling.
+
+## 2026-05-31 - Model Usage Query Help
+
+- Added Admin Web workflow editor help text for every `query:model-usage:list`
+  filter, including current-run, effect, dispatch, directory, and time-scope
+  behavior.
+- Added catalog suggestions for known model usage provider, harness, and
+  execution backend filter values.
+
+## 2026-05-31 - Workflow Run Search Latency
+
+- Made Admin Web Latest runs search use SQLite event-id slicing before hydrating
+  run cards, avoiding full trigger/effect/gate history scans on SQLite-backed
+  orchestration stores.
+- Changed the workflow editor Latest runs filter to include agent-session runs
+  by default instead of starting with the expensive no-session-only filter.
+- Fixed SQLite-backed Latest runs searches with `without_session=true` so recent
+  session-backed runs cannot hide older no-session runs from the result slice.
+
 ## 2026-05-31 - Users Tabs Dark Mode
 
 - Fixed the Admin Web Users & Groups mode tabs so the segmented control uses

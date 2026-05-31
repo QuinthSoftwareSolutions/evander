@@ -415,6 +415,86 @@ def test_realtime_function_call_reports_controller_failure_without_raising(
     assert "cannot check the origin agent" in str(realtime.responses[0])
 
 
+def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    order: list[str] = []
+    app_registered = False
+
+    class FakeRealtime:
+        async def __aenter__(self) -> "FakeRealtime":
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class FakeRtpEndpoint:
+        port: int | None = None
+
+        async def start(self) -> None:
+            self.port = 49000
+
+        def close(self) -> None:
+            order.append("rtp_close")
+
+    class FakeAriClient:
+        @asynccontextmanager
+        async def event_stream(self) -> Any:
+            nonlocal app_registered
+            order.append("event_stream_open")
+            app_registered = True
+            try:
+                yield object()
+            finally:
+                app_registered = False
+                order.append("event_stream_close")
+
+        async def start_external_media_call(self, **_: Any) -> AsteriskCallHandles:
+            assert app_registered
+            order.append("start_external_media_call")
+            return AsteriskCallHandles(
+                call_channel_id="call-didww-test",
+                bridge_id="bridge-didww-test",
+                external_media_channel_id="media-didww-test",
+            )
+
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            return None
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            return None
+
+    async def run() -> None:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            realtime_factory=lambda _projection, _realtime: FakeRealtime(),  # type: ignore[arg-type]
+            rtp_endpoint_factory=FakeRtpEndpoint,  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+
+        async def bridge_media_until_done(*_: Any, **kwargs: Any) -> None:
+            assert kwargs["ari_events"] is not None
+            order.append("bridge_media")
+
+        service._bridge_media_until_done = bridge_media_until_done  # type: ignore[method-assign]
+        await service.run_call(record, PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    asyncio.run(run())
+
+    assert order == [
+        "event_stream_open",
+        "start_external_media_call",
+        "bridge_media",
+        "event_stream_close",
+        "rtp_close",
+    ]
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.ari_channel_id == "call-didww-test"
+
+
 def test_attach_asterisk_keeps_call_connecting_until_answer(tmp_path: Path) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
