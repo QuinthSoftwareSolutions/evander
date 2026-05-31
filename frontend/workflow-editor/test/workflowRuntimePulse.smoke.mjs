@@ -269,7 +269,7 @@ test("workflow editor pulses live nodes from recent activity and suppresses insp
         id: "graph-hidden",
         name: "Hidden support",
         description: null,
-        directory_paths: ["team-a"],
+        directory_paths: ["root/team-a"],
         user_ids: [],
         node_ids: ["gate-1"],
       },
@@ -618,6 +618,7 @@ test("workflow editor pulses live nodes from recent activity and suppresses insp
 
   await page.locator('.react-flow__node[data-id="trigger-1"]').waitFor({ state: "visible" });
   await page.locator('.react-flow__node[data-id="effect-1"]').waitFor({ state: "visible" });
+  assert.equal(await page.locator('.react-flow__node[data-id="gate-1"]').count(), 0);
 
   const liveEffectActivity = {
     activity_key: "effect-1:exec-1:2026-05-16T12:00:03Z",

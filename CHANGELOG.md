@@ -15,6 +15,12 @@ material. Newer entries are added incrementally as changes land.
 - Added Users & Groups tooltips for Admin Web RBAC permissions so operators can
   distinguish owner, user/group management, workflow, and workflow-run access.
 
+## 2026-05-30 - Workflow Directory Canvas Scope
+
+- Restored exact directory filtering in the workflow editor so opening `root`
+  shows only root-owned graphs instead of descendant directory graphs on the
+  same canvas.
+
 ## 2026-05-30 - Effective Azure Provider Validation
 
 - Made effective directory provider validation run full Azure OpenAI required-field

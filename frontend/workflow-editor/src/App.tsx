@@ -62,6 +62,7 @@ import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContex
 import { CopyIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
+import { graphVisibleInDirectory } from "./workflowGraphDirectory";
 import {
   BindingParseError,
   isParsedBindingExpression,
@@ -793,12 +794,6 @@ function normalizeWorkflowGraphs(
       node_ids: component,
     };
   });
-}
-
-function graphVisibleInDirectory(graph: WorkflowGraphMetadata, selectedDirectoryPath: string): boolean {
-  const selectedPath = selectedDirectoryPath.trim() || "root";
-  const graphDirectoryPath = graph.directory_path.trim() || "root";
-  return graphDirectoryPath === selectedPath || graphDirectoryPath.startsWith(`${selectedPath}/`);
 }
 
 function fallbackPosition(index: number): { x: number; y: number } {
