@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Tool Call Selection Keys
+
+- Fixed Admin Web Tool Calls row selection so audit entries sharing a
+  `request_id` no longer highlight together or show details for the wrong row.
+
 ## 2026-05-31 - DIDWW Bridge Stasis Readiness
 
 - Waited for outbound and ExternalMedia Asterisk channels to enter the ARI

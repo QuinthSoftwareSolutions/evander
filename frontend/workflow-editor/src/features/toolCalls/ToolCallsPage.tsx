@@ -109,7 +109,7 @@ function stringField(item: ToolCallItem | null | undefined, ...keys: string[]): 
 }
 
 function toolCallRowKey(item: ToolCallItem | null | undefined, index = 0): string {
-  const explicitId = stringField(item, "event_id", "call_id", "request_id");
+  const explicitId = stringField(item, "event_id", "call_id");
   if (explicitId) {
     return explicitId;
   }
@@ -121,10 +121,14 @@ function toolCallRowKey(item: ToolCallItem | null | undefined, index = 0): strin
     stringField(item, "tool_name") ?? "unknown-tool",
     stringField(item, "created_at") ?? "unknown-time",
     stringField(item, "session_id") ?? "",
+    stringField(item, "request_id") ?? "",
     stringField(item, "correlation_id") ?? "",
     stringField(item, "approval_request_id") ?? "",
+    stringField(item, "mcp_tool_approval_lease_id") ?? "",
     stringField(item, "workflow_run_id", "trace_id") ?? "",
     stringField(item, "directory_path") ?? "",
+    stringField(item, "status", "decision") ?? "",
+    item?.duration_ms == null ? "" : String(item.duration_ms),
     String(index),
   ].join("|");
 }
