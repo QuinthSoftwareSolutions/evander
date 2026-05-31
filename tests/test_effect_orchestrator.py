@@ -1973,6 +1973,191 @@ def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) 
     assert for_records[0].get("published_event_id") is None
 
 
+def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": 0, "greater_than": 0},
+                    "max_iterations": 3,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "done ${{while-1.iteration_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "while-1"),
+                {"source_id": "while-1", "source_port": "done", "target_id": "effect-done"},
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-done": {"success": True, "message": "done"}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-while-done-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-while-done-1",
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
+    assert len(done_records) == 1
+    assert done_records[0]["resolved_config"]["command"] == "done 0"
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    while_records = [item for item in gate_payload.values() if item["gate_id"] == "while-1"]
+    assert len(while_records) == 1
+    assert while_records[0]["outputs"] == {
+        "iteration_index": 0,
+        "iteration_count": 0,
+        "remaining_iterations": 3,
+        "is_done": True,
+        "is_exhausted": False,
+    }
+
+
+def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": 1, "equals": 1},
+                    "max_iterations": 2,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "body ${{while-1.iteration_index}}/${{while-1.remaining_iterations}}",
+                },
+                {
+                    "id": "effect-exhausted",
+                    "display_name": "Exhausted",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "exhausted ${{while-1.iteration_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "while-1"),
+                {"source_id": "while-1", "source_port": "body", "target_id": "effect-body"},
+                {
+                    "source_id": "while-1",
+                    "source_port": "exhausted",
+                    "target_id": "effect-exhausted",
+                },
+                {"source_id": "effect-body", "target_id": "while-1", "allow_cycle": True},
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-body": {"success": True, "message": "body"},
+            "effect-exhausted": {"success": True, "message": "exhausted"},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-while-exhaust-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-while-exhaust-1",
+        )
+    )
+
+    for _ in range(16):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
+    exhausted_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-exhausted"
+    ]
+    assert len(body_records) == 2
+    assert sorted(item["resolved_config"]["command"] for item in body_records) == [
+        "body 0/1",
+        "body 1/0",
+    ]
+    assert len(exhausted_records) == 1
+    assert exhausted_records[0]["resolved_config"]["command"] == "exhausted 2"
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    while_records = [item for item in gate_payload.values() if item["gate_id"] == "while-1"]
+    assert len(while_records) == 3
+    assert sum(1 for item in while_records if item["outputs"].get("is_done") is False) == 2
+    exhausted = [item for item in while_records if item["outputs"].get("is_exhausted") is True]
+    assert len(exhausted) == 1
+    assert exhausted[0]["outputs"] == {
+        "iteration_index": 2,
+        "iteration_count": 2,
+        "remaining_iterations": 0,
+        "is_done": True,
+        "is_exhausted": True,
+    }
+
+
 def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
     tmp_path: Path,
 ) -> None:

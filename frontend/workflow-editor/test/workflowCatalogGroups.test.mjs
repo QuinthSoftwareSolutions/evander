@@ -191,6 +191,7 @@ test("groups switch gate types with flow control", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("gate", "gate:await-agent", "Await agent"),
     catalogNode("gate", "gate:for", "For each item"),
+    catalogNode("gate", "gate:while", "While"),
     catalogNode("gate", "gate:merge", "Merge"),
     catalogNode("gate", "gate:switch", "Switch"),
   ], "gate");
@@ -202,6 +203,7 @@ test("groups switch gate types with flow control", () => {
     "gate:for",
     "gate:merge",
     "gate:switch",
+    "gate:while",
   ]);
 });
 

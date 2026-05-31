@@ -1368,6 +1368,89 @@ def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validati
     assert config.gates[0].type == "gate:for"
 
 
+def test_trigger_orchestrator_while_gate_accepts_body_done_exhausted_ports_and_cycle_return() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"failure_count": {"type": "integer"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": "${{trigger-1.failure_count}}", "greater_than": 0},
+                    "max_iterations": 3,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo done",
+                },
+                {
+                    "id": "effect-exhausted",
+                    "display_name": "Exhausted",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo exhausted",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "while-1"},
+                {"source_id": "while-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "while-1", "source_port": "done", "target_id": "effect-done"},
+                {
+                    "source_id": "while-1",
+                    "source_port": "exhausted",
+                    "target_id": "effect-exhausted",
+                },
+                {"source_id": "effect-body", "target_id": "while-1", "allow_cycle": True},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:while"
+
+
+@pytest.mark.parametrize("max_iterations", [0, -1, 1.5, [], {}])
+def test_trigger_orchestrator_while_gate_rejects_invalid_literal_max_iterations(
+    max_iterations,
+) -> None:
+    with pytest.raises(ValueError, match="gate:while max_iterations must be a positive integer"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "while-1",
+                        "display_name": "Retry while failing",
+                        "type": "gate:while",
+                        "when": {"left": 1, "equals": 1},
+                        "max_iterations": max_iterations,
+                    }
+                ],
+            }
+        )
+
+
 def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {

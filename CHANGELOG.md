@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Workflow While Gate
+
+- Added a bounded `gate:while` workflow gate with `body`, `done`, and
+  `exhausted` routes for deterministic retry loops.
+- Registered while-loop catalog metadata, validation, output schemas, and
+  workflow editor cycle handling.
+
 ## 2026-05-31 - Workflow Run Search Latency
 
 - Made Admin Web Latest runs search use SQLite event-id slicing before hydrating

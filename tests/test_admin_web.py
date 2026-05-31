@@ -1027,6 +1027,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
     ]
+    while_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:while")
+    while_gate_fields = {field["key"]: field for field in while_gate["fields"]}
+    assert while_gate_fields["when"]["kind"] == "json"
+    assert while_gate_fields["when"]["required"]
+    assert while_gate_fields["when"]["bindable"]
+    assert while_gate_fields["max_iterations"]["kind"] == "number"
+    assert while_gate_fields["max_iterations"]["required"]
+    assert while_gate_fields["max_iterations"]["bindable"]
+    assert while_gate_fields["max_iterations"]["default_value"] == 3
+    assert while_gate["output_ports"] == [
+        {"key": "body", "label": "Body", "description": "Loop body path while the predicate is true."},
+        {"key": "done", "label": "Done", "description": "Exit path when the predicate is false."},
+        {
+            "key": "exhausted",
+            "label": "Exhausted",
+            "description": "Exit path when Max iterations is reached while the predicate is still true.",
+        },
+    ]
     switch_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:switch")
     assert switch_gate["output_ports"] == []
     assert [field["key"] for field in switch_gate["fields"]] == [
@@ -3779,6 +3797,68 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     assert {
         "code": "node_capability",
         "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
+        "severity": "error",
+    } in diagnostics
+
+
+def test_admin_web_validate_requires_while_body_loopback(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Cron",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": 1, "equals": 1},
+                    "max_iterations": 3,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body-1",
+                    "display_name": "Body",
+                    "type": "effect:event:emit",
+                    "event_type": "while_body",
+                    "payload": {},
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "gate-while-1"},
+                {
+                    "source_id": "gate-while-1",
+                    "source_port": "body",
+                    "target_id": "effect-body-1",
+                },
+            ],
+        },
+        "layout": {"nodes": {}},
+        "graphs": [],
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    diagnostics = response.json()["validation_diagnostics"]
+    assert {
+        "code": "node_capability",
+        "message": (
+            "gate:while gate-while-1 body branch must have an allow_cycle path back "
+            "to gate-while-1"
+        ),
+        "node_id": "gate-while-1",
+        "node_type": "gate:while",
         "severity": "error",
     } in diagnostics
 

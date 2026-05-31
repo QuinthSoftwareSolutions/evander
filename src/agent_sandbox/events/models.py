@@ -80,6 +80,37 @@ class GateFilterDefinition(GateDefinition):
         return self
 
 
+class GateWhileDefinition(GateDefinition):
+    type: Literal["gate:while"]
+    when: ConfigValue
+    max_iterations: ConfigValue
+
+    @field_validator("when")
+    @classmethod
+    def validate_when_expression(cls, value: ConfigValue) -> ConfigValue:
+        validate_filter_when_expression(value, context="gate:while when")
+        return value
+
+    @field_validator("max_iterations")
+    @classmethod
+    def validate_max_iterations(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, bool):
+            raise ValueError("gate:while max_iterations must be a positive integer")
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("gate:while max_iterations must be a positive integer")
+            return value
+        if isinstance(value, str):
+            return value
+        raise ValueError("gate:while max_iterations must be a positive integer or binding")
+
+    @model_validator(mode="after")
+    def validate_default_outputs(self) -> "GateWhileDefinition":
+        if self.outputs is None:
+            self.outputs = effective_node_output_schema(self)
+        return self
+
+
 class GateSwitchCaseDefinition(BaseModel):
     port: str
     label: str | None = None
@@ -371,6 +402,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:dedupe": GateDedupeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
+        "gate:while": GateWhileDefinition,
         "effect:event:emit": provider_models.EventEmitEffectDefinition,
         "effect:vm:create": provider_models.VmCreateEffectDefinition,
         "effect:vm:clone-repo": provider_models.VmCloneRepoEffectDefinition,

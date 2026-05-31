@@ -1763,6 +1763,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:merge": "Merge compatible inbound event streams into one downstream path.",
     "gate:await-agent": "Pause the workflow until a selected agent session completes.",
     "gate:for": "Iterate over an array and run the body branch for each item.",
+    "gate:while": "Repeat a body branch while a bounded predicate remains true.",
     "effect:vm:create": "Create a dedicated libvirt VM and session record.",
     "effect:vm:clone-repo": "Clone a repository into a VM-backed agent workspace.",
     "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -2615,6 +2616,46 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         output_ports=[
             _port("body", "Body", description="Loop body path while items remain."),
             _port("done", "Done", description="Exit path after the final item."),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:while",
+        label="While",
+        fields=[
+            _field(
+                "when",
+                "When",
+                "json",
+                required=True,
+                bindable=True,
+                description='Structured predicate using bindings, for example {"left":"${{parse-tests.failure_count}}","greater_than":0}.',
+            ),
+            _field(
+                "max_iterations",
+                "Max iterations",
+                "number",
+                required=True,
+                bindable=True,
+                description="Positive integer cap for body iterations before routing to Exhausted.",
+                default_value=3,
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from while-loop runtime outputs.",
+            ),
+        ],
+        output_ports=[
+            _port("body", "Body", description="Loop body path while the predicate is true."),
+            _port("done", "Done", description="Exit path when the predicate is false."),
+            _port(
+                "exhausted",
+                "Exhausted",
+                description="Exit path when Max iterations is reached while the predicate is still true.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -17510,6 +17551,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "gate:switch",
                 "gate:await-agent",
                 "gate:for",
+                "gate:while",
                 "gate:merge",
             }:
                 gate["outputs"] = output_schemas.get(gate_id, {})
