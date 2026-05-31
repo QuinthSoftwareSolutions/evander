@@ -856,6 +856,12 @@ use a static payload codec. The default is A-law/PCMA:
 `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ=8000`. For u-law/PCMU, use `ulaw`, payload type `0`, and the same
 sample rate.
 
+For barge-in, the bridge keeps OpenAI Realtime `server_vad` and automatic caller-turn response
+creation enabled, but disables immediate Realtime interruption. The bridge waits
+`DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; short configured
+backchannels such as `ok` or `uh-huh` are stored in the transcript without cancelling current
+assistant playback.
+
 Minimum host setup:
 
 1. Install and configure Asterisk with ARI enabled.

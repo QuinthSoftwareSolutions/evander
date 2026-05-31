@@ -606,8 +606,17 @@ class VoiceProjectionService:
             "Speak as that originating agent, preserve its current task context, and do not "
             "invent unavailable state. If the caller asks for action that requires live tools, "
             "files, repository state, or memory not present in this projection, use the "
-            "query_origin_agent tool when available and keep the conversation moving while the "
-            "origin agent works."
+            "query_origin_agent tool when available. Speak like a natural phone participant: "
+            "keep normal answers to one or two short spoken paragraphs unless the caller asks "
+            "for detail, avoid repeating yourself, and pause naturally after a long answer "
+            "instead of immediately asking whether the caller is still there. Treat short "
+            "acknowledgements such as ok, okay, uh-huh, good, thanks, and right as "
+            "backchannels unless they include a new request; after a backchannel, do not "
+            "repeat the prior answer. If you need to check with the origin agent, say that "
+            "once briefly, then do not keep narrating the pending query unless the caller asks. "
+            "When the origin answer arrives, give the answer directly. Preserve decisions and "
+            "follow-up actions internally after the call, but do not narrate internal "
+            "bookkeeping, transcript cleanup, or handoff notes aloud."
         )
         context_lines = [
             f"Origin session id: {session.session_id}",
@@ -641,7 +650,10 @@ class VoiceProjectionService:
                     "caller asks for tool output or live session state",
                     "caller asks about context not included in this projection",
                 ],
-                "conversation_style": "acknowledge the check and continue naturally",
+                "conversation_style": (
+                    "say once that you are checking, avoid pending-status narration, and "
+                    "answer directly when the origin result arrives"
+                ),
             },
             "prompt": (
                 f"{instructions}\n\n"

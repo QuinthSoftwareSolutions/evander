@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ import re
 import struct
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -96,6 +97,25 @@ _FAILED_HANGUP_CAUSE_TEXTS = {
     "user_busy",
 }
 
+_DEBUG_SNIPPET_LIMIT = 200
+_ORIGIN_QUERY_ACK_GRACE_SECONDS = 2.0
+_BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
+_ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
+_IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
+_IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
+_DEFAULT_BACKCHANNEL_PHRASES = (
+    "ok",
+    "okay",
+    "uh-huh",
+    "mhm",
+    "yeah",
+    "yes",
+    "good",
+    "great",
+    "thanks",
+    "thank you",
+)
+
 
 class DidwwSipBridgeConfig(BaseModel):
     host: str = "127.0.0.1"
@@ -129,6 +149,11 @@ class DidwwSipBridgeConfig(BaseModel):
     max_concurrent_calls: int = Field(default=4, ge=1)
     voice_query_poll_interval_seconds: float = Field(default=1.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
+    barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
+    backchannel_max_words: int = Field(default=3, ge=1, le=12)
+    backchannel_phrases: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_BACKCHANNEL_PHRASES)
+    )
 
     @field_validator("openai_realtime_api_base_url", "asterisk_ari_url", mode="before")
     @classmethod
@@ -139,6 +164,22 @@ class DidwwSipBridgeConfig(BaseModel):
     @classmethod
     def normalize_media_format(cls, value: object) -> object:
         return str(value or "").strip().lower()
+
+    @field_validator("backchannel_phrases", mode="before")
+    @classmethod
+    def normalize_backchannel_phrases(cls, value: object) -> object:
+        if isinstance(value, str):
+            parts = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            parts = list(value)
+        else:
+            parts = []
+        normalized = [
+            _normalize_backchannel_phrase(part)
+            for part in parts
+            if _normalize_backchannel_phrase(part)
+        ]
+        return normalized or list(_DEFAULT_BACKCHANNEL_PHRASES)
 
     @field_validator("media_format")
     @classmethod
@@ -199,6 +240,19 @@ class PhoneCallStartRequest(BaseModel):
         return text or None
 
 
+class DidwwBridgeDebugEvent(BaseModel):
+    sequence: int = Field(ge=1)
+    event_type: str = Field(min_length=1)
+    occurred_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_event_type(cls, value: object) -> object:
+        text = str(value or "").strip()
+        return text or None
+
+
 class DidwwBridgeCallRecord(BaseModel):
     voice_session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -215,6 +269,7 @@ class DidwwBridgeCallRecord(BaseModel):
     ari_external_media_channel_id: str | None = None
     rtp_port: int | None = None
     transcript_events: list[VoiceTranscriptEvent] = Field(default_factory=list)
+    debug_events: list[DidwwBridgeDebugEvent] = Field(default_factory=list)
     transcript: str | None = None
     summary: str | None = None
     decisions: list[str] = Field(default_factory=list)
@@ -253,6 +308,9 @@ class DidwwBridgeCallRecord(BaseModel):
             "status": self.status,
             "transcript_events": [
                 event.model_dump(mode="json") for event in self.transcript_events
+            ],
+            "debug_events": [
+                event.model_dump(mode="json") for event in self.debug_events
             ],
             "transcript": self.transcript,
             "summary": self.summary,
@@ -375,6 +433,34 @@ class DidwwBridgeStore:
             record.transcript = transcript_from_events(record.transcript_events)
 
         return self._mutate(voice_session_id, mutate)
+
+    def append_debug_event(
+        self,
+        voice_session_id: str,
+        event_type: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> DidwwBridgeCallRecord | None:
+        normalized_event_type = str(event_type or "").strip()
+        if not normalized_event_type:
+            return self.get(voice_session_id)
+
+        occurred_at = datetime.now(UTC)
+        sanitized_metadata = _sanitize_debug_metadata(metadata or {})
+
+        def mutate(record: DidwwBridgeCallRecord) -> None:
+            record.debug_events.append(
+                DidwwBridgeDebugEvent(
+                    sequence=len(record.debug_events) + 1,
+                    event_type=normalized_event_type,
+                    occurred_at=occurred_at,
+                    metadata=sanitized_metadata,
+                )
+            )
+
+        record = self._mutate(voice_session_id, mutate)
+        _log_debug_event(record, normalized_event_type, sanitized_metadata)
+        return record
 
     def complete(
         self,
@@ -762,6 +848,12 @@ class OpenAIRealtimeSession:
             payload["response"] = {"instructions": instructions}
         await self.send_json(payload)
 
+    async def cancel_response(self, response_id: str | None = None) -> None:
+        payload: dict[str, Any] = {"type": "response.cancel"}
+        if response_id:
+            payload["response_id"] = response_id
+        await self.send_json(payload)
+
     async def inject_origin_query_result(
         self,
         query: dict[str, Any],
@@ -832,9 +924,8 @@ class OpenAIRealtimeSession:
                     "format": dict(openai_audio_format),
                     "turn_detection": {
                         "type": "server_vad",
-                        "create_response": True,
-                        "interrupt_response": True,
-                        "idle_timeout_ms": self.config.openai_realtime_idle_timeout_ms,
+                        "create_response": False,
+                        "interrupt_response": False,
                     },
                 },
                 "output": {
@@ -881,6 +972,36 @@ class RealtimeFunctionCall:
     call_id: str
     name: str
     arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BridgeResponseRequest:
+    instructions: str | None = None
+    reason: str = "bridge_requested"
+    key: str | None = None
+
+
+@dataclass
+class OriginQueryState:
+    query_id: str
+    question: str
+    question_key: str
+    status: str = "pending"
+    query: dict[str, Any] = field(default_factory=dict)
+    ack_response_queued: bool = False
+    answer_response_queued: bool = False
+    timeout_response_queued: bool = False
+    result_injected: bool = False
+    transcript_recorded: bool = False
+    failure_reused: bool = False
+    completed_event: asyncio.Event | None = None
+
+
+@dataclass(frozen=True)
+class OutboundAudioFrame:
+    payload: bytes
+    response_id: str | None = None
+    item_id: str | None = None
 
 
 class VoiceMediaControllerClient:
@@ -1229,10 +1350,19 @@ class DidwwSipBridgeService:
                         )
                         if handles.external_media_local_addr is not None:
                             rtp.remote_addr = handles.external_media_local_addr
-                        await realtime.request_response(
+                        initial_instructions = (
                             "Start the phone call now. Briefly greet the caller and begin the "
                             "projected calling task."
                         )
+                        self._append_debug_event(
+                            record.voice_session_id,
+                            "bridge.response.initial_greeting_requested",
+                            metadata={
+                                "reason": "call_started",
+                                **_instruction_debug_metadata(initial_instructions),
+                            },
+                        )
+                        await realtime.request_response(initial_instructions)
                         await self._bridge_media_until_done(
                             record.voice_session_id,
                             handles,
@@ -1326,51 +1456,513 @@ class DidwwSipBridgeService:
         summary_parts: list[str] = []
         query_tasks: set[asyncio.Task[None]] = set()
         delegated_queries: dict[str, str] = {}
+        origin_queries_by_question: dict[str, OriginQueryState] = {}
+        origin_queries_by_id: dict[str, OriginQueryState] = {}
+        assistant_speaking = True
         response_active = True
-        pending_responses: list[str | None] = []
+        active_response_id: str | None = None
+        last_caller_turn: str | None = None
+        pending_responses: list[BridgeResponseRequest] = []
         pending_response_keys: set[str] = set()
-        last_response_request: str | None = None
+        last_response_request: BridgeResponseRequest | None = None
         response_lock = asyncio.Lock()
+        audio_response_started_at: dict[str, float] = {}
+        audio_delta_counts: dict[str, int] = {}
+        audio_response_finished: set[str] = set()
+        outbound_audio_queue: asyncio.Queue[OutboundAudioFrame] = asyncio.Queue()
+        outbound_sender_active = False
+        outbound_sender_task: asyncio.Task[None] | None = None
+        last_assistant_audio_at: float | None = None
+        current_caller_utterance_id = 0
+        caller_speech_active = False
+        caller_speech_started_at: float | None = None
+        caller_speech_started_during_assistant = False
+        barge_cancelled_utterance_id: int | None = None
+        barge_delay_tasks: set[asyncio.Task[None]] = set()
+        idle_prompt_task: asyncio.Task[None] | None = None
+        idle_prompt_sent_this_period = False
+        idle_generation = 0
+        loop = asyncio.get_running_loop()
 
-        async def request_response_when_idle(instructions: str | None = None) -> None:
-            nonlocal last_response_request, response_active
-            key = instructions or ""
+        async def send_outbound_audio() -> None:
+            nonlocal outbound_sender_active, last_assistant_audio_at
+            while True:
+                frame = await outbound_audio_queue.get()
+                outbound_sender_active = True
+                try:
+                    await rtp.send_payload(frame.payload)
+                finally:
+                    last_assistant_audio_at = loop.time()
+                    outbound_sender_active = False
+
+        def start_outbound_sender() -> None:
+            nonlocal outbound_sender_task
+            outbound_sender_task = asyncio.create_task(send_outbound_audio())
+
+        def drain_outbound_audio_queue() -> int:
+            drained = 0
+            while True:
+                try:
+                    outbound_audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return drained
+                drained += 1
+
+        async def restart_outbound_sender_after_cancel() -> None:
+            nonlocal outbound_sender_task, outbound_sender_active
+            if outbound_sender_task is not None and not outbound_sender_task.done():
+                outbound_sender_task.cancel()
+                await asyncio.gather(outbound_sender_task, return_exceptions=True)
+            outbound_sender_active = False
+            start_outbound_sender()
+
+        def assistant_audio_active() -> bool:
+            if outbound_sender_active or not outbound_audio_queue.empty():
+                return True
+            if any(key not in audio_response_finished for key in audio_response_started_at):
+                return True
+            if last_assistant_audio_at is not None:
+                return (loop.time() - last_assistant_audio_at) < _ASSISTANT_PLAYBACK_DRAIN_SECONDS
+            return False
+
+        def discard_pending_response_key(key: str) -> int:
+            before = len(pending_responses)
+            pending_responses[:] = [
+                pending for pending in pending_responses if pending.key != key
+            ]
+            removed = before - len(pending_responses)
+            if removed:
+                pending_response_keys.discard(key)
+            return removed
+
+        def cancel_idle_prompt_timer() -> bool:
+            nonlocal idle_prompt_task
+            task = idle_prompt_task
+            idle_prompt_task = None
+            if task is not None and not task.done():
+                task.cancel()
+                return True
+            return False
+
+        async def cancel_idle_prompt(
+            *,
+            reason: str,
+            reset_period: bool = False,
+        ) -> None:
+            nonlocal idle_generation, idle_prompt_sent_this_period
+            if reset_period:
+                idle_generation += 1
+                idle_prompt_sent_this_period = False
+            timer_cancelled = cancel_idle_prompt_timer()
             async with response_lock:
-                if response_active:
-                    if key not in pending_response_keys:
-                        pending_responses.append(instructions)
+                removed = discard_pending_response_key(_IDLE_PROMPT_RESPONSE_KEY)
+                active_idle = (
+                    last_response_request is not None
+                    and last_response_request.key == _IDLE_PROMPT_RESPONSE_KEY
+                    and not assistant_audio_active()
+                )
+            if timer_cancelled or removed or active_idle:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.idle_prompt.cancelled",
+                    metadata={
+                        "reason": reason,
+                        "timer_cancelled": timer_cancelled,
+                        "removed_queued_count": removed,
+                        "active_idle_response": active_idle,
+                    },
+                )
+            if active_idle:
+                await realtime.cancel_response(active_response_id)
+
+        async def idle_prompt_after_playback(generation: int, *, reason: str) -> None:
+            nonlocal idle_prompt_sent_this_period
+            try:
+                while not stop_event.is_set() and assistant_audio_active():
+                    await asyncio.sleep(0.05)
+                if (
+                    stop_event.is_set()
+                    or generation != idle_generation
+                    or idle_prompt_sent_this_period
+                ):
+                    return
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.idle_countdown.started",
+                    metadata={
+                        "reason": reason,
+                        "delay_ms": int(_BRIDGE_IDLE_PROMPT_DELAY_SECONDS * 1000),
+                        "playback_drain_ms": int(_ASSISTANT_PLAYBACK_DRAIN_SECONDS * 1000),
+                    },
+                )
+                await asyncio.sleep(_BRIDGE_IDLE_PROMPT_DELAY_SECONDS)
+                if (
+                    stop_event.is_set()
+                    or generation != idle_generation
+                    or idle_prompt_sent_this_period
+                    or caller_speech_active
+                    or response_active
+                    or assistant_speaking
+                    or pending_responses
+                ):
+                    return
+                idle_prompt_sent_this_period = True
+                await request_bridge_response(
+                    _IDLE_PROMPT_INSTRUCTIONS,
+                    reason="idle_prompt",
+                    key=_IDLE_PROMPT_RESPONSE_KEY,
+                )
+            except asyncio.CancelledError:
+                raise
+
+        def schedule_idle_prompt_after_playback(*, reason: str) -> None:
+            nonlocal idle_prompt_task
+            if idle_prompt_sent_this_period:
+                return
+            if not audio_response_started_at and last_assistant_audio_at is None:
+                return
+            cancel_idle_prompt_timer()
+            idle_prompt_task = asyncio.create_task(
+                idle_prompt_after_playback(idle_generation, reason=reason)
+            )
+
+        async def send_barge_in_cancel(
+            *,
+            reason: str,
+            utterance_id: int,
+            transcript_text: str | None = None,
+        ) -> None:
+            nonlocal barge_cancelled_utterance_id
+            if barge_cancelled_utterance_id == utterance_id:
+                return
+            barge_cancelled_utterance_id = utterance_id
+            elapsed_ms = int(
+                max(
+                    0.0,
+                    loop.time() - (caller_speech_started_at or loop.time()),
+                )
+                * 1000
+            )
+            dropped_frames = drain_outbound_audio_queue()
+            await restart_outbound_sender_after_cancel()
+            self._append_debug_event(
+                voice_session_id,
+                "barge_in_cancel_sent",
+                metadata={
+                    "reason": reason,
+                    "response_id": active_response_id,
+                    "utterance_id": utterance_id,
+                    "elapsed_ms": elapsed_ms,
+                    "dropped_audio_frames": dropped_frames,
+                    "transcript_snippet": _debug_snippet(transcript_text),
+                },
+            )
+            await realtime.cancel_response(active_response_id)
+
+        async def delayed_barge_in_check(utterance_id: int) -> None:
+            delay_seconds = self.config.barge_in_delay_ms / 1000
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+            if stop_event.is_set():
+                return
+            if utterance_id != current_caller_utterance_id:
+                return
+            if not caller_speech_active or not caller_speech_started_during_assistant:
+                return
+            if not assistant_audio_active():
+                return
+            await send_barge_in_cancel(
+                reason="speech_delay_elapsed",
+                utterance_id=utterance_id,
+            )
+
+        def track_barge_delay_task(task: asyncio.Task[None]) -> None:
+            barge_delay_tasks.add(task)
+            task.add_done_callback(lambda completed: barge_delay_tasks.discard(completed))
+
+        async def handle_speech_started(event: dict[str, Any]) -> None:
+            nonlocal current_caller_utterance_id
+            nonlocal caller_speech_active, caller_speech_started_at
+            nonlocal caller_speech_started_during_assistant
+            await cancel_idle_prompt(reason="caller_speech_started", reset_period=True)
+            current_caller_utterance_id += 1
+            caller_speech_active = True
+            caller_speech_started_at = loop.time()
+            caller_speech_started_during_assistant = assistant_audio_active()
+            if not caller_speech_started_during_assistant:
+                return
+            self._append_debug_event(
+                voice_session_id,
+                "barge_in_delay_started",
+                metadata={
+                    "reason": "caller_speech_started",
+                    "response_id": active_response_id,
+                    "utterance_id": current_caller_utterance_id,
+                    "delay_ms": self.config.barge_in_delay_ms,
+                    **_realtime_vad_metadata(event),
+                },
+            )
+            track_barge_delay_task(
+                asyncio.create_task(delayed_barge_in_check(current_caller_utterance_id))
+            )
+
+        async def handle_speech_stopped() -> None:
+            nonlocal caller_speech_active
+            caller_speech_active = False
+
+        async def request_bridge_response(
+            instructions: str | None = None,
+            *,
+            reason: str = "bridge_requested",
+            key: str | None = None,
+            supersede_keys: set[str] | None = None,
+        ) -> None:
+            nonlocal last_response_request, response_active
+            request = BridgeResponseRequest(instructions=instructions, reason=reason, key=key)
+            async with response_lock:
+                if request.key != _IDLE_PROMPT_RESPONSE_KEY:
+                    timer_cancelled = cancel_idle_prompt_timer()
+                    removed_idle = discard_pending_response_key(_IDLE_PROMPT_RESPONSE_KEY)
+                    if timer_cancelled or removed_idle:
+                        self._append_debug_event(
+                            voice_session_id,
+                            "bridge.idle_prompt.cancelled",
+                            metadata={
+                                "reason": request.reason,
+                                "timer_cancelled": timer_cancelled,
+                                "removed_queued_count": removed_idle,
+                            },
+                        )
+                if supersede_keys:
+                    pending_responses[:] = [
+                        pending
+                        for pending in pending_responses
+                        if pending.key not in supersede_keys
+                    ]
+                    pending_response_keys.difference_update(supersede_keys)
+                if key and (
+                    key in pending_response_keys
+                    or (last_response_request is not None and last_response_request.key == key)
+                ):
+                    self._append_debug_event(
+                        voice_session_id,
+                        "bridge.response.skipped_duplicate",
+                        metadata={
+                            "reason": reason,
+                            "request_key": key,
+                            "queued_count": len(pending_responses),
+                            "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                            **_instruction_debug_metadata(instructions),
+                        },
+                    )
+                    return
+                if response_active or assistant_speaking:
+                    pending_responses.append(request)
+                    if key:
                         pending_response_keys.add(key)
+                    self._append_debug_event(
+                        voice_session_id,
+                        "bridge.response.queued",
+                        metadata={
+                            "reason": "active_response",
+                            "request_reason": request.reason,
+                            "request_key": request.key,
+                            "queued_count": len(pending_responses),
+                            "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                            **_instruction_debug_metadata(instructions),
+                        },
+                    )
                     return
                 response_active = True
-                last_response_request = instructions
-            await realtime.request_response(instructions)
+                last_response_request = request
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.response.requested",
+                    metadata={
+                        "reason": request.reason,
+                        "request_key": request.key,
+                        "queued_count": len(pending_responses),
+                        "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                        **_instruction_debug_metadata(instructions),
+                    },
+                )
+            await realtime.request_response(request.instructions)
 
-        async def mark_response_done_and_flush() -> None:
-            nonlocal last_response_request, response_active
-            instructions: str | None = None
+        async def mark_caller_turn_completed(transcript_text: str) -> None:
+            nonlocal caller_speech_active, caller_speech_started_during_assistant, last_caller_turn
+            await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
+            last_caller_turn = transcript_text
+            if not caller_speech_started_during_assistant:
+                caller_speech_active = False
+                return
+            caller_speech_active = False
+            is_backchannel = _is_backchannel_transcript(
+                transcript_text,
+                phrases=self.config.backchannel_phrases,
+                max_words=self.config.backchannel_max_words,
+            )
+            elapsed_ms = int(
+                max(
+                    0.0,
+                    loop.time() - (caller_speech_started_at or loop.time()),
+                )
+                * 1000
+            )
+            self._append_debug_event(
+                voice_session_id,
+                "barge_in_transcript_classified",
+                metadata={
+                    "reason": "backchannel" if is_backchannel else "substantive",
+                    "response_id": active_response_id,
+                    "utterance_id": current_caller_utterance_id,
+                    "elapsed_ms": elapsed_ms,
+                    "transcript_snippet": _debug_snippet(transcript_text),
+                    "word_count": _word_count(transcript_text),
+                },
+            )
+            if is_backchannel:
+                caller_speech_started_during_assistant = False
+                self._append_debug_event(
+                    voice_session_id,
+                    "backchannel_ignored",
+                    metadata={
+                        "reason": "classified_backchannel",
+                        "response_id": active_response_id,
+                        "utterance_id": current_caller_utterance_id,
+                        "elapsed_ms": elapsed_ms,
+                        "transcript_snippet": _debug_snippet(transcript_text),
+                    },
+                )
+                return
+            caller_speech_started_during_assistant = False
+            if barge_cancelled_utterance_id == current_caller_utterance_id:
+                return
+            if assistant_audio_active():
+                await send_barge_in_cancel(
+                    reason="substantive_transcript",
+                    utterance_id=current_caller_utterance_id,
+                    transcript_text=transcript_text,
+                )
+
+        async def mark_response_created(event: dict[str, Any]) -> None:
+            nonlocal active_response_id, assistant_speaking, response_active
             async with response_lock:
+                active_response_id = _realtime_response_id(event) or active_response_id
+                assistant_speaking = True
+                response_active = True
+
+        async def mark_assistant_speaking() -> None:
+            nonlocal assistant_speaking
+            async with response_lock:
+                assistant_speaking = True
+
+        async def mark_response_done_and_flush() -> bool:
+            nonlocal assistant_speaking, last_response_request, response_active
+            request: BridgeResponseRequest | None = None
+            async with response_lock:
+                assistant_speaking = False
                 response_active = False
                 last_response_request = None
                 if not pending_responses:
-                    return
-                instructions = pending_responses.pop(0)
-                pending_response_keys.discard(instructions or "")
+                    return False
+                request = pending_responses.pop(0)
+                if request.key:
+                    pending_response_keys.discard(request.key)
                 response_active = True
-                last_response_request = instructions
-            await realtime.request_response(instructions)
+                last_response_request = request
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.response.flushed",
+                    metadata={
+                        "reason": "response_done",
+                        "request_reason": request.reason,
+                        "request_key": request.key,
+                        "queued_count": len(pending_responses),
+                        "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                        **_instruction_debug_metadata(request.instructions),
+                    },
+                )
+            await realtime.request_response(request.instructions)
+            return True
 
         async def requeue_last_response_request() -> None:
-            nonlocal last_response_request, response_active
+            nonlocal assistant_speaking, last_response_request, response_active
             async with response_lock:
+                assistant_speaking = True
                 response_active = True
-                instructions = last_response_request
+                request = last_response_request
                 last_response_request = None
-                if instructions is None:
+                if request is None:
                     return
-                key = instructions or ""
-                if key not in pending_response_keys:
-                    pending_responses.insert(0, instructions)
-                    pending_response_keys.add(key)
+                if request.key and request.key in pending_response_keys:
+                    return
+                pending_responses.insert(0, request)
+                if request.key:
+                    pending_response_keys.add(request.key)
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.response.requeued",
+                    metadata={
+                        "reason": "conversation_already_has_active_response",
+                        "request_reason": request.reason,
+                        "request_key": request.key,
+                        "queued_count": len(pending_responses),
+                        "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                        **_instruction_debug_metadata(request.instructions),
+                    },
+                )
+
+        def mark_audio_delta(event: dict[str, Any]) -> None:
+            nonlocal active_response_id, last_assistant_audio_at
+            active_response_id = _realtime_response_id(event) or active_response_id
+            last_assistant_audio_at = loop.time()
+            key = _realtime_audio_key(event)
+            audio_delta_counts[key] = audio_delta_counts.get(key, 0) + 1
+            if key in audio_response_started_at:
+                return
+            audio_response_started_at[key] = loop.time()
+            self._append_debug_event(
+                voice_session_id,
+                "response.audio_delta.started",
+                metadata={
+                    **_realtime_audio_metadata(event),
+                    "reason": "audio_delta",
+                },
+            )
+
+        def mark_audio_finished(event: dict[str, Any], *, reason: str) -> None:
+            key = _realtime_audio_key(event)
+            keys = [key] if key in audio_response_started_at else []
+            if not keys and reason in {"response.done", "response.cancelled"}:
+                keys = [
+                    started_key
+                    for started_key in audio_response_started_at
+                    if started_key not in audio_response_finished
+                ]
+            for finished_key in keys:
+                if finished_key in audio_response_finished:
+                    continue
+                audio_response_finished.add(finished_key)
+                started_at = audio_response_started_at.get(finished_key, loop.time())
+                metadata = {
+                    **_realtime_audio_metadata(event),
+                    "reason": reason,
+                    "audio_delta_count": audio_delta_counts.get(finished_key, 0),
+                    "duration_ms": int(max(0.0, loop.time() - started_at) * 1000),
+                }
+                self._append_debug_event(
+                    voice_session_id,
+                    "response.audio_delta.finished",
+                    metadata=metadata,
+                )
+
+        def mark_response_inactive(event: dict[str, Any]) -> None:
+            nonlocal active_response_id
+            response_id = _realtime_response_id(event)
+            if response_id is None or response_id == active_response_id:
+                active_response_id = None
+
+        start_outbound_sender()
 
         try:
             while not stop_event.is_set():
@@ -1379,9 +1971,24 @@ class DidwwSipBridgeService:
                 except TimeoutError:
                     continue
                 event_type = str(event.get("type") or "")
+                if event_type in {"response.created", "response.done", "response.cancelled"}:
+                    self._append_debug_event(
+                        voice_session_id,
+                        event_type,
+                        metadata=_realtime_lifecycle_metadata(event),
+                    )
                 if event_type == "response.created":
-                    async with response_lock:
-                        response_active = True
+                    await mark_response_created(event)
+                if _realtime_vad_event(event):
+                    self._append_debug_event(
+                        voice_session_id,
+                        "realtime.vad",
+                        metadata=_realtime_vad_metadata(event),
+                    )
+                if event_type == "input_audio_buffer.speech_started":
+                    await handle_speech_started(event)
+                if event_type == "input_audio_buffer.speech_stopped":
+                    await handle_speech_stopped()
                 function_call = _realtime_function_call(event)
                 if function_call is not None:
                     await self._handle_realtime_function_call(
@@ -1392,13 +1999,26 @@ class DidwwSipBridgeService:
                         query_tasks,
                         stop_event,
                         delegated_queries=delegated_queries,
-                        request_response=request_response_when_idle,
+                        origin_queries_by_question=origin_queries_by_question,
+                        origin_queries_by_id=origin_queries_by_id,
+                        request_response=request_bridge_response,
                     )
                     continue
                 audio_delta = _realtime_audio_delta(event)
                 if audio_delta:
-                    await rtp.send_payload(base64.b64decode(audio_delta))
+                    await mark_assistant_speaking()
+                    mark_audio_delta(event)
+                    await outbound_audio_queue.put(
+                        OutboundAudioFrame(
+                            payload=base64.b64decode(audio_delta),
+                            response_id=_realtime_response_id(event),
+                            item_id=_realtime_item_id(event),
+                        )
+                    )
+                    await asyncio.sleep(0)
                     continue
+                if _realtime_audio_done(event):
+                    mark_audio_finished(event, reason=event_type)
                 transcript_text = _realtime_transcript_text(event)
                 if transcript_text:
                     speaker = "assistant" if event_type.startswith("response.") else "caller"
@@ -1408,6 +2028,17 @@ class DidwwSipBridgeService:
                         text=transcript_text,
                         metadata={"event_type": event_type},
                     )
+                    self._append_debug_event(
+                        voice_session_id,
+                        (
+                            "assistant_transcript.completed"
+                            if speaker == "assistant"
+                            else "caller_transcript.completed"
+                        ),
+                        metadata=_realtime_transcript_metadata(event, transcript_text),
+                    )
+                    if event_type == "conversation.item.input_audio_transcription.completed":
+                        await mark_caller_turn_completed(transcript_text)
                 text_delta = _realtime_text_delta(event)
                 if text_delta:
                     summary_parts.append(text_delta)
@@ -1418,23 +2049,43 @@ class DidwwSipBridgeService:
                         summary="".join(summary_parts).strip(),
                     )
                 if event_type == "response.done":
+                    mark_audio_finished(event, reason="response.done")
+                    mark_response_inactive(event)
+                    flushed_response = await mark_response_done_and_flush()
+                    if not flushed_response:
+                        schedule_idle_prompt_after_playback(reason="response_done")
+                if event_type == "response.cancelled":
+                    mark_audio_finished(event, reason="response.cancelled")
+                    mark_response_inactive(event)
                     await mark_response_done_and_flush()
                 if event_type == "error":
                     error = event.get("error") if isinstance(event.get("error"), dict) else event
+                    self._append_debug_event(
+                        voice_session_id,
+                        "error",
+                        metadata=_realtime_error_metadata(event),
+                    )
                     if (
                         isinstance(error, dict)
                         and error.get("code") == "conversation_already_has_active_response"
                     ):
-                        logger.info(
-                            "realtime_response_create_deferred voice_session_id=%s",
-                            voice_session_id,
-                        )
                         await requeue_last_response_request()
                         continue
                     raise RuntimeError(str(event.get("error") or event))
         finally:
+            if idle_prompt_task is not None:
+                idle_prompt_task.cancel()
+            if outbound_sender_task is not None:
+                outbound_sender_task.cancel()
+            for task in barge_delay_tasks:
+                task.cancel()
             for task in query_tasks:
                 task.cancel()
+            if idle_prompt_task is not None:
+                await asyncio.gather(idle_prompt_task, return_exceptions=True)
+            if outbound_sender_task is not None:
+                await asyncio.gather(outbound_sender_task, return_exceptions=True)
+            await asyncio.gather(*barge_delay_tasks, return_exceptions=True)
             await asyncio.gather(*query_tasks, return_exceptions=True)
 
     async def _handle_realtime_function_call(
@@ -1447,9 +2098,20 @@ class DidwwSipBridgeService:
         stop_event: asyncio.Event,
         *,
         delegated_queries: dict[str, str] | None = None,
-        request_response: Callable[[str | None], Awaitable[None]] | None = None,
+        origin_queries_by_question: dict[str, OriginQueryState] | None = None,
+        origin_queries_by_id: dict[str, OriginQueryState] | None = None,
+        request_response: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
-        request_response = request_response or realtime.request_response
+        if request_response is None:
+            async def request_response(
+                instructions: str | None = None,
+                **_: Any,
+            ) -> None:
+                await realtime.request_response(instructions)
+        if origin_queries_by_question is None:
+            origin_queries_by_question = {}
+        if origin_queries_by_id is None:
+            origin_queries_by_id = {}
         if function_call.name != "query_origin_agent":
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
@@ -1469,6 +2131,61 @@ class DidwwSipBridgeService:
             )
             await request_response("Ask the caller to clarify the question.")
             return
+        record = self.store.get(voice_session_id)
+        projection_answer = _projected_task_answer(
+            question,
+            record.projection if record is not None else {},
+        )
+        if projection_answer is not None:
+            self._append_debug_event(
+                voice_session_id,
+                "origin_query.answered_from_projection",
+                metadata={
+                    "realtime_call_id": function_call.call_id,
+                    "reason": "projected_task",
+                    "question_snippet": _debug_snippet(question),
+                    "answer_snippet": _debug_snippet(projection_answer),
+                },
+            )
+            await realtime.send_tool_output(
+                call_id=function_call.call_id,
+                output={
+                    "status": "answered",
+                    "source": "projection",
+                    "answer": projection_answer,
+                },
+            )
+            await request_response(
+                (
+                    "Answer the caller from the projected calling task now. "
+                    "Do not say you are checking with the origin agent."
+                ),
+                reason="projected_task",
+                key="projection:calling_task",
+            )
+            return
+        query_key = _voice_query_key(question)
+        argument_query_id = str(function_call.arguments.get("query_id") or "").strip()
+        state = origin_queries_by_id.get(argument_query_id) if argument_query_id else None
+        state = state or origin_queries_by_question.get(query_key)
+        if state is not None:
+            if state.status in {"failed", "timeout"} and state.failure_reused:
+                origin_queries_by_question.pop(state.question_key, None)
+                origin_queries_by_id.pop(state.query_id, None)
+            else:
+                await realtime.send_tool_output(
+                    call_id=function_call.call_id,
+                    output=_origin_query_tool_output(state.query, deduplicated=True),
+                )
+                if state.status in {"failed", "timeout"}:
+                    state.failure_reused = True
+                if state.status != "pending":
+                    await self._queue_terminal_origin_query_response(
+                        voice_session_id,
+                        state,
+                        request_response=request_response,
+                    )
+                return
         if not media_controller.configured:
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
@@ -1478,7 +2195,6 @@ class DidwwSipBridgeService:
                 "Tell the caller you cannot check the origin agent right now."
             )
             return
-        query_key = _voice_query_key(question)
         if delegated_queries is not None and query_key in delegated_queries:
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
@@ -1489,7 +2205,6 @@ class DidwwSipBridgeService:
                 },
             )
             return
-        record = self.store.get(voice_session_id)
         transcript_excerpt = record.transcript if record is not None else None
         try:
             query = await media_controller.create_query(
@@ -1509,6 +2224,16 @@ class DidwwSipBridgeService:
                 function_call.call_id,
                 exc_info=True,
             )
+            self._append_debug_event(
+                voice_session_id,
+                "origin_query.create_failed",
+                metadata={
+                    "reason": type(exc).__name__,
+                    "realtime_call_id": function_call.call_id,
+                    "question_snippet": _debug_snippet(question),
+                    "message_snippet": _debug_snippet(exc),
+                },
+            )
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": str(exc)},
@@ -1520,6 +2245,16 @@ class DidwwSipBridgeService:
         query_id = str(query.get("query_id") or "").strip()
         if delegated_queries is not None and query_id:
             delegated_queries[query_key] = query_id
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.created",
+            metadata={
+                "query_id": query_id,
+                "realtime_call_id": function_call.call_id,
+                "reason": function_call.arguments.get("reason"),
+                "question_snippet": _debug_snippet(question),
+            },
+        )
         self.store.append_transcript_event(
             voice_session_id,
             speaker="assistant",
@@ -1528,23 +2263,54 @@ class DidwwSipBridgeService:
         )
         await realtime.send_tool_output(
             call_id=function_call.call_id,
-            output={"status": "pending", "query_id": query_id},
+            output=_origin_query_tool_output(query),
         )
-        await request_response(
-            "Tell the caller you are checking with the originating agent, then continue naturally."
+        status = str(query.get("status") or "pending").strip() or "pending"
+        state = OriginQueryState(
+            query_id=query_id,
+            question=question,
+            question_key=query_key,
+            status=status,
+            query=dict(query),
+            completed_event=asyncio.Event(),
         )
-        task = asyncio.create_task(
+        origin_queries_by_question[query_key] = state
+        if query_id:
+            origin_queries_by_id[query_id] = state
+        if status in {"answered", "failed", "timeout"}:
+            await self._handle_terminal_origin_query_result(
+                voice_session_id,
+                state,
+                query,
+                realtime,
+                request_response=request_response,
+                event_type="origin_query.answered" if status != "timeout" else "origin_query.timeout",
+                started_at=asyncio.get_running_loop().time(),
+            )
+            return
+        ack_task = asyncio.create_task(
+            self._queue_delayed_origin_query_ack(
+                voice_session_id,
+                state,
+                stop_event,
+                request_response=request_response,
+            )
+        )
+        query_tasks.add(ack_task)
+        ack_task.add_done_callback(lambda completed: query_tasks.discard(completed))
+        poll_task = asyncio.create_task(
             self._poll_origin_query_result(
                 voice_session_id,
                 query_id,
                 media_controller,
                 realtime,
                 stop_event,
+                state=state,
                 request_response=request_response,
             )
         )
-        query_tasks.add(task)
-        task.add_done_callback(lambda completed: query_tasks.discard(completed))
+        query_tasks.add(poll_task)
+        poll_task.add_done_callback(lambda completed: query_tasks.discard(completed))
 
     async def _poll_origin_query_result(
         self,
@@ -1554,35 +2320,217 @@ class DidwwSipBridgeService:
         realtime: OpenAIRealtimeSession,
         stop_event: asyncio.Event,
         *,
-        request_response: Callable[[str | None], Awaitable[None]] | None = None,
+        state: OriginQueryState | None = None,
+        request_response: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
-        request_response = request_response or realtime.request_response
+        if request_response is None:
+            async def request_response(
+                instructions: str | None = None,
+                **_: Any,
+            ) -> None:
+                await realtime.request_response(instructions)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.config.voice_query_timeout_seconds
+        started_at = loop.time()
+        if state is None:
+            state = OriginQueryState(
+                query_id=query_id,
+                question="",
+                question_key="",
+                query={"query_id": query_id, "status": "pending"},
+                completed_event=asyncio.Event(),
+            )
+        poll_attempt = 0
         while not stop_event.is_set() and loop.time() < deadline:
             await asyncio.sleep(self.config.voice_query_poll_interval_seconds)
             query = await media_controller.get_query(voice_session_id, query_id)
+            poll_attempt += 1
             status = str(query.get("status") or "").strip()
             if status in {"answered", "failed"}:
-                await realtime.inject_origin_query_result(query, request_response=False)
-                await request_response(
-                    "If still relevant, briefly tell the caller the origin agent has the answer."
+                await self._handle_terminal_origin_query_result(
+                    voice_session_id,
+                    state,
+                    query,
+                    realtime,
+                    request_response=request_response,
+                    event_type="origin_query.answered",
+                    started_at=started_at,
                 )
-                answer = str(query.get("answer") or query.get("error") or "").strip()
-                if answer:
-                    self.store.append_transcript_event(
-                        voice_session_id,
-                        speaker="origin_agent",
-                        text=answer,
-                        metadata={"query_id": query_id, "event_type": "voice_query_answered"},
-                    )
                 return
+            self._append_debug_event(
+                voice_session_id,
+                "origin_query.poll_pending",
+                metadata={
+                    "query_id": query_id,
+                    "reason": status or "pending",
+                    "status": status or "pending",
+                    "poll_attempt": poll_attempt,
+                    "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
+                },
+            )
         if not stop_event.is_set():
             query = await media_controller.mark_query_timeout(voice_session_id, query_id)
-            await realtime.inject_origin_query_result(query, request_response=False)
-            await request_response(
-                "Tell the caller the origin agent did not answer before the voice query timed out."
+            await self._handle_terminal_origin_query_result(
+                voice_session_id,
+                state,
+                query,
+                realtime,
+                request_response=request_response,
+                event_type="origin_query.timeout",
+                started_at=started_at,
             )
+
+    async def _queue_delayed_origin_query_ack(
+        self,
+        voice_session_id: str,
+        state: OriginQueryState,
+        stop_event: asyncio.Event,
+        *,
+        request_response: Callable[..., Awaitable[None]],
+    ) -> None:
+        completed = state.completed_event
+        if completed is not None:
+            try:
+                await asyncio.wait_for(
+                    completed.wait(),
+                    timeout=_ORIGIN_QUERY_ACK_GRACE_SECONDS,
+                )
+                return
+            except TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(_ORIGIN_QUERY_ACK_GRACE_SECONDS)
+        if stop_event.is_set() or state.status != "pending" or state.ack_response_queued:
+            return
+        response_instructions = (
+            "Tell the caller you are checking with the originating agent, then continue naturally."
+        )
+        state.ack_response_queued = True
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.response_requested",
+            metadata={
+                "query_id": state.query_id,
+                "reason": "query_ack",
+                **_instruction_debug_metadata(response_instructions),
+            },
+        )
+        await request_response(
+            response_instructions,
+            reason="query_ack",
+            key=_origin_query_response_key(state.query_id, "ack"),
+        )
+
+    async def _handle_terminal_origin_query_result(
+        self,
+        voice_session_id: str,
+        state: OriginQueryState,
+        query: dict[str, Any],
+        realtime: OpenAIRealtimeSession,
+        *,
+        request_response: Callable[..., Awaitable[None]],
+        event_type: str,
+        started_at: float,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        status = str(query.get("status") or "").strip() or state.status
+        if event_type == "origin_query.timeout":
+            status = "timeout"
+        state.status = status
+        state.query = dict(query)
+        if state.completed_event is not None:
+            state.completed_event.set()
+        answer = str(query.get("answer") or query.get("error") or "").strip()
+        self._append_debug_event(
+            voice_session_id,
+            event_type,
+            metadata={
+                "query_id": state.query_id,
+                "reason": status,
+                "status": status,
+                "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
+                "answer_snippet": _debug_snippet(answer),
+            },
+        )
+        if not state.result_injected:
+            await realtime.inject_origin_query_result(query, request_response=False)
+            state.result_injected = True
+            self._append_debug_event(
+                voice_session_id,
+                "origin_query.result_injected",
+                metadata={
+                    "query_id": state.query_id,
+                    "reason": status,
+                    "status": status,
+                    "answer_snippet": _debug_snippet(answer),
+                },
+            )
+        await self._queue_terminal_origin_query_response(
+            voice_session_id,
+            state,
+            request_response=request_response,
+        )
+        if answer and not state.transcript_recorded:
+            state.transcript_recorded = True
+            self.store.append_transcript_event(
+                voice_session_id,
+                speaker="origin_agent",
+                text=answer,
+                metadata={"query_id": state.query_id, "event_type": "voice_query_answered"},
+            )
+
+    async def _queue_terminal_origin_query_response(
+        self,
+        voice_session_id: str,
+        state: OriginQueryState,
+        *,
+        request_response: Callable[..., Awaitable[None]],
+    ) -> None:
+        status = state.status
+        if status == "timeout":
+            if state.timeout_response_queued:
+                return
+            state.timeout_response_queued = True
+            response_instructions = (
+                "Tell the caller the origin agent did not answer before the voice query timed out. "
+                "Do not say the query is still pending."
+            )
+            response_kind = "timeout"
+            response_reason = "query_timeout"
+        else:
+            if state.answer_response_queued:
+                return
+            state.answer_response_queued = True
+            if status == "failed":
+                response_instructions = (
+                    "Tell the caller the origin agent could not answer the delegated query right "
+                    "now. Do not say the query is still pending."
+                )
+            else:
+                response_instructions = (
+                    "The origin agent's answer is available now in the conversation. Briefly "
+                    "answer the caller from it. Do not say the query is still pending or that "
+                    "you are still checking."
+                )
+            response_kind = "answer"
+            response_reason = "query_result"
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.response_requested",
+            metadata={
+                "query_id": state.query_id,
+                "reason": response_reason,
+                **_instruction_debug_metadata(response_instructions),
+            },
+        )
+        await request_response(
+            response_instructions,
+            reason=response_reason,
+            key=_origin_query_response_key(state.query_id, response_kind),
+            supersede_keys={
+                _origin_query_response_key(state.query_id, "ack"),
+            },
+        )
 
     async def _wait_for_asterisk_end(
         self,
@@ -1626,9 +2574,28 @@ class DidwwSipBridgeService:
             if channel_id != handles.call_channel_id:
                 continue
             if event_type == "ChannelStateChange" and _ari_channel_state(event) == "Up":
+                self._append_debug_event(
+                    voice_session_id,
+                    "asterisk.channel_up",
+                    metadata={
+                        "ari_event_type": event_type,
+                        "channel_id": channel_id,
+                        "state": "Up",
+                    },
+                )
                 self.store.update_status(voice_session_id, "active")
             if event_type in {"ChannelHangupRequest", "ChannelDestroyed", "StasisEnd"}:
                 cause = event.get("cause_txt") or event.get("cause") or "hangup"
+                self._append_debug_event(
+                    voice_session_id,
+                    _asterisk_debug_event_type(event_type),
+                    metadata={
+                        "ari_event_type": event_type,
+                        "channel_id": channel_id,
+                        "reason": cause,
+                        "status": _ari_hangup_status(event),
+                    },
+                )
                 self.store.complete(
                     voice_session_id,
                     status=_ari_hangup_status(event),
@@ -1641,6 +2608,26 @@ class DidwwSipBridgeService:
         await self.ari_client.hangup_channel(record.ari_external_media_channel_id)
         await self.ari_client.hangup_channel(record.ari_channel_id)
         await self.ari_client.destroy_bridge(record.ari_bridge_id)
+
+    def _append_debug_event(
+        self,
+        voice_session_id: str,
+        event_type: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self.store.append_debug_event(
+                voice_session_id,
+                event_type,
+                metadata=metadata or {},
+            )
+        except Exception:
+            logger.exception(
+                "didww_bridge_debug_event_failed voice_session_id=%s event_type=%s",
+                voice_session_id,
+                event_type,
+            )
 
     def _start_background_call(
         self,
@@ -1735,6 +2722,12 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         voice_query_timeout_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0
         ),
+        barge_in_delay_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", 700),
+        backchannel_max_words=_env_int("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", 3),
+        backchannel_phrases=_env_list(
+            "DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES",
+            list(_DEFAULT_BACKCHANNEL_PHRASES),
+        ),
     )
 
 
@@ -1757,8 +2750,27 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
     instructions = [
         "You are the same Truman agent represented by this projected voice session.",
         "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
-        "Keep the phone conversation concise and natural.",
-        "At the end of the call, preserve decisions and follow-up actions for reconciliation.",
+        (
+            "Speak like a natural phone participant: keep normal answers to one or two short "
+            "spoken paragraphs unless the caller asks for detail, avoid repeating yourself, "
+            "and pause naturally after a long answer instead of immediately asking whether "
+            "the caller is still there."
+        ),
+        (
+            "Treat short acknowledgements such as ok, okay, uh-huh, good, thanks, and right "
+            "as backchannels unless they include a new request. After a backchannel, do not "
+            "repeat the prior answer; continue only if you were mid-thought, otherwise pause."
+        ),
+        (
+            "If you need the query_origin_agent tool, say once briefly that you are checking "
+            "with the origin agent. Do not keep telling the caller the query is pending unless "
+            "they ask. When the origin answer arrives, give the answer directly without "
+            "recapping the pending state."
+        ),
+        (
+            "Preserve decisions and follow-up actions internally after the call, but do not "
+            "narrate internal bookkeeping, transcript cleanup, or handoff notes aloud."
+        ),
     ]
     origin = projection.get("origin")
     if isinstance(origin, dict):
@@ -1778,6 +2790,204 @@ def transcript_from_events(events: list[VoiceTranscriptEvent]) -> str | None:
         speaker = event.speaker or "speaker"
         lines.append(f"{speaker}: {event.text}")
     return "\n".join(lines) if lines else None
+
+
+def _sanitize_debug_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    jsonable = _debug_jsonable(metadata)
+    sanitized = sanitize_voice_metadata(jsonable)
+    truncated = _truncate_debug_value(sanitized)
+    if not isinstance(truncated, dict):
+        return {}
+    _restore_debug_hashes(jsonable, truncated)
+    return truncated
+
+
+def _debug_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _debug_jsonable(raw_value) for key, raw_value in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_debug_jsonable(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _truncate_debug_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _truncate_debug_value(raw_value) for key, raw_value in value.items()}
+    if isinstance(value, list):
+        return [_truncate_debug_value(item) for item in value[:20]]
+    if isinstance(value, str):
+        return _debug_snippet(value, limit=_DEBUG_SNIPPET_LIMIT)
+    return value
+
+
+def _restore_debug_hashes(original: Any, sanitized: Any) -> None:
+    if not isinstance(original, dict) or not isinstance(sanitized, dict):
+        return
+    for key, raw_value in original.items():
+        text_key = str(key)
+        if text_key.endswith("_sha256") and isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", normalized):
+                sanitized[text_key] = normalized
+                continue
+        _restore_debug_hashes(raw_value, sanitized.get(text_key))
+
+
+def _debug_snippet(value: object, *, limit: int = _DEBUG_SNIPPET_LIMIT) -> str | None:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return None
+    sanitized = sanitize_voice_metadata(text)
+    text = str(sanitized or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+
+def _instruction_debug_metadata(instructions: str | None) -> dict[str, Any]:
+    normalized = str(instructions or "").strip()
+    if not normalized:
+        return {"instruction_present": False}
+    return {
+        "instruction_present": True,
+        "instruction_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        "instruction_length": len(normalized),
+        "instruction_snippet": _debug_snippet(normalized),
+    }
+
+
+def _log_debug_event(
+    record: DidwwBridgeCallRecord,
+    event_type: str,
+    metadata: dict[str, Any],
+) -> None:
+    logger.info(
+        "didww_bridge_debug_event voice_session_id=%s call_id=%s event_type=%s "
+        "response_id=%s query_id=%s reason=%s elapsed_ms=%s duration_ms=%s metadata=%s",
+        record.voice_session_id,
+        record.call_id,
+        event_type,
+        _debug_log_value(metadata.get("response_id")),
+        _debug_log_value(metadata.get("query_id")),
+        _debug_log_value(metadata.get("reason")),
+        _debug_log_value(metadata.get("elapsed_ms")),
+        _debug_log_value(metadata.get("duration_ms")),
+        json.dumps(metadata, sort_keys=True, ensure_ascii=True),
+    )
+
+
+def _debug_log_value(value: Any) -> str:
+    if value is None:
+        return "-"
+    return str(value)
+
+
+def _normalize_backchannel_phrase(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    text = text.replace("'", "")
+    text = re.sub(r"[-_]+", " ", text)
+    text = re.sub(r"[^a-z0-9\s]+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _word_count(value: object) -> int:
+    normalized = _normalize_backchannel_phrase(value)
+    if not normalized:
+        return 0
+    return len(normalized.split())
+
+
+def _is_backchannel_transcript(
+    transcript_text: object,
+    *,
+    phrases: list[str],
+    max_words: int,
+) -> bool:
+    normalized = _normalize_backchannel_phrase(transcript_text)
+    if not normalized or _word_count(normalized) > max_words:
+        return False
+    normalized_phrases = {
+        phrase
+        for phrase in (_normalize_backchannel_phrase(item) for item in phrases)
+        if phrase
+    }
+    return normalized in normalized_phrases
+
+
+def _origin_query_response_key(query_id: str, kind: str) -> str:
+    return f"query:{query_id}:{kind}"
+
+
+def _origin_query_tool_output(
+    query: dict[str, Any],
+    *,
+    deduplicated: bool = False,
+) -> dict[str, Any]:
+    status = str(query.get("status") or "pending").strip() or "pending"
+    output: dict[str, Any] = {"status": status}
+    query_id = str(query.get("query_id") or "").strip()
+    if query_id:
+        output["query_id"] = query_id
+    answer = str(query.get("answer") or "").strip()
+    error = str(query.get("error") or "").strip()
+    if answer:
+        output["answer"] = answer
+    if error:
+        output["error"] = error
+    citations = query.get("citations")
+    if isinstance(citations, list) and citations:
+        output["citations"] = citations
+    if deduplicated:
+        output["deduplicated"] = True
+    return output
+
+
+def _projected_task_answer(question: str, projection: dict[str, Any]) -> str | None:
+    if not _question_asks_projected_task(question):
+        return None
+    task_prompt = _extract_projected_task_prompt(projection)
+    if not task_prompt:
+        return None
+    return f"The projected calling task is: {task_prompt}"
+
+
+def _question_asks_projected_task(question: str) -> bool:
+    normalized = _voice_query_key(question)
+    if not normalized:
+        return False
+    task_terms = (
+        "calling task",
+        "call task",
+        "current task",
+        "voice task",
+        "task prompt",
+        "why am i calling",
+        "why are we calling",
+        "what am i calling",
+        "what are we calling",
+        "what is this call about",
+        "what's this call about",
+    )
+    return any(term in normalized for term in task_terms)
+
+
+def _extract_projected_task_prompt(projection: dict[str, Any]) -> str | None:
+    task_prompt = projection.get("task_prompt")
+    if isinstance(task_prompt, str) and task_prompt.strip():
+        return task_prompt.strip()
+    prompt = projection.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    marker = "Current voice task:"
+    if marker in prompt:
+        return prompt.split(marker, 1)[1].strip()
+    return prompt.strip()
 
 
 def _voice_query_key(question: str) -> str:
@@ -1813,6 +3023,16 @@ def _ari_channel_state(event: dict[str, Any]) -> str | None:
         state = channel.get("state")
         return str(state) if state is not None else None
     return None
+
+
+def _asterisk_debug_event_type(ari_event_type: str) -> str:
+    if ari_event_type == "ChannelHangupRequest":
+        return "asterisk.hangup"
+    if ari_event_type == "ChannelDestroyed":
+        return "asterisk.channel_destroyed"
+    if ari_event_type == "StasisEnd":
+        return "asterisk.stasis_end"
+    return "asterisk.call_event"
 
 
 def _unicast_rtp_local_addr(channel: dict[str, Any]) -> tuple[str, int] | None:
@@ -1866,6 +3086,127 @@ def _realtime_audio_delta(event: dict[str, Any]) -> str | None:
         value = event.get("delta") or event.get("audio")
         return str(value) if value else None
     return None
+
+
+def _realtime_audio_done(event: dict[str, Any]) -> bool:
+    return str(event.get("type") or "") in {
+        "response.output_audio.done",
+        "response.audio.done",
+    }
+
+
+def _realtime_response_id(event: dict[str, Any]) -> str | None:
+    response = event.get("response")
+    if isinstance(response, dict):
+        value = response.get("id")
+        if value:
+            return str(value)
+    for key in ("response_id", "id"):
+        value = event.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _realtime_item_id(event: dict[str, Any]) -> str | None:
+    item = event.get("item")
+    if isinstance(item, dict):
+        value = item.get("id") or item.get("item_id")
+        if value:
+            return str(value)
+    value = event.get("item_id")
+    return str(value) if value else None
+
+
+def _realtime_audio_key(event: dict[str, Any]) -> str:
+    return _realtime_response_id(event) or _realtime_item_id(event) or "unknown"
+
+
+def _realtime_lifecycle_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "realtime_event_type": str(event.get("type") or ""),
+    }
+    response_id = _realtime_response_id(event)
+    if response_id:
+        metadata["response_id"] = response_id
+    response = event.get("response")
+    if isinstance(response, dict):
+        status = response.get("status")
+        if status:
+            metadata["status"] = str(status)
+        status_details = response.get("status_details")
+        if isinstance(status_details, dict):
+            reason = status_details.get("reason") or status_details.get("type")
+            if reason:
+                metadata["reason"] = str(reason)
+    return metadata
+
+
+def _realtime_audio_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "realtime_event_type": str(event.get("type") or ""),
+    }
+    for key, value in {
+        "response_id": _realtime_response_id(event),
+        "item_id": _realtime_item_id(event),
+        "output_index": event.get("output_index"),
+        "content_index": event.get("content_index"),
+    }.items():
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+def _realtime_transcript_metadata(event: dict[str, Any], transcript_text: str) -> dict[str, Any]:
+    metadata = _realtime_audio_metadata(event)
+    metadata["transcript_snippet"] = _debug_snippet(transcript_text)
+    return metadata
+
+
+def _realtime_vad_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type") or "")
+    lowered = event_type.lower()
+    return event_type in {
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.timeout_triggered",
+    } or "vad" in lowered
+
+
+def _realtime_vad_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"realtime_event_type": str(event.get("type") or "")}
+    for key in ("audio_start_ms", "audio_end_ms", "item_id"):
+        value = event.get(key)
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+def _realtime_error_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    error = event.get("error") if isinstance(event.get("error"), dict) else event
+    metadata: dict[str, Any] = {
+        "realtime_event_type": str(event.get("type") or "error"),
+    }
+    if isinstance(error, dict):
+        code = error.get("code")
+        error_type = error.get("type")
+        message = error.get("message")
+        event_id = error.get("event_id") or event.get("event_id")
+        response_id = error.get("response_id") or _realtime_response_id(event)
+        if code:
+            metadata["error_code"] = str(code)
+            metadata["reason"] = str(code)
+        if error_type:
+            metadata["error_type"] = str(error_type)
+        if message:
+            metadata["message_snippet"] = _debug_snippet(message)
+        if event_id:
+            metadata["realtime_event_id"] = str(event_id)
+        if response_id:
+            metadata["response_id"] = str(response_id)
+    else:
+        metadata["message_snippet"] = _debug_snippet(error)
+    return metadata
 
 
 def _realtime_function_call(event: dict[str, Any]) -> RealtimeFunctionCall | None:
@@ -1968,6 +3309,13 @@ def _env_float(name: str, default: float) -> float:
     if not value:
         return default
     return float(value)
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return list(default)
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 if __name__ == "__main__":  # pragma: no cover

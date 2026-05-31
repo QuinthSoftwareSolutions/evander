@@ -5,10 +5,43 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Playback-Aware DIDWW Idle Prompting
+
+- Moved DIDWW/OpenAI Realtime idle prompting into the bridge so the idle timer
+  starts only after assistant RTP playback drains, caller speech cancels stale
+  prompts, and silent periods receive at most one bridge-owned check-in prompt.
+
+## 2026-05-31 - DIDWW Origin Query State
+
+- Added DIDWW bridge-local origin-query state so delayed checking acknowledgements
+  are skipped or superseded when answers arrive, duplicate questions reuse the
+  existing pending or answered result, and projected calling-task questions are
+  answered without waking the origin agent.
+
+## 2026-05-31 - Realtime Voice Prompt Tightening
+
+- Tightened projected OpenAI Realtime voice instructions so DIDWW calls handle
+  short acknowledgements as backchannels, avoid spoken bookkeeping phrasing, keep
+  answers concise, and speak about origin-agent checks only once before giving
+  the result directly.
+
+## 2026-05-31 - DIDWW Bridge Turn Instrumentation
+
+- Added compact DIDWW SIP/OpenAI Realtime bridge debug events for Realtime
+  lifecycle, turn/audio markers, response queue decisions, origin-agent query
+  flow, and Asterisk call lifecycle without changing call behavior.
+
 ## 2026-05-31 - Teams Message Target Scoping
 
 - Required `channel_target` for `teams_get_messages`, scoped bare Teams message-id cursors to that
   target, and rejected cursors whose embedded target disagrees with the requested target.
+
+## 2026-05-31 - DIDWW Bridge Delayed Barge-In
+
+- Disabled immediate OpenAI Realtime auto-interruption for DIDWW calls while keeping server VAD,
+  automatic caller-turn responses, and idle prompting enabled.
+- Added bridge-side delayed barge-in cancellation, backchannel classification, and RTP output queue
+  clearing so brief acknowledgements do not cut off assistant playback.
 
 ## 2026-05-31 - DIDWW Bridge Realtime Audio Transport
 
