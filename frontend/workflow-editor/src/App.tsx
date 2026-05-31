@@ -387,6 +387,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
+  "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
   "gate:for": "Iterate over an array and execute the body branch for each item.",
   "gate:while": "Repeat a body branch while a bounded predicate remains true.",
   "effect:agent:prompt": "Send a prompt to an agent session.",
@@ -997,6 +998,9 @@ function renderStringInput(
   disabled: boolean,
   fallbackPlaceholder: string,
 ) {
+  const optionListId = field.options.length > 0
+    ? `workflow-field-options-${field.key.replace(/[^A-Za-z0-9_-]/g, "-")}`
+    : null;
   if (field.multiline) {
     return (
       <textarea
@@ -1009,12 +1013,22 @@ function renderStringInput(
     );
   }
   return (
-    <input
-      value={typeof value === "string" ? value : ""}
-      placeholder={field.placeholder ?? fallbackPlaceholder}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={disabled}
-    />
+    <>
+      <input
+        value={typeof value === "string" ? value : ""}
+        list={optionListId ?? undefined}
+        placeholder={field.placeholder ?? fallbackPlaceholder}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      />
+      {optionListId ? (
+        <datalist id={optionListId}>
+          {field.options.map((option) => (
+            <option key={`${field.key}-${option.value}`} value={option.value} label={option.label} />
+          ))}
+        </datalist>
+      ) : null}
+    </>
   );
 }
 
@@ -1626,6 +1640,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "gate" && type === "gate:map") {
     return { id, display_name: "New map", type, outputs: {}, template: {} };
+  }
+  if (kind === "gate" && type === "gate:aggregate") {
+    return {
+      id,
+      display_name: "Aggregate",
+      type,
+      items: [],
+      metrics: { total: { operation: "sum", path: "value" } },
+      outputs: { count: { type: "integer" }, total: { type: "number" } },
+    };
   }
   if (kind === "gate" && type === "gate:deserialize") {
     return {
@@ -3011,6 +3035,8 @@ function normalizeDerivedNodeFields(
     if (isPassThroughGateType(gate.type)) {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:aggregate") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:deserialize") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);

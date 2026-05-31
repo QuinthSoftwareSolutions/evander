@@ -8128,6 +8128,102 @@ def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Pat
     )
 
 
+def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"items": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-aggregate",
+                    "display_name": "Aggregate usage",
+                    "type": "gate:aggregate",
+                    "items": "${{trigger-1.items}}",
+                    "metrics": {
+                        "input_tokens": {"operation": "sum", "path": "input_tokens"},
+                        "output_tokens": {"operation": "sum", "path": "output_tokens"},
+                        "total_tokens": {"operation": "sum", "path": "total_tokens"},
+                        "average_tokens": {"operation": "avg", "path": "total_tokens"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": (
+                        "Tokens ${{gate-aggregate.total_tokens}} "
+                        "across ${{gate-aggregate.count}} event(s); "
+                        "average ${{gate-aggregate.average_tokens}}."
+                    ),
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-aggregate"),
+                _edge("gate-aggregate", "effect-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.provider_factory = _Factory({"effect-1": {"ok": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-aggregate",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+            payload={
+                "items": [
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    {"input_tokens": 20, "output_tokens": 8, "total_tokens": 28},
+                    {"input_tokens": None, "output_tokens": None, "total_tokens": None},
+                ]
+            },
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["outputs"] == {
+        "count": 3,
+        "input_tokens": 30,
+        "output_tokens": 13,
+        "total_tokens": 43,
+        "average_tokens": 21.5,
+    }
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    effect_record = next(iter(effect_payload.values()))
+    assert (
+        effect_record["resolved_config"]["prompt"]
+        == "Tokens 43 across 3 event(s); average 21.5."
+    )
+
+
 def test_serialize_gate_emits_yaml_content(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

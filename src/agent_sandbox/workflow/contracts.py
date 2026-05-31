@@ -114,12 +114,14 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         template = node.get("template")
         content = node.get("content")
         content_format = node.get("format")
+        metrics = node.get("metrics")
     else:
         node_type = str(getattr(node, "type", "") or "").strip()
         raw_outputs = getattr(node, "outputs", None)
         template = getattr(node, "template", None)
         content = getattr(node, "content", None)
         content_format = getattr(node, "format", None)
+        metrics = getattr(node, "metrics", None)
 
     schema: dict[str, dict[str, Any]] = {}
     static_schema = _NODE_OUTPUT_SCHEMA_REGISTRY.get(node_type, {})
@@ -132,6 +134,10 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
             if not name:
                 continue
             schema[name] = _infer_schema_from_template_value(value)
+        return schema
+
+    if node_type == "gate:aggregate" and isinstance(metrics, Mapping):
+        schema.update(_aggregate_metric_output_schema(metrics))
         return schema
 
     if node_type == "gate:deserialize":
@@ -151,6 +157,31 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
             }
         )
     return schema
+
+
+def _aggregate_metric_output_schema(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    schema: dict[str, dict[str, Any]] = {}
+    for key, raw_metric in metrics.items():
+        name = str(key).strip()
+        if not name or name == "count":
+            continue
+        metric = _model_or_mapping_to_dict(raw_metric)
+        operation = str(metric.get("operation") or "").strip().lower()
+        if operation == "sum":
+            schema[name] = {"type": "number"}
+        elif operation in {"min", "max", "avg"}:
+            schema[name] = {"type": ["number", "null"]}
+    return schema
+
+
+def _model_or_mapping_to_dict(value: Any) -> dict[str, Any]:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        return dict(dumped) if isinstance(dumped, Mapping) else {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
 
 
 def validate_output_mapping_keys(payload: Mapping[str, Any], *, context: str) -> None:

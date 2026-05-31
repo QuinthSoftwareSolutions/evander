@@ -558,6 +558,9 @@ _TRIGGER_OUTPUT_SCHEMAS = {
 }
 
 _GATE_OUTPUT_SCHEMAS = {
+    "gate:aggregate": {
+        "count": {"type": "integer"},
+    },
     "gate:for": {
         "current_element": {"type": "object"},
         "current_index": {"type": "integer"},

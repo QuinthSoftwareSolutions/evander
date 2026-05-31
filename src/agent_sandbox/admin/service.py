@@ -1755,6 +1755,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:map": "Project upstream outputs into a new payload shape.",
+    "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
     "gate:deserialize": (
         "Parse a JSON or YAML string into object properties for downstream bindings."
     ),
@@ -2435,6 +2436,44 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the top-level keys in the map template.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:aggregate",
+        label="Aggregate",
+        fields=[
+            _field(
+                "items",
+                "Items",
+                "json",
+                required=True,
+                bindable=True,
+                description="Array to aggregate. Use an exact binding to pass through an upstream array.",
+                json_value_type="array",
+                default_value=[],
+                placeholder="${{query-model-usage.items}}",
+            ),
+            _field(
+                "metrics",
+                "Metrics",
+                "json",
+                required=True,
+                description=(
+                    "Object keyed by output name. Each value defines operation "
+                    "sum, min, max, or avg and a dotted item path."
+                ),
+                json_value_type="object",
+                default_value={"total": {"operation": "sum", "path": "value"}},
+                placeholder='{"total_tokens":{"operation":"sum","path":"total_tokens"}}',
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Emits count plus one flat output for each configured metric.",
             ),
         ],
     ),
@@ -4243,18 +4282,57 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:model-usage:list",
         label="Model usage list",
         fields=[
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("workflow_run_id", "Workflow run ID", "string", bindable=True),
-            _field("effect_id", "Effect ID", "string", bindable=True),
-            _field("dispatch_id", "Dispatch ID", "string", bindable=True),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional session filter. Leave blank to include usage from every session "
+                    "that matches the other filters."
+                ),
+            ),
+            _field(
+                "workflow_run_id",
+                "Workflow run ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional workflow run filter. To scope the query to the current run, bind "
+                    "this to ${{system.execution.trace_id}}. Leave blank to include every run "
+                    "that matches the other filters."
+                ),
+            ),
+            _field(
+                "effect_id",
+                "Effect ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional effect node ID filter, for example effect-agent-prompt-1. Leave "
+                    "blank to include usage from all effects in the selected run, session, or "
+                    "directory scope."
+                ),
+            ),
+            _field(
+                "dispatch_id",
+                "Dispatch ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional prompt dispatch ID filter. Use this only when narrowing to one "
+                    "agent prompt dispatch; leave blank for all dispatches in scope."
+                ),
+            ),
             _field(
                 "directory_path",
                 "Directory path",
                 "string",
                 bindable=True,
                 description=(
-                    "Optional directory path such as root or root/team. When set, matches "
-                    "events in that directory and, if enabled, its descendants."
+                    "Optional directory filter such as root or root/team. Leave blank to include "
+                    "all directories. When set, matches only that directory unless matching "
+                    "descendants is enabled."
                 ),
             ),
             _field(
@@ -4263,17 +4341,67 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "boolean",
                 bindable=True,
                 default_value=False,
-                description="When enabled, include events from descendant directories too.",
+                description=(
+                    "Only applies when Directory path is set. When enabled, a filter such as "
+                    "root/team also includes usage from root/team/subteam."
+                ),
             ),
-            _field("provider", "Provider", "string", bindable=True),
-            _field("model", "Model", "string", bindable=True),
-            _field("agent_harness", "Agent harness", "string", bindable=True),
-            _field("execution_backend", "Execution backend", "string", bindable=True),
+            _field(
+                "provider",
+                "Provider",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional provider filter. The built-in relay currently records OpenAI "
+                    "usage as openai; leave blank for all providers."
+                ),
+                options=[_field_option("openai", "openai")],
+            ),
+            _field(
+                "model",
+                "Model",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional exact model filter using the provider response or correlated "
+                    "session model value. Leave blank for all models."
+                ),
+            ),
+            _field(
+                "agent_harness",
+                "Agent harness",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional harness filter. Prompt effects currently record Codex requests as "
+                    "codex; leave blank for every harness."
+                ),
+                options=[_field_option("codex", "codex")],
+            ),
+            _field(
+                "execution_backend",
+                "Execution backend",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional execution backend filter. Use libvirt_vm for VM-backed agents or "
+                    "container_worker_vm for container worker sessions; leave blank for both."
+                ),
+                options=[
+                    _field_option("libvirt_vm", "libvirt_vm"),
+                    _field_option("container_worker_vm", "container_worker_vm"),
+                ],
+            ),
             _field(
                 "normalized_usage_status",
                 "Normalized usage status",
                 "enum",
                 bindable=True,
+                description=(
+                    "Optional usage parsing filter. available means token usage was parsed from "
+                    "the provider response; usage_unavailable means the request was recorded "
+                    "without token usage."
+                ),
                 options=[
                     _field_option("available", "available"),
                     _field_option("usage_unavailable", "usage_unavailable"),
@@ -4284,6 +4412,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Request status",
                 "enum",
                 bindable=True,
+                description=(
+                    "Optional request outcome filter recorded by the relay. Leave blank to "
+                    "include every request status."
+                ),
                 options=[
                     _field_option("success", "success"),
                     _field_option("failed", "failed"),
@@ -4296,7 +4428,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Occurred after",
                 "string",
                 bindable=True,
-                description="Lower bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                description=(
+                    "Optional lower bound for occurred_at, expressed as an ISO-8601 timestamp. "
+                    "Leave blank for no start time filter."
+                ),
                 placeholder="2026-05-24T12:00:00Z",
             ),
             _field(
@@ -4304,7 +4439,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Occurred before",
                 "string",
                 bindable=True,
-                description="Upper bound for occurred_at, expressed as an ISO-8601 timestamp.",
+                description=(
+                    "Optional upper bound for occurred_at, expressed as an ISO-8601 timestamp. "
+                    "Leave blank for no end time filter."
+                ),
                 placeholder="2026-05-24T13:00:00Z",
             ),
             _field(
@@ -4312,7 +4450,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Limit",
                 "number",
                 bindable=True,
-                description="Maximum number of events to return. Must be a positive integer.",
+                description=(
+                    "Optional maximum number of events to return. Must be a positive integer; "
+                    "results are ordered from oldest to newest."
+                ),
             ),
         ],
     ),
@@ -17547,6 +17688,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "gate:deserialize",
                 "gate:serialize",
                 "gate:map",
+                "gate:aggregate",
                 "gate:dedupe",
                 "gate:switch",
                 "gate:await-agent",

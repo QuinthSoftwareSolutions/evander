@@ -107,6 +107,8 @@ export function deriveWorkflowOutputSchemas(
       );
     } else if (node.type === "gate:map" && isRecord(node.template)) {
       schema = mapTemplateOutputSchema(node.template);
+    } else if (node.type === "gate:aggregate" && isRecord(node.metrics)) {
+      schema = aggregateMetricOutputSchema(node.metrics);
     } else {
       const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
       schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
@@ -265,6 +267,15 @@ export function selectedNodeOutputContract(
     return buildOutputContract(node, templateOutputs, {
       state: "derived",
       note: "Map gate: outputs are derived from the map template.",
+      sourceNodeIds: [node.id],
+    });
+  }
+
+  if (node.type === "gate:aggregate" && isRecord(node.metrics)) {
+    const aggregateOutputs = aggregateMetricOutputSchema(node.metrics);
+    return buildOutputContract(node, aggregateOutputs, {
+      state: "derived",
+      note: "Aggregate gate: outputs are count plus one output per configured metric.",
       sourceNodeIds: [node.id],
     });
   }
@@ -466,6 +477,21 @@ function mapTemplateOutputSchema(template: Record<string, unknown>): Record<stri
     const outputName = key.trim();
     if (!outputName) continue;
     schema[outputName] = inferSchemaFromTemplateValue(value);
+  }
+  return schema;
+}
+
+function aggregateMetricOutputSchema(metrics: Record<string, unknown>): Record<string, unknown> {
+  const schema: Record<string, unknown> = { count: { type: "integer" } };
+  for (const [key, rawMetric] of Object.entries(metrics)) {
+    const outputName = key.trim();
+    if (!outputName || outputName === "count" || !isRecord(rawMetric)) continue;
+    const operation = typeof rawMetric.operation === "string" ? rawMetric.operation.trim().toLowerCase() : "";
+    if (operation === "sum") {
+      schema[outputName] = { type: "number" };
+    } else if (operation === "min" || operation === "max" || operation === "avg") {
+      schema[outputName] = { type: ["number", "null"] };
+    }
   }
   return schema;
 }

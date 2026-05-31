@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AggregateGateProvider",
     "AwaitAgentGateProvider",
     "FilterGateProvider",
     "ForGateProvider",
@@ -16,6 +17,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AggregateGateProvider": ".aggregate_gate",
     "AwaitAgentGateProvider": ".await_agent",
     "FilterGateProvider": ".filter_gate",
     "ForGateProvider": ".for_gate",

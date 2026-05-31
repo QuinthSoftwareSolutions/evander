@@ -207,6 +207,24 @@ test("groups switch gate types with flow control", () => {
   ]);
 });
 
+test("groups aggregate gate with data shaping", () => {
+  const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("gate", "gate:map", "Map"),
+    catalogNode("gate", "gate:aggregate", "Aggregate"),
+    catalogNode("gate", "gate:deserialize", "Deserialize"),
+    catalogNode("gate", "gate:serialize", "Serialize"),
+  ], "gate");
+
+  const dataShaping = groups.find((group) => group.label === "Data shaping");
+  assert.ok(dataShaping);
+  assert.deepEqual(dataShaping.entries.map((entry) => entry.type), [
+    "gate:aggregate",
+    "gate:deserialize",
+    "gate:map",
+    "gate:serialize",
+  ]);
+});
+
 test("falls back to namespace groups for unknown node types", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("query", "query:cloud-run:job", "Cloud job"),

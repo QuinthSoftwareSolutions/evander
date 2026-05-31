@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.events.models import (
+    GateAggregateDefinition,
     GateAwaitAgentDefinition,
     GateDebounceDefinition,
     GateDeserializeDefinition,
@@ -26,6 +27,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:deserialize": GateDeserializeDefinition,
     "gate:serialize": GateSerializeDefinition,
     "gate:map": GateMapDefinition,
+    "gate:aggregate": GateAggregateDefinition,
     "gate:merge": GateMergeDefinition,
     "gate:dedupe": GateDedupeDefinition,
     "gate:await-agent": GateAwaitAgentDefinition,
