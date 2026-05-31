@@ -443,10 +443,12 @@ Storage layout for directory config:
 - The host-side Teams adapter creates or reuses one-on-one chats with `POST /chats`. The default
   delegated `Chat.ReadWrite` scope is sufficient; a narrower deployment can grant `Chat.Create`
   for first-contact one-on-one chat creation.
-- `teams_get_messages` accepts an optional `channel_target` so agents can read the specific
-  channel or chat that woke them. Cursorless reads still stay on a bounded recent path: the gateway
-  applies `teams_poll_limit` as the default message limit, and the Graph adapter caps each history
-  scan with `teams_history_page_cap` plus `teams_history_deadline_seconds`.
+- `teams_get_messages` requires `channel_target` so agents read only the specific channel or chat
+  that woke them. Optional cursors can be full returned cursor values or bare message ids, which
+  the gateway scopes to the required target. Cursorless reads still stay on a bounded recent path
+  for that target: the gateway applies `teams_poll_limit` as the default message limit, and the
+  Graph adapter caps each history scan with `teams_history_page_cap` plus
+  `teams_history_deadline_seconds`.
 
 ## VM Python Bootstrap
 
@@ -848,6 +850,11 @@ and exposes the bridge API consumed by `didww_sip_bridge_url`:
 The bridge uses Asterisk ARI instead of implementing SIP in Python. Asterisk handles DIDWW PJSIP
 trunk registration/auth, outbound SIP dialogs, RTP, NAT, and hangups. Asterisk itself is open-source;
 there is no Asterisk license fee, but DIDWW call/trunk usage and OpenAI Realtime usage still apply.
+The bridge sends G.711 audio to OpenAI Realtime, so its Asterisk `ExternalMedia` RTP settings must
+use a static payload codec. The default is A-law/PCMA:
+`DIDWW_SIP_BRIDGE_MEDIA_FORMAT=alaw`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE=8`, and
+`DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ=8000`. For u-law/PCMU, use `ulaw`, payload type `0`, and the same
+sample rate.
 
 Minimum host setup:
 
@@ -857,6 +864,18 @@ Minimum host setup:
 4. Put `DIDWW_SIP_BRIDGE_TOKEN`, `VOICE_MEDIA_CONTROLLER_TOKEN`, `OPENAI_API_KEY`, and
    `ASTERISK_ARI_PASSWORD` in `secrets.env` or the systemd service manager environment.
 5. Set `didww_sip_bridge_url` to the bridge listener, for example `http://127.0.0.1:11888`.
+
+The known-good Asterisk/DIDWW shape for a NATed Azure control-plane host is:
+
+- PJSIP UDP transport bound on `0.0.0.0:5060`.
+- `external_signaling_address` and `external_media_address` set to the control-plane public IP.
+- `local_net` set to the control-plane private subnet, for example `10.2.0.0/24`.
+- DIDWW endpoint allows `ulaw,alaw`, uses `direct_media=no`, `rewrite_contact=yes`,
+  `force_rport=yes`, and `rtp_symmetric=no`.
+- Asterisk `rtp.conf` uses the narrow public RTP range `rtpstart=12000` and `rtpend=12100`.
+- Azure NSG and DIDWW trunk allowed-RTP rules allow UDP `12000-12100` to the control-plane public
+  IP; SIP signaling allows UDP `5060`. The Python bridge's loopback RTP range `41000-41100` is
+  host-local and should not be opened externally.
 
 The bridge creates `runtime/didww-sip-bridge-store.json`. It stores redacted phone numbers, ARI
 channel IDs, RTP port metadata, transcripts, and terminal summaries; it does not persist raw audio.

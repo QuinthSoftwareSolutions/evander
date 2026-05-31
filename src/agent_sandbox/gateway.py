@@ -166,6 +166,7 @@ from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
     TeamsInlineMediaProvider,
     normalize_pr_feedback_provider,
+    normalize_teams_target,
     parse_teams_target,
     resolve_teams_send_target,
     teams_target_from_message,
@@ -930,6 +931,33 @@ def _filter_teams_messages_for_session(
             continue
         messages.append(message.model_dump(mode="json"))
     return messages, denied_count, next_cursor
+
+
+def _teams_cursor_for_target(
+    cursor: str | None,
+    *,
+    channel_target: str,
+    field_name: str,
+) -> str | None:
+    if cursor is None:
+        return None
+    normalized_cursor = str(cursor or "").strip()
+    if not normalized_cursor:
+        raise ToolError(f"{field_name} must be non-empty when provided")
+    if "/" not in normalized_cursor:
+        return f"{channel_target}/{normalized_cursor}"
+    cursor_target, message_id = normalized_cursor.rsplit("/", 1)
+    if not cursor_target or not message_id:
+        raise ToolError(
+            f"{field_name} must be a Teams cursor or message id scoped by channel_target"
+        )
+    try:
+        normalized_cursor_target = normalize_teams_target(cursor_target)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    if normalized_cursor_target != channel_target:
+        raise ToolError(f"{field_name} target must match channel_target")
+    return f"{channel_target}/{message_id}"
 
 
 def _visible_vm_summaries_for_session(
@@ -6292,10 +6320,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
     @server.tool()
     def teams_get_messages(
         session_id: str,
+        channel_target: str,
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
-        channel_target: str | None = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
@@ -6310,18 +6338,30 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if since_cursor is not None and before_cursor is not None:
                 raise ToolError("since_cursor and before_cursor are mutually exclusive")
             session = context.policy.require_tool(session_id, ToolName.TEAMS_GET_MESSAGES)
-            normalized_target = None
-            if channel_target is not None:
-                normalized_target = context.policy.require_teams_channel_target(
-                    session,
-                    str(channel_target or "").strip(),
-                )
+            normalized_target = context.policy.require_teams_channel_target(
+                session,
+                str(channel_target or "").strip(),
+            )
+            effective_since_cursor = _teams_cursor_for_target(
+                since_cursor,
+                channel_target=normalized_target,
+                field_name="since_cursor",
+            )
+            effective_before_cursor = _teams_cursor_for_target(
+                before_cursor,
+                channel_target=normalized_target,
+                field_name="before_cursor",
+            )
             effective_limit = limit
-            if since_cursor is None and before_cursor is None and effective_limit is None:
+            if (
+                effective_since_cursor is None
+                and effective_before_cursor is None
+                and effective_limit is None
+            ):
                 effective_limit = context.config.teams_poll_limit
             raw_messages = context.teams_service_for_session(session_id).get_messages(
-                since_cursor=since_cursor,
-                before_cursor=before_cursor,
+                since_cursor=effective_since_cursor,
+                before_cursor=effective_before_cursor,
                 limit=None,
                 channel_target=normalized_target,
             )
@@ -6335,7 +6375,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             if effective_limit is not None:
                 messages = messages[-effective_limit:]
-                fallback_cursor = before_cursor if before_cursor is not None else since_cursor
+                fallback_cursor = (
+                    effective_before_cursor
+                    if effective_before_cursor is not None
+                    else effective_since_cursor
+                )
                 next_cursor = messages[-1]["cursor"] if messages else fallback_cursor
             result = {"messages": messages, "next_cursor": next_cursor}
             audit_success(

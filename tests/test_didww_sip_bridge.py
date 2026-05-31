@@ -130,6 +130,17 @@ def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/ari/channels/externalMedia":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "media-didww-test",
+                    "channelvars": {
+                        "UNICASTRTP_LOCAL_ADDRESS": "127.0.0.1",
+                        "UNICASTRTP_LOCAL_PORT": "27086",
+                    },
+                },
+            )
         return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[-1]})
 
     async def run() -> AsteriskCallHandles:
@@ -145,13 +156,14 @@ def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -
     handles = asyncio.run(run())
 
     assert handles.call_channel_id == "call-didww-test"
+    assert handles.external_media_local_addr == ("127.0.0.1", 27086)
     assert [request.method for request in requests] == ["POST", "POST", "POST", "POST", "POST"]
     assert requests[0].url.path == "/ari/bridges/bridge-didww-test"
     assert requests[1].url.path == "/ari/channels/call-didww-test"
     assert requests[1].url.params["endpoint"] == "PJSIP/+15551234567@didww"
     assert requests[2].url.path == "/ari/channels/externalMedia"
     assert requests[2].url.params["external_host"] == "127.0.0.1:49000"
-    assert requests[2].url.params["format"] == "slin16"
+    assert requests[2].url.params["format"] == "alaw"
     assert requests[3].url.path == "/ari/bridges/bridge-didww-test/addChannel"
     assert requests[4].url.path == "/ari/bridges/bridge-didww-test/addChannel"
 
@@ -243,7 +255,7 @@ def test_rtp_packet_roundtrip() -> None:
         sequence=42,
         timestamp=320,
         ssrc=1234,
-        payload_type=118,
+        payload_type=8,
         payload=b"\x01\x02\x03\x04",
         marker=True,
     )
@@ -253,7 +265,7 @@ def test_rtp_packet_roundtrip() -> None:
     assert parsed.sequence == 42
     assert parsed.timestamp == 320
     assert parsed.ssrc == 1234
-    assert parsed.payload_type == 118
+    assert parsed.payload_type == 8
     assert parsed.marker is True
     assert parsed.payload == b"\x01\x02\x03\x04"
 
@@ -270,15 +282,15 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
 
     endpoint.transport = FakeTransport()  # type: ignore[assignment]
     samples_per_frame = int(config.sample_rate_hz * config.frame_duration_ms / 1000)
-    payload = b"\x01\x02" * ((samples_per_frame * 2) + 80)
+    payload = b"\x55" * ((samples_per_frame * 2) + 80)
 
-    endpoint.send_payload(payload)
+    asyncio.run(endpoint.send_payload(payload))
 
     packets = [RtpPacket.parse(data) for data, _addr in sent]
     assert [len(packet.payload) for packet in packets] == [
-        samples_per_frame * 2,
-        samples_per_frame * 2,
-        80 * 2,
+        samples_per_frame,
+        samples_per_frame,
+        80,
     ]
     assert [packet.sequence for packet in packets] == [1, 2, 3]
     assert [packet.timestamp for packet in packets] == [
@@ -362,6 +374,23 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     assert captured["url"] == "wss://api.openai.test/v1/realtime?model=gpt-realtime-2"
     assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
     assert captured["session_update"]["type"] == "session.update"
+    session = captured["session_update"]["session"]
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcma"}
+    assert session["audio"]["output"]["format"] == {"type": "audio/pcma"}
+
+
+def test_realtime_g711_bridge_rejects_dynamic_rtp_media_format(tmp_path: Path) -> None:
+    try:
+        DidwwSipBridgeConfig(
+            runtime_dir=tmp_path,
+            media_format="slin24",
+            rtp_payload_type=118,
+            sample_rate_hz=24000,
+        )
+    except ValueError as exc:
+        assert "static G.711" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("dynamic RTP media formats should be rejected")
 
 
 def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
@@ -382,7 +411,12 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
 
-        async def inject_origin_query_result(self, query: dict[str, Any]) -> None:
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
             self.injected.append(query)
 
     class FakeController:
@@ -438,6 +472,195 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
     latest = store.get("voice-1")
     assert latest is not None
     assert latest.transcript_events[-1].speaker == "origin_agent"
+
+
+def test_realtime_function_calls_wait_for_response_done_and_dedupe_queries(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created"},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "query_origin_agent",
+                        "arguments": json.dumps({"question": "What changed?"}),
+                    },
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-2",
+                        "name": "query_origin_agent",
+                        "arguments": json.dumps({"question": "  What   changed? "}),
+                    },
+                },
+                {"type": "response.done"},
+            ]
+            self.tool_outputs: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeController:
+        configured = True
+
+        def __init__(self) -> None:
+            self.create_count = 0
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            self.create_count += 1
+            return {"query_id": "voice-query-1", "status": "pending"}
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            await asyncio.sleep(0.5)
+            return {"query_id": query_id, "status": "pending"}
+
+    class FakeRtp:
+        async def recv_payload(self) -> bytes:
+            await asyncio.sleep(0.5)
+            return b""
+
+    async def run() -> tuple[FakeRealtime, FakeController]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),
+                realtime,  # type: ignore[arg-type]
+                controller,  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime, controller
+
+    realtime, controller = asyncio.run(run())
+
+    assert controller.create_count == 1
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "pending", "query_id": "voice-query-1"}},
+        {
+            "call_id": "tool-call-2",
+            "output": {"status": "pending", "query_id": "voice-query-1", "deduplicated": True},
+        },
+    ]
+    assert realtime.responses == [
+        "Tell the caller you are checking with the originating agent, then continue naturally."
+    ]
+    latest = store.get("voice-1")
+    assert latest is not None
+    assert len(latest.transcript_events) == 1
+
+
+def test_realtime_active_response_error_requeues_response_request(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    instruction = "Tell the caller you are checking with the originating agent, then continue naturally."
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "query_origin_agent",
+                        "arguments": json.dumps({"question": "What changed?"}),
+                    },
+                },
+                {"type": "response.done"},
+                {
+                    "type": "error",
+                    "error": {
+                        "code": "conversation_already_has_active_response",
+                        "message": "Conversation already has an active response in progress",
+                    },
+                },
+                {"type": "response.done"},
+            ]
+            self.responses: list[str | None] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            return None
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            if len(self.responses) == 2:
+                stop_event.set()
+
+    class FakeController:
+        configured = True
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            return {"query_id": "voice-query-1", "status": "pending"}
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            await asyncio.sleep(0.5)
+            return {"query_id": query_id, "status": "pending"}
+
+    class FakeRtp:
+        async def recv_payload(self) -> bytes:
+            await asyncio.sleep(0.5)
+            return b""
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.responses == [instruction, instruction]
 
 
 def test_realtime_function_call_reports_controller_failure_without_raising(
@@ -504,14 +727,22 @@ def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) 
     app_registered = False
 
     class FakeRealtime:
+        def __init__(self) -> None:
+            self.responses: list[str | None] = []
+
         async def __aenter__(self) -> "FakeRealtime":
             return self
 
         async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
             return None
 
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            order.append("initial_response")
+
     class FakeRtpEndpoint:
         port: int | None = None
+        remote_addr: tuple[str, int] | None = None
 
         async def start(self) -> None:
             self.port = 49000
@@ -539,6 +770,8 @@ def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) 
                 call_channel_id="call-didww-test",
                 bridge_id="bridge-didww-test",
                 external_media_channel_id="media-didww-test",
+                external_media_local_address="127.0.0.1",
+                external_media_local_port=27086,
             )
 
         async def hangup_channel(self, channel_id: str | None) -> None:
@@ -557,7 +790,9 @@ def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) 
             start_background_tasks=False,
         )
 
-        async def bridge_media_until_done(*_: Any, **kwargs: Any) -> None:
+        async def bridge_media_until_done(*args: Any, **kwargs: Any) -> None:
+            rtp = args[2]
+            assert rtp.remote_addr == ("127.0.0.1", 27086)
             assert kwargs["ari_events"] is not None
             order.append("bridge_media")
 
@@ -569,6 +804,7 @@ def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) 
     assert order == [
         "event_stream_open",
         "start_external_media_call",
+        "initial_response",
         "bridge_media",
         "event_stream_close",
         "rtp_close",

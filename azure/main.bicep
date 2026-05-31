@@ -507,6 +507,53 @@ resource networkSecurityGroups_truman_control_center_nsg_name_HTTPS 'Microsoft.N
   ]
 }
 
+resource networkSecurityGroups_truman_control_center_nsg_name_DIDWWSipUdp 'Microsoft.Network/networkSecurityGroups/securityRules@2025-05-01' = {
+  name: '${networkSecurityGroups_truman_control_center_nsg_name}/DIDWW-SIP-UDP'
+  properties: {
+    protocol: 'UDP'
+    sourcePortRange: '*'
+    destinationPortRange: '5060'
+    destinationAddressPrefix: '*'
+    access: 'Allow'
+    priority: 325
+    direction: 'Inbound'
+    sourcePortRanges: []
+    destinationPortRanges: []
+    sourceAddressPrefixes: [
+      '46.19.208.0/21'
+      '185.238.172.0/22'
+    ]
+    destinationAddressPrefixes: []
+  }
+  dependsOn: [
+    networkSecurityGroups_truman_control_center_nsg_name_resource
+  ]
+}
+
+resource networkSecurityGroups_truman_control_center_nsg_name_DIDWWRtpUdp 'Microsoft.Network/networkSecurityGroups/securityRules@2025-05-01' = {
+  name: '${networkSecurityGroups_truman_control_center_nsg_name}/DIDWW-RTP-UDP'
+  properties: {
+    protocol: 'UDP'
+    sourcePortRange: '*'
+    destinationAddressPrefix: '*'
+    access: 'Allow'
+    priority: 326
+    direction: 'Inbound'
+    sourcePortRanges: []
+    destinationPortRanges: [
+      '12000-12100'
+    ]
+    sourceAddressPrefixes: [
+      '46.19.208.0/21'
+      '185.238.172.0/22'
+    ]
+    destinationAddressPrefixes: []
+  }
+  dependsOn: [
+    networkSecurityGroups_truman_control_center_nsg_name_resource
+  ]
+}
+
 resource networkSecurityGroups_truman_control_center_nsg_name_SSH 'Microsoft.Network/networkSecurityGroups/securityRules@2025-05-01' = {
   name: '${networkSecurityGroups_truman_control_center_nsg_name}/SSH'
   properties: {

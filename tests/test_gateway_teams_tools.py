@@ -203,7 +203,7 @@ def patch_httpx_client(
     )
 
 
-def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_sources(
+def test_teams_get_messages_passes_target_and_scopes_bare_since_cursor(
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
@@ -254,13 +254,64 @@ def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_source
     result = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1", "since_cursor": "team-a/channel-1/msg-0"},
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "since_cursor": "msg-0",
+        },
     )
 
     assert context.teams_service.last_since_cursor == "team-a/channel-1/msg-0"
     assert context.teams_service.last_before_cursor is None
+    assert context.teams_service.last_channel_target == "team-a/channel-1"
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-1"]
-    assert result["next_cursor"] == "team-b/channel-9/msg-9"
+    assert result["next_cursor"] == "team-a/channel-1/msg-1"
+
+
+def test_teams_get_messages_rejects_mismatched_cursor_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1", "team-b/channel-9"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService([])
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="since_cursor target must match channel_target"):
+        call_tool(
+            server,
+            "teams_get_messages",
+            {
+                "session_id": "session-1",
+                "channel_target": "team-a/channel-1",
+                "since_cursor": "team-b/channel-9/msg-9",
+            },
+        )
+
+    assert context.teams_service.last_channel_target is None
+
+
+def test_teams_get_messages_requires_channel_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService([])
+    server = create_server(context)
+
+    with pytest.raises(ToolError):
+        call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+
+    assert context.teams_service.last_channel_target is None
 
 
 def test_teams_get_messages_passes_channel_target_for_targeted_reads(
@@ -422,7 +473,7 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     result = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1", "limit": 2},
+        {"session_id": "session-1", "channel_target": "team-a/channel-1", "limit": 2},
     )
 
     assert [entry["cursor"] for entry in result["messages"]] == [
@@ -494,7 +545,11 @@ def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
     )
     server = create_server(context)
 
-    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "channel_target": "team-a/channel-1"},
+    )
 
     assert context.teams_service.last_limit is None
     assert [entry["cursor"] for entry in result["messages"]] == [
@@ -550,7 +605,11 @@ def test_teams_get_messages_applies_default_limit_after_session_filtering(
     )
     server = create_server(context)
 
-    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "channel_target": "team-a/channel-1"},
+    )
 
     assert context.teams_service.last_limit is None
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-1"]
@@ -618,7 +677,12 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
     result = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1", "before_cursor": "team-a/channel-1/msg-3", "limit": 2},
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "before_cursor": "team-a/channel-1/msg-3",
+            "limit": 2,
+        },
     )
 
     assert context.teams_service.last_since_cursor is None
@@ -893,7 +957,7 @@ def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same
     result = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1"},
+        {"session_id": "session-1", "channel_target": "team-a/channel-1"},
     )
 
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-2"]
@@ -1003,11 +1067,19 @@ def test_teams_get_messages_repeated_reads_with_cursor_do_not_retry_reactions(
     context.teams_service = fake_teams
     server = create_server(context)
 
-    first = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    first = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "channel_target": "team-a/channel-1"},
+    )
     second = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1", "since_cursor": first["next_cursor"]},
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "since_cursor": first["next_cursor"],
+        },
     )
 
     assert [entry["cursor"] for entry in first["messages"]] == ["team-a/channel-1/msg-3"]
@@ -1371,7 +1443,7 @@ def test_teams_get_messages_fails_clearly_when_delegated_credentials_are_missing
         asyncio.run(
             server.call_tool(
                 "teams_get_messages",
-                {"session_id": "session-1"},
+                {"session_id": "session-1", "channel_target": "team-a/channel-1"},
             )
         )
 

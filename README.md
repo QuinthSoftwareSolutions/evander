@@ -810,10 +810,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `GET /me/chats` plus `GET /chats/{chat-id}/messages` for allowlisted direct-message triggers
   It stores both top-level messages and any expanded replies in `runtime/teams_messages.db`.
   Existing `runtime/teams_messages.json` stores are imported on first use.
-- `teams_get_messages` accepts optional `channel_target`, `since_cursor`, `before_cursor`, and
-  `limit` arguments. Cursorless reads are bounded recent reads: the gateway defaults the call to
-  `teams_poll_limit`, and the Graph adapter stops after `teams_history_page_cap` pages or
-  `teams_history_deadline_seconds`, whichever comes first.
+- `teams_get_messages` requires `channel_target` plus optional `since_cursor`, `before_cursor`,
+  and `limit` arguments. Cursors can be full returned cursor values or bare message ids, which the
+  gateway scopes to the required target. Cursorless reads are bounded recent reads for that target:
+  the gateway defaults the call to `teams_poll_limit`, and the Graph adapter stops after
+  `teams_history_page_cap` pages or `teams_history_deadline_seconds`, whichever comes first.
 - The `teams_get_messages` gateway tool returns normalized envelopes with:
   - `cursor`
   - `message_id`
