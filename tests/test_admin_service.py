@@ -6128,6 +6128,111 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     assert active_only_search.runs == []
 
 
+def test_admin_service_read_workflow_run_search_without_session_reaches_past_sqlite_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "sqlite",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 365,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    base_at = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)
+    candidates = [("evt-no-session", base_at, None)]
+    candidates.extend(
+        (
+            f"evt-session-{index:03d}",
+            base_at + timedelta(minutes=index + 1),
+            f"session-{index:03d}",
+        )
+        for index in range(500)
+    )
+    for event_id, occurred_at, session_id in candidates:
+        queue_store.publish(
+            TriggerEvent(
+                event_id=event_id,
+                trigger_id="trigger-search",
+                trigger_type="trigger:test",
+                occurred_at=occurred_at,
+                payload={},
+                trace_id=f"trace-{event_id}",
+            )
+        )
+        queue_store.mark_delivered(event_id, delivered_at=occurred_at + timedelta(seconds=1))
+        effect_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=f"exec-{event_id}",
+                idempotency_key=f"{event_id}::effect-search",
+                event_id=event_id,
+                trace_id=f"trace-{event_id}",
+                source_node_id="trigger-search",
+                source_trigger_type="trigger:test",
+                effect_id="effect-search",
+                effect_type="effect:test",
+                status="succeeded",
+                started_at=occurred_at + timedelta(seconds=2),
+                finished_at=occurred_at + timedelta(seconds=3),
+                resolved_config_hash=f"hash-{event_id}",
+                resolved_config={"session_id": session_id} if session_id else {},
+                input_payload={},
+                outputs={},
+            )
+        )
+
+    monkeypatch.setattr(
+        SqliteTriggerEventQueue,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every trigger event"),
+    )
+    monkeypatch.setattr(
+        SqliteExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every effect execution"),
+    )
+    monkeypatch.setattr(
+        SqliteGateExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every gate execution"),
+    )
+
+    search = service.read_workflow_run_search(node_id="effect-search", without_session=True)
+
+    assert search.matched == 1
+    assert search.returned == 1
+    assert search.has_more is False
+    assert [run.event_id for run in search.runs] == ["evt-no-session"]
+    assert search.runs[0].session_ids == []
+    assert search.runs[0].has_agent_session is False
+
+    active_only_search = service.read_workflow_run_search(
+        node_id="effect-search", without_session=True, include_completed=False
+    )
+    assert active_only_search.matched == 0
+    assert active_only_search.runs == []
+
+
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_json_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

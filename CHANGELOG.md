@@ -45,6 +45,8 @@ material. Newer entries are added incrementally as changes land.
   orchestration stores.
 - Changed the workflow editor Latest runs filter to include agent-session runs
   by default instead of starting with the expensive no-session-only filter.
+- Fixed SQLite-backed Latest runs searches with `without_session=true` so recent
+  session-backed runs cannot hide older no-session runs from the result slice.
 
 ## 2026-05-31 - Users Tabs Dark Mode
 

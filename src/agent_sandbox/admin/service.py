@@ -15866,10 +15866,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         node_value_placeholders = ", ".join("(?)" for _ in node_ids)
         target_params = node_ids
-        candidate_filter = ""
+        candidate_conditions: list[str] = []
         non_completed_cte = ""
         if not include_completed:
-            candidate_filter = "WHERE event_id IN (SELECT event_id FROM non_completed_events)"
+            candidate_conditions.append("event_id IN (SELECT event_id FROM non_completed_events)")
             non_completed_cte = """
             ,
             non_completed_events AS (
@@ -15886,6 +15886,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 WHERE status IN ('running', 'waiting', 'failed', 'completion_pending')
             )
             """
+        no_session_cte = ""
+        if without_session:
+            candidate_conditions.append("event_id NOT IN (SELECT event_id FROM session_events)")
+            session_id_value_predicate = """
+                LOWER(CAST(session_value.key AS TEXT)) LIKE '%session_id'
+                AND session_value.type = 'text'
+                AND TRIM(CAST(session_value.value AS TEXT)) <> ''
+            """
+            no_session_cte = f"""
+            ,
+            session_events AS (
+                SELECT trigger_events.event_id
+                FROM trigger_events
+                JOIN candidate_events ON candidate_events.event_id = trigger_events.event_id
+                CROSS JOIN json_tree(trigger_events.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+                UNION
+                SELECT effect_executions.event_id
+                FROM effect_executions
+                JOIN candidate_events ON candidate_events.event_id = effect_executions.event_id
+                CROSS JOIN json_tree(effect_executions.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+                UNION
+                SELECT gate_executions.event_id
+                FROM gate_executions
+                JOIN candidate_events ON candidate_events.event_id = gate_executions.event_id
+                CROSS JOIN json_tree(gate_executions.payload_json) AS session_value
+                WHERE {session_id_value_predicate}
+            )
+            """
+        candidate_filter = (
+            "WHERE " + " AND ".join(candidate_conditions) if candidate_conditions else ""
+        )
         cte = f"""
             WITH target_nodes(node_id) AS (
                 VALUES {node_value_placeholders}
@@ -15909,8 +15942,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 GROUP BY event_id
             )
             {non_completed_cte}
+            {no_session_cte}
         """
-        fetch_limit = min(500, max(limit + 1, limit * 20 if without_session else limit + 1))
         db_path = Path(stores["orchestration_store_path"])
         ensure_orchestration_schema(db_path)
         with connect_orchestration_db(db_path) as connection:
@@ -15918,6 +15951,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 f"{cte} SELECT COUNT(*) AS matched FROM candidate_events {candidate_filter}",
                 target_params,
             ).fetchone()
+            matched_count = int(count_row["matched"] if count_row is not None else 0)
+            fetch_limit = matched_count if without_session else min(500, limit + 1)
+            if fetch_limit <= 0:
+                return [], matched_count, False
             rows = connection.execute(
                 f"""
                 {cte}
@@ -15929,7 +15966,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 """,
                 [*target_params, fetch_limit],
             ).fetchall()
-        matched_count = int(count_row["matched"] if count_row is not None else 0)
         event_ids = [
             event_id
             for row in rows
@@ -15952,7 +15988,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if not normalized_event_ids:
             return {}, {}, {}
 
-        placeholders = ", ".join("?" for _ in normalized_event_ids)
         db_path = Path(stores["orchestration_store_path"])
         ensure_orchestration_schema(db_path)
         queue_records: dict[str, Any] = {}
@@ -15972,37 +16007,44 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if key:
                 target[key] = payload
 
+        def event_id_batches() -> Iterator[list[str]]:
+            batch_size = 500
+            for index in range(0, len(normalized_event_ids), batch_size):
+                yield normalized_event_ids[index : index + batch_size]
+
         with connect_orchestration_db(db_path) as connection:
-            for row in connection.execute(
-                f"""
-                SELECT event_id, payload_json
-                FROM trigger_events
-                WHERE event_id IN ({placeholders})
-                ORDER BY occurred_at ASC, event_id ASC
-                """,
-                normalized_event_ids,
-            ):
-                add_payload(queue_records, row, key_field="event_id")
-            for row in connection.execute(
-                f"""
-                SELECT execution_id, payload_json
-                FROM effect_executions
-                WHERE event_id IN ({placeholders})
-                ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
-                """,
-                normalized_event_ids,
-            ):
-                add_payload(effect_records, row, key_field="execution_id")
-            for row in connection.execute(
-                f"""
-                SELECT execution_id, payload_json
-                FROM gate_executions
-                WHERE event_id IN ({placeholders})
-                ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
-                """,
-                normalized_event_ids,
-            ):
-                add_payload(gate_records, row, key_field="execution_id")
+            for event_id_batch in event_id_batches():
+                placeholders = ", ".join("?" for _ in event_id_batch)
+                for row in connection.execute(
+                    f"""
+                    SELECT event_id, payload_json
+                    FROM trigger_events
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(queue_records, row, key_field="event_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM effect_executions
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(effect_records, row, key_field="execution_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM gate_executions
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_batch,
+                ):
+                    add_payload(gate_records, row, key_field="execution_id")
 
         return queue_records, effect_records, gate_records
 
