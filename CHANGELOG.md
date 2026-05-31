@@ -5,6 +5,28 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Teams Message Target Scoping
+
+- Required `channel_target` for `teams_get_messages`, scoped bare Teams message-id cursors to that
+  target, and rejected cursors whose embedded target disagrees with the requested target.
+
+## 2026-05-31 - DIDWW Bridge Realtime Audio Transport
+
+- Changed the DIDWW SIP/OpenAI Realtime bridge to use static G.711
+  ExternalMedia audio (`alaw`/PCMA by default) instead of dynamic signed-linear
+  RTP payloads that Asterisk does not inject reliably in bidirectional
+  ExternalMedia calls.
+- Paced OpenAI audio deltas into 20 ms RTP frames before injecting them into
+  Asterisk, avoiding bursty playback on the PSTN leg.
+- Queued Realtime `response.create` requests until the active response finishes
+  and deduplicated repeated origin-agent voice queries so tool-call delegation no
+  longer terminates calls with `conversation_already_has_active_response`.
+- Requeued retryable `conversation_already_has_active_response` errors instead
+  of treating them as fatal, keeping calls alive when Realtime auto-generates a
+  response while the bridge is ready to speak.
+- Added Azure NSG template rules for DIDWW SIP signaling and Asterisk RTP media
+  to the control-plane public interface using a dedicated narrow RTP port range.
+
 ## 2026-05-31 - Tool Call Selection Keys
 
 - Fixed Admin Web Tool Calls row selection so audit entries sharing a

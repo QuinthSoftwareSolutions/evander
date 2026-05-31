@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import struct
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import httpx
 import uvicorn
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -37,6 +37,11 @@ from agent_sandbox.voice_sessions import (
 logger = logging.getLogger(__name__)
 
 BridgeCallStatus = Literal["created", "connecting", "active", "ended", "failed"]
+
+_RTP_STATIC_AUDIO_FORMATS = {
+    "alaw": {"openai_type": "audio/pcma", "payload_type": 8, "sample_rate_hz": 8000},
+    "ulaw": {"openai_type": "audio/pcmu", "payload_type": 0, "sample_rate_hz": 8000},
+}
 
 _FAILED_HANGUP_CAUSE_CODES = {
     1,
@@ -113,10 +118,10 @@ class DidwwSipBridgeConfig(BaseModel):
     rtp_bind_host: str = "127.0.0.1"
     rtp_port_min: int = Field(default=41000, ge=1, le=65535)
     rtp_port_max: int = Field(default=41100, ge=1, le=65535)
-    rtp_payload_type: int = Field(default=118, ge=0, le=127)
+    rtp_payload_type: int = Field(default=8, ge=0, le=127)
     rtp_ssrc: int = Field(default=0x41534757, ge=0, le=0xFFFFFFFF)
-    media_format: str = "slin16"
-    sample_rate_hz: int = Field(default=16000, ge=8000)
+    media_format: str = "alaw"
+    sample_rate_hz: int = Field(default=8000, ge=8000)
     frame_duration_ms: int = Field(default=20, ge=10, le=60)
     call_timeout_seconds: float = Field(default=45.0, gt=0)
     max_call_seconds: float = Field(default=1800.0, gt=0)
@@ -129,6 +134,38 @@ class DidwwSipBridgeConfig(BaseModel):
     @classmethod
     def normalize_base_url(cls, value: object) -> object:
         return str(value or "").strip().rstrip("/")
+
+    @field_validator("media_format", mode="before")
+    @classmethod
+    def normalize_media_format(cls, value: object) -> object:
+        return str(value or "").strip().lower()
+
+    @field_validator("media_format")
+    @classmethod
+    def validate_media_format(cls, value: str) -> str:
+        if value not in _RTP_STATIC_AUDIO_FORMATS:
+            raise ValueError(
+                "Asterisk ExternalMedia RTP bridge requires static G.711 "
+                "media_format='alaw' or 'ulaw'"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_static_rtp_audio(self) -> DidwwSipBridgeConfig:
+        audio_format = _RTP_STATIC_AUDIO_FORMATS[self.media_format]
+        expected_payload_type = int(audio_format["payload_type"])
+        if self.rtp_payload_type != expected_payload_type:
+            raise ValueError(
+                f"media_format={self.media_format!r} requires "
+                f"rtp_payload_type={expected_payload_type}"
+            )
+        expected_sample_rate = int(audio_format["sample_rate_hz"])
+        if self.sample_rate_hz != expected_sample_rate:
+            raise ValueError(
+                f"media_format={self.media_format!r} requires "
+                f"sample_rate_hz={expected_sample_rate}"
+            )
+        return self
 
     @field_validator("rtp_port_max")
     @classmethod
@@ -406,6 +443,14 @@ class AsteriskCallHandles:
     call_channel_id: str
     bridge_id: str
     external_media_channel_id: str
+    external_media_local_address: str | None = None
+    external_media_local_port: int | None = None
+
+    @property
+    def external_media_local_addr(self) -> tuple[str, int] | None:
+        if not self.external_media_local_address or self.external_media_local_port is None:
+            return None
+        return (self.external_media_local_address, self.external_media_local_port)
 
 
 class AsteriskAriClient:
@@ -449,7 +494,7 @@ class AsteriskAriClient:
                     "timeout": int(self.config.call_timeout_seconds),
                 },
             )
-            await self._request(
+            external_media = await self._request(
                 "POST",
                 "/channels/externalMedia",
                 params={
@@ -461,6 +506,7 @@ class AsteriskAriClient:
                     "direction": "both",
                 },
             )
+            external_media_local_addr = _unicast_rtp_local_addr(external_media)
             if event_websocket is not None:
                 await self._wait_for_stasis_channels(
                     event_websocket,
@@ -486,6 +532,12 @@ class AsteriskAriClient:
             call_channel_id=call_channel_id,
             bridge_id=bridge_id,
             external_media_channel_id=external_media_channel_id,
+            external_media_local_address=(
+                external_media_local_addr[0] if external_media_local_addr is not None else None
+            ),
+            external_media_local_port=(
+                external_media_local_addr[1] if external_media_local_addr is not None else None
+            ),
         )
 
     async def hangup_channel(self, channel_id: str | None) -> None:
@@ -617,6 +669,20 @@ class AsteriskAriClient:
         return f"{ws_base}/events?{query}"
 
 
+def _openai_audio_format(media_format: str) -> dict[str, Any]:
+    try:
+        audio_format = _RTP_STATIC_AUDIO_FORMATS[media_format]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported Realtime bridge media format: {media_format}") from exc
+    return {"type": str(audio_format["openai_type"])}
+
+
+def _rtp_bytes_per_sample(media_format: str) -> int:
+    if media_format in _RTP_STATIC_AUDIO_FORMATS:
+        return 1
+    raise ValueError(f"Unsupported RTP media format: {media_format}")
+
+
 class OpenAIRealtimeSession:
     def __init__(
         self,
@@ -654,13 +720,13 @@ class OpenAIRealtimeSession:
         if self.websocket is not None:
             await self.websocket.close()
 
-    async def append_audio(self, pcm16_audio: bytes) -> None:
-        if not pcm16_audio:
+    async def append_audio(self, audio: bytes) -> None:
+        if not audio:
             return
         await self.send_json(
             {
                 "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(pcm16_audio).decode("ascii"),
+                "audio": base64.b64encode(audio).decode("ascii"),
             }
         )
 
@@ -696,7 +762,12 @@ class OpenAIRealtimeSession:
             payload["response"] = {"instructions": instructions}
         await self.send_json(payload)
 
-    async def inject_origin_query_result(self, query: dict[str, Any]) -> None:
+    async def inject_origin_query_result(
+        self,
+        query: dict[str, Any],
+        *,
+        request_response: bool = True,
+    ) -> None:
         query_id = str(query.get("query_id") or "").strip()
         status = str(query.get("status") or "").strip() or "unknown"
         answer = str(query.get("answer") or query.get("error") or "").strip()
@@ -717,9 +788,10 @@ class OpenAIRealtimeSession:
                 },
             }
         )
-        await self.request_response(
-            "If still relevant, briefly tell the caller the origin agent has the answer."
-        )
+        if request_response:
+            await self.request_response(
+                "If still relevant, briefly tell the caller the origin agent has the answer."
+            )
 
     async def recv_json(self) -> dict[str, Any]:
         if self.websocket is None:
@@ -749,6 +821,7 @@ class OpenAIRealtimeSession:
 
     def _session_payload(self, model: str) -> dict[str, Any]:
         instructions = projection_to_instructions(self.projection)
+        openai_audio_format = _openai_audio_format(self.config.media_format)
         payload: dict[str, Any] = {
             "type": "realtime",
             "model": model,
@@ -756,10 +829,7 @@ class OpenAIRealtimeSession:
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": self.config.sample_rate_hz,
-                    },
+                    "format": dict(openai_audio_format),
                     "turn_detection": {
                         "type": "server_vad",
                         "create_response": True,
@@ -768,10 +838,7 @@ class OpenAIRealtimeSession:
                     },
                 },
                 "output": {
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": self.config.sample_rate_hz,
-                    },
+                    "format": dict(openai_audio_format),
                     "voice": self.config.openai_realtime_voice,
                 },
             },
@@ -998,14 +1065,17 @@ class RtpUdpEndpoint:
     async def recv_payload(self) -> bytes:
         return await self.incoming.get()
 
-    def send_payload(self, payload: bytes) -> None:
+    async def send_payload(self, payload: bytes) -> None:
         if not payload or self.transport is None or self.remote_addr is None:
             return
         samples_per_frame = int(self.config.sample_rate_hz * self.config.frame_duration_ms / 1000)
-        bytes_per_sample = 2
+        bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
         payload_bytes_per_frame = max(1, samples_per_frame * bytes_per_sample)
-        for offset in range(0, len(payload), payload_bytes_per_frame):
-            chunk = payload[offset : offset + payload_bytes_per_frame]
+        chunks = [
+            payload[offset : offset + payload_bytes_per_frame]
+            for offset in range(0, len(payload), payload_bytes_per_frame)
+        ]
+        for index, chunk in enumerate(chunks):
             packet = RtpPacket(
                 sequence=self._sequence,
                 timestamp=self._timestamp,
@@ -1017,6 +1087,8 @@ class RtpUdpEndpoint:
             self._sequence = (self._sequence + 1) & 0xFFFF
             samples_sent = max(1, (len(chunk) + bytes_per_sample - 1) // bytes_per_sample)
             self._timestamp = (self._timestamp + samples_sent) & 0xFFFFFFFF
+            if index < len(chunks) - 1:
+                await asyncio.sleep(self.config.frame_duration_ms / 1000)
 
     def close(self) -> None:
         if self.transport is not None:
@@ -1155,6 +1227,12 @@ class DidwwSipBridgeService:
                             ari_external_media_channel_id=handles.external_media_channel_id,
                             rtp_port=rtp.port,
                         )
+                        if handles.external_media_local_addr is not None:
+                            rtp.remote_addr = handles.external_media_local_addr
+                        await realtime.request_response(
+                            "Start the phone call now. Briefly greet the caller and begin the "
+                            "projected calling task."
+                        )
                         await self._bridge_media_until_done(
                             record.voice_session_id,
                             handles,
@@ -1247,6 +1325,53 @@ class DidwwSipBridgeService:
     ) -> None:
         summary_parts: list[str] = []
         query_tasks: set[asyncio.Task[None]] = set()
+        delegated_queries: dict[str, str] = {}
+        response_active = True
+        pending_responses: list[str | None] = []
+        pending_response_keys: set[str] = set()
+        last_response_request: str | None = None
+        response_lock = asyncio.Lock()
+
+        async def request_response_when_idle(instructions: str | None = None) -> None:
+            nonlocal last_response_request, response_active
+            key = instructions or ""
+            async with response_lock:
+                if response_active:
+                    if key not in pending_response_keys:
+                        pending_responses.append(instructions)
+                        pending_response_keys.add(key)
+                    return
+                response_active = True
+                last_response_request = instructions
+            await realtime.request_response(instructions)
+
+        async def mark_response_done_and_flush() -> None:
+            nonlocal last_response_request, response_active
+            instructions: str | None = None
+            async with response_lock:
+                response_active = False
+                last_response_request = None
+                if not pending_responses:
+                    return
+                instructions = pending_responses.pop(0)
+                pending_response_keys.discard(instructions or "")
+                response_active = True
+                last_response_request = instructions
+            await realtime.request_response(instructions)
+
+        async def requeue_last_response_request() -> None:
+            nonlocal last_response_request, response_active
+            async with response_lock:
+                response_active = True
+                instructions = last_response_request
+                last_response_request = None
+                if instructions is None:
+                    return
+                key = instructions or ""
+                if key not in pending_response_keys:
+                    pending_responses.insert(0, instructions)
+                    pending_response_keys.add(key)
+
         try:
             while not stop_event.is_set():
                 try:
@@ -1254,6 +1379,9 @@ class DidwwSipBridgeService:
                 except TimeoutError:
                     continue
                 event_type = str(event.get("type") or "")
+                if event_type == "response.created":
+                    async with response_lock:
+                        response_active = True
                 function_call = _realtime_function_call(event)
                 if function_call is not None:
                     await self._handle_realtime_function_call(
@@ -1263,11 +1391,13 @@ class DidwwSipBridgeService:
                         media_controller,
                         query_tasks,
                         stop_event,
+                        delegated_queries=delegated_queries,
+                        request_response=request_response_when_idle,
                     )
                     continue
                 audio_delta = _realtime_audio_delta(event)
                 if audio_delta:
-                    rtp.send_payload(base64.b64decode(audio_delta))
+                    await rtp.send_payload(base64.b64decode(audio_delta))
                     continue
                 transcript_text = _realtime_transcript_text(event)
                 if transcript_text:
@@ -1287,7 +1417,20 @@ class DidwwSipBridgeService:
                         status="ended",
                         summary="".join(summary_parts).strip(),
                     )
+                if event_type == "response.done":
+                    await mark_response_done_and_flush()
                 if event_type == "error":
+                    error = event.get("error") if isinstance(event.get("error"), dict) else event
+                    if (
+                        isinstance(error, dict)
+                        and error.get("code") == "conversation_already_has_active_response"
+                    ):
+                        logger.info(
+                            "realtime_response_create_deferred voice_session_id=%s",
+                            voice_session_id,
+                        )
+                        await requeue_last_response_request()
+                        continue
                     raise RuntimeError(str(event.get("error") or event))
         finally:
             for task in query_tasks:
@@ -1302,13 +1445,17 @@ class DidwwSipBridgeService:
         media_controller: VoiceMediaControllerClient,
         query_tasks: set[asyncio.Task[None]],
         stop_event: asyncio.Event,
+        *,
+        delegated_queries: dict[str, str] | None = None,
+        request_response: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
+        request_response = request_response or realtime.request_response
         if function_call.name != "query_origin_agent":
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": f"Unsupported tool: {function_call.name}"},
             )
-            await realtime.request_response("Tell the caller that tool is unavailable.")
+            await request_response("Tell the caller that tool is unavailable.")
             return
         question = str(
             function_call.arguments.get("question")
@@ -1320,15 +1467,26 @@ class DidwwSipBridgeService:
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": "question is required"},
             )
-            await realtime.request_response("Ask the caller to clarify the question.")
+            await request_response("Ask the caller to clarify the question.")
             return
         if not media_controller.configured:
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": "origin agent delegation is not configured"},
             )
-            await realtime.request_response(
+            await request_response(
                 "Tell the caller you cannot check the origin agent right now."
+            )
+            return
+        query_key = _voice_query_key(question)
+        if delegated_queries is not None and query_key in delegated_queries:
+            await realtime.send_tool_output(
+                call_id=function_call.call_id,
+                output={
+                    "status": "pending",
+                    "query_id": delegated_queries[query_key],
+                    "deduplicated": True,
+                },
             )
             return
         record = self.store.get(voice_session_id)
@@ -1355,11 +1513,13 @@ class DidwwSipBridgeService:
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": str(exc)},
             )
-            await realtime.request_response(
+            await request_response(
                 "Tell the caller you cannot check the origin agent right now."
             )
             return
         query_id = str(query.get("query_id") or "").strip()
+        if delegated_queries is not None and query_id:
+            delegated_queries[query_key] = query_id
         self.store.append_transcript_event(
             voice_session_id,
             speaker="assistant",
@@ -1370,7 +1530,7 @@ class DidwwSipBridgeService:
             call_id=function_call.call_id,
             output={"status": "pending", "query_id": query_id},
         )
-        await realtime.request_response(
+        await request_response(
             "Tell the caller you are checking with the originating agent, then continue naturally."
         )
         task = asyncio.create_task(
@@ -1380,6 +1540,7 @@ class DidwwSipBridgeService:
                 media_controller,
                 realtime,
                 stop_event,
+                request_response=request_response,
             )
         )
         query_tasks.add(task)
@@ -1392,7 +1553,10 @@ class DidwwSipBridgeService:
         media_controller: VoiceMediaControllerClient,
         realtime: OpenAIRealtimeSession,
         stop_event: asyncio.Event,
+        *,
+        request_response: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
+        request_response = request_response or realtime.request_response
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.config.voice_query_timeout_seconds
         while not stop_event.is_set() and loop.time() < deadline:
@@ -1400,7 +1564,10 @@ class DidwwSipBridgeService:
             query = await media_controller.get_query(voice_session_id, query_id)
             status = str(query.get("status") or "").strip()
             if status in {"answered", "failed"}:
-                await realtime.inject_origin_query_result(query)
+                await realtime.inject_origin_query_result(query, request_response=False)
+                await request_response(
+                    "If still relevant, briefly tell the caller the origin agent has the answer."
+                )
                 answer = str(query.get("answer") or query.get("error") or "").strip()
                 if answer:
                     self.store.append_transcript_event(
@@ -1412,7 +1579,10 @@ class DidwwSipBridgeService:
                 return
         if not stop_event.is_set():
             query = await media_controller.mark_query_timeout(voice_session_id, query_id)
-            await realtime.inject_origin_query_result(query)
+            await realtime.inject_origin_query_result(query, request_response=False)
+            await request_response(
+                "Tell the caller the origin agent did not answer before the voice query timed out."
+            )
 
     async def _wait_for_asterisk_end(
         self,
@@ -1551,9 +1721,9 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         rtp_bind_host=_env("DIDWW_SIP_BRIDGE_RTP_BIND_HOST", "127.0.0.1"),
         rtp_port_min=_env_int("DIDWW_SIP_BRIDGE_RTP_PORT_MIN", 41000),
         rtp_port_max=_env_int("DIDWW_SIP_BRIDGE_RTP_PORT_MAX", 41100),
-        rtp_payload_type=_env_int("DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE", 118),
-        media_format=_env("DIDWW_SIP_BRIDGE_MEDIA_FORMAT", "slin16"),
-        sample_rate_hz=_env_int("DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ", 16000),
+        rtp_payload_type=_env_int("DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE", 8),
+        media_format=_env("DIDWW_SIP_BRIDGE_MEDIA_FORMAT", "alaw"),
+        sample_rate_hz=_env_int("DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ", 8000),
         frame_duration_ms=_env_int("DIDWW_SIP_BRIDGE_FRAME_DURATION_MS", 20),
         call_timeout_seconds=_env_float("DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS", 45.0),
         max_call_seconds=_env_float("DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS", 1800.0),
@@ -1610,6 +1780,10 @@ def transcript_from_events(events: list[VoiceTranscriptEvent]) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def _voice_query_key(question: str) -> str:
+    return re.sub(r"\s+", " ", str(question or "").strip()).casefold()
+
+
 def redact_phone_number(value: str | None) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -1639,6 +1813,22 @@ def _ari_channel_state(event: dict[str, Any]) -> str | None:
         state = channel.get("state")
         return str(state) if state is not None else None
     return None
+
+
+def _unicast_rtp_local_addr(channel: dict[str, Any]) -> tuple[str, int] | None:
+    raw_vars = channel.get("channelvars")
+    channelvars = raw_vars if isinstance(raw_vars, dict) else {}
+    address = str(channelvars.get("UNICASTRTP_LOCAL_ADDRESS") or "").strip()
+    port_text = str(channelvars.get("UNICASTRTP_LOCAL_PORT") or "").strip()
+    if not address or not port_text:
+        return None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    return (address, port)
 
 
 def _ari_hangup_status(event: dict[str, Any]) -> BridgeCallStatus:
