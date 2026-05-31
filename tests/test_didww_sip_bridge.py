@@ -1760,6 +1760,124 @@ def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_qu
     assert "origin agent's answer is available" in str(realtime.responses[0])
 
 
+def test_terminal_origin_query_retry_clears_legacy_delegated_query_cache(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.tool_outputs: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+            self.injected: list[dict[str, object]] = []
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+    class FakeController:
+        configured = True
+
+        def __init__(self) -> None:
+            self.create_count = 0
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            self.create_count += 1
+            if self.create_count == 1:
+                return {
+                    "query_id": "voice-query-1",
+                    "status": "failed",
+                    "error": "first failed",
+                }
+            return {
+                "query_id": "voice-query-2",
+                "status": "failed",
+                "error": "second failed",
+            }
+
+    async def run() -> tuple[FakeRealtime, FakeController, dict[str, str]]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        query_tasks: set[asyncio.Task[None]] = set()
+        delegated_queries: dict[str, str] = {}
+        origin_queries_by_question: dict[str, didww_sip_bridge.OriginQueryState] = {}
+        origin_queries_by_id: dict[str, didww_sip_bridge.OriginQueryState] = {}
+
+        async def ask(call_id: str) -> None:
+            await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+                record.voice_session_id,
+                RealtimeFunctionCall(
+                    call_id=call_id,
+                    name="query_origin_agent",
+                    arguments={"question": "What changed?"},
+                ),
+                realtime,  # type: ignore[arg-type]
+                controller,  # type: ignore[arg-type]
+                query_tasks,
+                asyncio.Event(),
+                delegated_queries=delegated_queries,
+                origin_queries_by_question=origin_queries_by_question,
+                origin_queries_by_id=origin_queries_by_id,
+            )
+
+        await ask("tool-call-1")
+        await ask("tool-call-2")
+        await ask("tool-call-3")
+        return realtime, controller, delegated_queries
+
+    realtime, controller, delegated_queries = asyncio.run(run())
+
+    assert controller.create_count == 2
+    assert realtime.tool_outputs == [
+        {
+            "call_id": "tool-call-1",
+            "output": {
+                "status": "failed",
+                "query_id": "voice-query-1",
+                "error": "first failed",
+            },
+        },
+        {
+            "call_id": "tool-call-2",
+            "output": {
+                "status": "failed",
+                "query_id": "voice-query-1",
+                "error": "first failed",
+                "deduplicated": True,
+            },
+        },
+        {
+            "call_id": "tool-call-3",
+            "output": {
+                "status": "failed",
+                "query_id": "voice-query-2",
+                "error": "second failed",
+            },
+        },
+    ]
+    assert list(delegated_queries.values()) == ["voice-query-2"]
+    assert [query["query_id"] for query in realtime.injected] == [
+        "voice-query-1",
+        "voice-query-2",
+    ]
+
+
 def test_calling_task_question_answers_from_projection_without_origin_query(
     tmp_path: Path,
 ) -> None:

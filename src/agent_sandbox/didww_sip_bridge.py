@@ -2173,6 +2173,9 @@ class DidwwSipBridgeService:
             if state.status in {"failed", "timeout"} and state.failure_reused:
                 origin_queries_by_question.pop(state.question_key, None)
                 origin_queries_by_id.pop(state.query_id, None)
+                if delegated_queries is not None:
+                    delegated_queries.pop(query_key, None)
+                    delegated_queries.pop(state.question_key, None)
             else:
                 await realtime.send_tool_output(
                     call_id=function_call.call_id,

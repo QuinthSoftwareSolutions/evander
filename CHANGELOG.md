@@ -23,6 +23,9 @@ material. Newer entries are added incrementally as changes land.
   are skipped or superseded when answers arrive, duplicate questions reuse the
   existing pending or answered result, and projected calling-task questions are
   answered without waking the origin agent.
+- Fixed repeated DIDWW origin-query retries after terminal failures so stale
+  duplicate-query cache entries do not keep returning an already-failed query as
+  pending.
 
 ## 2026-05-31 - Realtime Voice Prompt Tightening
 
