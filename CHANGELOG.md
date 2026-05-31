@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Users Tabs Dark Mode
+
+- Fixed the Admin Web Users & Groups mode tabs so the segmented control uses
+  dark-theme colors instead of light surfaces.
+
 ## 2026-05-30 - Users And Groups Page Modes
 
 - Split Admin Web Users & Groups into separate Users and Groups modes and made
