@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   starts only after assistant RTP playback drains, caller speech cancels stale
   prompts, and silent periods receive at most one bridge-owned check-in prompt.
 
+## 2026-05-31 - DIDWW Caller Turn Response Ownership
+
+- Completed the DIDWW bridge-owned Realtime turn takeover by explicitly queuing
+  bridge `response.create` requests when caller transcription completes, including
+  caller turns that arrive while an assistant response is still active.
+
 ## 2026-05-31 - DIDWW Origin Query State
 
 - Added DIDWW bridge-local origin-query state so delayed checking acknowledgements

@@ -1792,10 +1792,10 @@ class DidwwSipBridgeService:
             nonlocal caller_speech_active, caller_speech_started_during_assistant, last_caller_turn
             await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
             last_caller_turn = transcript_text
-            if not caller_speech_started_during_assistant:
-                caller_speech_active = False
-                return
             caller_speech_active = False
+            if not caller_speech_started_during_assistant:
+                await request_bridge_response(reason="caller_turn_completed")
+                return
             is_backchannel = _is_backchannel_transcript(
                 transcript_text,
                 phrases=self.config.backchannel_phrases,
@@ -1835,6 +1835,7 @@ class DidwwSipBridgeService:
                 )
                 return
             caller_speech_started_during_assistant = False
+            await request_bridge_response(reason="caller_turn_completed")
             if barge_cancelled_utterance_id == current_caller_utterance_id:
                 return
             if assistant_audio_active():

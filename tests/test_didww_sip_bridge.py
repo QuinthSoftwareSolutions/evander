@@ -1069,6 +1069,7 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
                 {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
             ]
             self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
 
         async def recv_json(self) -> dict[str, Any]:
             while self.events:
@@ -1085,7 +1086,8 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
             self.cancels.append(response_id)
 
         async def request_response(self, instructions: str | None = None) -> None:
-            raise AssertionError("caller transcript should use Realtime auto response")
+            self.responses.append(instructions)
+            stop_event.set()
 
     class FakeRtp:
         async def send_payload(self, payload: bytes) -> None:
@@ -1116,6 +1118,7 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
     realtime = asyncio.run(run())
 
     assert realtime.cancels == ["resp-1"]
+    assert realtime.responses == [None]
     latest = store.get("voice-1")
     assert latest is not None
     cancel_events = [
@@ -1217,7 +1220,7 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     assert rtp.sent == [first, later]
 
 
-def test_realtime_caller_transcript_uses_realtime_auto_response_after_greeting_done(
+def test_realtime_caller_transcript_requests_bridge_response_after_greeting_done(
     tmp_path: Path,
 ) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
@@ -1278,10 +1281,11 @@ def test_realtime_caller_transcript_uses_realtime_auto_response_after_greeting_d
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses == []
+    assert realtime.responses == [None]
     assert order == [
         "response.done",
         "conversation.item.input_audio_transcription.completed",
+        "response.create",
     ]
     latest = store.get("voice-1")
     assert latest is not None
@@ -1289,7 +1293,7 @@ def test_realtime_caller_transcript_uses_realtime_auto_response_after_greeting_d
     assert latest.transcript_events[-1].text == "What changed?"
 
 
-def test_realtime_caller_transcript_during_active_response_does_not_request_bridge_response(
+def test_realtime_caller_transcript_during_active_response_is_queued_until_done(
     tmp_path: Path,
 ) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
@@ -1350,14 +1354,15 @@ def test_realtime_caller_transcript_during_active_response_does_not_request_brid
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses == []
+    assert realtime.responses == [None]
     assert order == [
         "conversation.item.input_audio_transcription.completed",
         "response.done",
+        "response.create",
     ]
 
 
-def test_realtime_caller_transcripts_do_not_create_bridge_response_queue(
+def test_realtime_caller_transcripts_create_serialized_bridge_responses(
     tmp_path: Path,
 ) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
@@ -1424,12 +1429,14 @@ def test_realtime_caller_transcripts_do_not_create_bridge_response_queue(
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses == []
+    assert realtime.responses == [None, None]
     assert order == [
         "conversation.item.input_audio_transcription.completed",
         "conversation.item.input_audio_transcription.completed",
         "response.done",
+        "response.create.1",
         "response.done",
+        "response.create.2",
     ]
 
 
