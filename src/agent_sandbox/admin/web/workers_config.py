@@ -86,6 +86,15 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
     ("providers", "execution_backend"): "Execution backend",
+    ("providers", "phone_call_backend"): "Phone call backend",
+    ("providers", "retell_api_base_url"): "Retell API base URL",
+    ("providers", "retell_api_key_env"): "Retell API key env",
+    ("providers", "retell_from_number"): "Retell from number",
+    ("providers", "retell_default_agent_id"): "Retell default agent ID",
+    ("providers", "retell_request_timeout_seconds"): "Retell request timeout seconds",
+    ("providers", "didww_sip_bridge_url"): "DIDWW SIP bridge URL",
+    ("providers", "didww_sip_bridge_token_env"): "DIDWW SIP bridge token env",
+    ("providers", "didww_from_number"): "DIDWW from number",
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
