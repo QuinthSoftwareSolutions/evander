@@ -5997,6 +5997,137 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     assert cleared_gate.clear_reason == "manual_clear_stale_workflow_runs"
 
 
+def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "sqlite",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 365,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    queue_store = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
+    older_at = datetime(2026, 5, 19, 10, 0, tzinfo=UTC)
+    newer_at = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)
+    for event_id, occurred_at in (
+        ("evt-old", older_at),
+        ("evt-new", newer_at),
+        ("evt-other", newer_at + timedelta(hours=1)),
+    ):
+        queue_store.publish(
+            TriggerEvent(
+                event_id=event_id,
+                trigger_id="trigger-search",
+                trigger_type="trigger:test",
+                occurred_at=occurred_at,
+                payload={},
+                trace_id=f"trace-{event_id}",
+            )
+        )
+        queue_store.mark_delivered(event_id, delivered_at=occurred_at + timedelta(seconds=5))
+
+    for event_id, started_at, effect_id in (
+        ("evt-old", older_at + timedelta(minutes=1), "effect-search"),
+        ("evt-new", newer_at + timedelta(minutes=1), "effect-search"),
+        ("evt-other", newer_at + timedelta(hours=1, minutes=1), "effect-other"),
+    ):
+        effect_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=f"exec-{event_id}",
+                idempotency_key=f"{event_id}::{effect_id}",
+                event_id=event_id,
+                trace_id=f"trace-{event_id}",
+                source_node_id="trigger-search",
+                source_trigger_type="trigger:test",
+                effect_id=effect_id,
+                effect_type="effect:test",
+                status="succeeded",
+                started_at=started_at,
+                finished_at=started_at + timedelta(seconds=1),
+                resolved_config_hash=f"hash-{event_id}",
+                resolved_config={},
+                input_payload={},
+                outputs={},
+            )
+        )
+    gate_store.record_execution(
+        GateExecutionRecord(
+            execution_id="gate-evt-new",
+            idempotency_key="evt-new::gate-search",
+            event_id="evt-new",
+            trace_id="trace-evt-new",
+            source_node_id="effect-search",
+            source_trigger_type="trigger:test",
+            gate_id="gate-search",
+            gate_type="gate:test",
+            status="succeeded",
+            started_at=newer_at + timedelta(minutes=2),
+            finished_at=newer_at + timedelta(minutes=2, seconds=1),
+            resolved_config_hash="hash-gate-new",
+            resolved_config={},
+            input_payload={},
+            outputs={},
+            inputs_by_source={},
+            input_event_ids_by_source={},
+            input_occurred_at_by_source={},
+        )
+    )
+
+    monkeypatch.setattr(
+        SqliteTriggerEventQueue,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every trigger event"),
+    )
+    monkeypatch.setattr(
+        SqliteExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every effect execution"),
+    )
+    monkeypatch.setattr(
+        SqliteGateExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run search should not scan every gate execution"),
+    )
+
+    search = service.read_workflow_run_search(node_id="effect-search", limit=1)
+
+    assert search.matched == 2
+    assert search.returned == 1
+    assert search.has_more is True
+    assert [run.event_id for run in search.runs] == ["evt-new"]
+    assert search.runs[0].matched_node_ids == ["effect-search"]
+    assert search.runs[0].node_ids == ["effect-search", "gate-search", "trigger-search"]
+    assert search.runs[0].status_counts == {"delivered": 1, "succeeded": 2}
+
+    active_only_search = service.read_workflow_run_search(
+        node_id="effect-search", limit=1, include_completed=False
+    )
+    assert active_only_search.matched == 0
+    assert active_only_search.runs == []
+
+
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_json_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

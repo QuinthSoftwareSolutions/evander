@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-31 - Workflow Run Search Latency
+
+- Made Admin Web Latest runs search use SQLite event-id slicing before hydrating
+  run cards, avoiding full trigger/effect/gate history scans on SQLite-backed
+  orchestration stores.
+- Changed the workflow editor Latest runs filter to include agent-session runs
+  by default instead of starting with the expensive no-session-only filter.
+
 ## 2026-05-31 - Users Tabs Dark Mode
 
 - Fixed the Admin Web Users & Groups mode tabs so the segmented control uses

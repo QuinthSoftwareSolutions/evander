@@ -3625,7 +3625,7 @@ export default function App() {
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [runSearchScope, setRunSearchScope] = useState("");
-  const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(true);
+  const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(false);
   const [runSearchIncludeCompleted, setRunSearchIncludeCompleted] = useState(true);
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);

@@ -14194,14 +14194,35 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError("Workflow run search requires node_id or graph_id.")
 
         stores = self._workflow_run_store_paths()
-        _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
-        queue_records = self._workflow_run_event_records(stores)
-        effect_records = effect_store.read_all()
-        gate_records = gate_store.read_all()
         await_agent_payload = _read_merged_json_objects(
             stores["legacy_await_agent_store_path"],
             stores["await_agent_store_path"],
         )
+        sqlite_matched_count: int | None = None
+        sqlite_has_more_candidates = False
+        if self._workflow_uses_sqlite_store(stores):
+            (
+                sqlite_event_ids,
+                sqlite_matched_count,
+                sqlite_has_more_candidates,
+            ) = self._workflow_run_search_sqlite_event_ids(
+                stores,
+                target_node_ids=target_node_ids,
+                include_completed=include_completed,
+                limit=normalized_limit,
+                without_session=without_session,
+            )
+            queue_records, effect_records, gate_records = (
+                self._workflow_run_sqlite_records_for_event_ids(
+                    stores,
+                    event_ids=sqlite_event_ids,
+                )
+            )
+        else:
+            _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
+            queue_records = self._workflow_run_event_records(stores)
+            effect_records = effect_store.read_all()
+            gate_records = gate_store.read_all()
         approval_requests = self.runtime.approvals.read_all()
         artifact_store = self._communication_artifact_store()
 
@@ -14211,6 +14232,41 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if isinstance(record, dict):
                 return dict(record)
             return {}
+
+        def record_event_id(record: dict[str, Any], fallback: object) -> str:
+            return _coerce_optional_string(record.get("event_id")) or str(fallback)
+
+        def collect_json_candidate_event_ids() -> set[str] | None:
+            if self._workflow_uses_sqlite_store(stores) or without_session:
+                return None
+            event_ids: set[str] = set()
+            for record_key, record in queue_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("trigger_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, record_key))
+            for execution_id, record in effect_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("effect_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, execution_id))
+            for execution_id, record in gate_records.items():
+                raw_record = normalize_record_payload(record)
+                if not raw_record:
+                    continue
+                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
+                    event_ids.add(record_event_id(raw_record, execution_id))
+            for record_key, raw_record in await_agent_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
+                    event_ids.add(
+                        _coerce_optional_string(raw_record.get("prompt_event_id"))
+                        or str(record_key)
+                    )
+            return event_ids
 
         def latest_of(*values: object) -> datetime | None:
             parsed = [
@@ -14349,11 +14405,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
 
         groups: dict[str, dict[str, Any]] = {}
+        candidate_event_ids = collect_json_candidate_event_ids()
         for record_key, record in queue_records.items():
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(record_key)
+            event_id = record_event_id(raw_record, record_key)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             occurred_at = _coerce_optional_datetime(raw_record.get("occurred_at"))
             register_activity(
                 groups,
@@ -14383,7 +14442,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            event_id = record_event_id(raw_record, execution_id)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             payload_sources = [
                 raw_record.get("resolved_config"),
                 raw_record.get("input_payload"),
@@ -14410,7 +14471,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            event_id = record_event_id(raw_record, execution_id)
+            if candidate_event_ids is not None and event_id not in candidate_event_ids:
+                continue
             payload_sources = [
                 raw_record.get("resolved_config"),
                 raw_record.get("input_payload"),
@@ -14528,6 +14591,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             reverse=True,
         )
         limited_runs = matched_runs[:normalized_limit]
+        matched_count = (
+            max(sqlite_matched_count, len(matched_runs))
+            if sqlite_matched_count is not None and not without_session
+            else len(matched_runs)
+        )
         return WorkflowRunSearchPayload(
             generated_at=_utc_now(),
             filters=WorkflowRunSearchFilterPayload(
@@ -14538,10 +14606,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 include_completed=include_completed,
             ),
             runs=limited_runs,
-            matched=len(matched_runs),
+            matched=matched_count,
             returned=len(limited_runs),
             limit=normalized_limit,
-            has_more=len(matched_runs) > normalized_limit,
+            has_more=matched_count > len(limited_runs)
+            or (sqlite_has_more_candidates and not without_session),
         )
 
     def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
@@ -15599,6 +15668,161 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 for record in queue_store.read_all().values()
             }
         return JsonTriggerEventRepository().read_events(stores["event_queue_store_path"])
+
+    def _workflow_run_search_sqlite_event_ids(
+        self,
+        stores: Mapping[str, Any],
+        *,
+        target_node_ids: set[str],
+        include_completed: bool,
+        limit: int,
+        without_session: bool,
+    ) -> tuple[list[str], int, bool]:
+        node_ids = sorted(node_id for node_id in target_node_ids if node_id)
+        if not node_ids:
+            return [], 0, False
+
+        node_value_placeholders = ", ".join("(?)" for _ in node_ids)
+        target_params = node_ids
+        candidate_filter = ""
+        non_completed_cte = ""
+        if not include_completed:
+            candidate_filter = "WHERE event_id IN (SELECT event_id FROM non_completed_events)"
+            non_completed_cte = """
+            ,
+            non_completed_events AS (
+                SELECT event_id
+                FROM trigger_events
+                WHERE delivery_state IN ('pending', 'inflight')
+                UNION
+                SELECT event_id
+                FROM effect_executions
+                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending', 'error_routed')
+                UNION
+                SELECT event_id
+                FROM gate_executions
+                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending')
+            )
+            """
+        cte = f"""
+            WITH target_nodes(node_id) AS (
+                VALUES {node_value_placeholders}
+            ),
+            target_activity AS (
+                SELECT event_id, COALESCE(delivered_at, inflight_at, occurred_at) AS activity_at
+                FROM trigger_events
+                WHERE trigger_id IN (SELECT node_id FROM target_nodes)
+                UNION ALL
+                SELECT event_id, COALESCE(finished_at, started_at) AS activity_at
+                FROM effect_executions
+                WHERE effect_id IN (SELECT node_id FROM target_nodes)
+                UNION ALL
+                SELECT event_id, COALESCE(finished_at, started_at) AS activity_at
+                FROM gate_executions
+                WHERE gate_id IN (SELECT node_id FROM target_nodes)
+            ),
+            candidate_events AS (
+                SELECT event_id, MAX(activity_at) AS latest_activity_at
+                FROM target_activity
+                GROUP BY event_id
+            )
+            {non_completed_cte}
+        """
+        fetch_limit = min(500, max(limit + 1, limit * 20 if without_session else limit + 1))
+        db_path = Path(stores["orchestration_store_path"])
+        ensure_orchestration_schema(db_path)
+        with connect_orchestration_db(db_path) as connection:
+            count_row = connection.execute(
+                f"{cte} SELECT COUNT(*) AS matched FROM candidate_events {candidate_filter}",
+                target_params,
+            ).fetchone()
+            rows = connection.execute(
+                f"""
+                {cte}
+                SELECT event_id
+                FROM candidate_events
+                {candidate_filter}
+                ORDER BY latest_activity_at DESC, event_id DESC
+                LIMIT ?
+                """,
+                [*target_params, fetch_limit],
+            ).fetchall()
+        matched_count = int(count_row["matched"] if count_row is not None else 0)
+        event_ids = [
+            event_id
+            for row in rows
+            for event_id in [_coerce_optional_string(row["event_id"])]
+            if event_id
+        ]
+        return event_ids, matched_count, matched_count > len(event_ids)
+
+    def _workflow_run_sqlite_records_for_event_ids(
+        self,
+        stores: Mapping[str, Any],
+        *,
+        event_ids: list[str],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        normalized_event_ids = [
+            event_id.strip()
+            for event_id in dict.fromkeys(event_ids)
+            if event_id and event_id.strip()
+        ]
+        if not normalized_event_ids:
+            return {}, {}, {}
+
+        placeholders = ", ".join("?" for _ in normalized_event_ids)
+        db_path = Path(stores["orchestration_store_path"])
+        ensure_orchestration_schema(db_path)
+        queue_records: dict[str, Any] = {}
+        effect_records: dict[str, Any] = {}
+        gate_records: dict[str, Any] = {}
+
+        def add_payload(
+            target: dict[str, Any],
+            row: Any,
+            *,
+            key_field: str,
+        ) -> None:
+            payload = json_loads_object(row["payload_json"])
+            key = _coerce_optional_string(payload.get(key_field)) or _coerce_optional_string(
+                row[key_field]
+            )
+            if key:
+                target[key] = payload
+
+        with connect_orchestration_db(db_path) as connection:
+            for row in connection.execute(
+                f"""
+                SELECT event_id, payload_json
+                FROM trigger_events
+                WHERE event_id IN ({placeholders})
+                ORDER BY occurred_at ASC, event_id ASC
+                """,
+                normalized_event_ids,
+            ):
+                add_payload(queue_records, row, key_field="event_id")
+            for row in connection.execute(
+                f"""
+                SELECT execution_id, payload_json
+                FROM effect_executions
+                WHERE event_id IN ({placeholders})
+                ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                """,
+                normalized_event_ids,
+            ):
+                add_payload(effect_records, row, key_field="execution_id")
+            for row in connection.execute(
+                f"""
+                SELECT execution_id, payload_json
+                FROM gate_executions
+                WHERE event_id IN ({placeholders})
+                ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                """,
+                normalized_event_ids,
+            ):
+                add_payload(gate_records, row, key_field="execution_id")
+
+        return queue_records, effect_records, gate_records
 
     def _workflow_run_detail_sqlite_records(
         self,
