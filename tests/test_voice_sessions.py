@@ -88,6 +88,27 @@ def test_voice_projection_contains_originating_agent_context() -> None:
     assert "Origin metadata" in projection["context"]
 
 
+def test_voice_projection_instructions_set_natural_phone_behavior() -> None:
+    projection = VoiceProjectionService().build_projection(
+        session=_session(),
+        prompt="Ask which approval item to release.",
+        channel="phone",
+        metadata={"reason": "approval"},
+    )
+
+    instructions = projection["instructions"].lower()
+    prompt = projection["prompt"].lower()
+    assert "backchannels" in instructions
+    assert "do not repeat the prior answer" in instructions
+    assert "one or two short spoken paragraphs" in instructions
+    assert "pause naturally after a long answer" in instructions
+    assert "do not keep narrating the pending query" in instructions
+    assert "give the answer directly" in instructions
+    assert "do not narrate internal bookkeeping" in instructions
+    assert "for reconciliation" not in instructions
+    assert "for reconciliation" not in prompt
+
+
 def test_voice_query_delegator_schedules_origin_agent_wake_and_completes(
     tmp_path: Path,
 ) -> None:

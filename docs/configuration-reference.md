@@ -1121,6 +1121,7 @@ overlays.
 | `DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST`, `DIDWW_SIP_BRIDGE_RTP_BIND_HOST`, `DIDWW_SIP_BRIDGE_RTP_PORT_MIN`, `DIDWW_SIP_BRIDGE_RTP_PORT_MAX`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | bridge env | Asterisk `ExternalMedia` RTP settings for bidirectional audio between Asterisk and the Python bridge. Use static G.711 RTP: `alaw` with payload type `8` by default, or `ulaw` with payload type `0`; both use `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ=8000`. |
 | `DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS`, `DIDWW_SIP_BRIDGE_REQUEST_TIMEOUT_SECONDS`, `DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS` | bridge env | Bridge control-plane timeout and concurrency limits. |
 | `DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS`, `DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS` | bridge env | Polling and timeout behavior for async `query_origin_agent` delegation back to the originating session. |
+| `DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS`, `DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS`, `DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES` | bridge env | Delayed bridge-controlled barge-in for DIDWW Realtime calls; short configured backchannels are transcribed but do not cancel assistant audio. |
 
 ### Teams meeting media bridge service keys
 
