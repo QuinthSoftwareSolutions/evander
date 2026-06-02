@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Workflow Generator Schema Fix
+
+- Included the legacy `directory_paths` graph field in the strict OpenAI
+  workflow draft response schema requirements so generated workflow drafts are
+  accepted by Responses API schema validation.
+
 ## 2026-06-02 - Configuration Override Removal
 
 - Fixed Admin Web configuration tab saves so unchecking an existing directory override removes

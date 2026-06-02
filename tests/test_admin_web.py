@@ -7902,6 +7902,32 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert len(responses["conformance_reports"].json()["reports"]) == 2
 
 
+def _assert_json_schema_requires_every_object_property(
+    schema: dict[str, object], path: str = "$"
+) -> None:
+    schema_type = schema.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        properties = schema.get("properties")
+        required = schema.get("required")
+        assert isinstance(properties, dict), f"{path} must define object properties"
+        assert isinstance(required, list), f"{path} must define required properties"
+        assert set(properties) <= set(required), (
+            f"{path} required must include every property"
+        )
+    else:
+        properties = schema.get("properties")
+
+    if isinstance(properties, dict):
+        for key, value in properties.items():
+            if isinstance(value, dict):
+                _assert_json_schema_requires_every_object_property(value, f"{path}.{key}")
+    items = schema.get("items")
+    if isinstance(items, dict):
+        _assert_json_schema_requires_every_object_property(items, f"{path}[]")
+
+
 def test_workflow_generator_returns_validated_draft_without_writing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7992,6 +8018,9 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert request_payload["model"] == "gpt-workflow-test"
     assert request_payload["text"]["format"]["type"] == "json_schema"
     assert request_payload["text"]["format"]["strict"] is True
+    schema = request_payload["text"]["format"]["schema"]
+    assert isinstance(schema, dict)
+    _assert_json_schema_requires_every_object_property(schema)
     assert captured_requests[0]["headers"]["authorization"] == "Bearer sk-test"
     assert not (tmp_path / "config" / "trigger-orchestrator" / "config.json").exists()
     assert not (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
