@@ -216,6 +216,7 @@ type InspectorDraftSnapshot = {
   displayName: string;
   knownValues: Record<string, unknown>;
   unknownValues: Record<string, unknown>;
+  effectTargetKey?: EffectTargetKey;
   jsonDrafts: Record<string, string>;
   toolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
   jsonDisplayModes: Record<string, JsonDisplayMode>;
@@ -3574,6 +3575,12 @@ function insertBindingReference(currentValue: unknown, bindingReference: string)
 function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey {
   if (typeof values.session_id === "string" && values.session_id.trim()) return "session_id";
   if (typeof values.vm_name === "string" && values.vm_name.trim()) return "vm_name";
+  if (typeof values.session_id === "string" && !Object.prototype.hasOwnProperty.call(values, "target")) {
+    return "session_id";
+  }
+  if (typeof values.vm_name === "string" && !Object.prototype.hasOwnProperty.call(values, "target")) {
+    return "vm_name";
+  }
   return "target";
 }
 
@@ -3718,6 +3725,7 @@ export default function App() {
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
+  const [runSnapshotError, setRunSnapshotError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
   const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
@@ -3753,6 +3761,7 @@ export default function App() {
     SessionListMetadataRuleDraftRow[]
   >([]);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
+  const [inspectorEffectTargetKey, setInspectorEffectTargetKey] = useState<EffectTargetKey>("target");
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
   const [outputCopyError, setOutputCopyError] = useState<string | null>(null);
@@ -4047,7 +4056,7 @@ export default function App() {
     [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
   );
   const hasCollapsedTargetUi = TARGET_SELECTOR_NODE_TYPES.has(selectedNode?.type ?? "");
-  const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
+  const effectTargetKey = hasCollapsedTargetUi ? inspectorEffectTargetKey : activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];
     if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
@@ -4268,6 +4277,7 @@ export default function App() {
       setRunDetailError(null);
       setRunSearchResult(null);
       setRunSearchError(null);
+      setRunSnapshotError(null);
       return;
     }
     let cancelled = false;
@@ -4275,11 +4285,11 @@ export default function App() {
       .then((runSnapshotPayload) => {
         if (cancelled) return;
         applyWorkflowRunSnapshot(runSnapshotPayload);
-        setError(null);
+        setRunSnapshotError(null);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setRunSnapshotError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => {
       cancelled = true;
@@ -5274,6 +5284,7 @@ export default function App() {
       setInspectorStringMapDrafts({});
       setInspectorSessionListMetadataRules([]);
       setInspectorFieldModes({});
+      setInspectorEffectTargetKey("target");
       setRawJsonDraft("{}");
       return;
     }
@@ -5364,6 +5375,7 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
     setInspectorFieldModes(nextFieldModes);
+    setInspectorEffectTargetKey(activeEffectTargetKey(nextKnownValues));
     setRawJsonDraft(JSON.stringify(extras, null, 2));
     setInspectorDraftError(null);
   }
@@ -6349,7 +6361,7 @@ export default function App() {
       delete nextKnownValues.enabled;
     }
     if (hasCollapsedTargetUi) {
-      const activeTargetKey = activeEffectTargetKey(nextKnownValues);
+      const activeTargetKey = draft.effectTargetKey ?? activeEffectTargetKey(nextKnownValues);
       for (const key of EFFECT_TARGET_KEYS) {
         if (key !== activeTargetKey) {
           delete nextKnownValues[key];
@@ -6625,6 +6637,7 @@ export default function App() {
         displayName: nextDraft.displayName ?? inspectorDisplayName,
         knownValues: nextDraft.knownValues ?? inspectorKnownValues,
         unknownValues: nextDraft.unknownValues ?? inspectorUnknownValues,
+        effectTargetKey: nextDraft.effectTargetKey ?? inspectorEffectTargetKey,
         jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
         toolArgumentPolicyDrafts: nextDraft.toolArgumentPolicyDrafts ?? inspectorToolArgumentPolicyDrafts,
         jsonDisplayModes: nextDraft.jsonDisplayModes ?? inspectorJsonDisplayModes,
@@ -6893,7 +6906,7 @@ export default function App() {
   }
 
   function updateEffectTargetKey(nextKey: EffectTargetKey) {
-    const currentKey = activeEffectTargetKey(inspectorKnownValues);
+    const currentKey = effectTargetKey;
     const currentValue = inspectorKnownValues[currentKey];
     const currentMode = inspectorFieldModes[currentKey]
       ?? (effectTargetField ? fieldValueMode(effectTargetField, currentValue) : "literal");
@@ -6909,9 +6922,10 @@ export default function App() {
       delete nextModes[key];
     }
     nextModes[nextKey] = currentMode;
+    setInspectorEffectTargetKey(nextKey);
     setInspectorKnownValues(next);
     setInspectorFieldModes(nextModes);
-    stageInspectorDraft({ knownValues: next });
+    stageInspectorDraft({ knownValues: next, effectTargetKey: nextKey });
   }
 
   function renderEffectTargetField() {
@@ -9364,6 +9378,7 @@ export default function App() {
                     ? "No active or errored workflow runs."
                     : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
                 </p>
+                {runSnapshotError ? <div className="runtime-run-error">{runSnapshotError}</div> : null}
                 <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
                   <select
                     value={runDetailLookupKind}

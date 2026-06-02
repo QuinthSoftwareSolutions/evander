@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Workflow Editor Target Selector Regression Fixes
+
+- Fixed collapsed workflow target selectors so choosing `Session ID` or
+  `VM name` sticks before a target value is entered, and kept independent run
+  snapshot refreshes from clearing document-load errors.
+
 ## 2026-06-02 - Workflow Definition-Only Access
 
 - Fixed the workflow editor so users with `workflows.read` but without

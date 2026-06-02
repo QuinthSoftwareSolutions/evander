@@ -34,6 +34,10 @@ test("collapses target selector triplets while preserving session and VM disambi
   }
 
   assert.match(app, /const hasCollapsedTargetUi = TARGET_SELECTOR_NODE_TYPES\.has\(selectedNode\?\.type \?\? ""\);/);
+  assert.match(app, /const \[inspectorEffectTargetKey, setInspectorEffectTargetKey\] = useState<EffectTargetKey>\("target"\);/);
+  assert.match(app, /const effectTargetKey = hasCollapsedTargetUi \? inspectorEffectTargetKey : activeEffectTargetKey\(inspectorKnownValues\);/);
+  assert.match(app, /effectTargetKey: nextDraft\.effectTargetKey \?\? inspectorEffectTargetKey,/);
+  assert.match(app, /stageInspectorDraft\(\{ knownValues: next, effectTargetKey: nextKey \}\);/);
   assert.match(app, /<option value="target">Generic target<\/option>/);
   assert.match(app, /<option value="session_id">Session ID<\/option>/);
   assert.match(app, /<option value="vm_name">VM name<\/option>/);
