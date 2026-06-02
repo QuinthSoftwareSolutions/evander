@@ -7902,6 +7902,32 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert len(responses["conformance_reports"].json()["reports"]) == 2
 
 
+def _assert_json_schema_requires_every_object_property(
+    schema: dict[str, object], path: str = "$"
+) -> None:
+    schema_type = schema.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        properties = schema.get("properties")
+        required = schema.get("required")
+        assert isinstance(properties, dict), f"{path} must define object properties"
+        assert isinstance(required, list), f"{path} must define required properties"
+        assert set(properties) <= set(required), (
+            f"{path} required must include every property"
+        )
+    else:
+        properties = schema.get("properties")
+
+    if isinstance(properties, dict):
+        for key, value in properties.items():
+            if isinstance(value, dict):
+                _assert_json_schema_requires_every_object_property(value, f"{path}.{key}")
+    items = schema.get("items")
+    if isinstance(items, dict):
+        _assert_json_schema_requires_every_object_property(items, f"{path}[]")
+
+
 def test_workflow_generator_returns_validated_draft_without_writing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7992,6 +8018,9 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert request_payload["model"] == "gpt-workflow-test"
     assert request_payload["text"]["format"]["type"] == "json_schema"
     assert request_payload["text"]["format"]["strict"] is True
+    schema = request_payload["text"]["format"]["schema"]
+    assert isinstance(schema, dict)
+    _assert_json_schema_requires_every_object_property(schema)
     assert captured_requests[0]["headers"]["authorization"] == "Bearer sk-test"
     assert not (tmp_path / "config" / "trigger-orchestrator" / "config.json").exists()
     assert not (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
@@ -8802,6 +8831,77 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
+
+
+def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_override(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+    target_payload = [
+        {
+            "id": "ops-notify",
+            "provider": "teams",
+            "kind": "teams",
+            "address": "team-id/channel-id",
+            "policy": {"capabilities": ["notify"]},
+        }
+    ]
+
+    create_response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    assert create_response.status_code == 200
+    root_write = service.write_directory_domain_config(
+        "root",
+        "providers",
+        {"teams_delegated_scopes": ["Chat.ReadWrite"]},
+    )
+    child_provider_write = service.write_directory_domain_config(
+        "root/ops",
+        "providers",
+        {"teams_delegated_scopes": ["ChannelMessage.Read.All"]},
+    )
+    child_target_write = service.write_directory_domain_config(
+        "root/ops",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {"targets": target_payload},
+    )
+    assert root_write.ok is True
+    assert child_provider_write.ok is True
+    assert child_target_write.ok is True
+
+    response = client.put(
+        "/api/configuration/domains/communications?directory_path=root/ops",
+        json={
+            "config": {"targets": target_payload},
+            "removed_fields": ["teams_delegated_scopes"],
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "communications"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    child_providers = service.read_directory_domain_config("root/ops", "providers")
+    assert child_providers.ok is True
+    assert child_providers.data is not None
+    assert child_providers.data.exists is False
+    assert child_providers.data.config is None
+    effective_providers = service.compute_directory_effective_config("root/ops", "providers")
+    assert effective_providers.ok is True
+    assert effective_providers.data is not None
+    assert (
+        effective_providers.data.resolution.effective_config["teams_delegated_scopes"]
+        == ["Chat.ReadWrite"]
+    )
+    targets = service.read_directory_domain_config("root/ops", COMMUNICATION_TARGETS_DOMAIN)
+    assert targets.ok is True
+    assert targets.data is not None
+    assert targets.data.config is not None
+    assert targets.data.config["targets"][0]["id"] == "ops-notify"
+    assert targets.data.config["targets"][0]["policy"]["capabilities"] == ["notify"]
 
 
 def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(

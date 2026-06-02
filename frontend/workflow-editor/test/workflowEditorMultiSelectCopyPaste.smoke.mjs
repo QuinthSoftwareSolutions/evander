@@ -38,6 +38,57 @@ function collectWorkflowNodes(config) {
   ];
 }
 
+async function screenPointToFlowPosition(page, point) {
+  return page.evaluate(({ clientX, clientY }) => {
+    const wrapper = document.querySelector(".react-flow");
+    const viewport = document.querySelector(".react-flow__viewport");
+    if (!wrapper || !viewport) {
+      throw new Error("expected React Flow wrapper and viewport");
+    }
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const transform = getComputedStyle(viewport).transform;
+    const matrix = transform === "none" ? new DOMMatrixReadOnly() : new DOMMatrixReadOnly(transform);
+    return {
+      x: (clientX - wrapperRect.left - matrix.e) / matrix.a,
+      y: (clientY - wrapperRect.top - matrix.f) / matrix.d,
+    };
+  }, point);
+}
+
+async function workflowNodeFlowBounds(page, nodeId) {
+  return page.locator(`.react-flow__node[data-id="${nodeId}"]`).evaluate((element) => {
+    const wrapper = document.querySelector(".react-flow");
+    const viewport = document.querySelector(".react-flow__viewport");
+    if (!wrapper || !viewport) {
+      throw new Error("expected React Flow wrapper and viewport");
+    }
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const nodeRect = element.getBoundingClientRect();
+    const transform = getComputedStyle(viewport).transform;
+    const matrix = transform === "none" ? new DOMMatrixReadOnly() : new DOMMatrixReadOnly(transform);
+    return {
+      left: (nodeRect.left - wrapperRect.left - matrix.e) / matrix.a,
+      top: (nodeRect.top - wrapperRect.top - matrix.f) / matrix.d,
+      right: (nodeRect.right - wrapperRect.left - matrix.e) / matrix.a,
+      bottom: (nodeRect.bottom - wrapperRect.top - matrix.f) / matrix.d,
+    };
+  });
+}
+
+function selectionCenter(bounds) {
+  return {
+    x: (Math.min(...bounds.map((bound) => bound.left)) + Math.max(...bounds.map((bound) => bound.right))) / 2,
+    y: (Math.min(...bounds.map((bound) => bound.top)) + Math.max(...bounds.map((bound) => bound.bottom))) / 2,
+  };
+}
+
+function assertNear(actual, expected, message, tolerance = 3) {
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${message}: expected ${expected}, got ${actual}`,
+  );
+}
+
 test("workflow editor modifier-click multi-selects nodes and copy/paste preserves the selected edge", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -61,6 +112,7 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
   const pageErrors = [];
   const consoleErrors = [];
   const unhandledApiRoutes = [];
+  let expectedPastedPositions = null;
 
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -245,6 +297,11 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({ completed_tutorial_ids: [], skipped_tutorial_ids: [] }));
+      return;
+    }
+
     if (pathname === "/api/workflow-editor/document") {
       if (route.request().method() === "GET") {
         await route.fulfill(jsonResponse(workflowDocument));
@@ -279,6 +336,15 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
         ),
         "expected the copied edge to connect the copied trigger and copied effect",
       );
+      assert.ok(expectedPastedPositions, "expected cursor-centered paste positions to be computed");
+      const copiedTriggerPosition = body.layout.nodes[copiedTrigger.id];
+      const copiedEffectPosition = body.layout.nodes[copiedEffect.id];
+      assert.ok(copiedTriggerPosition, "expected copied trigger layout position");
+      assert.ok(copiedEffectPosition, "expected copied effect layout position");
+      assertNear(copiedTriggerPosition.x, expectedPastedPositions.trigger.x, "copied trigger x should follow cursor paste");
+      assertNear(copiedTriggerPosition.y, expectedPastedPositions.trigger.y, "copied trigger y should follow cursor paste");
+      assertNear(copiedEffectPosition.x, expectedPastedPositions.effect.x, "copied effect x should follow cursor paste");
+      assertNear(copiedEffectPosition.y, expectedPastedPositions.effect.y, "copied effect y should follow cursor paste");
 
       await route.fulfill(
         jsonResponse({
@@ -347,15 +413,13 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
   const modifierKey = process.platform === "darwin" ? "Meta" : "Control";
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-1"]');
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
-  const triggerBox = await triggerNode.boundingBox();
-  const effectBox = await effectNode.boundingBox();
-  assert.ok(triggerBox, "expected trigger node bounds");
-  assert.ok(effectBox, "expected effect node bounds");
-
-  await page.mouse.click(triggerBox.x + triggerBox.width / 2, triggerBox.y + triggerBox.height / 2);
-  await page.keyboard.down(modifierKey);
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
-  await page.keyboard.up(modifierKey);
+  await triggerNode.waitFor({ state: "visible" });
+  await effectNode.waitFor({ state: "visible" });
+  await triggerNode.click();
+  await page.waitForFunction(() =>
+    Boolean(document.querySelector('.react-flow__node[data-id="trigger-1"] .node-card.selected')),
+  );
+  await effectNode.click({ modifiers: [modifierKey] });
 
   await page.waitForFunction(() => {
     const triggerSelected = document.querySelector('.react-flow__node[data-id="trigger-1"] .node-card.selected');
@@ -369,6 +433,33 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
 
   await page.locator(".app-shell.workflow-editor-shell").focus();
   await page.keyboard.press(`${modifierKey}+C`);
+  const canvasBox = await page.locator(".canvas-shell").boundingBox();
+  assert.ok(canvasBox, "expected canvas shell bounds");
+  const pasteCursor = {
+    clientX: canvasBox.x + canvasBox.width * 0.68,
+    clientY: canvasBox.y + canvasBox.height * 0.57,
+  };
+  const [pasteTargetFlow, triggerFlowBounds, effectFlowBounds] = await Promise.all([
+    screenPointToFlowPosition(page, pasteCursor),
+    workflowNodeFlowBounds(page, "trigger-1"),
+    workflowNodeFlowBounds(page, "effect-1"),
+  ]);
+  const copiedCenter = selectionCenter([triggerFlowBounds, effectFlowBounds]);
+  const pasteDelta = {
+    x: pasteTargetFlow.x - copiedCenter.x,
+    y: pasteTargetFlow.y - copiedCenter.y,
+  };
+  expectedPastedPositions = {
+    trigger: {
+      x: workflowDocument.layout.nodes["trigger-1"].x + pasteDelta.x,
+      y: workflowDocument.layout.nodes["trigger-1"].y + pasteDelta.y,
+    },
+    effect: {
+      x: workflowDocument.layout.nodes["effect-1"].x + pasteDelta.x,
+      y: workflowDocument.layout.nodes["effect-1"].y + pasteDelta.y,
+    },
+  };
+  await page.mouse.move(pasteCursor.clientX, pasteCursor.clientY);
   await page.keyboard.press(`${modifierKey}+V`);
 
   await page.waitForFunction(() => {
@@ -391,6 +482,7 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/user-preferences/workflow-tutorial-progress"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));

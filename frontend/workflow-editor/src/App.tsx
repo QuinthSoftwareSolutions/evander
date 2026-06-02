@@ -216,6 +216,7 @@ type InspectorDraftSnapshot = {
   displayName: string;
   knownValues: Record<string, unknown>;
   unknownValues: Record<string, unknown>;
+  effectTargetKey?: EffectTargetKey;
   jsonDrafts: Record<string, string>;
   toolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
   jsonDisplayModes: Record<string, JsonDisplayMode>;
@@ -237,6 +238,11 @@ type WorkflowGraphLabel = {
 type CanvasPoint = {
   x: number;
   y: number;
+};
+
+type ScreenPoint = {
+  clientX: number;
+  clientY: number;
 };
 
 type TutorialEditorSnapshot = {
@@ -276,6 +282,8 @@ type PendingConnectionRole = "source" | "valid-target" | "invalid-target";
 type CopiedWorkflowNode = {
   node: WorkflowNodeConfig;
   position: { x: number; y: number };
+  width: number;
+  height: number;
 };
 
 type CopiedWorkflowSelection = {
@@ -311,6 +319,30 @@ const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
 const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const TARGET_SELECTOR_NODE_TYPES = new Set([
+  "effect:vm:clone-repo",
+  "effect:vm:bootstrap-python",
+  "effect:vm:bootstrap-frontend",
+  "effect:vm:start",
+  "effect:vm:stop",
+  "effect:vm:exec",
+  "effect:vm:copy-files",
+  "effect:vm:delete-files",
+  "effect:agent:destroy",
+  "effect:agent:clone-repo",
+  "effect:agent:bootstrap-frontend",
+  "effect:agent:copy-files",
+  "effect:agent:prompt",
+  "effect:agent:enqueue-prompt",
+  "effect:agent:exec",
+  "effect:artifact:stage",
+  "effect:artifact:publish-artifacts",
+  "effect:artifact:import-published",
+  "effect:session:update-metadata",
+  "effect:session:approve-mcp-tools-for-run",
+  "effect:session:renew-if-expired",
+  "query:session-context",
+]);
 const SESSION_LIST_METADATA_FIELD_KEYS = [
   "metadata_equals",
   "metadata_exists",
@@ -802,6 +834,18 @@ function fallbackPosition(index: number): { x: number; y: number } {
   return {
     x: 120 + (index % 4) * 280,
     y: 100 + Math.floor(index / 4) * 180,
+  };
+}
+
+function copiedWorkflowSelectionCenter(nodes: ReadonlyArray<CopiedWorkflowNode>): { x: number; y: number } | null {
+  if (nodes.length === 0) return null;
+  const left = Math.min(...nodes.map((node) => node.position.x));
+  const top = Math.min(...nodes.map((node) => node.position.y));
+  const right = Math.max(...nodes.map((node) => node.position.x + node.width));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + node.height));
+  return {
+    x: (left + right) / 2,
+    y: (top + bottom) / 2,
   };
 }
 
@@ -3531,6 +3575,12 @@ function insertBindingReference(currentValue: unknown, bindingReference: string)
 function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey {
   if (typeof values.session_id === "string" && values.session_id.trim()) return "session_id";
   if (typeof values.vm_name === "string" && values.vm_name.trim()) return "vm_name";
+  if (typeof values.session_id === "string" && !Object.prototype.hasOwnProperty.call(values, "target")) {
+    return "session_id";
+  }
+  if (typeof values.vm_name === "string" && !Object.prototype.hasOwnProperty.call(values, "target")) {
+    return "vm_name";
+  }
   return "target";
 }
 
@@ -3616,6 +3666,7 @@ export default function App() {
     directoryTree,
     setWorkflowHasUnsavedChanges,
     canReadWorkflows,
+    canReadWorkflowRuns,
     canWriteWorkflows,
     canControlWorkflowRuns,
   } = useAdminUi();
@@ -3627,6 +3678,7 @@ export default function App() {
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
+  const canvasCursorPointRef = useRef<ScreenPoint | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const workflowGeneratorAbortRef = useRef<AbortController | null>(null);
   const workflowGeneratorRequestIdRef = useRef(0);
@@ -3673,6 +3725,7 @@ export default function App() {
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
+  const [runSnapshotError, setRunSnapshotError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
   const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
@@ -3708,6 +3761,7 @@ export default function App() {
     SessionListMetadataRuleDraftRow[]
   >([]);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
+  const [inspectorEffectTargetKey, setInspectorEffectTargetKey] = useState<EffectTargetKey>("target");
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
   const [outputCopyError, setOutputCopyError] = useState<string | null>(null);
@@ -3730,7 +3784,8 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
-  const workflowRunControlLocked = !canControlWorkflowRuns;
+  const workflowRunReadLocked = !canReadWorkflowRuns;
+  const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
   useEffect(() => {
     runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
   }, [runtimePulseNodeIds]);
@@ -4000,15 +4055,8 @@ export default function App() {
       : [],
     [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
   );
-  const hasCollapsedTargetUi =
-    selectedNode?.type === "effect:vm:copy-files" ||
-    selectedNode?.type === "effect:agent:prompt" ||
-    selectedNode?.type === "effect:agent:exec" ||
-    selectedNode?.type === "effect:agent:destroy" ||
-    selectedNode?.type === "effect:session:update-metadata" ||
-    selectedNode?.type === "effect:session:renew-if-expired" ||
-    selectedNode?.type === "query:session-context";
-  const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
+  const hasCollapsedTargetUi = TARGET_SELECTOR_NODE_TYPES.has(selectedNode?.type ?? "");
+  const effectTargetKey = hasCollapsedTargetUi ? inspectorEffectTargetKey : activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];
     if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
@@ -4175,11 +4223,8 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
-      fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
-    ])
-      .then(([payload, runSnapshotPayload]) => {
+    fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document")
+      .then((payload) => {
         if (cancelled) return;
         const backendOutputSchemas = payload.output_schemas ?? {};
         const normalizedConfig = normalizeDerivedNodeFields(
@@ -4203,7 +4248,6 @@ export default function App() {
           initialGraphDirectoryPathRef.current,
         );
         validationCacheRef.current.clear();
-        applyWorkflowRunSnapshot(runSnapshotPayload);
         const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
           graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
         );
@@ -4225,6 +4269,32 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (workflowRunReadLocked) {
+      setRunSnapshot(null);
+      setRunDetail(null);
+      setRunDetailError(null);
+      setRunSearchResult(null);
+      setRunSearchError(null);
+      setRunSnapshotError(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs")
+      .then((runSnapshotPayload) => {
+        if (cancelled) return;
+        applyWorkflowRunSnapshot(runSnapshotPayload);
+        setRunSnapshotError(null);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setRunSnapshotError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowRunReadLocked]);
 
   function rememberRuntimePulseSeenActivityKey(activityKey: string) {
     const seenKeys = runtimePulseSeenActivityKeysRef.current;
@@ -4392,6 +4462,13 @@ export default function App() {
   }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
+    if (workflowRunReadLocked) {
+      for (const timeout of runtimePulseTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      runtimePulseTimeoutsRef.current.clear();
+      return;
+    }
     const stream = new EventSource("/api/workflow-editor/runs/stream");
 
     stream.addEventListener("snapshot", (event) => {
@@ -4415,7 +4492,7 @@ export default function App() {
       }
       runtimePulseTimeoutsRef.current.clear();
     };
-  }, []);
+  }, [workflowRunReadLocked]);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();
@@ -4502,7 +4579,7 @@ export default function App() {
 
   async function loadWorkflowRunDetail(query: URLSearchParams, lookupText?: string) {
     const queryText = query.toString();
-    if (!queryText || runDetailLoading) return;
+    if (!queryText || runDetailLoading || workflowRunReadLocked) return;
     setRunDetailLoading(true);
     setRunDetailError(null);
     try {
@@ -4526,7 +4603,7 @@ export default function App() {
 
   async function loadWorkflowRunSearch(query: URLSearchParams) {
     const queryText = query.toString();
-    if (!queryText || runSearchLoading) return;
+    if (!queryText || runSearchLoading || workflowRunReadLocked) return;
     setRunSearchLoading(true);
     setRunSearchError(null);
     try {
@@ -4541,7 +4618,7 @@ export default function App() {
 
   function inspectWorkflowRun(eventId: string) {
     if (activeWorkflowTutorial) return;
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const normalizedEventId = eventId.trim();
     if (!normalizedEventId) return;
     void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
@@ -4549,6 +4626,9 @@ export default function App() {
 
   useEffect(() => {
     const applyDeepLink = () => {
+      if (workflowRunReadLocked) {
+        return;
+      }
       const lookup = workflowRunLookupFromHash();
       if (!lookup) {
         return;
@@ -4561,11 +4641,11 @@ export default function App() {
     applyDeepLink();
     window.addEventListener("hashchange", applyDeepLink);
     return () => window.removeEventListener("hashchange", applyDeepLink);
-  }, []);
+  }, [workflowRunReadLocked]);
 
   function submitWorkflowRunDetailLookup(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const normalizedLookup = runDetailLookup.trim();
     if (!normalizedLookup) return;
     void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
@@ -4573,7 +4653,7 @@ export default function App() {
 
   function submitWorkflowRunSearch(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const query = workflowRunSearchQuery(runSearchScope, {
       withoutSession: runSearchWithoutSession,
       includeCompleted: runSearchIncludeCompleted,
@@ -5204,6 +5284,7 @@ export default function App() {
       setInspectorStringMapDrafts({});
       setInspectorSessionListMetadataRules([]);
       setInspectorFieldModes({});
+      setInspectorEffectTargetKey("target");
       setRawJsonDraft("{}");
       return;
     }
@@ -5294,6 +5375,7 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
     setInspectorFieldModes(nextFieldModes);
+    setInspectorEffectTargetKey(activeEffectTargetKey(nextKnownValues));
     setRawJsonDraft(JSON.stringify(extras, null, 2));
     setInspectorDraftError(null);
   }
@@ -5529,6 +5611,27 @@ export default function App() {
     };
   }
 
+  function screenPointIsOverCanvas(point: ScreenPoint): boolean {
+    const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+    if (!canvasRect) return false;
+    return (
+      point.clientX >= canvasRect.left &&
+      point.clientX <= canvasRect.right &&
+      point.clientY >= canvasRect.top &&
+      point.clientY <= canvasRect.bottom
+    );
+  }
+
+  function updateCanvasCursorPoint(clientX: number, clientY: number) {
+    canvasCursorPointRef.current = { clientX, clientY };
+  }
+
+  function flowPositionAtCanvasCursor(): { x: number; y: number } | null {
+    const cursorPoint = canvasCursorPointRef.current;
+    if (!cursorPoint || !screenPointIsOverCanvas(cursorPoint)) return null;
+    return flowPositionFromScreenPoint(cursorPoint.clientX, cursorPoint.clientY);
+  }
+
   function nodePositionCenteredOnFlowPoint(flowPosition: { x: number; y: number }): { x: number; y: number } {
     return {
       x: flowPosition.x - FALLBACK_NODE_WIDTH / 2,
@@ -5541,13 +5644,18 @@ export default function App() {
     return flowPosition ? nodePositionCenteredOnFlowPoint(flowPosition) : null;
   }
 
-  function nodePositionAtCanvasCenter(): { x: number; y: number } | null {
+  function flowPositionAtCanvasCenter(): { x: number; y: number } | null {
     const canvasRect = canvasShellRef.current?.getBoundingClientRect();
     if (!canvasRect) return null;
-    return nodePositionFromScreenPoint(
+    return flowPositionFromScreenPoint(
       canvasRect.left + canvasRect.width / 2,
       canvasRect.top + canvasRect.height / 2,
     );
+  }
+
+  function nodePositionAtCanvasCenter(): { x: number; y: number } | null {
+    const flowPosition = flowPositionAtCanvasCenter();
+    return flowPosition ? nodePositionCenteredOnFlowPoint(flowPosition) : null;
   }
 
   function nodeCenterCanvasPoint(node: Node<GraphNodeData>): CanvasPoint {
@@ -5820,9 +5928,18 @@ export default function App() {
     appShellRef.current?.focus();
   }
 
+  function handleCanvasPointerEnter(event: ReactPointerEvent<HTMLElement>) {
+    updateCanvasCursorPoint(event.clientX, event.clientY);
+  }
+
   function handleCanvasPointerMove(event: ReactPointerEvent<HTMLElement>) {
+    updateCanvasCursorPoint(event.clientX, event.clientY);
     if (!pendingConnection) return;
     updatePendingConnectionCursor(event.clientX, event.clientY);
+  }
+
+  function handleCanvasPointerLeave() {
+    canvasCursorPointRef.current = null;
   }
 
   function handleCanvasTouchStartCapture(event: ReactTouchEvent<HTMLElement>) {
@@ -5954,14 +6071,22 @@ export default function App() {
     if (!document || selectedNodeIds.length === 0) return false;
     const selectedNodeIdSet = new Set(selectedNodeIds);
     const nodesById = new Map(workflowNodes(document.config).map((node) => [node.id, node]));
-    const positionsById = new Map(flowNodes.map((node) => [node.id, node.position]));
+    const currentFlowNodes = flowInstance?.getNodes() as Node<GraphNodeData>[] | undefined;
+    const flowNodesById = new Map(
+      (currentFlowNodes && currentFlowNodes.length > 0 ? currentFlowNodes : flowNodes).map((node) => [node.id, node]),
+    );
     const copiedNodes = selectedNodeIds
       .map((nodeId, index) => {
         const node = nodesById.get(nodeId);
         if (!node) return null;
+        const flowNode = flowNodesById.get(nodeId);
+        const position = flowNode?.position ?? document.layout.nodes[nodeId] ?? fallbackPosition(index);
+        const bounds = nodeBounds(flowNode ? { ...flowNode, position } : { id: node.id, position });
         return {
           node: cloneNodeConfig(node),
-          position: positionsById.get(nodeId) ?? document.layout.nodes[nodeId] ?? fallbackPosition(index),
+          position,
+          width: bounds.right - bounds.left,
+          height: bounds.bottom - bounds.top,
         };
       })
       .filter((node): node is CopiedWorkflowNode => Boolean(node));
@@ -6021,12 +6146,20 @@ export default function App() {
       .filter((edge): edge is WorkflowEdge => Boolean(edge));
     nextConfig.edges = [...nextConfig.edges, ...duplicatedEdges];
     const nextLayout = cloneLayout(document.layout);
+    const selectionCenter = copiedWorkflowSelectionCenter(copiedSelection.nodes);
+    const pasteTarget = flowPositionAtCanvasCursor() ?? flowPositionAtCanvasCenter();
+    const pasteDelta = selectionCenter && pasteTarget
+      ? {
+          x: pasteTarget.x - selectionCenter.x,
+          y: pasteTarget.y - selectionCenter.y,
+        }
+      : { x: 40, y: 40 };
     for (const copiedNode of copiedSelection.nodes) {
       const nextId = idMap.get(copiedNode.node.id);
       if (!nextId) continue;
       nextLayout.nodes[nextId] = {
-        x: copiedNode.position.x + 40,
-        y: copiedNode.position.y + 40,
+        x: copiedNode.position.x + pasteDelta.x,
+        y: copiedNode.position.y + pasteDelta.y,
       };
     }
     const pastedNodeIds = copiedSelection.nodes
@@ -6228,7 +6361,7 @@ export default function App() {
       delete nextKnownValues.enabled;
     }
     if (hasCollapsedTargetUi) {
-      const activeTargetKey = activeEffectTargetKey(nextKnownValues);
+      const activeTargetKey = draft.effectTargetKey ?? activeEffectTargetKey(nextKnownValues);
       for (const key of EFFECT_TARGET_KEYS) {
         if (key !== activeTargetKey) {
           delete nextKnownValues[key];
@@ -6504,6 +6637,7 @@ export default function App() {
         displayName: nextDraft.displayName ?? inspectorDisplayName,
         knownValues: nextDraft.knownValues ?? inspectorKnownValues,
         unknownValues: nextDraft.unknownValues ?? inspectorUnknownValues,
+        effectTargetKey: nextDraft.effectTargetKey ?? inspectorEffectTargetKey,
         jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
         toolArgumentPolicyDrafts: nextDraft.toolArgumentPolicyDrafts ?? inspectorToolArgumentPolicyDrafts,
         jsonDisplayModes: nextDraft.jsonDisplayModes ?? inspectorJsonDisplayModes,
@@ -6772,7 +6906,7 @@ export default function App() {
   }
 
   function updateEffectTargetKey(nextKey: EffectTargetKey) {
-    const currentKey = activeEffectTargetKey(inspectorKnownValues);
+    const currentKey = effectTargetKey;
     const currentValue = inspectorKnownValues[currentKey];
     const currentMode = inspectorFieldModes[currentKey]
       ?? (effectTargetField ? fieldValueMode(effectTargetField, currentValue) : "literal");
@@ -6788,9 +6922,10 @@ export default function App() {
       delete nextModes[key];
     }
     nextModes[nextKey] = currentMode;
+    setInspectorEffectTargetKey(nextKey);
     setInspectorKnownValues(next);
     setInspectorFieldModes(nextModes);
-    stageInspectorDraft({ knownValues: next });
+    stageInspectorDraft({ knownValues: next, effectTargetKey: nextKey });
   }
 
   function renderEffectTargetField() {
@@ -9085,7 +9220,7 @@ export default function App() {
                         type="button"
                         className="subtle-button"
                         onClick={() => inspectWorkflowRun(run.event_id)}
-                        disabled={runDetailLoading || workflowReadLocked}
+                        disabled={runDetailLoading || workflowRunReadLocked}
                       >
                         Inspect
                       </button>
@@ -9232,6 +9367,7 @@ export default function App() {
                 </button>
               </div>
 
+              {canReadWorkflowRuns ? (
               <details className="sidebar-section current-runs-section">
                 <summary className="current-runs-summary">
                   <span className="section-label current-runs-label">Current runs</span>
@@ -9242,6 +9378,7 @@ export default function App() {
                     ? "No active or errored workflow runs."
                     : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
                 </p>
+                {runSnapshotError ? <div className="runtime-run-error">{runSnapshotError}</div> : null}
                 <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
                   <select
                     value={runDetailLookupKind}
@@ -9265,7 +9402,7 @@ export default function App() {
                   <button
                     type="submit"
                     className="subtle-button"
-                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowReadLocked}
+                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
                   >
                     {runDetailLoading ? "Loading..." : "Inspect"}
                   </button>
@@ -9322,7 +9459,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope || workflowReadLocked}
+                      disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
                     >
                       {runSearchLoading ? "Loading..." : "Find"}
                     </button>
@@ -9375,7 +9512,7 @@ export default function App() {
                           type="button"
                           className="subtle-button"
                           onClick={() => inspectWorkflowRun(run.event_id)}
-                          disabled={runDetailLoading || workflowReadLocked}
+                          disabled={runDetailLoading || workflowRunReadLocked}
                         >
                           Inspect
                         </button>
@@ -9408,6 +9545,7 @@ export default function App() {
                   ))}
                 </div>
               </details>
+              ) : null}
 
             <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
               <summary className="collapsible-sidebar-summary">
@@ -9718,7 +9856,9 @@ export default function App() {
             ref={canvasShellRef}
             onDragOver={handleNodeTypeDragOver}
             onDrop={handleNodeTypeDrop}
+            onPointerEnter={handleCanvasPointerEnter}
             onPointerMove={handleCanvasPointerMove}
+            onPointerLeave={handleCanvasPointerLeave}
             onTouchStartCapture={handleCanvasTouchStartCapture}
             onTouchMoveCapture={handleCanvasTouchMoveCapture}
             onTouchEndCapture={handleCanvasTouchEndCapture}

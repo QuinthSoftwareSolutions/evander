@@ -13194,7 +13194,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "graph": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["id", "name", "description", "directory_path", "user_ids"],
+                    "required": [
+                        "id",
+                        "name",
+                        "description",
+                        "directory_path",
+                        "directory_paths",
+                        "user_ids",
+                    ],
                     "properties": {
                         "id": {"type": "string"},
                         "name": {"type": "string"},

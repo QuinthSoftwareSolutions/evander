@@ -5,6 +5,51 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Workflow Editor Target Selector Regression Fixes
+
+- Fixed collapsed workflow target selectors so choosing `Session ID` or
+  `VM name` sticks before a target value is entered, and kept independent run
+  snapshot refreshes from clearing document-load errors.
+
+## 2026-06-02 - Workflow Definition-Only Access
+
+- Fixed the workflow editor so users with `workflows.read` but without
+  `workflow_runs.read` can still open workflow definitions; run snapshots,
+  streaming, search, and inspect controls now stay behind workflow-run read
+  permission.
+
+## 2026-06-02 - Workflow Editor Cursor Paste Placement
+
+- Changed workflow editor copy/paste so pasted nodes are centered on the cursor
+  when the cursor is over the canvas, falling back to the current canvas center
+  otherwise. Added regression coverage for cursor paste placement and
+  click-created catalogue node centering.
+
+## 2026-06-02 - Users Directory Assignment Selectors
+
+- Changed the Admin Web Users & Groups access assignment directory fields from
+  free-form path inputs to directory dropdowns backed by the current directory
+  tree, while preserving existing assignments whose directories are no longer
+  listed.
+
+## 2026-06-02 - Workflow Target Selector Cleanup
+
+- Collapsed workflow editor `target`/`session_id`/`vm_name` triplets into a
+  single Target control across target-capable nodes while keeping the target
+  type selector so operators can disambiguate session IDs from VM names.
+
+## 2026-06-02 - Workflow Generator Schema Fix
+
+- Included the legacy `directory_paths` graph field in the strict OpenAI
+  workflow draft response schema requirements so generated workflow drafts are
+  accepted by Responses API schema validation.
+
+## 2026-06-02 - Configuration Override Removal
+
+- Fixed Admin Web configuration tab saves so unchecking an existing directory override removes
+  that field even when other fields on the tab are still saved, allowing child Teams delegated
+  scopes to fall back to a parent directory.
+
 ## 2026-05-31 - Playback-Aware DIDWW Idle Prompting
 
 - Moved DIDWW/OpenAI Realtime idle prompting into the bridge so the idle timer

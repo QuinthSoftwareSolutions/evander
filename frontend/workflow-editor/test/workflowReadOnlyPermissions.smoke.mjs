@@ -454,3 +454,234 @@ test("workflow editor keeps read-only workflow users in inspect mode but disable
 
   assert.deepEqual(pageErrors, []);
 });
+
+test("workflow editor opens workflow definitions without workflow run read access", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  const page = await context.newPage();
+
+  const pageErrors = [];
+  const runApiRequests = [];
+
+  await t.after(async () => {
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  const permissions = ["workflows.read"];
+  const sessionResponse = {
+    auth_mode: "none",
+    auth_required: false,
+    authenticated: true,
+    username: "definition-viewer",
+    display_name: "Definition Viewer",
+    role: "regular",
+    can_manage_users: false,
+    permissions,
+    effective_permissions: permissions,
+    session_id: "session-definition-viewer",
+    available_login_methods: [],
+    azure_sso_login_url: null,
+    privileged_operations: {
+      unlocked: false,
+    },
+  };
+  const adminStateResponse = {
+    selected_directory_path: "root",
+    directory_scoped_config_enabled: true,
+    execution_backend: "libvirt_vm",
+    role: "regular",
+    can_manage_users: false,
+    permissions,
+    effective_permissions: permissions,
+    privileged_operations: {
+      unlocked: false,
+    },
+    assistant: {
+      enabled: false,
+      show_launcher_when_disabled: false,
+    },
+  };
+  const configurationStateResponse = {
+    directory_scoped_config_enabled: true,
+    selected_directory_path: "root",
+    execution_backend: "libvirt_vm",
+    selected_directory: {
+      path: "root",
+      parent_path: null,
+      can_create: false,
+      can_delete: false,
+    },
+    tree: {
+      ok: true,
+      data: createDirectoryTree(),
+      errors: [],
+      validation_diagnostics: [],
+    },
+  };
+  const workflowDocument = {
+    config_path: "workflow.json",
+    layout_path: "workflow-layout.json",
+    config_exists: true,
+    layout_exists: true,
+    revision: "rev-definition-only",
+    config: {
+      triggers: [
+        {
+          id: "definition-trigger",
+          display_name: "Definition trigger",
+          type: "trigger:manual",
+        },
+      ],
+      gates: [],
+      effects: [
+        {
+          id: "definition-effect",
+          display_name: "Definition effect",
+          type: "effect:agent",
+          prompt: "Inspect only",
+        },
+      ],
+      queries: [],
+      edges: [
+        {
+          source_id: "definition-trigger",
+          target_id: "definition-effect",
+          source_port: "completed",
+        },
+      ],
+    },
+    layout: {
+      nodes: {
+        "definition-trigger": { x: 80, y: 120 },
+        "definition-effect": { x: 360, y: 120 },
+      },
+    },
+    graphs: [
+      {
+        id: "graph-definition",
+        name: "Definition-only graph",
+        description: null,
+        directory_path: "root",
+        user_ids: [],
+        node_ids: ["definition-trigger", "definition-effect"],
+      },
+    ],
+    output_schemas: {},
+    validation_diagnostics: [],
+  };
+  const workflowCatalog = {
+    worker_id: "trigger-orchestrator",
+    nodes: [
+      {
+        kind: "trigger",
+        type: "trigger:manual",
+        label: "Manual",
+        fields: [],
+        input_ports: [],
+        output_ports: [{ key: "completed", label: "Completed" }],
+      },
+      {
+        kind: "effect",
+        type: "effect:agent",
+        label: "Agent",
+        fields: [],
+        input_ports: [],
+        output_ports: [],
+      },
+    ],
+  };
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(jsonResponse(sessionResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/state") {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      await route.fulfill(jsonResponse(adminStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/configuration/state") {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      await route.fulfill(jsonResponse(configurationStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({ completed_tutorial_ids: [], skipped_tutorial_ids: [] }));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/document") {
+      await route.fulfill(jsonResponse(workflowDocument));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/catalog") {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      await route.fulfill(jsonResponse(workflowCatalog));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/runs" || pathname === "/api/workflow-editor/runs/stream") {
+      runApiRequests.push(pathname);
+      await route.fulfill(jsonResponse({ error: "Permission required: workflow_runs.read" }, 403));
+      return;
+    }
+
+    await route.fulfill(jsonResponse({ error: `Unhandled ${pathname}` }, 404));
+  });
+
+  page.on("pageerror", (error) => {
+    pageErrors.push(error);
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#workflow`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.waitForSelector(".canvas-shell .react-flow__pane");
+  await page.locator(".workflow-graphs-section summary").click();
+  await page.locator(".workflow-graph-name", { hasText: "Definition-only graph" }).waitFor({ state: "visible" });
+
+  assert.equal(await page.getByText("Current runs", { exact: true }).count(), 0);
+  assert.deepEqual(runApiRequests, []);
+  assert.deepEqual(pageErrors, []);
+});

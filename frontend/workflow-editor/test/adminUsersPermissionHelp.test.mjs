@@ -72,3 +72,25 @@ test("users page separates users and groups into URL-backed modes", () => {
   assert.ok(userRecords > usersBranch && userRecords < groupsBranch, "user records should be inside users mode");
   assert.ok(groupEditor > groupsBranch, "group editor should be inside groups mode");
 });
+
+test("users access assignments use directory dropdowns", () => {
+  const accessStart = usersPage.indexOf("<h3>Access assignments</h3>");
+  const userRecordsStart = usersPage.indexOf("<h3>User records</h3>", accessStart);
+  assert.ok(accessStart >= 0, "missing access assignments panel");
+  assert.ok(userRecordsStart > accessStart, "missing user records panel after access assignments");
+
+  const accessPanel = usersPage.slice(accessStart, userRecordsStart);
+
+  assert.ok(usersPage.includes("directoryTree,"), "users page should read the admin directory tree");
+  assert.ok(usersPage.includes("flattenDirectorySelectOptions"), "users page should flatten directory options");
+  assert.ok(usersPage.includes("ensureDirectorySelectOption"), "users page should preserve root/current/stale directory options");
+  assert.equal(
+    (accessPanel.match(/renderDirectorySelect\(/g) ?? []).length,
+    2,
+    "group assignments and workflow grants should both render directory selects",
+  );
+  assert.ok(accessPanel.includes('"Group assignment directory"'), "missing group assignment directory select label");
+  assert.ok(accessPanel.includes('"Workflow grant directory"'), "missing workflow grant directory select label");
+  assert.doesNotMatch(accessPanel, /placeholder="root\/ops"/, "directory paths should not require typed placeholders");
+  assert.doesNotMatch(accessPanel, /<input\b/, "access assignment directory controls should not be free-form inputs");
+});

@@ -18,6 +18,8 @@ test("admin save requests include expected revisions", () => {
   assert.match(app, /setSavedDocument\(normalizedSavedDocument\)/);
   assert.match(workers, /expected_revision:\s*detail\?\.config\.revision/);
   assert.match(configuration, /expected_revision:\s*snapshot\.revision/);
+  assert.match(configuration, /removed_fields:\s*removedFields/);
+  assert.match(configuration, /removedFields\.push\(field\.field_name\)/);
 });
 
 test("admin fetch helper preserves conflict status", () => {

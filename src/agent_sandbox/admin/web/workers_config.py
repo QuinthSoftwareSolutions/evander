@@ -1148,7 +1148,20 @@ def _directory_overrides_snapshot(
     }
 
 
-def _split_tab_payload(tab_key: str, config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _removed_fields_from_payload(payload: dict[str, Any]) -> list[str]:
+    raw_removed_fields = payload.get("removed_fields", [])
+    if raw_removed_fields is None:
+        return []
+    if not isinstance(raw_removed_fields, list) or not all(
+        isinstance(field_name, str) for field_name in raw_removed_fields
+    ):
+        raise ValueError("removed_fields must be a list of field names")
+    return raw_removed_fields
+
+
+def _split_tab_payload(
+    tab_key: str, config: dict[str, Any], *, removed_fields: list[str] | None = None
+) -> dict[str, dict[str, Any]]:
     field_sources = {
         field_name: source_domain
         for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
@@ -1167,6 +1180,15 @@ def _split_tab_payload(tab_key: str, config: dict[str, Any]) -> dict[str, dict[s
         if source_domain is None:
             raise ValueError(f"Unknown field for {tab_key}: {field_name}")
         payloads_by_source.setdefault(source_domain, {})[field_name] = value
+    for field_name in removed_fields or []:
+        source_domain = field_sources.get(field_name)
+        if source_domain is None:
+            raise ValueError(f"Unknown removed field for {tab_key}: {field_name}")
+        if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+            raise ValueError(
+                f"Global configuration field cannot be removed from {tab_key}: {field_name}"
+            )
+        payloads_by_source.setdefault(source_domain, {})
     return payloads_by_source
 
 
@@ -1345,7 +1367,10 @@ def worker_config_routes(
 
         if domain in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES:
             try:
-                payloads_by_source = _split_tab_payload(domain, config)
+                removed_fields = _removed_fields_from_payload(payload)
+                payloads_by_source = _split_tab_payload(
+                    domain, config, removed_fields=removed_fields
+                )
             except ValueError as exc:
                 return _error_response(str(exc), status_code=400)
             tab_fields_by_source = _tab_fields_by_source_domain(domain)
