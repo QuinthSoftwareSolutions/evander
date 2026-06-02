@@ -2,7 +2,7 @@ import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import { usersModeFromHash, usersModeHash, type AdminUsersMode } from "../../adminRouting";
 import { fetchJson, formatTimestamp } from "../admin/api";
-import { useAdminUi } from "../admin/AdminContext";
+import { useAdminUi, type DirectoryTreeNode } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import type {
   AdminContactSummary,
@@ -24,6 +24,11 @@ type GroupAssignmentFormState = {
 type WorkflowGrantFormState = {
   permission: "workflows.read" | "workflows.write";
   directoryPath: string;
+};
+
+type DirectorySelectOption = {
+  value: string;
+  label: string;
 };
 
 type UserFormState = {
@@ -97,6 +102,33 @@ function groupLabel(group: AdminWebGroupRecord | undefined, groupId: string): st
   return group?.display_name?.trim() || groupId;
 }
 
+function directoryOptionLabel(path: string, name: string | undefined, depth: number): string {
+  if (path === "root") return "root";
+  const prefix = depth > 0 ? `${"  ".repeat(depth)}` : "";
+  return name && name !== path ? `${prefix}${name} (${path})` : `${prefix}${path}`;
+}
+
+function flattenDirectorySelectOptions(node: DirectoryTreeNode, depth = 0): DirectorySelectOption[] {
+  const path = node.directory.path;
+  const current = {
+    value: path,
+    label: directoryOptionLabel(path, node.directory.name, depth),
+  };
+  return [
+    current,
+    ...node.children.flatMap((child) => flattenDirectorySelectOptions(child, depth + 1)),
+  ];
+}
+
+function ensureDirectorySelectOption(
+  options: DirectorySelectOption[],
+  value: string,
+  label: string,
+): DirectorySelectOption[] {
+  if (!value || options.some((option) => option.value === value)) return options;
+  return [...options, { value, label }];
+}
+
 function permissionHelp(permission: string): string {
   return PERMISSION_HELP[permission] ?? `Permission: ${permission}`;
 }
@@ -118,6 +150,7 @@ export function UsersPage() {
     canManageUsers,
     currentUserId,
     directoryScopedConfigEnabled,
+    directoryTree,
     selectedDirectoryPath,
   } = useAdminUi();
   const [users, setUsers] = useState<AdminWebUserRecord[]>([]);
@@ -162,6 +195,14 @@ export function UsersPage() {
     () => new Map(sortedGroups.map((group) => [group.group_id, group])),
     [sortedGroups],
   );
+
+  const directoryPathOptions = useMemo(() => {
+    const treeOptions = directoryTree?.ok && directoryTree.data
+      ? flattenDirectorySelectOptions(directoryTree.data)
+      : [];
+    const withRoot = ensureDirectorySelectOption(treeOptions, "root", "root");
+    return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
+  }, [directoryTree, selectedDirectoryPath]);
 
   const selectedUser = useMemo(
     () => sortedUsers.find((user) => user.login === selectedLogin) ?? null,
@@ -452,6 +493,33 @@ export function UsersPage() {
   const selectedGroupTitle = selectedGroup ? selectedGroup.display_name : "New group";
   const actionDisabled = loading || saving || !canManageUsers;
 
+  function renderDirectorySelect(
+    value: string,
+    onChange: (nextValue: string) => void,
+    ariaLabel: string,
+  ) {
+    const directoryPath = value.trim() || "root";
+    const options = ensureDirectorySelectOption(
+      directoryPathOptions,
+      directoryPath,
+      `${directoryPath} (not in directory tree)`,
+    );
+    return (
+      <select
+        value={directoryPath}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={actionDisabled}
+        aria-label={ariaLabel}
+      >
+        {options.map((option) => (
+          <option key={`${ariaLabel}-${option.value}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
   return (
     <div className="feature-page users-page">
       <section className="feature-sidebar">
@@ -701,19 +769,17 @@ export function UsersPage() {
                             </option>
                           ))}
                         </select>
-                        <input
-                          value={assignment.directoryPath}
-                          onChange={(event) =>
+                        {renderDirectorySelect(
+                          assignment.directoryPath,
+                          (directoryPath) =>
                             setForm((current) => ({
                               ...current,
                               groupAssignments: current.groupAssignments.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
+                                itemIndex === index ? { ...item, directoryPath } : item,
                               ),
-                            }))
-                          }
-                          disabled={actionDisabled}
-                          placeholder="root/ops"
-                        />
+                            })),
+                          "Group assignment directory",
+                        )}
                         <button
                           type="button"
                           onClick={() =>
@@ -767,19 +833,17 @@ export function UsersPage() {
                           <option value="workflows.read">Workflow read</option>
                           <option value="workflows.write">Workflow write</option>
                         </select>
-                        <input
-                          value={grant.directoryPath}
-                          onChange={(event) =>
+                        {renderDirectorySelect(
+                          grant.directoryPath,
+                          (directoryPath) =>
                             setForm((current) => ({
                               ...current,
                               workflowGrants: current.workflowGrants.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, directoryPath: event.target.value } : item,
+                                itemIndex === index ? { ...item, directoryPath } : item,
                               ),
-                            }))
-                          }
-                          disabled={actionDisabled}
-                          placeholder="root/ops"
-                        />
+                            })),
+                          "Workflow grant directory",
+                        )}
                         <button
                           type="button"
                           onClick={() =>

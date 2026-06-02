@@ -19,6 +19,13 @@ material. Newer entries are added incrementally as changes land.
   otherwise. Added regression coverage for cursor paste placement and
   click-created catalogue node centering.
 
+## 2026-06-02 - Users Directory Assignment Selectors
+
+- Changed the Admin Web Users & Groups access assignment directory fields from
+  free-form path inputs to directory dropdowns backed by the current directory
+  tree, while preserving existing assignments whose directories are no longer
+  listed.
+
 ## 2026-06-02 - Workflow Target Selector Cleanup
 
 - Collapsed workflow editor `target`/`session_id`/`vm_name` triplets into a
