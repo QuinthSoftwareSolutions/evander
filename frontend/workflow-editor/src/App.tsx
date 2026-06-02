@@ -311,6 +311,30 @@ const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
 const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const TARGET_SELECTOR_NODE_TYPES = new Set([
+  "effect:vm:clone-repo",
+  "effect:vm:bootstrap-python",
+  "effect:vm:bootstrap-frontend",
+  "effect:vm:start",
+  "effect:vm:stop",
+  "effect:vm:exec",
+  "effect:vm:copy-files",
+  "effect:vm:delete-files",
+  "effect:agent:destroy",
+  "effect:agent:clone-repo",
+  "effect:agent:bootstrap-frontend",
+  "effect:agent:copy-files",
+  "effect:agent:prompt",
+  "effect:agent:enqueue-prompt",
+  "effect:agent:exec",
+  "effect:artifact:stage",
+  "effect:artifact:publish-artifacts",
+  "effect:artifact:import-published",
+  "effect:session:update-metadata",
+  "effect:session:approve-mcp-tools-for-run",
+  "effect:session:renew-if-expired",
+  "query:session-context",
+]);
 const SESSION_LIST_METADATA_FIELD_KEYS = [
   "metadata_equals",
   "metadata_exists",
@@ -4000,14 +4024,7 @@ export default function App() {
       : [],
     [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
   );
-  const hasCollapsedTargetUi =
-    selectedNode?.type === "effect:vm:copy-files" ||
-    selectedNode?.type === "effect:agent:prompt" ||
-    selectedNode?.type === "effect:agent:exec" ||
-    selectedNode?.type === "effect:agent:destroy" ||
-    selectedNode?.type === "effect:session:update-metadata" ||
-    selectedNode?.type === "effect:session:renew-if-expired" ||
-    selectedNode?.type === "query:session-context";
+  const hasCollapsedTargetUi = TARGET_SELECTOR_NODE_TYPES.has(selectedNode?.type ?? "");
   const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];

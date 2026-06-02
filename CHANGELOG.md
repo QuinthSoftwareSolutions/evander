@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Workflow Target Selector Cleanup
+
+- Collapsed workflow editor `target`/`session_id`/`vm_name` triplets into a
+  single Target control across target-capable nodes while keeping the target
+  type selector so operators can disambiguate session IDs from VM names.
+
 ## 2026-06-02 - Workflow Generator Schema Fix
 
 - Included the legacy `directory_paths` graph field in the strict OpenAI
