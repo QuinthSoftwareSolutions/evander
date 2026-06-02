@@ -1190,11 +1190,13 @@ export function ConfigurationScreen() {
     if (!selectedTabDefinition || !snapshot) return;
     const currentDraft = drafts[selectedTab] ?? {};
     const payload: Record<string, unknown> = {};
+    const removedFields: string[] = [];
     try {
       for (const section of selectedTabDefinition.sections) {
         for (const field of section.fields) {
           const fieldState = currentDraft[field.field_name];
           if (!fieldState) continue;
+          const hadExplicitValue = Object.prototype.hasOwnProperty.call(snapshot.raw.config, field.field_name);
           if (isGlobalField(field)) {
             payload[field.field_name] = parseFieldValue(field, fieldState.value);
             continue;
@@ -1204,12 +1206,18 @@ export function ConfigurationScreen() {
           }
           if (isRoot) {
             if (fieldState.clear) {
+              if (hadExplicitValue) {
+                removedFields.push(field.field_name);
+              }
               continue;
             }
             payload[field.field_name] = parseFieldValue(field, fieldState.value);
             continue;
           }
           if (!fieldState.include) {
+            if (hadExplicitValue) {
+              removedFields.push(field.field_name);
+            }
             continue;
           }
           if (fieldState.clear) {
@@ -1232,7 +1240,7 @@ export function ConfigurationScreen() {
         tab_snapshot: TabSnapshot | null;
       }>(`/api/configuration/domains/${encodeURIComponent(selectedTab)}?directory_path=${encodeURIComponent(selectedDirectoryPath)}`, {
         method: "PUT",
-        body: JSON.stringify({ config: payload, expected_revision: snapshot.revision }),
+        body: JSON.stringify({ config: payload, removed_fields: removedFields, expected_revision: snapshot.revision }),
       });
       if (!payloadResponse.write_result.ok || !payloadResponse.tab_snapshot) {
         throw new Error(payloadResponse.write_result.errors[0]?.message ?? "Save failed.");

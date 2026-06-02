@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Configuration Override Removal
+
+- Fixed Admin Web configuration tab saves so unchecking an existing directory override removes
+  that field even when other fields on the tab are still saved, allowing child Teams delegated
+  scopes to fall back to a parent directory.
+
 ## 2026-05-31 - Playback-Aware DIDWW Idle Prompting
 
 - Moved DIDWW/OpenAI Realtime idle prompting into the bridge so the idle timer
