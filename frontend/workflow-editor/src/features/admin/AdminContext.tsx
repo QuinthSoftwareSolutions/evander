@@ -35,6 +35,7 @@ export type AdminUiState = {
   currentUserPermissions: string[];
   currentUserEffectivePermissions: string[];
   canReadWorkflows: boolean;
+  canReadWorkflowRuns: boolean;
   canWriteWorkflows: boolean;
   canControlWorkflowRuns: boolean;
   canManageUsers: boolean;
@@ -66,6 +67,7 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   currentUserPermissions: [],
   currentUserEffectivePermissions: [],
   canReadWorkflows: false,
+  canReadWorkflowRuns: false,
   canWriteWorkflows: false,
   canControlWorkflowRuns: false,
   canManageUsers: false,

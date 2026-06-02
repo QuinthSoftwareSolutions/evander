@@ -89,8 +89,9 @@ type DirectoryMutationResult = AdminResult<unknown>;
 
 type AdminExecutionBackend = "libvirt_vm" | "container_worker_vm";
 
-const WORKFLOW_READ_PERMISSIONS = new Set(["workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"]);
+const WORKFLOW_READ_PERMISSIONS = new Set(["workflows.read", "workflows.write"]);
 const WORKFLOW_WRITE_PERMISSION = "workflows.write";
+const WORKFLOW_RUN_READ_PERMISSION = "workflow_runs.read";
 const WORKFLOW_RUN_CONTROL_PERMISSION = "workflow_runs.control";
 const USER_MANAGEMENT_PERMISSIONS = new Set(["users.manage"]);
 
@@ -1430,6 +1431,7 @@ export default function AdminRoot() {
   const isOwner = currentUserRole === "admin" || currentUserPermissionSet.has("admin.owner");
   const hasPermission = (permission: string) => isOwner || currentUserPermissionSet.has(permission);
   const canReadWorkflows = isOwner || [...WORKFLOW_READ_PERMISSIONS].some((permission) => hasPermission(permission));
+  const canReadWorkflowRuns = hasPermission(WORKFLOW_RUN_READ_PERMISSION);
   const canWriteWorkflows = hasPermission(WORKFLOW_WRITE_PERMISSION);
   const canControlWorkflowRuns = hasPermission(WORKFLOW_RUN_CONTROL_PERMISSION);
   const canManageUsers =
@@ -1487,6 +1489,7 @@ export default function AdminRoot() {
     currentUserPermissions,
     currentUserEffectivePermissions,
     canReadWorkflows,
+    canReadWorkflowRuns,
     canWriteWorkflows,
     canControlWorkflowRuns,
     canManageUsers,

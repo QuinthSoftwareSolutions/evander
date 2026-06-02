@@ -3659,6 +3659,7 @@ export default function App() {
     directoryTree,
     setWorkflowHasUnsavedChanges,
     canReadWorkflows,
+    canReadWorkflowRuns,
     canWriteWorkflows,
     canControlWorkflowRuns,
   } = useAdminUi();
@@ -3774,7 +3775,8 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
-  const workflowRunControlLocked = !canControlWorkflowRuns;
+  const workflowRunReadLocked = !canReadWorkflowRuns;
+  const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
   useEffect(() => {
     runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
   }, [runtimePulseNodeIds]);
@@ -4212,11 +4214,8 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
-      fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
-    ])
-      .then(([payload, runSnapshotPayload]) => {
+    fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document")
+      .then((payload) => {
         if (cancelled) return;
         const backendOutputSchemas = payload.output_schemas ?? {};
         const normalizedConfig = normalizeDerivedNodeFields(
@@ -4240,7 +4239,6 @@ export default function App() {
           initialGraphDirectoryPathRef.current,
         );
         validationCacheRef.current.clear();
-        applyWorkflowRunSnapshot(runSnapshotPayload);
         const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
           graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
         );
@@ -4262,6 +4260,31 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (workflowRunReadLocked) {
+      setRunSnapshot(null);
+      setRunDetail(null);
+      setRunDetailError(null);
+      setRunSearchResult(null);
+      setRunSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs")
+      .then((runSnapshotPayload) => {
+        if (cancelled) return;
+        applyWorkflowRunSnapshot(runSnapshotPayload);
+        setError(null);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowRunReadLocked]);
 
   function rememberRuntimePulseSeenActivityKey(activityKey: string) {
     const seenKeys = runtimePulseSeenActivityKeysRef.current;
@@ -4429,6 +4452,13 @@ export default function App() {
   }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
+    if (workflowRunReadLocked) {
+      for (const timeout of runtimePulseTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      runtimePulseTimeoutsRef.current.clear();
+      return;
+    }
     const stream = new EventSource("/api/workflow-editor/runs/stream");
 
     stream.addEventListener("snapshot", (event) => {
@@ -4452,7 +4482,7 @@ export default function App() {
       }
       runtimePulseTimeoutsRef.current.clear();
     };
-  }, []);
+  }, [workflowRunReadLocked]);
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();
@@ -4539,7 +4569,7 @@ export default function App() {
 
   async function loadWorkflowRunDetail(query: URLSearchParams, lookupText?: string) {
     const queryText = query.toString();
-    if (!queryText || runDetailLoading) return;
+    if (!queryText || runDetailLoading || workflowRunReadLocked) return;
     setRunDetailLoading(true);
     setRunDetailError(null);
     try {
@@ -4563,7 +4593,7 @@ export default function App() {
 
   async function loadWorkflowRunSearch(query: URLSearchParams) {
     const queryText = query.toString();
-    if (!queryText || runSearchLoading) return;
+    if (!queryText || runSearchLoading || workflowRunReadLocked) return;
     setRunSearchLoading(true);
     setRunSearchError(null);
     try {
@@ -4578,7 +4608,7 @@ export default function App() {
 
   function inspectWorkflowRun(eventId: string) {
     if (activeWorkflowTutorial) return;
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const normalizedEventId = eventId.trim();
     if (!normalizedEventId) return;
     void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
@@ -4586,6 +4616,9 @@ export default function App() {
 
   useEffect(() => {
     const applyDeepLink = () => {
+      if (workflowRunReadLocked) {
+        return;
+      }
       const lookup = workflowRunLookupFromHash();
       if (!lookup) {
         return;
@@ -4598,11 +4631,11 @@ export default function App() {
     applyDeepLink();
     window.addEventListener("hashchange", applyDeepLink);
     return () => window.removeEventListener("hashchange", applyDeepLink);
-  }, []);
+  }, [workflowRunReadLocked]);
 
   function submitWorkflowRunDetailLookup(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const normalizedLookup = runDetailLookup.trim();
     if (!normalizedLookup) return;
     void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
@@ -4610,7 +4643,7 @@ export default function App() {
 
   function submitWorkflowRunSearch(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (workflowReadLocked) return;
+    if (workflowRunReadLocked) return;
     const query = workflowRunSearchQuery(runSearchScope, {
       withoutSession: runSearchWithoutSession,
       includeCompleted: runSearchIncludeCompleted,
@@ -9173,7 +9206,7 @@ export default function App() {
                         type="button"
                         className="subtle-button"
                         onClick={() => inspectWorkflowRun(run.event_id)}
-                        disabled={runDetailLoading || workflowReadLocked}
+                        disabled={runDetailLoading || workflowRunReadLocked}
                       >
                         Inspect
                       </button>
@@ -9320,6 +9353,7 @@ export default function App() {
                 </button>
               </div>
 
+              {canReadWorkflowRuns ? (
               <details className="sidebar-section current-runs-section">
                 <summary className="current-runs-summary">
                   <span className="section-label current-runs-label">Current runs</span>
@@ -9353,7 +9387,7 @@ export default function App() {
                   <button
                     type="submit"
                     className="subtle-button"
-                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowReadLocked}
+                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
                   >
                     {runDetailLoading ? "Loading..." : "Inspect"}
                   </button>
@@ -9410,7 +9444,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope || workflowReadLocked}
+                      disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
                     >
                       {runSearchLoading ? "Loading..." : "Find"}
                     </button>
@@ -9463,7 +9497,7 @@ export default function App() {
                           type="button"
                           className="subtle-button"
                           onClick={() => inspectWorkflowRun(run.event_id)}
-                          disabled={runDetailLoading || workflowReadLocked}
+                          disabled={runDetailLoading || workflowRunReadLocked}
                         >
                           Inspect
                         </button>
@@ -9496,6 +9530,7 @@ export default function App() {
                   ))}
                 </div>
               </details>
+              ) : null}
 
             <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
               <summary className="collapsible-sidebar-summary">
