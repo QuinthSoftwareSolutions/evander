@@ -239,6 +239,11 @@ type CanvasPoint = {
   y: number;
 };
 
+type ScreenPoint = {
+  clientX: number;
+  clientY: number;
+};
+
 type TutorialEditorSnapshot = {
   selectedNodeIds: string[];
   selectedNodeId: string | null;
@@ -276,6 +281,8 @@ type PendingConnectionRole = "source" | "valid-target" | "invalid-target";
 type CopiedWorkflowNode = {
   node: WorkflowNodeConfig;
   position: { x: number; y: number };
+  width: number;
+  height: number;
 };
 
 type CopiedWorkflowSelection = {
@@ -826,6 +833,18 @@ function fallbackPosition(index: number): { x: number; y: number } {
   return {
     x: 120 + (index % 4) * 280,
     y: 100 + Math.floor(index / 4) * 180,
+  };
+}
+
+function copiedWorkflowSelectionCenter(nodes: ReadonlyArray<CopiedWorkflowNode>): { x: number; y: number } | null {
+  if (nodes.length === 0) return null;
+  const left = Math.min(...nodes.map((node) => node.position.x));
+  const top = Math.min(...nodes.map((node) => node.position.y));
+  const right = Math.max(...nodes.map((node) => node.position.x + node.width));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + node.height));
+  return {
+    x: (left + right) / 2,
+    y: (top + bottom) / 2,
   };
 }
 
@@ -3651,6 +3670,7 @@ export default function App() {
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
+  const canvasCursorPointRef = useRef<ScreenPoint | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const workflowGeneratorAbortRef = useRef<AbortController | null>(null);
   const workflowGeneratorRequestIdRef = useRef(0);
@@ -5546,6 +5566,27 @@ export default function App() {
     };
   }
 
+  function screenPointIsOverCanvas(point: ScreenPoint): boolean {
+    const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+    if (!canvasRect) return false;
+    return (
+      point.clientX >= canvasRect.left &&
+      point.clientX <= canvasRect.right &&
+      point.clientY >= canvasRect.top &&
+      point.clientY <= canvasRect.bottom
+    );
+  }
+
+  function updateCanvasCursorPoint(clientX: number, clientY: number) {
+    canvasCursorPointRef.current = { clientX, clientY };
+  }
+
+  function flowPositionAtCanvasCursor(): { x: number; y: number } | null {
+    const cursorPoint = canvasCursorPointRef.current;
+    if (!cursorPoint || !screenPointIsOverCanvas(cursorPoint)) return null;
+    return flowPositionFromScreenPoint(cursorPoint.clientX, cursorPoint.clientY);
+  }
+
   function nodePositionCenteredOnFlowPoint(flowPosition: { x: number; y: number }): { x: number; y: number } {
     return {
       x: flowPosition.x - FALLBACK_NODE_WIDTH / 2,
@@ -5558,13 +5599,18 @@ export default function App() {
     return flowPosition ? nodePositionCenteredOnFlowPoint(flowPosition) : null;
   }
 
-  function nodePositionAtCanvasCenter(): { x: number; y: number } | null {
+  function flowPositionAtCanvasCenter(): { x: number; y: number } | null {
     const canvasRect = canvasShellRef.current?.getBoundingClientRect();
     if (!canvasRect) return null;
-    return nodePositionFromScreenPoint(
+    return flowPositionFromScreenPoint(
       canvasRect.left + canvasRect.width / 2,
       canvasRect.top + canvasRect.height / 2,
     );
+  }
+
+  function nodePositionAtCanvasCenter(): { x: number; y: number } | null {
+    const flowPosition = flowPositionAtCanvasCenter();
+    return flowPosition ? nodePositionCenteredOnFlowPoint(flowPosition) : null;
   }
 
   function nodeCenterCanvasPoint(node: Node<GraphNodeData>): CanvasPoint {
@@ -5837,9 +5883,18 @@ export default function App() {
     appShellRef.current?.focus();
   }
 
+  function handleCanvasPointerEnter(event: ReactPointerEvent<HTMLElement>) {
+    updateCanvasCursorPoint(event.clientX, event.clientY);
+  }
+
   function handleCanvasPointerMove(event: ReactPointerEvent<HTMLElement>) {
+    updateCanvasCursorPoint(event.clientX, event.clientY);
     if (!pendingConnection) return;
     updatePendingConnectionCursor(event.clientX, event.clientY);
+  }
+
+  function handleCanvasPointerLeave() {
+    canvasCursorPointRef.current = null;
   }
 
   function handleCanvasTouchStartCapture(event: ReactTouchEvent<HTMLElement>) {
@@ -5971,14 +6026,22 @@ export default function App() {
     if (!document || selectedNodeIds.length === 0) return false;
     const selectedNodeIdSet = new Set(selectedNodeIds);
     const nodesById = new Map(workflowNodes(document.config).map((node) => [node.id, node]));
-    const positionsById = new Map(flowNodes.map((node) => [node.id, node.position]));
+    const currentFlowNodes = flowInstance?.getNodes() as Node<GraphNodeData>[] | undefined;
+    const flowNodesById = new Map(
+      (currentFlowNodes && currentFlowNodes.length > 0 ? currentFlowNodes : flowNodes).map((node) => [node.id, node]),
+    );
     const copiedNodes = selectedNodeIds
       .map((nodeId, index) => {
         const node = nodesById.get(nodeId);
         if (!node) return null;
+        const flowNode = flowNodesById.get(nodeId);
+        const position = flowNode?.position ?? document.layout.nodes[nodeId] ?? fallbackPosition(index);
+        const bounds = nodeBounds(flowNode ? { ...flowNode, position } : { id: node.id, position });
         return {
           node: cloneNodeConfig(node),
-          position: positionsById.get(nodeId) ?? document.layout.nodes[nodeId] ?? fallbackPosition(index),
+          position,
+          width: bounds.right - bounds.left,
+          height: bounds.bottom - bounds.top,
         };
       })
       .filter((node): node is CopiedWorkflowNode => Boolean(node));
@@ -6038,12 +6101,20 @@ export default function App() {
       .filter((edge): edge is WorkflowEdge => Boolean(edge));
     nextConfig.edges = [...nextConfig.edges, ...duplicatedEdges];
     const nextLayout = cloneLayout(document.layout);
+    const selectionCenter = copiedWorkflowSelectionCenter(copiedSelection.nodes);
+    const pasteTarget = flowPositionAtCanvasCursor() ?? flowPositionAtCanvasCenter();
+    const pasteDelta = selectionCenter && pasteTarget
+      ? {
+          x: pasteTarget.x - selectionCenter.x,
+          y: pasteTarget.y - selectionCenter.y,
+        }
+      : { x: 40, y: 40 };
     for (const copiedNode of copiedSelection.nodes) {
       const nextId = idMap.get(copiedNode.node.id);
       if (!nextId) continue;
       nextLayout.nodes[nextId] = {
-        x: copiedNode.position.x + 40,
-        y: copiedNode.position.y + 40,
+        x: copiedNode.position.x + pasteDelta.x,
+        y: copiedNode.position.y + pasteDelta.y,
       };
     }
     const pastedNodeIds = copiedSelection.nodes
@@ -9735,7 +9806,9 @@ export default function App() {
             ref={canvasShellRef}
             onDragOver={handleNodeTypeDragOver}
             onDrop={handleNodeTypeDrop}
+            onPointerEnter={handleCanvasPointerEnter}
             onPointerMove={handleCanvasPointerMove}
+            onPointerLeave={handleCanvasPointerLeave}
             onTouchStartCapture={handleCanvasTouchStartCapture}
             onTouchMoveCapture={handleCanvasTouchMoveCapture}
             onTouchEndCapture={handleCanvasTouchEndCapture}

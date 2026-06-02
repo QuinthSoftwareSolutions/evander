@@ -31,3 +31,17 @@ test("regular workflow document patches preserve the current canvas viewport", (
   assert.doesNotMatch(patchBranch, /autoFit: true/);
   assert.doesNotMatch(saveBranch, /autoFit: true/);
 });
+
+test("catalog click-created workflow nodes use the current canvas center", () => {
+  const addNodeBranch = sourceBetween(
+    "function addNode(",
+    "function deleteSelectedNode()",
+  );
+  const createListBranch = sourceBetween(
+    'className="create-group-actions create-subgroup-actions"',
+    '<div className="sidebar-section">',
+  );
+
+  assert.match(addNodeBranch, /requestedPosition\) \?\? nodePositionAtCanvasCenter\(\) \?\? fallbackPosition/);
+  assert.match(createListBranch, /onClick=\{\(\) => addNode\(entry\.kind, entry\.type\)\}/);
+});

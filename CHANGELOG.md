@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-02 - Workflow Editor Cursor Paste Placement
+
+- Changed workflow editor copy/paste so pasted nodes are centered on the cursor
+  when the cursor is over the canvas, falling back to the current canvas center
+  otherwise. Added regression coverage for cursor paste placement and
+  click-created catalogue node centering.
+
 ## 2026-06-02 - Workflow Target Selector Cleanup
 
 - Collapsed workflow editor `target`/`session_id`/`vm_name` triplets into a
