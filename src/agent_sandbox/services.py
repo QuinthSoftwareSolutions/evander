@@ -1562,8 +1562,6 @@ class StubTeamsService:
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
         normalized_mentions = normalize_teams_mention_refs(mentions)
-        if normalized_mentions and target.kind != "channel":
-            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -2795,8 +2793,6 @@ class GraphTeamsService:
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
         normalized_mentions = normalize_teams_mention_refs(mentions)
-        if normalized_mentions and target.kind != "channel":
-            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         if target.kind == "chat":
             if normalized_thread_id is not None:

@@ -1452,6 +1452,8 @@ Teams channel targets can still be declared directly with `teams_channel_allowli
 targets with `teams_chat_allowlist`, and one-on-one user send targets with
 `teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
+`teams_post_status` can mention Graph users in channel posts, channel thread replies, and chat
+posts; user targets are resolved into one-on-one chats before sending.
 Direct-message trigger polling is configured with `sender_user_ids` on
 `trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
 

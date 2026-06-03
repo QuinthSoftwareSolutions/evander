@@ -21,9 +21,9 @@ material. Newer entries are added incrementally as changes land.
 ## 2026-06-03 - Teams Status Mentions
 
 - Added explicit `mentions` support to `teams_post_status` for Teams channel
-  posts and channel thread replies, with Graph user lookup, channel-only
-  validation, workflow prompt guidance, and documentation for required
-  delegated user-read scopes.
+  posts, chat posts, and channel thread replies, with Graph user lookup,
+  workflow prompt guidance, and documentation for required delegated user-read
+  scopes.
 
 ## 2026-06-03 - ADO Work Item Comment Trigger
 

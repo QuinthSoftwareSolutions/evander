@@ -206,7 +206,7 @@ TeamsMentionRefsArgument = Annotated[
     list[str] | None,
     PydanticField(
         description=(
-            "Optional Teams user refs to mention in a channel post or channel thread reply. "
+            "Optional Teams user refs to mention in a channel post, chat post, or channel thread reply. "
             "Use user:<graph-user-id-or-upn> or a bare Graph user ID, UPN, or mail address. "
             "Plain @name text in message does not notify users."
         )
@@ -7052,8 +7052,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 capability="reply" if thread_id is not None else "write",
             )
             parsed_target = parse_teams_target(normalized_target)
-            if normalized_mentions and parsed_target.kind != "channel":
-                raise PolicyError("Teams mentions are supported only for channel targets")
             if parsed_target.kind == "user" and thread_id is not None:
                 raise PolicyError("Teams user targets do not support thread replies")
             service = context.teams_service_for_session(session_id)

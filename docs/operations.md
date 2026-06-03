@@ -432,6 +432,9 @@ Storage layout for directory config:
     `chat:<chat-id>` before sending. User targets require `session.teams_user_allowlist` or a
     declared communication target; they are not valid for message reads, reactions, or attachment
     downloads.
+- `teams_post_status` accepts `mentions` for channel posts, channel thread replies, and chat posts.
+  User targets are resolved into a one-on-one chat before sending. Plain `@name` text in the
+  message body does not notify users; pass Graph user IDs, UPNs, or mail addresses in `mentions`.
 - Session communication allowlists can also contain directory-scoped communication target IDs. A
   target ID is resolved from the session directory at use time and must expose `read`, `write`, or
   `reply` to match the attempted read/poll/download, top-level send, or reply/reaction operation.

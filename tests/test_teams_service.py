@@ -1050,13 +1050,41 @@ def test_graph_teams_service_posts_thread_reply_with_mentions(
     ]
 
 
-def test_graph_teams_service_rejects_mentions_for_chat_target(
+def test_graph_teams_service_posts_chat_status_with_mentions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transport = httpx.MockTransport(
-        lambda request: pytest.fail(f"Unexpected request: {request.url}")
-    )
+    requests: list[httpx.Request] = []
+    posted_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "user-operator",
+                    "displayName": "Operator User",
+                    "mail": "operator@example.com",
+                },
+                request=request,
+            )
+        if request.method == "POST" and request.url.path == "/v1.0/chats/chat-1/messages":
+            posted_payloads.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-chat",
+                    "createdDateTime": "2026-03-30T12:02:00Z",
+                    "body": {"content": "<p>chat status</p>", "contentType": "html"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "chatId": "chat-1",
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     service = GraphTeamsService(
@@ -1067,13 +1095,40 @@ def test_graph_teams_service_rejects_mentions_for_chat_target(
         timeout_seconds=5.0,
     )
 
-    with pytest.raises(ValueError, match="Teams mentions are supported only for channel targets"):
-        service.post_status(
-            "status",
-            "chat:chat-1",
-            "session-1",
-            mentions=["operator@example.com"],
-        )
+    result = service.post_status(
+        "chat status",
+        "chat:chat-1",
+        "session-1",
+        mentions=["operator@example.com"],
+    )
+
+    assert result["status"] == "posted"
+    assert result["chat_id"] == "chat-1"
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/operator@example.com",
+        "/v1.0/chats/chat-1/messages",
+    ]
+    assert posted_payloads == [
+        {
+            "body": {
+                "content": '<p><at id="0">Operator User</at></p><p>chat status</p>',
+                "contentType": "html",
+            },
+            "mentions": [
+                {
+                    "id": 0,
+                    "mentionText": "Operator User",
+                    "mentioned": {
+                        "user": {
+                            "id": "user-operator",
+                            "displayName": "Operator User",
+                            "userIdentityType": "aadUser",
+                        }
+                    },
+                }
+            ],
+        }
+    ]
 
 
 def test_graph_teams_service_fails_when_mention_user_is_unresolved(
