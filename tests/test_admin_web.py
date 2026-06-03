@@ -879,6 +879,41 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "project",
         "directories",
     ]
+    ado_comment = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:ado:work-item-comment-created"
+    )
+    assert ado_comment["label"] == "ADO work item comment"
+    assert ado_comment["description"] == (
+        "Start when a matching Azure DevOps work item receives a new matching comment."
+    )
+    assert [field["key"] for field in ado_comment["fields"]] == [
+        "directory_path",
+        "project",
+        "wiql",
+        "current_iteration",
+        "team",
+        "iteration",
+        "area_path",
+        "states",
+        "types",
+        "tags_any",
+        "text_search",
+        "top",
+        "comment_contains",
+        "comment_contains_any",
+        "comment_author_exclude_names",
+        "comment_author_exclude_ids",
+        "comment_case_sensitive",
+        "include_existing",
+    ]
+    ado_comment_fields = {field["key"]: field for field in ado_comment["fields"]}
+    assert ado_comment_fields["wiql"]["multiline"] is True
+    assert ado_comment_fields["top"]["default_value"] == 50
+    assert ado_comment_fields["comment_contains_any"]["default_value"] == []
+    assert ado_comment_fields["comment_case_sensitive"]["default_value"] is False
+    assert ado_comment_fields["include_existing"]["default_value"] is False
     pr_trigger_field_keys = [
         "provider",
         "repo",

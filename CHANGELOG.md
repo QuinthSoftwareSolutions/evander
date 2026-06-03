@@ -18,6 +18,8 @@ material. Newer entries are added incrementally as changes land.
   work-item comment polling with configurable work-item/comment filters,
   trigger-owned comment cursors, default no-backfill initialization, and
   detailed work-item payloads suitable for proxy issue upserts.
+- Exposed `trigger:ado:work-item-comment-created` in the Admin Web workflow
+  editor catalog so operators can create and configure it from the GUI.
 
 ## 2026-06-03 - Workflow Create Panel Trigger Defaults
 
