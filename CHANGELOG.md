@@ -18,6 +18,12 @@ material. Newer entries are added incrementally as changes land.
   replies, with ADO identity lookup, unresolved/ambiguous mention failures, and
   Markdown `@<identity-id>` rendering.
 
+## 2026-06-03 - Teams Auth Dark Mode
+
+- Fixed the Admin Web Configuration Teams delegated auth device-code panel so
+  the active sign-in card, code row, metadata, and links use readable dark-mode
+  colors.
+
 ## 2026-06-03 - Teams Status Mentions
 
 - Added explicit `mentions` support to `teams_post_status` for Teams channel
