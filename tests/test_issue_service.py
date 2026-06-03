@@ -292,6 +292,67 @@ def test_post_comment_uploads_artifact_appends_image_and_links_relation(
     assert result["uploaded_attachments"][0]["filename"] == "comment.png"
 
 
+def test_post_comment_resolves_ado_mentions_before_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "11111111-1111-1111-1111-111111111111",
+                        "providerDisplayName": "Ada Lovelace",
+                        "uniqueName": "ada@example.com",
+                    }
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "text": "Comment",
+                "_links": {"web": {"href": "https://dev.azure.com/comment/5"}},
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.post_comment(
+        directory_path="root",
+        remote_issue_id="77",
+        comment="Comment",
+        mentions=["ada@example.com"],
+    )
+
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == "https://vssps.dev.azure.com/example/_apis/identities"
+    assert calls[0]["params"]["filterValue"] == "ada@example.com"
+    assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert calls[1]["json"]["text"] == (
+        "@<11111111-1111-1111-1111-111111111111>\n\nComment"
+    )
+    assert result["resolved_mentions"] == [
+        {
+            "input": "ada@example.com",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "display_name": "Ada Lovelace",
+            "unique_name": "ada@example.com",
+        }
+    ]
+
+
 def test_update_issue_uploads_field_artifact_appends_image_and_links_relation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

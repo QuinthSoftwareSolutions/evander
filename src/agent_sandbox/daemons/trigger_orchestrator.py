@@ -40,6 +40,10 @@ from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
+from agent_sandbox.workflow.graph_metadata import (
+    ResolvedWorkflowGraphMetadata,
+    resolve_workflow_graph_metadata,
+)
 from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.orchestration.host_polling import (
     HostFileLockManager,
@@ -320,11 +324,16 @@ class TriggerOrchestratorWorker:
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
         triggers: list[TriggerDefinitionDiscriminated],
     ) -> dict[str, Any]:
-        _ = worker_config
+        node_graph_metadata_by_id = _resolve_node_graph_metadata(worker_config)
         providers: dict[str, Any] = {}
         for trigger in triggers:
             try:
-                providers[trigger.id] = self.provider_factory.build(trigger)
+                providers[trigger.id] = self.provider_factory.build(
+                    trigger,
+                    directory_path=_effective_trigger_directory_path(
+                        trigger, node_graph_metadata_by_id
+                    ),
+                )
             except Exception:
                 logger.exception(
                     "Trigger provider initialization failed trigger_id=%s trigger_type=%s",
@@ -380,6 +389,38 @@ def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEv
 
 def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:
     return str(trigger.type or "").startswith("trigger:system:")
+
+
+def _resolve_node_graph_metadata(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> dict[str, ResolvedWorkflowGraphMetadata]:
+    nodes_by_id = {
+        node.id: node
+        for node in (
+            *worker_config.triggers,
+            *worker_config.gates,
+            *worker_config.effects,
+            *worker_config.queries,
+        )
+    }
+    return resolve_workflow_graph_metadata(
+        nodes_by_id=nodes_by_id,
+        edges=worker_config.edges,
+        workflow_graphs=worker_config.workflow_graphs,
+    )
+
+
+def _effective_trigger_directory_path(
+    trigger: TriggerDefinitionDiscriminated,
+    node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata],
+) -> str | None:
+    explicit_directory_path = str(getattr(trigger, "directory_path", "") or "").strip()
+    if explicit_directory_path:
+        return explicit_directory_path
+    graph_metadata = node_graph_metadata_by_id.get(trigger.id)
+    if graph_metadata is not None:
+        return graph_metadata.directory_path
+    return None
 
 
 def _build_trigger_event_queue(

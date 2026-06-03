@@ -1398,7 +1398,7 @@ def test_teams_post_status_resolves_allowlisted_user_target(tmp_path: Path) -> N
     ]
 
 
-def test_teams_post_status_rejects_mentions_for_chat_target(tmp_path: Path) -> None:
+def test_teams_post_status_forwards_mentions_for_chat_target(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1412,22 +1412,30 @@ def test_teams_post_status_rejects_mentions_for_chat_target(tmp_path: Path) -> N
     context.teams_service = fake_teams
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="Teams mentions are supported only for channel targets"):
-        asyncio.run(
-            server.call_tool(
-                "teams_post_status",
-                {
-                    "session_id": "session-1",
-                    "channel_target": "chat:chat-1",
-                    "message": "This should be denied.",
-                    "mentions": ["operator@example.com"],
-                },
-            )
-        )
-    assert fake_teams.post_calls == []
+    result = call_tool(
+        server,
+        "teams_post_status",
+        {
+            "session_id": "session-1",
+            "channel_target": "chat:chat-1",
+            "message": "Please take a look.",
+            "mentions": ["operator@example.com"],
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_teams.post_calls == [
+        (
+            "Please take a look.",
+            "chat:chat-1",
+            "session-1",
+            None,
+            ("user:operator@example.com",),
+        ),
+    ]
 
 
-def test_teams_post_status_rejects_mentions_for_user_target(tmp_path: Path) -> None:
+def test_teams_post_status_resolves_user_target_with_mentions(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1441,20 +1449,28 @@ def test_teams_post_status_rejects_mentions_for_user_target(tmp_path: Path) -> N
     context.teams_service = fake_teams
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="Teams mentions are supported only for channel targets"):
-        asyncio.run(
-            server.call_tool(
-                "teams_post_status",
-                {
-                    "session_id": "session-1",
-                    "channel_target": "user:operator@example.com",
-                    "message": "This should be denied.",
-                    "mentions": ["other@example.com"],
-                },
-            )
-        )
-    assert fake_teams.ensure_chat_calls == []
-    assert fake_teams.post_calls == []
+    result = call_tool(
+        server,
+        "teams_post_status",
+        {
+            "session_id": "session-1",
+            "channel_target": "user:operator@example.com",
+            "message": "Please take a look.",
+            "mentions": ["other@example.com"],
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_teams.ensure_chat_calls == ["operator@example.com"]
+    assert fake_teams.post_calls == [
+        (
+            "Please take a look.",
+            "chat:chat-created-1",
+            "session-1",
+            None,
+            ("user:other@example.com",),
+        ),
+    ]
 
 
 def test_teams_post_status_rejects_non_allowlisted_user_target(tmp_path: Path) -> None:

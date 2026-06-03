@@ -294,7 +294,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+    trigger_worker.provider_factory.build = lambda trigger, **_: _QueuedTriggerProvider(
         trigger.id, trigger_events
     )  # type: ignore[assignment]
     effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(
@@ -765,7 +765,7 @@ def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+    trigger_worker.provider_factory.build = lambda trigger, **_: _QueuedTriggerProvider(
         trigger.id, trigger_events
     )  # type: ignore[assignment]
     effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(
@@ -864,7 +864,7 @@ def test_workers_reload_when_referenced_workflow_pack_changes(tmp_path: Path) ->
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+    trigger_worker.provider_factory.build = lambda trigger, **_: _QueuedTriggerProvider(
         trigger.id, trigger_events
     )  # type: ignore[assignment]
     effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(

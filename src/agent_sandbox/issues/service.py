@@ -14,6 +14,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
+from agent_sandbox.ado_mentions import (
+    render_ado_mentions_prefix,
+    resolve_ado_mentions,
+)
 from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
@@ -313,6 +317,7 @@ class IssueProviderAdapter(Protocol):
         directory_path: str,
         comment: str,
         project: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
@@ -1057,6 +1062,7 @@ class AzureDevOpsIssueAdapter:
         directory_path: str,
         comment: str,
         project: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
@@ -1068,6 +1074,12 @@ class AzureDevOpsIssueAdapter:
             f"{organization_url}/{normalized_project}/_apis/wit/workItems/{remote_issue_id}/comments"
         )
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            resolved_mentions = resolve_ado_mentions(
+                client=client,
+                organization_url=organization_url,
+                pat=pat,
+                mention_refs=mentions,
+            )
             uploaded_attachments = self._upload_work_item_attachments(
                 client,
                 organization_url=organization_url,
@@ -1075,7 +1087,10 @@ class AzureDevOpsIssueAdapter:
                 auth_header=auth_header,
                 attachments=attachments,
             )
-            formatted_comment = _append_html_attachment_links(comment, uploaded_attachments) or ""
+            comment_with_mentions = render_ado_mentions_prefix(comment, resolved_mentions)
+            formatted_comment = (
+                _append_html_attachment_links(comment_with_mentions, uploaded_attachments) or ""
+            )
             response = client.post(
                 comments_url,
                 params={"api-version": "7.1-preview.4"},
@@ -1109,6 +1124,7 @@ class AzureDevOpsIssueAdapter:
                     ).strip(),
                 },
                 "uploaded_attachments": uploaded_attachments,
+                "resolved_mentions": [mention.audit_payload() for mention in resolved_mentions],
             }
 
     def update_issue(
@@ -2081,6 +2097,7 @@ class IssueService:
         directory_path: str,
         comment: str,
         project: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
@@ -2091,6 +2108,7 @@ class IssueService:
             directory_path=directory_path,
             comment=comment,
             project=project,
+            mentions=mentions,
             attachments=attachments,
         )
 

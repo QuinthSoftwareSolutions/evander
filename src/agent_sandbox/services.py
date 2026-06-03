@@ -15,6 +15,12 @@ from typing import Any, Callable, Iterator, Literal, Mapping, Protocol
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import httpx
+from agent_sandbox.ado_mentions import (
+    AdoResolvedMention,
+    normalize_ado_mention_refs,
+    render_ado_mentions_prefix,
+    resolve_ado_mentions,
+)
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
@@ -1556,8 +1562,6 @@ class StubTeamsService:
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
         normalized_mentions = normalize_teams_mention_refs(mentions)
-        if normalized_mentions and target.kind != "channel":
-            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -2789,8 +2793,6 @@ class GraphTeamsService:
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
         normalized_mentions = normalize_teams_mention_refs(mentions)
-        if normalized_mentions and target.kind != "channel":
-            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         if target.kind == "chat":
             if normalized_thread_id is not None:
@@ -3282,6 +3284,17 @@ def _reject_unsupported_comment_attachments(provider: str, comments: list[dict[s
         raise ValueError(f"{provider} PR review comments do not support artifact attachments")
 
 
+def _reject_unsupported_mentions(provider: str, mentions: list[str] | None) -> None:
+    if normalize_ado_mention_refs(mentions):
+        raise ValueError(f"{provider} PR comments do not support ADO mentions")
+
+
+def _ado_resolved_mention_payloads(
+    mentions: list[AdoResolvedMention],
+) -> list[dict[str, str]]:
+    return [mention.audit_payload() for mention in mentions]
+
+
 def _upload_azure_devops_pr_attachments(
     *,
     client: httpx.Client,
@@ -3334,6 +3347,7 @@ class PrReplyProvider(Protocol):
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse: ...
 
@@ -3392,8 +3406,10 @@ class GitHubPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
+        _reject_unsupported_mentions("GitHub", mentions)
         _reject_unsupported_attachments("GitHub", attachments)
         if not comment_id:
             raise ValueError("GitHub reply posting requires comment_id")
@@ -3443,6 +3459,7 @@ class AzureDevOpsPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
         if not thread_id:
@@ -3451,6 +3468,12 @@ class AzureDevOpsPrReplyProvider:
             raise ValueError("Azure DevOps reply posting requires comment_id")
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            resolved_mentions = resolve_ado_mentions(
+                client=client,
+                organization_url=self.organization_url,
+                pat=self.pat,
+                mention_refs=mentions,
+            )
             uploaded_attachments = _upload_azure_devops_pr_attachments(
                 client=client,
                 organization_url=self.organization_url,
@@ -3460,7 +3483,8 @@ class AzureDevOpsPrReplyProvider:
                 pr_id=pr_id,
                 attachments=attachments,
             )
-            content = _append_markdown_attachment_links(body_text, uploaded_attachments)
+            body_with_mentions = render_ado_mentions_prefix(body_text, resolved_mentions)
+            content = _append_markdown_attachment_links(body_with_mentions, uploaded_attachments)
             response = client.post(
                 (
                     f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
@@ -3482,6 +3506,7 @@ class AzureDevOpsPrReplyProvider:
             reply_id=str(payload.get("id", "")) or None,
             reply_url=payload.get("_links", {}).get("web", {}).get("href"),
             uploaded_attachments=uploaded_attachments,
+            resolved_mentions=_ado_resolved_mention_payloads(resolved_mentions),
         )
 
 
@@ -4590,6 +4615,7 @@ class PrReplyService:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> PostPrFeedbackReplyResponse:
@@ -4607,14 +4633,18 @@ class PrReplyService:
                 cached = PostPrFeedbackReplyResponse.model_validate(existing)
                 return cached.model_copy(update={"status": "deduplicated"})
 
-        response = self.providers[provider_name].post_reply(
-            repo=repo,
-            pr_id=pr_id,
-            thread_id=thread_id,
-            comment_id=comment_id,
-            body_text=body_text.strip(),
-            attachments=attachments,
-        )
+        normalized_mentions = normalize_ado_mention_refs(mentions)
+        reply_kwargs: dict[str, Any] = {
+            "repo": repo,
+            "pr_id": pr_id,
+            "thread_id": thread_id,
+            "comment_id": comment_id,
+            "body_text": body_text.strip(),
+            "attachments": attachments,
+        }
+        if normalized_mentions:
+            reply_kwargs["mentions"] = normalized_mentions
+        response = self.providers[provider_name].post_reply(**reply_kwargs)
         response.idempotency_key = normalized_key
         self._record_ignored_feedback_id(response)
         if cache_key:
@@ -4737,6 +4767,7 @@ class PrPublishProvider(Protocol):
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
@@ -4748,6 +4779,7 @@ class PrPublishProvider(Protocol):
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
@@ -4777,8 +4809,10 @@ class GitHubPrPublishProvider:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        _reject_unsupported_mentions("GitHub", mentions)
         _reject_unsupported_attachments("GitHub", attachments)
         normalized_body = body_text.strip()
         if not normalized_body:
@@ -4810,11 +4844,15 @@ class GitHubPrPublishProvider:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        _reject_unsupported_mentions("GitHub", mentions)
         _reject_unsupported_attachments("GitHub", attachments)
         normalized_body = body_text.strip()
         normalized_comments = _normalize_pr_review_comments(comments)
+        if any(comment.get("mentions") for comment in normalized_comments):
+            raise ValueError("GitHub PR review comments do not support ADO mentions")
         _reject_unsupported_comment_attachments("GitHub", normalized_comments)
         normalized_event = _normalize_pr_review_event(event)
         if not normalized_body and not normalized_comments:
@@ -4901,11 +4939,20 @@ class AzureDevOpsPrPublishProvider:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None = None,
+        resolved_mentions: list[AdoResolvedMention] | None = None,
         thread_context: dict[str, Any] | None = None,
         pull_request_thread_context: dict[str, Any] | None = None,
         error_context: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if resolved_mentions is None:
+            resolved_mentions = resolve_ado_mentions(
+                client=client,
+                organization_url=self.organization_url,
+                pat=self.pat,
+                mention_refs=mentions,
+            )
         uploaded_attachments = _upload_azure_devops_pr_attachments(
             client=client,
             organization_url=self.organization_url,
@@ -4915,7 +4962,8 @@ class AzureDevOpsPrPublishProvider:
             pr_id=pr_id,
             attachments=attachments,
         )
-        content = _append_markdown_attachment_links(body_text, uploaded_attachments)
+        body_with_mentions = render_ado_mentions_prefix(body_text, resolved_mentions)
+        content = _append_markdown_attachment_links(body_with_mentions, uploaded_attachments)
         payload: dict[str, Any] = {
             "comments": [{"parentCommentId": 0, "content": content.strip(), "commentType": "text"}],
             "status": "active",
@@ -4957,6 +5005,7 @@ class AzureDevOpsPrPublishProvider:
             "comment_url": comment_url,
             "published_feedback_ids": published_feedback_ids,
             "uploaded_attachments": uploaded_attachments,
+            "resolved_mentions": _ado_resolved_mention_payloads(resolved_mentions),
         }
 
     def post_comment(
@@ -4965,6 +5014,7 @@ class AzureDevOpsPrPublishProvider:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_body = body_text.strip()
@@ -4976,6 +5026,7 @@ class AzureDevOpsPrPublishProvider:
                 repo=repo,
                 pr_id=pr_id,
                 body_text=normalized_body,
+                mentions=mentions,
                 error_context="top-level PR comment",
                 attachments=attachments,
             )
@@ -4995,6 +5046,7 @@ class AzureDevOpsPrPublishProvider:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_body = body_text.strip()
@@ -5008,12 +5060,23 @@ class AzureDevOpsPrPublishProvider:
         summary_thread_id: str | None = None
         summary_comment_id: str | None = None
         summary_comment_url: str | None = None
+        summary_resolved_mentions: list[dict[str, str]] = []
         inline_comment_ids: list[str] = []
         inline_comment_urls: list[str] = []
         inline_published_feedback_ids: list[str] = []
+        inline_resolved_mentions: list[list[dict[str, str]]] = []
         uploaded_attachments: list[dict[str, Any]] = []
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            resolved_summary_mentions = resolve_ado_mentions(
+                client=client,
+                organization_url=self.organization_url,
+                pat=self.pat,
+                mention_refs=mentions,
+            )
+            summary_resolved_mentions = _ado_resolved_mention_payloads(
+                resolved_summary_mentions
+            )
             iteration_context = (
                 _azure_devops_pr_iteration_context(
                     client=client,
@@ -5033,9 +5096,16 @@ class AzureDevOpsPrPublishProvider:
                     dict[str, Any],
                     dict[str, Any] | None,
                     str,
+                    list[AdoResolvedMention],
                 ]
             ] = []
             for index, comment in enumerate(normalized_comments, start=1):
+                resolved_comment_mentions = resolve_ado_mentions(
+                    client=client,
+                    organization_url=self.organization_url,
+                    pat=self.pat,
+                    mention_refs=comment.get("mentions"),
+                )
                 thread_context = _azure_devops_thread_context_for_review_comment(comment)
                 pull_request_thread_context = (
                     _azure_devops_pull_request_thread_context_for_review_comment(
@@ -5056,6 +5126,7 @@ class AzureDevOpsPrPublishProvider:
                         thread_context,
                         pull_request_thread_context,
                         error_context,
+                        resolved_comment_mentions,
                     )
                 )
 
@@ -5064,6 +5135,7 @@ class AzureDevOpsPrPublishProvider:
                 thread_context,
                 pull_request_thread_context,
                 error_context,
+                resolved_comment_mentions,
             ) in prepared_inline_comments:
                 try:
                     comment_result = self._post_thread_comment(
@@ -5071,6 +5143,7 @@ class AzureDevOpsPrPublishProvider:
                         repo=repo,
                         pr_id=pr_id,
                         body_text=comment["body_text"],
+                        resolved_mentions=resolved_comment_mentions,
                         thread_context=thread_context,
                         pull_request_thread_context=pull_request_thread_context,
                         error_context=error_context,
@@ -5093,6 +5166,9 @@ class AzureDevOpsPrPublishProvider:
                 if comment_result["comment_url"]:
                     inline_comment_urls.append(comment_result["comment_url"])
                 inline_published_feedback_ids.extend(comment_result["published_feedback_ids"])
+                inline_resolved_mentions.append(
+                    list(comment_result.get("resolved_mentions") or [])
+                )
                 uploaded_attachments.extend(comment_result.get("uploaded_attachments") or [])
 
             if normalized_body:
@@ -5101,6 +5177,7 @@ class AzureDevOpsPrPublishProvider:
                     repo=repo,
                     pr_id=pr_id,
                     body_text=normalized_body,
+                    resolved_mentions=resolved_summary_mentions,
                     error_context="review summary comment",
                     attachments=attachments,
                 )
@@ -5112,6 +5189,7 @@ class AzureDevOpsPrPublishProvider:
                 if summary_comment_url:
                     comment_urls.append(summary_comment_url)
                 published_feedback_ids.extend(summary_result["published_feedback_ids"])
+                summary_resolved_mentions = list(summary_result.get("resolved_mentions") or [])
                 uploaded_attachments.extend(summary_result.get("uploaded_attachments") or [])
 
             comment_ids.extend(inline_comment_ids)
@@ -5130,6 +5208,8 @@ class AzureDevOpsPrPublishProvider:
             "summary_thread_id": summary_thread_id,
             "summary_comment_id": summary_comment_id,
             "summary_comment_url": summary_comment_url,
+            "resolved_mentions": summary_resolved_mentions,
+            "inline_resolved_mentions": inline_resolved_mentions,
             "comment_ids": comment_ids,
             "comment_urls": comment_urls,
             "published_feedback_ids": published_feedback_ids,
@@ -5480,6 +5560,7 @@ class PrPublishService:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
@@ -5489,6 +5570,7 @@ class PrPublishService:
             repo=repo,
             pr_id=pr_id,
             body_text=body_text,
+            mentions=mentions,
             attachments=attachments,
             comments=None,
             event=None,
@@ -5504,6 +5586,7 @@ class PrPublishService:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
@@ -5513,6 +5596,7 @@ class PrPublishService:
             repo=repo,
             pr_id=pr_id,
             body_text=body_text,
+            mentions=mentions,
             attachments=attachments,
             comments=comments,
             event=event,
@@ -5530,6 +5614,7 @@ class PrPublishService:
         body_text: str,
         start_line: int | None = None,
         side: str | None = None,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
@@ -5542,6 +5627,9 @@ class PrPublishService:
             comment["start_line"] = start_line
         if side is not None:
             comment["side"] = side
+        normalized_mentions = normalize_ado_mention_refs(mentions)
+        if normalized_mentions:
+            comment["mentions"] = normalized_mentions
         if attachments:
             comment["attachments"] = attachments
         return self._publish(
@@ -5550,6 +5638,7 @@ class PrPublishService:
             repo=repo,
             pr_id=pr_id,
             body_text="",
+            mentions=None,
             attachments=None,
             comments=[comment],
             event=None,
@@ -5564,6 +5653,7 @@ class PrPublishService:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: list[str] | None,
         attachments: list[dict[str, Any]] | None,
         comments: list[dict[str, Any]] | None,
         event: str | None,
@@ -5589,22 +5679,29 @@ class PrPublishService:
                 return cached
 
         provider = self.providers[provider_name]
+        normalized_mentions = normalize_ado_mention_refs(mentions)
         if operation == "post_comment":
-            response = provider.post_comment(
-                repo=repo,
-                pr_id=pr_id,
-                body_text=body_text.strip(),
-                attachments=attachments,
-            )
+            comment_kwargs: dict[str, Any] = {
+                "repo": repo,
+                "pr_id": pr_id,
+                "body_text": body_text.strip(),
+                "attachments": attachments,
+            }
+            if normalized_mentions:
+                comment_kwargs["mentions"] = normalized_mentions
+            response = provider.post_comment(**comment_kwargs)
         elif operation in {"submit_review", "post_inline_comment"}:
-            response = provider.submit_review(
-                repo=repo,
-                pr_id=pr_id,
-                body_text=body_text.strip(),
-                comments=comments,
-                event=event,
-                attachments=attachments,
-            )
+            review_kwargs: dict[str, Any] = {
+                "repo": repo,
+                "pr_id": pr_id,
+                "body_text": body_text.strip(),
+                "comments": comments,
+                "event": event,
+                "attachments": attachments,
+            }
+            if normalized_mentions:
+                review_kwargs["mentions"] = normalized_mentions
+            response = provider.submit_review(**review_kwargs)
         else:
             raise ValueError(f"Unsupported publish operation: {operation!r}")
         response = dict(response)
@@ -5698,6 +5795,9 @@ def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
         commit_id = _normalize_optional_text(raw_comment.get("commit_id"))
         if commit_id is not None:
             normalized_comment["commit_id"] = commit_id
+        mentions = normalize_ado_mention_refs(raw_comment.get("mentions"))
+        if mentions:
+            normalized_comment["mentions"] = mentions
         raw_attachments = raw_comment.get("attachments")
         if raw_attachments is None:
             raw_attachments = raw_comment.get("artifacts")

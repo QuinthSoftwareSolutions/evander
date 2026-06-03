@@ -651,6 +651,10 @@ list. `query:pull-request:feedback` fetches normalized feedback for one
 provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
 where that cursor is stored.
 
+Azure DevOps comment tools with `mentions` also use the configured ADO PAT to
+call the identities API; that PAT must be allowed to read identities, equivalent
+to Azure DevOps OAuth `vso.identity`.
+
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
 parentheses, for example `(TagA or TagB) and not TagC`. Quote tag names that
@@ -1448,6 +1452,8 @@ Teams channel targets can still be declared directly with `teams_channel_allowli
 targets with `teams_chat_allowlist`, and one-on-one user send targets with
 `teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
+`teams_post_status` can mention Graph users in channel posts, channel thread replies, and chat
+posts; user targets are resolved into one-on-one chats before sending.
 Direct-message trigger polling is configured with `sender_user_ids` on
 `trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
 

@@ -2361,6 +2361,7 @@ class _FakePrReplyService:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        mentions: list[str] | None = None,
         attachments: list[dict[str, object]] | None = None,
         idempotency_key: str | None = None,
     ) -> SimpleNamespace:
@@ -2372,6 +2373,7 @@ class _FakePrReplyService:
                 "thread_id": thread_id,
                 "comment_id": comment_id,
                 "body_text": body_text,
+                "mentions": mentions or [],
                 "attachments": attachments,
                 "idempotency_key": idempotency_key,
             }
