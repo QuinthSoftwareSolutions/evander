@@ -1459,8 +1459,9 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_tenant_id`
 - optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
-- Resolving Teams direct-message sender mail addresses may require adding a Graph user-read scope
-  such as `User.ReadBasic.All` or `User.Read.All` and rerunning Teams auth.
+- Resolving Teams direct-message sender mail addresses and outbound mention targets may require
+  adding a Graph user-read scope such as `User.ReadBasic.All` or `User.Read.All` and rerunning
+  Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default

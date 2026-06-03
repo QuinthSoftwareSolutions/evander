@@ -746,8 +746,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
-  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
-    as `User.ReadBasic.All` or `User.Read`
+  - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
+    a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /
   device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
   confidential client and needs to be updated or replaced.
@@ -833,6 +833,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+  - optional `mentions` list of Teams user refs (`user:<graph-user-id-or-upn>` or bare Graph user
+    ID, UPN, or mail address) for channel posts and channel thread replies. Plain `@name` text in
+    `message` does not notify users.
 - The `add_message_reaction` gateway tool accepts:
   - `provider`: `teams` or `discord`
   - `message_id`

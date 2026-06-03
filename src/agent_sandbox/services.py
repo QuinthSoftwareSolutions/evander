@@ -440,6 +440,7 @@ class TeamsService(Protocol):
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
     def ensure_one_on_one_chat(self, user_ref: str) -> str: ...
@@ -583,6 +584,13 @@ class TeamsTarget:
     channel_id: str | None = None
     chat_id: str | None = None
     user_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class _TeamsMentionTarget:
+    user_ref: str
+    user_id: str
+    mention_text: str
 
 
 class StubDiscordService:
@@ -1222,6 +1230,21 @@ def normalize_teams_user_target(target: str) -> str:
     return f"user:{user_ref.casefold()}"
 
 
+def normalize_teams_mention_refs(value: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in value or []:
+        text = str(raw_ref or "").strip()
+        if not text:
+            continue
+        user_target = normalize_teams_user_target(text)
+        if user_target in seen:
+            continue
+        seen.add(user_target)
+        normalized.append(user_target)
+    return normalized
+
+
 def normalize_teams_target(target: str) -> str:
     normalized = str(target or "").strip().strip("/")
     if normalized.startswith("chat:"):
@@ -1527,10 +1550,14 @@ class StubTeamsService:
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
+        normalized_mentions = normalize_teams_mention_refs(mentions)
+        if normalized_mentions and target.kind != "channel":
+            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -1746,6 +1773,29 @@ class GraphTeamsService:
         user_id = str(payload.get("id") or "").strip()
         return user_id or None
 
+    @staticmethod
+    def _graph_user_payload_mention_text(payload: object, fallback: str) -> str:
+        if not isinstance(payload, dict):
+            return fallback
+        for key in ("displayName", "mail", "userPrincipalName", "id"):
+            text = str(payload.get(key) or "").strip()
+            if text:
+                return text
+        return fallback
+
+    def _graph_user_payload_mention(
+        self, payload: object, *, user_ref: str
+    ) -> _TeamsMentionTarget | None:
+        user_id = self._graph_user_payload_id(payload)
+        if not user_id:
+            return None
+        self.user_chat_cache[self._user_id_cache_key(user_ref)] = user_id
+        return _TeamsMentionTarget(
+            user_ref=user_ref,
+            user_id=user_id,
+            mention_text=self._graph_user_payload_mention_text(payload, user_ref),
+        )
+
     def resolve_user_id(self, client: httpx.Client, user_ref: str) -> str | None:
         normalized_ref = self._graph_user_ref(user_ref)
         cache_key = self._user_id_cache_key(normalized_ref)
@@ -1794,6 +1844,54 @@ class GraphTeamsService:
             if user_id:
                 self.user_chat_cache[cache_key] = user_id
                 return user_id
+        return None
+
+    def resolve_user_mention(
+        self, client: httpx.Client, user_ref: str
+    ) -> _TeamsMentionTarget | None:
+        normalized_ref = self._graph_user_ref(user_ref)
+        params = {"$select": "id,displayName,userPrincipalName,mail"}
+        try:
+            response = self._request_with_retries(
+                client,
+                "GET",
+                self._graph_user_lookup_url(self.api_base_url, normalized_ref),
+                params=params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404 or "@" not in normalized_ref:
+                raise
+        else:
+            mention = self._graph_user_payload_mention(
+                response.json(),
+                user_ref=normalized_ref,
+            )
+            if mention is not None:
+                return mention
+
+        if "@" not in normalized_ref:
+            return None
+
+        escaped_ref = normalized_ref.replace("'", "''")
+        response = self._request_with_retries(
+            client,
+            "GET",
+            f"{self.api_base_url}/users",
+            params={
+                **params,
+                "$filter": (
+                    f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"
+                ),
+                "$top": 1,
+            },
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        for item in payload.get("value", []):
+            mention = self._graph_user_payload_mention(item, user_ref=normalized_ref)
+            if mention is not None:
+                return mention
         return None
 
     def _require_allowed_user_target(self, user_ref: str) -> str:
@@ -2583,6 +2681,57 @@ class GraphTeamsService:
             payload["hostedContents"] = hosted_contents
         return payload
 
+    def _resolve_mention_targets(
+        self, client: httpx.Client, mentions: list[str] | None
+    ) -> list[_TeamsMentionTarget]:
+        resolved: list[_TeamsMentionTarget] = []
+        seen_user_ids: set[str] = set()
+        for user_ref in normalize_teams_mention_refs(mentions):
+            mention = self.resolve_user_mention(client, user_ref)
+            if mention is None:
+                raise ValueError(f"Unable to resolve Teams mention user: {user_ref}")
+            if mention.user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(mention.user_id)
+            resolved.append(mention)
+        return resolved
+
+    def _teams_status_message_payload(
+        self,
+        message: str,
+        mentions: list[_TeamsMentionTarget],
+    ) -> dict[str, Any]:
+        body_html = _teams_message_to_html(message)
+        payload: dict[str, Any] = {
+            "body": {"content": body_html, "contentType": "html"},
+        }
+        if not mentions:
+            return payload
+
+        mention_tags: list[str] = []
+        graph_mentions: list[dict[str, Any]] = []
+        for index, mention in enumerate(mentions):
+            mention_text = mention.mention_text
+            mention_tags.append(
+                f'<at id="{index}">{html.escape(mention_text, quote=False)}</at>'
+            )
+            graph_mentions.append(
+                {
+                    "id": index,
+                    "mentionText": mention_text,
+                    "mentioned": {
+                        "user": {
+                            "id": mention.user_id,
+                            "displayName": mention_text,
+                            "userIdentityType": "aadUser",
+                        }
+                    },
+                }
+            )
+        payload["body"]["content"] = f"<p>{' '.join(mention_tags)}</p>{body_html}"
+        payload["mentions"] = graph_mentions
+        return payload
+
     def post_file(
         self,
         message: str,
@@ -2634,10 +2783,14 @@ class GraphTeamsService:
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
+        normalized_mentions = normalize_teams_mention_refs(mentions)
+        if normalized_mentions and target.kind != "channel":
+            raise ValueError("Teams mentions are supported only for channel targets.")
         normalized_thread_id = str(thread_id or "").strip() or None
         if target.kind == "chat":
             if normalized_thread_id is not None:
@@ -2655,12 +2808,12 @@ class GraphTeamsService:
                 )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            formatted_message = _teams_message_to_html(message)
+            mention_targets = self._resolve_mention_targets(client, normalized_mentions)
             response = self._request_with_retries(
                 client,
                 "POST",
                 url,
-                json={"body": {"content": formatted_message, "contentType": "html"}},
+                json=self._teams_status_message_payload(message, mention_targets),
             )
             payload = response.json()
 
