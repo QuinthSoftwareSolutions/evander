@@ -5,6 +5,14 @@ import test from "node:test";
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const catalogGroups = readFileSync(new URL("../src/workflowCatalogGroups.ts", import.meta.url), "utf8");
 
+function sourceBetween(startText, endText) {
+  const start = app.indexOf(startText);
+  assert.notEqual(start, -1, `missing start marker: ${startText}`);
+  const end = app.indexOf(endText, start);
+  assert.notEqual(end, -1, `missing end marker: ${endText}`);
+  return app.slice(start, end);
+}
+
 test("adds the approval and communication trigger descriptions and default node shapes", () => {
   assert.match(
     app,
@@ -34,4 +42,14 @@ test("adds the approval and communication trigger descriptions and default node 
     app,
     /if \(kind === "effect" && type === "effect:session:renew-if-expired"\) \{\n\s+return \{\n\s+id,\n\s+display_name: "Renew expired or soon-expiring session",\n\s+type,\n\s+session_id: "session-id",\n\s+extend_by: "1d",\n\s+renew_if_expires_within: "2h",\n\s+\};\n\s+\}/,
   );
+});
+
+test("create panel does not default-expand the triggers group", () => {
+  const createGroupBranch = sourceBetween(
+    'className="create-group"',
+    '<summary className="create-group-summary">',
+  );
+
+  assert.match(createGroupBranch, /open=\{hasTutorialAllowedNodeType\}/);
+  assert.doesNotMatch(createGroupBranch, /group\.kind === "trigger"/);
 });

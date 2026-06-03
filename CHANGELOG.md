@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-03 - Workflow Create Panel Trigger Defaults
+
+- Stopped default-expanding the Triggers group when operators open the Workflow
+  Editor Create panel.
+
+## 2026-06-03 - Workflow Query Catalogue Session Group
+
+- Moved the Session context query from the Workflow Editor query catalogue's
+  Runtime state group into the Sessions group.
+
 ## 2026-06-02 - Workflow Editor Target Selector Regression Fixes
 
 - Fixed collapsed workflow target selectors so choosing `Session ID` or
