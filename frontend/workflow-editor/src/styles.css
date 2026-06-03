@@ -8310,6 +8310,41 @@ select {
   color: #d7e3ea;
 }
 
+:root[data-theme="dark"] .teams-auth-session-card {
+  border-color: rgba(125, 170, 190, 0.18);
+  background: linear-gradient(180deg, rgba(18, 31, 39, 0.96) 0%, rgba(13, 24, 31, 0.96) 100%);
+  color: #d7e3ea;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="dark"] .teams-auth-session-card .panel-header h4,
+:root[data-theme="dark"] .teams-auth-code-line code {
+  color: #f1f6fa;
+}
+
+:root[data-theme="dark"] .teams-auth-session-card .detail-grid span,
+:root[data-theme="dark"] .teams-auth-code-line span,
+:root[data-theme="dark"] .teams-auth-link-list span {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .teams-auth-session-card .detail-grid strong {
+  color: #e6f1f7;
+}
+
+:root[data-theme="dark"] .teams-auth-code-line {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(8, 18, 24, 0.72);
+}
+
+:root[data-theme="dark"] .teams-auth-uri {
+  color: #8fcfff;
+}
+
+:root[data-theme="dark"] .teams-auth-uri:hover {
+  color: #b9e3ff;
+}
+
 :root[data-theme="dark"] .teams-channel-lookup {
   border-color: rgba(125, 170, 190, 0.16);
   background: rgba(16, 28, 36, 0.72);

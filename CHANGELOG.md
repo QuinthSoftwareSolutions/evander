@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-03 - Teams Auth Dark Mode
+
+- Fixed the Admin Web Configuration Teams delegated auth device-code panel so
+  the active sign-in card, code row, metadata, and links use readable dark-mode
+  colors.
+
 ## 2026-06-03 - Teams Status Mentions
 
 - Added explicit `mentions` support to `teams_post_status` for Teams channel

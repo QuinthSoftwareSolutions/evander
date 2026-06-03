@@ -6,6 +6,7 @@ const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
 );
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("configuration screen wires the Teams auth panel to the expected endpoints", () => {
   assert.match(configuration, /\/api\/teams-auth\/status\?directory_path=/);
@@ -28,4 +29,11 @@ test("configuration screen does not render raw secret-bearing Teams auth fields"
   assert.doesNotMatch(configuration, /store_path/i);
   assert.doesNotMatch(configuration, /access_token/i);
   assert.doesNotMatch(configuration, /refresh_token/i);
+});
+
+test("Teams auth device-code card has dark mode contrast styles", () => {
+  assert.match(styles, /:root\[data-theme="dark"\] \.teams-auth-session-card\s*\{/);
+  assert.match(styles, /:root\[data-theme="dark"\] \.teams-auth-code-line\s*\{/);
+  assert.match(styles, /:root\[data-theme="dark"\] \.teams-auth-uri\s*\{/);
+  assert.match(styles, /:root\[data-theme="dark"\] \.teams-auth-session-card \.detail-grid strong/);
 });
