@@ -5,6 +5,19 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-03 - Workflow Trigger Graph Directory Scope
+
+- Fixed trigger provider initialization so graph-scoped triggers inherit their
+  workflow graph directory when the trigger node does not set an explicit
+  `directory_path`, while preserving node-level directory overrides.
+
+## 2026-06-03 - Azure DevOps Comment Mentions
+
+- Added first-class `mentions` support to Azure DevOps work-item comments, PR
+  comments, inline review comments, batched PR review comments, and PR feedback
+  replies, with ADO identity lookup, unresolved/ambiguous mention failures, and
+  Markdown `@<identity-id>` rendering.
+
 ## 2026-06-03 - Teams Status Mentions
 
 - Added explicit `mentions` support to `teams_post_status` for Teams channel

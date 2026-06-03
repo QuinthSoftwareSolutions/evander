@@ -2019,7 +2019,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
 
             return [TriggerEvent.model_validate(event_payload)]
 
-    worker.provider_factory.build = lambda _trigger: _Provider()  # type: ignore[assignment]
+    worker.provider_factory.build = lambda _trigger, **_: _Provider()  # type: ignore[assignment]
 
     first = worker.run_once()
     second = worker.run_once()

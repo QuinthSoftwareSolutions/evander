@@ -270,6 +270,56 @@ def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.reply_url == "https://ado.test/reply/301"
 
 
+def test_azure_reply_provider_posts_reply_with_mentions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/example/_apis/identities":
+            assert request.url.params["filterValue"] == "ada@example.com"
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "11111111-1111-1111-1111-111111111111",
+                            "providerDisplayName": "Ada Lovelace",
+                            "uniqueName": "ada@example.com",
+                        }
+                    ]
+                },
+            )
+        assert request.url.path.endswith("/pullRequests/17/threads/44/comments")
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["content"] == (
+            "@<11111111-1111-1111-1111-111111111111>\n\nHandled."
+        )
+        return httpx.Response(
+            201,
+            json={"id": 301, "_links": {"web": {"href": "https://ado.test/reply/301"}}},
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrReplyProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    result = provider.post_reply(
+        repo="repo1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="Handled.",
+        mentions=["ada@example.com"],
+    )
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+    assert result.resolved_mentions[0]["id"] == "11111111-1111-1111-1111-111111111111"
+
+
 def test_azure_reply_provider_uploads_attachment_and_embeds_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

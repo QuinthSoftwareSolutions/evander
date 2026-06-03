@@ -212,6 +212,16 @@ TeamsMentionRefsArgument = Annotated[
         )
     ),
 ]
+AdoMentionRefsArgument = Annotated[
+    list[str] | None,
+    PydanticField(
+        description=(
+            "Optional Azure DevOps user refs to mention. Use an ADO identity ID, descriptor, "
+            "email/UPN, or display-name search text. The gateway resolves refs and prepends "
+            "provider-native mention tokens; plain @name text does not reliably notify users."
+        )
+    ),
+]
 _WORKSPACE_FILE_READER_SCRIPT = r"""
 import base64
 import json
@@ -3809,6 +3819,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         id: int | str,
         comment: str,
         project: str | None = None,
+        mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         request_id: str | None = None,
         *,
@@ -3822,6 +3833,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             id=id,
             project=project,
             comment=comment,
+            mentions=mentions,
             artifact_ids=artifact_ids or [],
             request_id=request_id,
         )
@@ -3842,18 +3854,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 directory_path=session.directory_path,
                 project=request_model.project,
                 comment=request_model.comment,
+                mentions=request_model.mentions or None,
                 attachments=artifacts,
             )
+            audit_result = {
+                "work_item_id": request_model.id,
+                "project": request_model.project,
+                "comment_id": (result.get("comment") or {}).get("id"),
+                "uploaded_attachment_count": len(result.get("uploaded_attachments") or []),
+            }
+            if result.get("resolved_mentions"):
+                audit_result["resolved_mentions"] = result.get("resolved_mentions")
             audit_success(
                 session_id,
                 ToolName.POST_ADO_BACKLOG_COMMENT,
                 args,
-                {
-                    "work_item_id": request_model.id,
-                    "project": request_model.project,
-                    "comment_id": (result.get("comment") or {}).get("id"),
-                    "uploaded_attachment_count": len(result.get("uploaded_attachments") or []),
-                },
+                audit_result,
             )
             return result
         except PolicyError as exc:
@@ -5783,6 +5799,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         thread_id: str | None = None,
         comment_id: str | None = None,
+        mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
@@ -5797,6 +5814,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             thread_id=normalized_thread_id,
             comment_id=normalized_comment_id,
+            mentions=mentions,
             artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
@@ -5823,30 +5841,36 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
                 context.policy.require_approved(request.request_id, payload=approval_payload)
+            reply_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "thread_id": request.thread_id,
+                "comment_id": request.comment_id,
+                "body_text": request.body_text,
+                "attachments": artifacts,
+                "idempotency_key": request.idempotency_key,
+            }
+            if request.mentions:
+                reply_kwargs["mentions"] = request.mentions
             result = (
                 context.pr_reply_service_for_session(session_id)
-                .post_reply(
-                    provider=request.provider,
-                    repo=request.repo,
-                    pr_id=request.pr_id,
-                    thread_id=request.thread_id,
-                    comment_id=request.comment_id,
-                    body_text=request.body_text,
-                    attachments=artifacts,
-                    idempotency_key=request.idempotency_key,
-                )
+                .post_reply(**reply_kwargs)
                 .model_dump(mode="json")
             )
+            audit_result = {
+                "status": result.get("status"),
+                "provider": result.get("provider"),
+                "reply_id": result.get("reply_id"),
+                "reply_url": result.get("reply_url"),
+            }
+            if result.get("resolved_mentions"):
+                audit_result["resolved_mentions"] = result.get("resolved_mentions")
             audit_success(
                 session_id,
                 ToolName.POST_PR_FEEDBACK_REPLY,
                 args,
-                {
-                    "status": result.get("status"),
-                    "provider": result.get("provider"),
-                    "reply_id": result.get("reply_id"),
-                    "reply_url": result.get("reply_url"),
-                },
+                audit_result,
             )
             return result
         except PolicyError as exc:
@@ -5967,6 +5991,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         repo: str,
         pr_id: str,
         body_text: str,
+        mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
@@ -5977,6 +6002,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             repo=repo.strip(),
             pr_id=pr_id.strip(),
             body_text=body_text.strip(),
+            mentions=mentions,
             artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
@@ -5999,24 +6025,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
                 context.policy.require_approved(request.request_id, payload=approval_payload)
+            comment_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "body_text": request.body_text,
+                "attachments": artifacts,
+                "idempotency_key": request.idempotency_key,
+            }
+            if request.mentions:
+                comment_kwargs["mentions"] = request.mentions
             result = context.pr_publish_service_for_session(request.session_id).post_comment(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                body_text=request.body_text,
-                attachments=artifacts,
-                idempotency_key=request.idempotency_key,
+                **comment_kwargs
             )
+            audit_result = {
+                "status": result.get("status"),
+                "provider": result.get("provider"),
+                "comment_id": result.get("comment_id"),
+                "comment_url": result.get("comment_url"),
+            }
+            if result.get("resolved_mentions"):
+                audit_result["resolved_mentions"] = result.get("resolved_mentions")
             audit_success(
                 request.session_id,
                 ToolName.POST_PR_COMMENT,
                 args,
-                {
-                    "status": result.get("status"),
-                    "provider": result.get("provider"),
-                    "comment_id": result.get("comment_id"),
-                    "comment_url": result.get("comment_url"),
-                },
+                audit_result,
             )
             return result
         except PolicyError as exc:
@@ -6054,6 +6088,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         start_line: int | None = None,
         side: str | None = "RIGHT",
+        mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
@@ -6068,6 +6103,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             start_line=start_line,
             side=side.strip().upper() if isinstance(side, str) else None,
+            mentions=mentions,
             artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
@@ -6092,29 +6128,40 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
                 context.policy.require_approved(request.request_id, payload=approval_payload)
+            inline_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "path": request.path,
+                "line": request.line,
+                "body_text": request.body_text,
+                "start_line": request.start_line,
+                "side": request.side,
+                "attachments": artifacts,
+                "idempotency_key": request.idempotency_key,
+            }
+            if request.mentions:
+                inline_kwargs["mentions"] = request.mentions
             result = context.pr_publish_service_for_session(request.session_id).post_inline_comment(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                path=request.path,
-                line=request.line,
-                body_text=request.body_text,
-                start_line=request.start_line,
-                side=request.side,
-                attachments=artifacts,
-                idempotency_key=request.idempotency_key,
+                **inline_kwargs
             )
+            audit_result = {
+                "status": result.get("status"),
+                "provider": result.get("provider"),
+                "review_id": result.get("review_id"),
+                "review_url": result.get("review_url"),
+                "comment_count": len(result.get("comment_ids") or []),
+            }
+            inline_resolved_mentions = result.get("inline_resolved_mentions") or []
+            if any(inline_resolved_mentions):
+                audit_result["inline_resolved_mentions"] = result.get(
+                    "inline_resolved_mentions"
+                )
             audit_success(
                 request.session_id,
                 ToolName.POST_PR_INLINE_COMMENT,
                 args,
-                {
-                    "status": result.get("status"),
-                    "provider": result.get("provider"),
-                    "review_id": result.get("review_id"),
-                    "review_url": result.get("review_url"),
-                    "comment_count": len(result.get("comment_ids") or []),
-                },
+                audit_result,
             )
             return result
         except PolicyError as exc:
@@ -6150,6 +6197,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         event: str | None = None,
         comments: list[dict[str, Any]] | None = None,
+        mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
@@ -6162,6 +6210,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             event=event.strip() if isinstance(event, str) else None,
             comments=comments or [],
+            mentions=mentions,
             artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
@@ -6194,27 +6243,40 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
                 context.policy.require_approved(request.request_id, payload=approval_payload)
+            review_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "body_text": request.body_text,
+                "event": request.event,
+                "comments": comment_payloads,
+                "attachments": summary_artifacts,
+                "idempotency_key": request.idempotency_key,
+            }
+            if request.mentions:
+                review_kwargs["mentions"] = request.mentions
             result = context.pr_publish_service_for_session(request.session_id).submit_review(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                body_text=request.body_text,
-                event=request.event,
-                comments=comment_payloads,
-                attachments=summary_artifacts,
-                idempotency_key=request.idempotency_key,
+                **review_kwargs
             )
+            audit_result = {
+                "status": result.get("status"),
+                "provider": result.get("provider"),
+                "review_id": result.get("review_id"),
+                "review_url": result.get("review_url"),
+                "comment_count": len(result.get("comment_ids") or []),
+            }
+            if result.get("resolved_mentions"):
+                audit_result["resolved_mentions"] = result.get("resolved_mentions")
+            inline_resolved_mentions = result.get("inline_resolved_mentions") or []
+            if any(inline_resolved_mentions):
+                audit_result["inline_resolved_mentions"] = result.get(
+                    "inline_resolved_mentions"
+                )
             audit_success(
                 request.session_id,
                 ToolName.SUBMIT_PR_REVIEW,
                 args,
-                {
-                    "status": result.get("status"),
-                    "provider": result.get("provider"),
-                    "review_id": result.get("review_id"),
-                    "review_url": result.get("review_url"),
-                    "comment_count": len(result.get("comment_ids") or []),
-                },
+                audit_result,
             )
             return result
         except PolicyError as exc:

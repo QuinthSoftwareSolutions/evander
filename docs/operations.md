@@ -592,7 +592,10 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Gateway tool name: `post_ado_backlog_comment`.
   - Policy-gated with `post_ado_backlog_comment`.
   - Required MCP arguments: `id`, `comment`.
-  - Optional MCP arguments: `project`, `artifact_ids`, `request_id`.
+  - Optional MCP arguments: `project`, `mentions`, `artifact_ids`, `request_id`.
+  - `mentions` accepts Azure DevOps identity IDs, descriptors, email/UPN values, or display/name
+    search text. The gateway resolves refs with the ADO identities API and prepends Markdown
+    `@<identity-id>` mention tokens before posting; unresolved or ambiguous refs fail the call.
 - Gateway tool name: `update_ado_backlog_text`.
   - Policy-gated with `update_ado_backlog_text`.
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
@@ -1288,7 +1291,8 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
 4. For Discord and Teams, submit/approve the exact payload expected by `discord_post_file` or
    `teams_post_file`, including destination, message, and `artifact_ids`; then pass the approval
    `request_id` to the send tool.
-   For Azure DevOps PR/backlog tools, approve the exact comment/text payload and artifact IDs.
+   For Azure DevOps PR/backlog tools, approve the exact comment/text payload, `mentions`, and
+   artifact IDs.
 5. Disable `communication_file_send_enabled` again after the test unless the production change was
    intentionally approved.
 
@@ -1562,6 +1566,10 @@ The review-request inbox is persisted in `runtime/review-request-store.json`. Re
 through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
 For Azure DevOps PRs, these publish tools can include staged `artifact_ids`; the gateway uploads
 them as PR attachments and appends Markdown image/link references to the posted text.
+They also accept `mentions` on top-level comments, inline comments, review summaries, batched
+review comments, and feedback-thread replies. Mention refs use the same ADO identity ID,
+descriptor, email/UPN, or display/name lookup behavior as `post_ado_backlog_comment`; the PAT must
+be able to read ADO identities, equivalent to Azure DevOps OAuth scope `vso.identity`.
 
 ### Recommended workflow graph
 

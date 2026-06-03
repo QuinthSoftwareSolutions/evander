@@ -651,6 +651,10 @@ list. `query:pull-request:feedback` fetches normalized feedback for one
 provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
 where that cursor is stored.
 
+Azure DevOps comment tools with `mentions` also use the configured ADO PAT to
+call the identities API; that PAT must be allowed to read identities, equivalent
+to Azure DevOps OAuth `vso.identity`.
+
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
 parentheses, for example `(TagA or TagB) and not TagC`. Quote tag names that

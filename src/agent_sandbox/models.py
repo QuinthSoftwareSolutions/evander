@@ -27,6 +27,27 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def normalize_ado_mention_refs(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("mentions must be a list of strings")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
 class ToolName(str, Enum):
     ASSISTANT_READ_STATUS = "assistant_read_status"
     ASSISTANT_LIST_AGENTS = "assistant_list_agents"
@@ -1517,9 +1538,15 @@ class PostPrFeedbackReplyRequest(BaseModel):
     body_text: str = Field(min_length=1)
     thread_id: str | None = None
     comment_id: str | None = None
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("artifact_ids", mode="before")
     @classmethod
@@ -1541,6 +1568,7 @@ class PostPrFeedbackReplyResponse(BaseModel):
     reply_id: str | None = None
     reply_url: str | None = None
     uploaded_attachments: list[dict[str, Any]] = Field(default_factory=list)
+    resolved_mentions: list[dict[str, str]] = Field(default_factory=list)
     idempotency_key: str | None = None
 
 
@@ -1778,6 +1806,7 @@ class AdoBacklogCommentRequest(BaseModel):
     id: int | str
     project: str | None = None
     comment: str = Field(min_length=1)
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     request_id: str | None = None
 
@@ -1800,6 +1829,11 @@ class AdoBacklogCommentRequest(BaseModel):
             return None
         normalized = str(value).strip()
         return normalized or None
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("artifact_ids", mode="before")
     @classmethod
@@ -2292,9 +2326,15 @@ class PostPrCommentRequest(BaseModel):
     repo: str = Field(min_length=1)
     pr_id: str = Field(min_length=1)
     body_text: str = Field(min_length=1)
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("artifact_ids", mode="before")
     @classmethod
@@ -2339,7 +2379,13 @@ class SubmitPrReviewComment(BaseModel):
         default=None,
         description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
     )
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("side")
     @classmethod
@@ -2387,9 +2433,15 @@ class PostPrInlineCommentRequest(BaseModel):
         default="RIGHT",
         description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
     )
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("side")
     @classmethod
@@ -2419,9 +2471,15 @@ class SubmitPrReviewRequest(BaseModel):
     body_text: str = Field(min_length=1)
     event: str | None = None
     comments: list[SubmitPrReviewComment] = Field(default_factory=list)
+    mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def normalize_mentions(cls, value: object) -> list[str]:
+        return normalize_ado_mention_refs(value)
 
     @field_validator("artifact_ids", mode="before")
     @classmethod

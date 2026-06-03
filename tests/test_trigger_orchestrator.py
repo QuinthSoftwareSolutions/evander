@@ -53,6 +53,15 @@ class _AcknowledgingProvider(_StaticProvider):
         self.acknowledged_event_ids.append(event.event_id)
 
 
+class _CapturingProviderFactory:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    def build(self, trigger, *, directory_path: str | None = None):
+        self.calls.append((trigger.id, directory_path))
+        return _StaticProvider([])
+
+
 class _FailingEventQueue:
     def __init__(self) -> None:
         self.published_event_ids: list[str] = []
@@ -172,7 +181,7 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
         occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
         payload={"kind": "tick"},
     )
-    worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
     wake_calls: list[str] = []
     worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
         notify=lambda: wake_calls.append("effect") or True
@@ -221,7 +230,7 @@ def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
     )
     build_calls: list[str] = []
 
-    def build_provider(trigger):
+    def build_provider(trigger, **_):
         build_calls.append(trigger.id)
         return _StaticProvider([])
 
@@ -239,6 +248,111 @@ def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
     assert build_calls == []
     assert worker.event_queue.list_pending() == []
     assert wake_calls == []
+
+
+def test_trigger_orchestrator_passes_graph_directory_to_trigger_provider(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "workflow_graphs": [
+                {
+                    "id": "graph-ado-comment",
+                    "name": "ADO comments",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["ado-comment"],
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "ado-comment",
+                    "display_name": "ADO comment",
+                    "type": "trigger:ado:work-item-comment-created",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("ado-comment", "root/team-a")]
+
+
+def test_trigger_orchestrator_prefers_trigger_directory_over_graph_directory(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "workflow_graphs": [
+                {
+                    "id": "graph-ado-comment",
+                    "name": "ADO comments",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["ado-comment"],
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "ado-comment",
+                    "display_name": "ADO comment",
+                    "type": "trigger:ado:work-item-comment-created",
+                    "directory_path": "root/team-b",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("ado-comment", "root/team-b")]
+
+
+def test_trigger_orchestrator_keeps_graphless_trigger_directory_unset(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("cron-1", None)]
 
 
 def test_trigger_orchestrator_does_not_wake_effect_worker_for_duplicate_event(
@@ -270,7 +384,7 @@ def test_trigger_orchestrator_does_not_wake_effect_worker_for_duplicate_event(
         payload={"kind": "tick"},
     )
     worker.event_queue.publish(event)
-    worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
     wake_calls: list[str] = []
     worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
         notify=lambda: wake_calls.append("effect") or True
@@ -312,7 +426,7 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
         payload={"kind": "tick"},
     )
     provider = _AcknowledgingProvider([event])
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
 
     worker.run_once()
 
@@ -348,7 +462,7 @@ def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
         payload={"kind": "tick"},
     )
     provider = _AcknowledgingProvider([event])
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
     failing_queue = _FailingEventQueue()
     worker.event_queue = failing_queue  # type: ignore[assignment]
 
@@ -426,7 +540,7 @@ def test_trigger_orchestrator_retries_same_timestamp_teams_event_after_publish_f
         TriggerRuntimeContext(resolved_config=config, env={}),
     )
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
     worker.event_queue = _FailingSecondEventQueue()  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="queue publish failed on second event"):
@@ -499,7 +613,7 @@ def test_trigger_orchestrator_publish_failure_with_real_provider_keeps_cursor_un
             metadata={"directory_path": "root/team-a"},
         ),
     )
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
     failing_queue = _FailingEventQueue()
     worker.event_queue = failing_queue  # type: ignore[assignment]
 
@@ -556,7 +670,7 @@ def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
         payload={"kind": "tick-2"},
     )
     provider = _AcknowledgingProvider([first_event, second_event])
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
 
     result = worker.run_once()
 
@@ -672,7 +786,7 @@ def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Pat
         occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
         payload={"__node_outputs": "forbidden"},
     )
-    worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
 
     result = worker.run_once()
 
@@ -725,7 +839,7 @@ def test_trigger_orchestrator_runs_only_explicitly_configured_triggers(tmp_path:
     )
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
-    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
 
     result = worker.run_once()
 
@@ -760,7 +874,7 @@ def test_trigger_orchestrator_does_not_poll_system_triggers(tmp_path: Path) -> N
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     built_trigger_ids: list[str] = []
 
-    def _build_provider(trigger):
+    def _build_provider(trigger, **_):
         built_trigger_ids.append(trigger.id)
         return _StaticProvider([])
 
@@ -806,7 +920,7 @@ def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Pat
         config_reloader=_StaticReloader(updated_config, changed=True),
         runtime=None,  # type: ignore[arg-type]
     )
-    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
 
     result = worker.run_once()
 
@@ -865,7 +979,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         if worker_config.provider_modules and len(build_calls) == 2:
             raise RuntimeError("temporary provider_loader reload failure")
         provider_factory = SimpleNamespace(
-            build=lambda trigger: _StaticProvider([event])
+            build=lambda trigger, **_: _StaticProvider([event])
             if worker_config.provider_modules and trigger.id == "reload-trigger"
             else _StaticProvider([])
         )
@@ -1140,7 +1254,7 @@ def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
         ),
         encoding="utf-8",
     )
-    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
 
     result = worker.run_once()
 
@@ -1221,7 +1335,7 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
         config_reloader=_StaticReloader(updated_config, changed=True),
         runtime=None,  # type: ignore[arg-type]
     )
-    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
 
     caplog.set_level("INFO")
     result = worker.run_once()
@@ -1604,7 +1718,7 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
     )
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
-    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
 
     first = worker.run_once()
     second = worker.run_once()

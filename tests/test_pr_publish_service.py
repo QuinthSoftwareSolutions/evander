@@ -329,6 +329,58 @@ def test_azure_publish_provider_posts_top_level_comment(monkeypatch: pytest.Monk
     assert result["published_feedback_ids"] == ["azure_devops:thread_comment:44:10"]
 
 
+def test_azure_publish_provider_posts_top_level_comment_with_mentions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/example/_apis/identities":
+            assert request.url.params["filterValue"] == "ada@example.com"
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "11111111-1111-1111-1111-111111111111",
+                            "providerDisplayName": "Ada Lovelace",
+                            "uniqueName": "ada@example.com",
+                        }
+                    ]
+                },
+            )
+        assert request.url.path.endswith("/pullRequests/17/threads")
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["comments"][0]["content"] == (
+            "@<11111111-1111-1111-1111-111111111111>\n\nPublished."
+        )
+        return httpx.Response(
+            201,
+            json={
+                "id": 44,
+                "comments": [{"id": 10}],
+                "_links": {"web": {"href": "https://ado.test/threads/44"}},
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    result = provider.post_comment(
+        repo="repo1",
+        pr_id="17",
+        body_text="Published.",
+        mentions=["ada@example.com"],
+    )
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+    assert result["resolved_mentions"][0]["id"] == "11111111-1111-1111-1111-111111111111"
+
+
 def test_azure_publish_provider_uploads_pr_attachment_and_embeds_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -488,6 +540,113 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
     payloads = [json.loads(request.content.decode("utf-8")) for request in post_requests]
     assert payloads[0]["comments"][0]["content"] == "Fix this line"
     assert payloads[1]["comments"][0]["content"] == "Summary"
+
+
+def test_azure_publish_provider_submits_review_with_summary_and_inline_mentions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def identity_payload(user_id: str, display_name: str, unique_name: str) -> dict[str, object]:
+        return {
+            "value": [
+                {
+                    "id": user_id,
+                    "providerDisplayName": display_name,
+                    "uniqueName": unique_name,
+                }
+            ]
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/example/_apis/identities":
+            if request.url.params.get("filterValue") == "ada@example.com":
+                return httpx.Response(
+                    200,
+                    json=identity_payload(
+                        "11111111-1111-1111-1111-111111111111",
+                        "Ada Lovelace",
+                        "ada@example.com",
+                    ),
+                )
+            if request.url.params.get("filterValue") == "grace@example.com":
+                return httpx.Response(
+                    200,
+                    json=identity_payload(
+                        "22222222-2222-2222-2222-222222222222",
+                        "Grace Hopper",
+                        "grace@example.com",
+                    ),
+                )
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 3}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/3/changes"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "edit",
+                            "item": {"path": "/src/app.py"},
+                        }
+                    ]
+                },
+            )
+        payload = json.loads(request.content.decode("utf-8"))
+        if payload["comments"][0]["content"].endswith("Inline"):
+            assert payload["comments"][0]["content"] == (
+                "@<22222222-2222-2222-2222-222222222222>\n\nInline"
+            )
+            return httpx.Response(
+                201,
+                json={
+                    "id": 45,
+                    "comments": [{"id": 11}],
+                    "_links": {"web": {"href": "https://ado.test/threads/45"}},
+                },
+            )
+        assert payload["comments"][0]["content"] == (
+            "@<11111111-1111-1111-1111-111111111111>\n\nSummary"
+        )
+        return httpx.Response(
+            201,
+            json={
+                "id": 44,
+                "comments": [{"id": 10}],
+                "_links": {"web": {"href": "https://ado.test/threads/44"}},
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.submit_review(
+        repo="repo1",
+        pr_id="17",
+        body_text="Summary",
+        mentions=["ada@example.com"],
+        comments=[
+            {
+                "path": "src/app.py",
+                "line": 4,
+                "body_text": "Inline",
+                "mentions": ["grace@example.com"],
+            }
+        ],
+    )
+
+    assert result["resolved_mentions"][0]["id"] == "11111111-1111-1111-1111-111111111111"
+    assert result["inline_resolved_mentions"][0][0]["id"] == (
+        "22222222-2222-2222-2222-222222222222"
+    )
 
 
 def test_azure_publish_provider_failed_inline_comment_does_not_post_summary(
@@ -762,3 +921,19 @@ def test_azure_publish_provider_prevalidates_inline_paths_before_posting(
         )
 
     assert [request.method for request in requests] == ["GET", "GET"]
+
+
+def test_github_publish_provider_rejects_ado_mentions(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_httpx_client(
+        monkeypatch,
+        httpx.MockTransport(lambda request: pytest.fail(f"unexpected request: {request.url}")),
+    )
+    provider = GitHubPrPublishProvider(token="token")
+
+    with pytest.raises(ValueError, match="GitHub PR comments do not support ADO mentions"):
+        provider.post_comment(
+            repo="org/repo",
+            pr_id="17",
+            body_text="Published.",
+            mentions=["ada@example.com"],
+        )

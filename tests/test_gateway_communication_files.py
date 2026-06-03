@@ -75,6 +75,22 @@ def call_tool(server, name: str, arguments: dict[str, object]):
     return result
 
 
+def test_ado_comment_tool_schemas_describe_mentions(tmp_path: Path) -> None:
+    server = create_server(make_context(tmp_path))
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    for tool_name in (
+        "post_ado_backlog_comment",
+        "post_pr_feedback_reply",
+        "post_pr_comment",
+        "post_pr_inline_comment",
+        "submit_pr_review",
+    ):
+        mentions = tools[tool_name].parameters["properties"]["mentions"]
+        assert "Azure DevOps user refs to mention" in mentions["description"]
+        assert "plain @name text" in mentions["description"]
+
+
 def workspace_file_stdout(
     *,
     source_path: str,
