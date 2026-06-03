@@ -387,6 +387,10 @@ work-item payloads on first match and when `System.ChangedDate` advances, or use
 `query:ado:work-items` for an explicit query. Wire either output into
 `effect:issue:upsert-ado-proxy` to create or refresh local proxy issues and
 `runtime/ado-work-items/work-item-*.yaml`.
+Use `trigger:ado:work-item-comment-created` when comments themselves should wake a workflow. It
+uses workflow-configured work-item and comment filters, keeps its own cursor in
+`runtime/trigger-cursors-ado-work-item-comments.json`, and baselines existing comments unless
+`include_existing` is explicitly enabled.
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
 `agent-sandbox-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
@@ -742,8 +746,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
-  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
-    as `User.ReadBasic.All` or `User.Read`
+  - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
+    a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /
   device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
   confidential client and needs to be updated or replaced.
@@ -829,6 +833,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+  - optional `mentions` list of Teams user refs (`user:<graph-user-id-or-upn>` or bare Graph user
+    ID, UPN, or mail address) for channel posts and channel thread replies. Plain `@name` text in
+    `message` does not notify users.
 - The `add_message_reaction` gateway tool accepts:
   - `provider`: `teams` or `discord`
   - `message_id`

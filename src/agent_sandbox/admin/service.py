@@ -1722,6 +1722,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:ado:work-item-matching": (
         "Start when an Azure DevOps work item first matches or advances its changed date."
     ),
+    "trigger:ado:work-item-comment-created": (
+        "Start when a matching Azure DevOps work item receives a new matching comment."
+    ),
     "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."
@@ -2006,6 +2009,78 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("tags_any", "Tags any", "string_list"),
             _field("text_search", "Text search", "string"),
             _field("top", "Top", "number"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:ado:work-item-comment-created",
+        label="ADO work item comment",
+        fields=[
+            _field("directory_path", "Directory path", "string"),
+            _field("project", "Project", "string"),
+            _field(
+                "wiql",
+                "WIQL",
+                "string",
+                multiline=True,
+                description="Explicit WIQL query. When set, filter fields are not applied.",
+            ),
+            _field(
+                "current_iteration",
+                "Current iteration",
+                "boolean",
+                default_value=False,
+                description="Resolve the team's current iteration before querying.",
+            ),
+            _field("team", "Team", "string"),
+            _field("iteration", "Iteration path", "string"),
+            _field("area_path", "Area path", "string"),
+            _field("states", "States", "string_list", default_value=[]),
+            _field("types", "Types", "string_list", default_value=[]),
+            _field("tags_any", "Tags any", "string_list", default_value=[]),
+            _field("text_search", "Text search", "string"),
+            _field("top", "Top", "number", default_value=50),
+            _field(
+                "comment_contains",
+                "Comment contains",
+                "string",
+                description="Only emit comments whose body contains this text.",
+            ),
+            _field(
+                "comment_contains_any",
+                "Comment contains any",
+                "string_list",
+                default_value=[],
+                description="Only emit comments whose body contains any listed text.",
+            ),
+            _field(
+                "comment_author_exclude_names",
+                "Comment author exclude names",
+                "string_list",
+                default_value=[],
+                description="Comment author display names to suppress.",
+            ),
+            _field(
+                "comment_author_exclude_ids",
+                "Comment author exclude IDs",
+                "string_list",
+                default_value=[],
+                description="Comment author identity IDs to suppress.",
+            ),
+            _field(
+                "comment_case_sensitive",
+                "Comment case sensitive",
+                "boolean",
+                default_value=False,
+                description="Apply comment text filters with case-sensitive matching.",
+            ),
+            _field(
+                "include_existing",
+                "Include existing",
+                "boolean",
+                default_value=False,
+                description="Emit existing comments on the first poll instead of baselining them.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

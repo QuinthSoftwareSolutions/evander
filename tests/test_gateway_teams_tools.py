@@ -27,7 +27,7 @@ class FakeTeamsService:
         self.last_channel_target: str | None = None
         self.last_list_attachments_channel_target: str | None = None
         self.last_download_attachment_channel_target: str | None = None
-        self.post_calls: list[tuple[str, str, str, str | None]] = []
+        self.post_calls: list[tuple[str, str, str, str | None, tuple[str, ...]]] = []
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
         self.read_reaction_emoji = "👀"
@@ -85,8 +85,11 @@ class FakeTeamsService:
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict[str, str | None]:
-        self.post_calls.append((message, channel_target, session_id, thread_id))
+        self.post_calls.append(
+            (message, channel_target, session_id, thread_id, tuple(mentions or ()))
+        )
         return {
             "status": "posted",
             "channel_target": channel_target,
@@ -1239,7 +1242,59 @@ def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Pat
 
     assert result["status"] == "posted"
     assert fake_teams.post_calls == [
-        ("Host relay is healthy.", "team-a/channel-1", "session-1", "msg-root"),
+        ("Host relay is healthy.", "team-a/channel-1", "session-1", "msg-root", ()),
+    ]
+
+
+def test_teams_post_status_schema_describes_mentions(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    server = create_server(context)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    mentions = tools["teams_post_status"].parameters["properties"]["mentions"]
+
+    assert "Teams user refs to mention" in mentions["description"]
+    assert "Plain @name text" in mentions["description"]
+
+
+def test_teams_post_status_forwards_normalized_mentions(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_post_status",
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "message": "Please take a look.",
+            "mentions": [
+                "operator@example.com",
+                "user:SECOND@example.com",
+                "operator@example.com",
+            ],
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_teams.post_calls == [
+        (
+            "Please take a look.",
+            "team-a/channel-1",
+            "session-1",
+            None,
+            ("user:operator@example.com", "user:second@example.com"),
+        ),
     ]
 
 
@@ -1282,7 +1337,7 @@ def test_teams_post_status_resolves_communication_target_id(tmp_path: Path) -> N
 
     assert result["status"] == "posted"
     assert fake_teams.post_calls == [
-        ("Host relay is healthy.", "team-a/channel-1", "session-1", "msg-root"),
+        ("Host relay is healthy.", "team-a/channel-1", "session-1", "msg-root", ()),
     ]
 
 
@@ -1339,8 +1394,67 @@ def test_teams_post_status_resolves_allowlisted_user_target(tmp_path: Path) -> N
     assert result["status"] == "posted"
     assert fake_teams.ensure_chat_calls == ["operator@example.com"]
     assert fake_teams.post_calls == [
-        ("Host relay is healthy.", "chat:chat-created-1", "session-1", None),
+        ("Host relay is healthy.", "chat:chat-created-1", "session-1", None, ()),
     ]
+
+
+def test_teams_post_status_rejects_mentions_for_chat_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Teams mentions are supported only for channel targets"):
+        asyncio.run(
+            server.call_tool(
+                "teams_post_status",
+                {
+                    "session_id": "session-1",
+                    "channel_target": "chat:chat-1",
+                    "message": "This should be denied.",
+                    "mentions": ["operator@example.com"],
+                },
+            )
+        )
+    assert fake_teams.post_calls == []
+
+
+def test_teams_post_status_rejects_mentions_for_user_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_user_allowlist=["user:operator@example.com"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Teams mentions are supported only for channel targets"):
+        asyncio.run(
+            server.call_tool(
+                "teams_post_status",
+                {
+                    "session_id": "session-1",
+                    "channel_target": "user:operator@example.com",
+                    "message": "This should be denied.",
+                    "mentions": ["other@example.com"],
+                },
+            )
+        )
+    assert fake_teams.ensure_chat_calls == []
+    assert fake_teams.post_calls == []
 
 
 def test_teams_post_status_rejects_non_allowlisted_user_target(tmp_path: Path) -> None:

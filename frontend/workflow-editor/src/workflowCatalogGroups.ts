@@ -168,9 +168,15 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "runtime",
       label: "Runtime state",
-      description: "Read VM, session, agent, or workflow runtime state.",
-      types: ["query:session-context"],
+      description: "Read VM, agent, or workflow runtime state.",
       prefixes: ["query:vm:", "query:agent:", "query:state:"],
+    },
+    {
+      key: "sessions",
+      label: "Sessions",
+      description: "Read session context and session manifests.",
+      types: ["query:session-context"],
+      prefixes: ["query:session:"],
     },
     {
       key: "work-tracking",

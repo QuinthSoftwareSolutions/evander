@@ -892,6 +892,273 @@ def test_graph_teams_service_posts_status_and_thread_reply(
     assert stored["team-a/channel-1/msg-reply"].thread_id == "msg-root"
 
 
+def test_graph_teams_service_posts_status_with_mentions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    posted_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "user-operator",
+                    "displayName": "Research & Ops",
+                    "mail": "operator@example.com",
+                },
+                request=request,
+            )
+        if request.method == "POST" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages"
+        ):
+            posted_payloads.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-root",
+                    "createdDateTime": "2026-03-30T12:00:00Z",
+                    "body": {"content": "<p>root status</p>", "contentType": "html"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "webUrl": "https://teams.example/root",
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    service.post_status(
+        "root status",
+        "team-a/channel-1",
+        "session-1",
+        mentions=["operator@example.com"],
+    )
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/operator@example.com",
+        "/v1.0/teams/team-a/channels/channel-1/messages",
+    ]
+    assert posted_payloads == [
+        {
+            "body": {
+                "content": (
+                    '<p><at id="0">Research &amp; Ops</at></p><p>root status</p>'
+                ),
+                "contentType": "html",
+            },
+            "mentions": [
+                {
+                    "id": 0,
+                    "mentionText": "Research & Ops",
+                    "mentioned": {
+                        "user": {
+                            "id": "user-operator",
+                            "displayName": "Research & Ops",
+                            "userIdentityType": "aadUser",
+                        }
+                    },
+                }
+            ],
+        }
+    ]
+
+
+def test_graph_teams_service_posts_thread_reply_with_mentions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "user-operator",
+                    "displayName": "Operator User",
+                    "mail": "operator@example.com",
+                },
+                request=request,
+            )
+        if request.method == "POST" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages/msg-root/replies"
+        ):
+            posted_payloads.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-reply",
+                    "replyToId": "msg-root",
+                    "createdDateTime": "2026-03-30T12:01:00Z",
+                    "body": {"content": "<p>thread reply</p>", "contentType": "html"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "webUrl": "https://teams.example/reply",
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    service.post_status(
+        "thread reply",
+        "team-a/channel-1",
+        "session-1",
+        thread_id="msg-root",
+        mentions=["operator@example.com"],
+    )
+
+    assert posted_payloads[0]["body"] == {
+        "content": '<p><at id="0">Operator User</at></p><p>thread reply</p>',
+        "contentType": "html",
+    }
+    assert posted_payloads[0]["mentions"] == [
+        {
+            "id": 0,
+            "mentionText": "Operator User",
+            "mentioned": {
+                "user": {
+                    "id": "user-operator",
+                    "displayName": "Operator User",
+                    "userIdentityType": "aadUser",
+                }
+            },
+        }
+    ]
+
+
+def test_graph_teams_service_rejects_mentions_for_chat_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: pytest.fail(f"Unexpected request: {request.url}")
+    )
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with pytest.raises(ValueError, match="Teams mentions are supported only for channel targets"):
+        service.post_status(
+            "status",
+            "chat:chat-1",
+            "session-1",
+            mentions=["operator@example.com"],
+        )
+
+
+def test_graph_teams_service_fails_when_mention_user_is_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/missing@example.com":
+            return httpx.Response(
+                404,
+                json={"error": {"code": "Request_ResourceNotFound"}},
+                request=request,
+            )
+        if request.url.path == "/v1.0/users":
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(ValueError, match="Unable to resolve Teams mention user"):
+        service.post_status(
+            "status",
+            "team-a/channel-1",
+            "session-1",
+            mentions=["missing@example.com"],
+        )
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/missing@example.com",
+        "/v1.0/users",
+    ]
+
+
+def test_graph_teams_service_surfaces_mention_lookup_permission_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                403,
+                json={"error": {"code": "Authorization_RequestDenied"}},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        service.post_status(
+            "status",
+            "team-a/channel-1",
+            "session-1",
+            mentions=["operator@example.com"],
+        )
+
+    assert [request.url.path for request in requests] == ["/v1.0/users/operator@example.com"]
+
+
 def test_graph_teams_service_get_messages_preserves_status_source_for_known_posts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

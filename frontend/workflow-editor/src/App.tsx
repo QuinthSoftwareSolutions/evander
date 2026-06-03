@@ -9648,7 +9648,7 @@ export default function App() {
                   <details
                     key={group.kind}
                     className="create-group"
-                    open={group.kind === "trigger" || hasTutorialAllowedNodeType}
+                    open={hasTutorialAllowedNodeType}
                   >
                     <summary className="create-group-summary">
                       <Tooltip content={group.description}>

@@ -397,8 +397,8 @@ Storage layout for directory config:
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
-  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
-    as `User.ReadBasic.All` or `User.Read`
+  - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
+    a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
@@ -1707,6 +1707,10 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   `System.ChangedDate` advances, or use `query:ado:work-items` for explicit one-shot queries.
   Wire either output into `effect:issue:upsert-ado-proxy` to write or refresh
   `runtime/local-issues.json` and `runtime/ado-work-items/work-item-*.yaml`.
+- Use `trigger:ado:work-item-comment-created` when new ADO comments should wake a workflow. The
+  trigger owns `runtime/trigger-cursors-ado-work-item-comments.json`, baselines existing comments
+  by default, and leaves mention text, bot author exclusion, tags, and state filters to workflow
+  config.
 - For terminal-PR cleanup workflows using legacy PR-map mode, wire
   `trigger:pull-request:completed.session_id` into `effect:agent:destroy.session_id`. For explicit
   PR trigger mode, route with `query:session:list` against session metadata and pass the selected

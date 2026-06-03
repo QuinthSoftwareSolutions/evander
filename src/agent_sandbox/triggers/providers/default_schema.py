@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.triggers.providers.schemas import (
+    AdoWorkItemCommentCreatedTriggerDefinition,
     AdoWorkItemMatchingTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
@@ -38,6 +39,7 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:ticket:changed": TicketChangedTriggerDefinition,
     "trigger:issue:comment-created": IssueCommentCreatedTriggerDefinition,
     "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerDefinition,
+    "trigger:ado:work-item-comment-created": AdoWorkItemCommentCreatedTriggerDefinition,
     "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
     "trigger:communication:new-message": CommunicationNewMessageTriggerDefinition,
     "trigger:http:webhook": WebhookTriggerDefinition,

@@ -1078,5 +1078,6 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
     assert item["relations"][0]["inline_media"]["filename"] == "attached.jpg"
     assert item["comments"][0]["html"].startswith("<div>Comment")
     assert item["comments"][0]["raw_text"].startswith("<div>Comment")
+    assert item["comments"][0]["created_by_identity"]["displayName"] == "Ada"
     assert item["comments"][0]["inline_media"][0]["filename"] == "comment.gif"
     assert comment_media["comment_id"] == "7"

@@ -166,6 +166,7 @@ from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
     TeamsInlineMediaProvider,
     normalize_pr_feedback_provider,
+    normalize_teams_mention_refs,
     normalize_teams_target,
     parse_teams_target,
     resolve_teams_send_target,
@@ -200,6 +201,16 @@ SemanticPayloadArgument = Annotated[
 SemanticFilterArgument = Annotated[
     dict[str, Any] | None,
     PydanticField(description="Optional Qdrant filter JSON object."),
+]
+TeamsMentionRefsArgument = Annotated[
+    list[str] | None,
+    PydanticField(
+        description=(
+            "Optional Teams user refs to mention in a channel post or channel thread reply. "
+            "Use user:<graph-user-id-or-upn> or a bare Graph user ID, UPN, or mail address. "
+            "Plain @name text in message does not notify users."
+        )
+    ),
 ]
 _WORKSPACE_FILE_READER_SCRIPT = r"""
 import base64
@@ -6958,21 +6969,30 @@ def create_server(context: RuntimeContext) -> FastMCP:
         channel_target: str,
         message: str,
         thread_id: str | None = None,
+        mentions: TeamsMentionRefsArgument = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
             "channel_target": channel_target,
             "message": message,
             "thread_id": thread_id,
+            "mentions": mentions,
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_STATUS)
+            try:
+                normalized_mentions = normalize_teams_mention_refs(mentions)
+            except ValueError as exc:
+                raise PolicyError(str(exc)) from exc
             normalized_target = context.policy.require_teams_send_target(
                 session,
                 channel_target,
                 capability="reply" if thread_id is not None else "write",
             )
-            if parse_teams_target(normalized_target).kind == "user" and thread_id is not None:
+            parsed_target = parse_teams_target(normalized_target)
+            if normalized_mentions and parsed_target.kind != "channel":
+                raise PolicyError("Teams mentions are supported only for channel targets")
+            if parsed_target.kind == "user" and thread_id is not None:
                 raise PolicyError("Teams user targets do not support thread replies")
             service = context.teams_service_for_session(session_id)
             send_target = resolve_teams_send_target(service, normalized_target)
@@ -6981,6 +7001,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 send_target,
                 session_id,
                 thread_id=thread_id,
+                mentions=normalized_mentions,
             )
             audit_success(session_id, ToolName.TEAMS_POST_STATUS, args, result)
             return result

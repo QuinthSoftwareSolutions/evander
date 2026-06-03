@@ -178,6 +178,7 @@ Type-specific keys:
 | `trigger:ticket:changed` | `directories` | — |
 | `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
+| `trigger:ado:work-item-comment-created` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
@@ -232,6 +233,13 @@ its cursor state in `runtime/trigger-cursors-ci-runs.json`.
 without writing local issue state. It emits `work_item` on first match and again when the remote
 changed date advances. Use `effect:issue:upsert-ado-proxy` downstream when the workflow should
 materialize or refresh a local proxy issue.
+
+`trigger:ado:work-item-comment-created` uses the same work-item filter/query surface, then reads
+matching work-item details with comments. It stores comment cursors in
+`runtime/trigger-cursors-ado-work-item-comments.json`, keyed by trigger id and work-item stream.
+Existing comments are baselined without emitting by default; set `include_existing=true` only for
+explicit backfill workflows. Bot names, mention text, tags, and cleanup states are workflow config,
+not built-in defaults.
 
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
@@ -1451,8 +1459,9 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_tenant_id`
 - optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
-- Resolving Teams direct-message sender mail addresses may require adding a Graph user-read scope
-  such as `User.ReadBasic.All` or `User.Read.All` and rerunning Teams auth.
+- Resolving Teams direct-message sender mail addresses and outbound mention targets may require
+  adding a Graph user-read scope such as `User.ReadBasic.All` or `User.Read.All` and rerunning
+  Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default
