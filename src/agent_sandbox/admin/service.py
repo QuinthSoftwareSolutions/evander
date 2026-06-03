@@ -1722,6 +1722,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:ado:work-item-matching": (
         "Start when an Azure DevOps work item first matches or advances its changed date."
     ),
+    "trigger:ado:work-item-comment-created": (
+        "Start when a matching Azure DevOps work item receives a new matching comment."
+    ),
     "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."

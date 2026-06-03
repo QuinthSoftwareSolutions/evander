@@ -84,6 +84,37 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
     assert trigger.directories == ["root/team-a"]
 
 
+def test_ado_work_item_comment_trigger_normalizes_config() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-ado-comment",
+                "display_name": "ADO work item comment",
+                "type": "trigger:ado:work-item-comment-created",
+                "config": {
+                    "directory_path": " root/team-a ",
+                    "project": " APP ",
+                    "states": [" New ", ""],
+                    "tags_any": [" spec "],
+                    "comment_contains": " @SpecAssistant ",
+                    "comment_contains_any": [" @SpecAssistant ", ""],
+                    "comment_author_exclude_names": [" SpecAssistant "],
+                },
+            }
+        )
+    )
+
+    assert trigger.directory_path == "root/team-a"
+    assert trigger.project == "APP"
+    assert trigger.states == ["New"]
+    assert trigger.tags_any == ["spec"]
+    assert trigger.comment_contains == "@SpecAssistant"
+    assert trigger.comment_contains_any == ["@SpecAssistant"]
+    assert trigger.comment_author_exclude_names == ["SpecAssistant"]
+
+
 def test_webhook_trigger_defaults_event_type_from_slug() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 

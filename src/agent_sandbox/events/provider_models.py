@@ -73,6 +73,7 @@ from agent_sandbox.queries.providers.schemas import (
     VmRunStateQueryDefinition,
 )
 from agent_sandbox.triggers.providers.schemas import (
+    AdoWorkItemCommentCreatedTriggerDefinition,
     AdoWorkItemMatchingTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
@@ -104,6 +105,7 @@ from agent_sandbox.triggers.providers.schemas import (
 __all__ = [
     "AdoPipelineRunEffectDefinition",
     "AdoUpdateWorkItemEffectDefinition",
+    "AdoWorkItemCommentCreatedTriggerDefinition",
     "AdoWorkItemMatchingTriggerDefinition",
     "AdoWorkItemsQueryDefinition",
     "AgentArtifactTextQueryDefinition",

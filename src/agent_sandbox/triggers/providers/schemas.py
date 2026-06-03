@@ -208,6 +208,67 @@ class AdoWorkItemMatchingTriggerDefinition(TriggerDefinition):
         return self
 
 
+class AdoWorkItemCommentCreatedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:ado:work-item-comment-created"]
+    directory_path: str | None = None
+    project: str | None = None
+    wiql: str | None = None
+    current_iteration: bool = False
+    team: str | None = None
+    iteration: str | None = None
+    area_path: str | None = None
+    states: list[str] = Field(default_factory=list)
+    types: list[str] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    text_search: str | None = None
+    top: int = Field(default=50, ge=1, le=200)
+    comment_contains: str | None = None
+    comment_contains_any: list[str] = Field(default_factory=list)
+    comment_author_exclude_names: list[str] = Field(default_factory=list)
+    comment_author_exclude_ids: list[str] = Field(default_factory=list)
+    comment_case_sensitive: bool = False
+    include_existing: bool = False
+
+    @field_validator(
+        "directory_path",
+        "project",
+        "wiql",
+        "team",
+        "iteration",
+        "area_path",
+        "text_search",
+        "comment_contains",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator(
+        "states",
+        "types",
+        "tags_any",
+        "comment_contains_any",
+        "comment_author_exclude_names",
+        "comment_author_exclude_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_filters(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+    @model_validator(mode="after")
+    def validate_query_mode(self) -> "AdoWorkItemCommentCreatedTriggerDefinition":
+        if self.wiql and self.current_iteration:
+            raise ValueError(
+                "trigger:ado:work-item-comment-created wiql and current_iteration are mutually exclusive"
+            )
+        return self
+
+
 class ScriptRunRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:script-run-request"]
 

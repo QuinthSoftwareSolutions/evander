@@ -738,13 +738,15 @@ class AzureDevOpsIssueAdapter:
             html_content = str(
                 raw.get("html") or raw.get("renderedText") or raw.get("text") or ""
             ).strip()
+            created_by = raw.get("createdBy") if isinstance(raw.get("createdBy"), dict) else {}
             normalized.append(
                 {
                     "id": comment_id,
                     "text": raw_text,
                     "html": html_content,
                     "raw_text": raw_text,
-                    "created_by": str((raw.get("createdBy") or {}).get("displayName", "")).strip(),
+                    "created_by": str(created_by.get("displayName", "")).strip(),
+                    "created_by_identity": self._json_safe(created_by),
                     "created_date": self._normalize_datetime(
                         str(raw.get("createdDate", "")).strip()
                     ),

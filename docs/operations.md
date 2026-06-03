@@ -1707,6 +1707,10 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   `System.ChangedDate` advances, or use `query:ado:work-items` for explicit one-shot queries.
   Wire either output into `effect:issue:upsert-ado-proxy` to write or refresh
   `runtime/local-issues.json` and `runtime/ado-work-items/work-item-*.yaml`.
+- Use `trigger:ado:work-item-comment-created` when new ADO comments should wake a workflow. The
+  trigger owns `runtime/trigger-cursors-ado-work-item-comments.json`, baselines existing comments
+  by default, and leaves mention text, bot author exclusion, tags, and state filters to workflow
+  config.
 - For terminal-PR cleanup workflows using legacy PR-map mode, wire
   `trigger:pull-request:completed.session_id` into `effect:agent:destroy.session_id`. For explicit
   PR trigger mode, route with `query:session:list` against session metadata and pass the selected

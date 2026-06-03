@@ -108,6 +108,9 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
+from agent_sandbox.triggers.providers.ado_work_item_comment_created import (
+    AdoWorkItemCommentCreatedTriggerProvider,
+)
 from agent_sandbox.triggers.providers.approval_pending_created import (
     ApprovalPendingCreatedTriggerProvider,
 )
@@ -150,6 +153,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:ticket:changed": TicketChangedTriggerProvider,
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
+            "trigger:ado:work-item-comment-created": AdoWorkItemCommentCreatedTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:communication:new-message": CommunicationNewMessageTriggerProvider,
             "trigger:http:webhook": WebhookTriggerProvider,

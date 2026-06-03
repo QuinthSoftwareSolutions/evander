@@ -134,6 +134,20 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "ado-comment",
+                "display_name": "ADO work item comment",
+                "type": "trigger:ado:work-item-comment-created",
+                "directory_path": "root/team-a",
+                "states": ["New"],
+                "tags_any": ["spec"],
+                "comment_contains": "@SpecAssistant",
+                "comment_author_exclude_names": ["SpecAssistant"],
+            },
+            "trigger:ado:work-item-comment-created",
+            "comment_contains",
+        ),
+        (
+            {
                 "id": "comm",
                 "display_name": "Communication",
                 "type": "trigger:communication:new-message",

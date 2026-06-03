@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-03 - ADO Work Item Comment Trigger
+
+- Added `trigger:ado:work-item-comment-created` for workflow-owned Azure DevOps
+  work-item comment polling with configurable work-item/comment filters,
+  trigger-owned comment cursors, default no-backfill initialization, and
+  detailed work-item payloads suitable for proxy issue upserts.
+
 ## 2026-06-03 - Workflow Create Panel Trigger Defaults
 
 - Stopped default-expanding the Triggers group when operators open the Workflow

@@ -387,6 +387,10 @@ work-item payloads on first match and when `System.ChangedDate` advances, or use
 `query:ado:work-items` for an explicit query. Wire either output into
 `effect:issue:upsert-ado-proxy` to create or refresh local proxy issues and
 `runtime/ado-work-items/work-item-*.yaml`.
+Use `trigger:ado:work-item-comment-created` when comments themselves should wake a workflow. It
+uses workflow-configured work-item and comment filters, keeps its own cursor in
+`runtime/trigger-cursors-ado-work-item-comments.json`, and baselines existing comments unless
+`include_existing` is explicitly enabled.
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
 `agent-sandbox-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
