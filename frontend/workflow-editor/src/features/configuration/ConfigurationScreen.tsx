@@ -1120,6 +1120,7 @@ export function ConfigurationScreen() {
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
+  const [modelPricingPanelCollapsed, setModelPricingPanelCollapsed] = useState(true);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
   const [selectedTab, setSelectedTab] = useState("communications");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
@@ -1399,6 +1400,7 @@ export function ConfigurationScreen() {
   const teamsAuthBusy = teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut;
   const teamsAuthDirectoryPath = normalizeDirectoryPath(selectedDirectoryPath);
   const activeModelPricingDraft = modelPricingDraft ?? modelPricingDraftFromStatus(modelPricingCatalog);
+  const modelPricingPanelBodyId = "model-pricing-catalog-panel-body";
   const modelPricingSaveDisabled =
     loading ||
     modelPricingSaving ||
@@ -2870,55 +2872,66 @@ export function ConfigurationScreen() {
             </div>
           </article>
           <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
-            <div className="panel-header">
+            <button
+              type="button"
+              className="panel-header panel-toggle model-pricing-panel-toggle"
+              onClick={() => setModelPricingPanelCollapsed((current) => !current)}
+              aria-expanded={!modelPricingPanelCollapsed}
+              aria-controls={modelPricingPanelBodyId}
+            >
               <div>
                 <h3>Model pricing catalog</h3>
                 <p className="muted-text">
                   Host-global OpenAI pricing rules used for query-time model usage cost estimates.
                 </p>
               </div>
-              <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
-            </div>
-            <div className="inline-actions compact-actions">
-              <button
-                type="button"
-                onClick={() => void loadModelPricingCatalog()}
-                disabled={loading || modelPricingSaving}
-              >
-                Refresh
-              </button>
-              <button
-                type="button"
-                onClick={discardModelPricingChanges}
-                disabled={modelPricingSaving || !modelPricingDirty}
-              >
-                Discard
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => void saveModelPricingCatalog()}
-                disabled={modelPricingSaveDisabled}
-              >
-                {modelPricingSaving ? "Saving..." : "Save pricing"}
-              </button>
-            </div>
-            {!modelPricingCatalog ? (
-              <div className="callout warning-callout">Loading model pricing catalog...</div>
-            ) : null}
-            {mutationLocked ? (
-              <div className="callout warning-callout">
-                Privileged operations are locked. Unlock privileged operations to save pricing changes.
+              <div className="model-pricing-panel-toggle-meta">
+                <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
+                <span className="panel-toggle-indicator">{modelPricingPanelCollapsed ? "Show" : "Hide"}</span>
               </div>
-            ) : null}
-            {modelPricingCatalog?.status === "error" ? (
-              <div className="callout error-callout">
-                {modelPricingCatalog.error ?? "Model pricing catalog could not be loaded."}
-              </div>
-            ) : null}
-            {modelPricingError ? <div className="callout error-callout">{modelPricingError}</div> : null}
-            {modelPricingCatalog ? (
-              <div className="detail-stack compact-detail-stack">
+            </button>
+            {!modelPricingPanelCollapsed ? (
+              <div id={modelPricingPanelBodyId} className="detail-stack compact-detail-stack">
+                <div className="inline-actions compact-actions">
+                  <button
+                    type="button"
+                    onClick={() => void loadModelPricingCatalog()}
+                    disabled={loading || modelPricingSaving}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={discardModelPricingChanges}
+                    disabled={modelPricingSaving || !modelPricingDirty}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void saveModelPricingCatalog()}
+                    disabled={modelPricingSaveDisabled}
+                  >
+                    {modelPricingSaving ? "Saving..." : "Save pricing"}
+                  </button>
+                </div>
+                {!modelPricingCatalog ? (
+                  <div className="callout warning-callout">Loading model pricing catalog...</div>
+                ) : null}
+                {mutationLocked ? (
+                  <div className="callout warning-callout">
+                    Privileged operations are locked. Unlock privileged operations to save pricing changes.
+                  </div>
+                ) : null}
+                {modelPricingCatalog?.status === "error" ? (
+                  <div className="callout error-callout">
+                    {modelPricingCatalog.error ?? "Model pricing catalog could not be loaded."}
+                  </div>
+                ) : null}
+                {modelPricingError ? <div className="callout error-callout">{modelPricingError}</div> : null}
+                {modelPricingCatalog ? (
+                  <>
                 <div className="detail-grid">
                   <div><span>Revision</span><strong>{modelPricingCatalog.revision?.slice(0, 12) ?? "n/a"}</strong></div>
                   <div><span>Path source</span><strong>{pricingPathSourceLabel(modelPricingCatalog.path_source)}</strong></div>
@@ -2970,14 +2983,16 @@ export function ConfigurationScreen() {
                       <h4>Sources</h4>
                       <p className="muted-text">OpenAI documentation URLs used to maintain this rate card.</p>
                     </div>
-                    <button type="button" onClick={addModelPricingSource} disabled={modelPricingSaving}>
-                      Add source
-                    </button>
+                    <div className="feature-toolbar-actions model-pricing-section-actions">
+                      <button type="button" onClick={addModelPricingSource} disabled={modelPricingSaving}>
+                        Add source
+                      </button>
+                    </div>
                   </div>
                   {activeModelPricingDraft.sources.length ? (
                     <div className="detail-stack compact-detail-stack">
                       {activeModelPricingDraft.sources.map((source, index) => (
-                        <div className="inline-actions compact-actions" key={`source-${index}`}>
+                        <div className="inline-actions compact-actions model-pricing-source-row" key={`source-${index}`}>
                           <input
                             type="url"
                             value={source}
@@ -3007,9 +3022,11 @@ export function ConfigurationScreen() {
                         Rates are expressed per 1M tokens. Models are newline-separated.
                       </p>
                     </div>
-                    <button type="button" onClick={addModelPricingRule} disabled={modelPricingSaving}>
-                      Add rule
-                    </button>
+                    <div className="feature-toolbar-actions model-pricing-section-actions">
+                      <button type="button" onClick={addModelPricingRule} disabled={modelPricingSaving}>
+                        Add rule
+                      </button>
+                    </div>
                   </div>
                   {activeModelPricingDraft.rules.length ? (
                   <div className="detail-stack compact-detail-stack">
@@ -3192,6 +3209,8 @@ export function ConfigurationScreen() {
                       ))}
                     </div>
                   </div>
+                ) : null}
+                  </>
                 ) : null}
               </div>
             ) : null}

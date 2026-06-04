@@ -6,6 +6,7 @@ const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
 );
+const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("communication target editor preserves capability drafts and inserts Teams channels into the draft", () => {
   assert.match(configuration, /COMMUNICATION_TARGET_KINDS_BY_PROVIDER/);
@@ -46,6 +47,13 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /Model pricing catalog/);
   assert.match(configuration, /modelPricingPayloadFromDraft/);
   assert.match(configuration, /saveModelPricingCatalog/);
+  assert.match(
+    configuration,
+    /const \[modelPricingPanelCollapsed, setModelPricingPanelCollapsed\] = useState\(true\)/,
+  );
+  assert.match(configuration, /modelPricingPanelCollapsed/);
+  assert.match(configuration, /className="panel-header panel-toggle model-pricing-panel-toggle"/);
+  assert.match(configuration, /aria-controls=\{modelPricingPanelBodyId\}/);
   assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
   assert.match(configuration, /duplicateModelPricingRule/);
   assert.match(configuration, /deleteModelPricingRule/);
@@ -54,5 +62,9 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /preserveDirtyDraft \? current : payload\.revision/);
   assert.match(configuration, /preserveDirtyDraft \? current : fallback\.revision/);
   assert.match(configuration, /expected_revision: modelPricingExpectedRevision/);
+  assert.match(configuration, /feature-toolbar-actions model-pricing-section-actions/);
+  assert.match(configuration, /inline-actions compact-actions model-pricing-source-row/);
   assert.match(configuration, /pricingPathSourceLabel/);
+  assert.match(styles, /\.model-pricing-source-row/);
+  assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) auto/);
 });

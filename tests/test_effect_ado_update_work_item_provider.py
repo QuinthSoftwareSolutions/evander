@@ -147,7 +147,15 @@ def test_ado_update_work_item_returns_proxy_ticket_without_duplicates(
         "url": "https://dev.azure.com/exampleindustry/Example%20Industry%20APP/_workitems/edit/123",
         "updated_at": "2026-05-15T10:00:00Z",
         "comments": [{"id": "1", "text": "cached comment"}],
-        "fields": {"System.State": "In Progress", "System.Tags": "auto-dev; backend"},
+        "fields": {
+            "System.AssignedTo": {
+                "displayName": "Ada Lovelace",
+                "uniqueName": "ada@example.com",
+            },
+            "System.State": "In Progress",
+            "System.Tags": "auto-dev; backend",
+        },
+        "rev": 7,
     }
     service = _IssueServiceStub(
         read_payloads=[
@@ -174,6 +182,14 @@ def test_ado_update_work_item_returns_proxy_ticket_without_duplicates(
 
     assert first["ticket"]["issue_number"] == "123"
     assert first["ticket"]["remote_reference"]["work_item_id"] == "123"
+    assert first["remote_assigned_to_identity"] == {
+        "display_name": "Ada Lovelace",
+        "unique_name": "ada@example.com",
+        "email": "ada@example.com",
+        "id": None,
+        "descriptor": None,
+    }
+    assert first["remote_work_item_rev"] == 7
     assert second["ticket"]["title"] == "Claimed auto-dev item updated"
     stored = JsonStore(
         tmp_path / "runtime" / "local-issues.json", LocalIssueRecord

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from agent_sandbox.effects.providers.schemas import (
     AdoPipelineRunEffectDefinition,
+    AdoPostWorkItemCommentEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -88,6 +89,7 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:issue:update-metadata": IssueUpdateMetadataEffectDefinition,
     "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectDefinition,
     "effect:ado:pipeline-run": AdoPipelineRunEffectDefinition,
+    "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectDefinition,
     "effect:ado:update-work-item": AdoUpdateWorkItemEffectDefinition,
     "effect:pull-request:update": PullRequestUpdateEffectDefinition,
     "effect:communication:send-message": CommunicationSendMessageEffectDefinition,

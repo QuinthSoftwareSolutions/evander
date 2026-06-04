@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agent_sandbox.effects.providers.schemas import (
     AdoPipelineRunEffectDefinition,
+    AdoPostWorkItemCommentEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -104,6 +105,7 @@ from agent_sandbox.triggers.providers.schemas import (
 
 __all__ = [
     "AdoPipelineRunEffectDefinition",
+    "AdoPostWorkItemCommentEffectDefinition",
     "AdoUpdateWorkItemEffectDefinition",
     "AdoWorkItemCommentCreatedTriggerDefinition",
     "AdoWorkItemMatchingTriggerDefinition",

@@ -631,6 +631,18 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "expected_states",
         "sync_proxy_cache",
     ]
+    ado_comment = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:ado:post-work-item-comment"
+    )
+    assert [field["key"] for field in ado_comment["fields"]] == [
+        "directory_path",
+        "project",
+        "work_item_id",
+        "comment",
+    ]
+    assert ado_comment["fields"][-1]["multiline"] is True
     pr_update = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:update"
     )

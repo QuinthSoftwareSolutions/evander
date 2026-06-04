@@ -5,6 +5,7 @@ from typing import Any
 
 __all__ = [
     "AdoPipelineRunEffectProvider",
+    "AdoPostWorkItemCommentEffectProvider",
     "AdoUpdateWorkItemEffectProvider",
     "AgentBootstrapFrontendEffectProvider",
     "AgentCloneRepoEffectProvider",
@@ -46,6 +47,7 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "AdoPipelineRunEffectProvider": ".ado_pipeline_run",
+    "AdoPostWorkItemCommentEffectProvider": ".ado_post_work_item_comment",
     "AdoUpdateWorkItemEffectProvider": ".ado_update_work_item",
     "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
     "AgentCloneRepoEffectProvider": ".agent_clone_repo",

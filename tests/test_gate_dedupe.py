@@ -14,11 +14,25 @@ from agent_sandbox.events.models import GateDedupeDefinition, TriggerEvent
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 
-def _edge(source_id: str, target_id: str) -> dict[str, str]:
-    return {"source_id": source_id, "target_id": target_id}
+def _edge(
+    source_id: str, target_id: str, *, source_port: str | None = None
+) -> dict[str, object]:
+    edge: dict[str, object] = {"source_id": source_id, "target_id": target_id}
+    if source_port is not None:
+        edge["source_port"] = source_port
+    return edge
 
 
-def _worker_config(runtime_dir: Path) -> TriggerOrchestratorWorkerGlobalConfig:
+def _worker_config(
+    runtime_dir: Path, *, include_dropped_edge: bool = False
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    edges = [
+        _edge("trigger-comment", "gate-dedupe"),
+        _edge("gate-dedupe", "effect-prompt"),
+    ]
+    if include_dropped_edge:
+        edges.append(_edge("gate-dedupe", "effect-prompt", source_port="dropped"))
+
     return TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": runtime_dir,
@@ -64,20 +78,21 @@ def _worker_config(runtime_dir: Path) -> TriggerOrchestratorWorkerGlobalConfig:
                     "prompt": "Process ${{gate-dedupe.body}}",
                 }
             ],
-            "edges": [
-                _edge("trigger-comment", "gate-dedupe"),
-                _edge("gate-dedupe", "effect-prompt"),
-            ],
+            "edges": edges,
         }
     )
 
 
-def _worker(tmp_path: Path) -> EffectOrchestratorWorker:
+def _worker(
+    tmp_path: Path, *, include_dropped_edge: bool = False
+) -> EffectOrchestratorWorker:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     return EffectOrchestratorWorker(
         config=config,
-        worker_config=_worker_config(runtime_dir),
+        worker_config=_worker_config(
+            runtime_dir, include_dropped_edge=include_dropped_edge
+        ),
         runtime=None,  # type: ignore[arg-type]
     )
 
@@ -142,6 +157,38 @@ def test_dedupe_gate_duplicate_occurrence_is_suppressed(tmp_path: Path) -> None:
     assert records[1]["resolved_config"]["allowed"] is False
     assert "duplicate" in records[1]["error"]
     assert len(_completion_events(worker)) == 1
+
+
+def test_dedupe_gate_duplicate_publishes_dropped_branch_when_wired(
+    tmp_path: Path,
+) -> None:
+    worker = _worker(tmp_path, include_dropped_edge=True)
+    graph = worker._build_execution_graph()
+    gate = graph.gates_by_id["gate-dedupe"]
+
+    for index in range(2):
+        record = TriggerQueueRecord(
+            event_id=f"event-{index}",
+            trigger_id="trigger-comment",
+            trigger_type="trigger:cron",
+            trace_id=f"trace-{index}",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"issue_id": 123, "comment_id": 456, "body": "same"},
+        )
+        worker._execute_gate(record, gate=gate, graph=graph, config_revision="test")
+
+    records = sorted(_gate_records(worker), key=lambda item: str(item["event_id"]))
+    assert [record["status"] for record in records] == ["succeeded", "dropped"]
+    assert records[1]["resolved_config"]["allowed"] is False
+    assert "duplicate" in records[1]["error"]
+    assert records[1]["outputs"]["body"] == "same"
+
+    events = _completion_events(worker)
+    assert len(events) == 2
+    dropped_event = next(
+        event for event in events if event["payload"].get("__branch_port") == "dropped"
+    )
+    assert dropped_event["payload"]["body"] == "same"
 
 
 def test_dedupe_gate_distinct_keys_pass_independently(tmp_path: Path) -> None:

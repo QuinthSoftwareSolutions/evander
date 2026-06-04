@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_sandbox.daemons.proxy_issue_sync import upsert_ado_proxy_issue_from_remote_payload
 from agent_sandbox.issues.service import IssueService
+from agent_sandbox.issue_owner import assigned_to_identity
 
 from .base import EffectProviderBase
 
@@ -106,6 +107,15 @@ class AdoUpdateWorkItemEffectProvider(EffectProviderBase):
                 project=project,
                 include_comments=True,
             )
+            remote_fields = (
+                remote_payload.get("fields")
+                if isinstance(remote_payload.get("fields"), Mapping)
+                else {}
+            )
+            output["remote_assigned_to_identity"] = assigned_to_identity(
+                remote_fields.get("System.AssignedTo")
+            )
+            output["remote_work_item_rev"] = remote_payload.get("rev")
             output["state"] = self._normalize_optional_string(remote_payload.get("state")) or output[
                 "state"
             ]

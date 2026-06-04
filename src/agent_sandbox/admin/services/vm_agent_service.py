@@ -4,6 +4,7 @@ from importlib import resources
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -390,6 +391,8 @@ class VmAgentAdminSupport:
         clone_branch: str | None = None,
         issue_number: str | None = None,
         vm_ip: str | None = None,
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
         completed = _admin_service._run_subprocess(
@@ -440,6 +443,14 @@ class VmAgentAdminSupport:
         branch_suffix_line = (
             'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
         )
+        git_user_name = str(git_author_name or "Truman Bot").strip() or "Truman Bot"
+        git_user_email = str(git_author_email or "truman@quinth.se").strip() or "truman@quinth.se"
+        issue_owner_config_line = ""
+        if git_author_name and git_author_email:
+            issue_owner_config_line = (
+                'git -C "${TARGET_DIR}" config agent-sandbox.issueOwnerName "${GIT_USER_NAME}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.issueOwnerEmail "${GIT_USER_EMAIL}"\n'
+            )
         remote_script = f"""
 set -euo pipefail
 . ~/.profile
@@ -449,6 +460,8 @@ CANONICAL_REMOTE_URL="{canonical_remote_url}"
 SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
 PR_NOTES_REF="{pr_notes_ref}"
+GIT_USER_NAME={shlex.quote(git_user_name)}
+GIT_USER_EMAIL={shlex.quote(git_user_email)}
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
 SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
@@ -466,8 +479,8 @@ if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
 else
   git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
 fi
-git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
-git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
+git -C "${{TARGET_DIR}}" config user.name "${{GIT_USER_NAME}}"
+git -C "${{TARGET_DIR}}" config user.email "${{GIT_USER_EMAIL}}"
 BASE_BRANCH="${{CLONE_BRANCH:-}}"
 if [[ -z "${{BASE_BRANCH}}" ]]; then
   BASE_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
@@ -486,7 +499,7 @@ if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
 fi
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
 git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
-{issue_config_line}{branch_suffix_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+{issue_config_line}{branch_suffix_line}{issue_owner_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
 import os
@@ -2147,6 +2160,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         clone_branch: str | None = None,
         vm_user: str = "agent",
         directory_path: str = "root",
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
     ) -> VmActionResult:
         resolved_vm_name = vm_name.strip()
         if not resolved_vm_name:
@@ -2201,6 +2216,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 repo_source=normalized_repo_source,
                 clone_branch=normalized_clone_branch or None,
                 vm_ip=vm_ip,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
             )
             guest_remote_url = (
                 f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{resolved_repo_name}.git"

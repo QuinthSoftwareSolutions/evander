@@ -25,6 +25,7 @@ from agent_sandbox.inline_media import (
     inline_media_download_from_embedded_payload,
     require_provider_media_url,
 )
+from agent_sandbox.issue_owner import assigned_to_identity
 from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.text_formatting import looks_like_html, render_markdownish_text_to_html
@@ -826,6 +827,7 @@ class AzureDevOpsIssueAdapter:
             "area": str(fields.get("System.AreaPath") or "").strip() or None,
             "iteration": str(fields.get("System.IterationPath") or "").strip() or None,
             "assigned_to": self._normalize_assigned_to(fields.get("System.AssignedTo")),
+            "assigned_to_identity": assigned_to_identity(fields.get("System.AssignedTo")),
             "tags": self._split_tags(fields.get("System.Tags")),
             "url": web_url or api_url or None,
             "updated_at": changed_at,
@@ -1785,6 +1787,10 @@ class AzureDevOpsIssueAdapter:
                         "assigned_to": self._normalize_assigned_to(
                             raw_fields.get("System.AssignedTo")
                         ),
+                        "assigned_to_identity": assigned_to_identity(
+                            raw_fields.get("System.AssignedTo")
+                        ),
+                        "rev": raw_item.get("rev"),
                         "url": str(
                             (raw_item.get("_links") or {}).get("web", {}).get("href") or ""
                         ).strip()

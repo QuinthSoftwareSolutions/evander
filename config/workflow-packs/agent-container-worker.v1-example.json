@@ -37,7 +37,35 @@
       {
         "source_id": "gate-for-auto-dev-1",
         "source_port": "body",
+        "target_id": "gate-filter-auto-dev-has-owner-1"
+      },
+      {
+        "source_id": "gate-filter-auto-dev-has-owner-1",
         "target_id": "effect-ado-update-work-item-auto-dev-1"
+      },
+      {
+        "source_id": "gate-for-auto-dev-1",
+        "source_port": "body",
+        "target_id": "gate-filter-auto-dev-missing-owner-1"
+      },
+      {
+        "source_id": "gate-filter-auto-dev-missing-owner-1",
+        "target_id": "gate-dedupe-auto-dev-missing-owner-comment-1"
+      },
+      {
+        "source_id": "gate-dedupe-auto-dev-missing-owner-comment-1",
+        "target_id": "effect-ado-post-work-item-comment-auto-dev-owner-1"
+      },
+      {
+        "allow_cycle": true,
+        "source_id": "gate-dedupe-auto-dev-missing-owner-comment-1",
+        "source_port": "dropped",
+        "target_id": "gate-for-auto-dev-1"
+      },
+      {
+        "allow_cycle": true,
+        "source_id": "effect-ado-post-work-item-comment-auto-dev-owner-1",
+        "target_id": "gate-for-auto-dev-1"
       },
       {
         "allow_cycle": true,
@@ -496,6 +524,104 @@
       },
       {
         "config": {
+          "when": {
+            "all": [
+              {
+                "is_not_null": true,
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.display_name ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? null}}"
+              },
+              {
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "matches_regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+              },
+              {
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "not_equals": "truman@quinth.se"
+              }
+            ]
+          }
+        },
+        "display_name": "Only auto-dev items with issue owners",
+        "id": "gate-filter-auto-dev-has-owner-1",
+        "outputs": {
+          "current_element": {
+            "type": "object"
+          },
+          "current_index": {
+            "type": "integer"
+          },
+          "item_count": {
+            "type": "integer"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "not": {
+              "all": [
+                {
+                  "is_not_null": true,
+                  "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.display_name ?? null}}"
+                },
+                {
+                  "is_not_null": true,
+                  "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? null}}"
+                },
+                {
+                  "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                  "matches_regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+                },
+                {
+                  "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                  "not_equals": "truman@quinth.se"
+                }
+              ]
+            }
+          }
+        },
+        "display_name": "Auto-dev items missing issue owners",
+        "id": "gate-filter-auto-dev-missing-owner-1",
+        "outputs": {
+          "current_element": {
+            "type": "object"
+          },
+          "current_index": {
+            "type": "integer"
+          },
+          "item_count": {
+            "type": "integer"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "key": "auto-dev-missing-owner:${{gate-filter-auto-dev-missing-owner-1.current_element.id}}:${{gate-filter-auto-dev-missing-owner-1.current_element.rev ?? gate-filter-auto-dev-missing-owner-1.current_element.changed_at ?? gate-filter-auto-dev-missing-owner-1.current_index}}",
+          "ttl": "PT168H"
+        },
+        "display_name": "Suppress repeated auto-dev owner comments",
+        "id": "gate-dedupe-auto-dev-missing-owner-comment-1",
+        "type": "gate:dedupe"
+      },
+      {
+        "config": {
+          "comment": "Truman auto-dev cannot claim this work item until System.AssignedTo is set to a human owner with a usable email address. Please assign the work item to the developer who will own the change, then leave it in New or To Do.",
+          "directory_path": "root/example/truman",
+          "project": "Example Industry APP",
+          "work_item_id": "${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}"
+        },
+        "display_name": "Comment on auto-dev missing owner",
+        "id": "effect-ado-post-work-item-comment-auto-dev-owner-1",
+        "type": "effect:ado:post-work-item-comment"
+      },
+      {
+        "config": {
           "directory_path": "root/example/truman",
           "expected_states": [
             "New",
@@ -504,7 +630,7 @@
           "project": "Example Industry APP",
           "state": "In Progress",
           "sync_proxy_cache": true,
-          "work_item_id": "${{gate-for-auto-dev-1.current_element.id}}"
+          "work_item_id": "${{gate-filter-auto-dev-has-owner-1.current_element.id}}"
         },
         "display_name": "Claim auto-dev work item",
         "id": "effect-ado-update-work-item-auto-dev-1",
@@ -582,6 +708,15 @@
             "frontend_install_roots": [
               "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
             ],
+            "issue_owner": {
+              "display_name": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.display_name}}",
+              "email": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.email}}",
+              "provider": "azure_devops",
+              "resolved_at": "${{system.now.utc_timestamp}}",
+              "source": "System.AssignedTo",
+              "work_item_id": "${{effect-ado-update-work-item-auto-dev-1.work_item_id}}",
+              "work_item_rev": "${{effect-ado-update-work-item-auto-dev-1.remote_work_item_rev ?? null}}"
+            },
             "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
             "ticket": "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
           }
@@ -609,6 +744,9 @@
           },
           "frontend_install_roots": {
             "type": "array"
+          },
+          "issue_owner": {
+            "type": "object"
           },
           "repo_source": {
             "type": "string"
@@ -866,6 +1004,7 @@
             "frontend_install_roots": [
               "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
             ],
+            "issue_owner": null,
             "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
             "ticket": {
               "body": "${{gate-filter-6.ticket.body}}",
@@ -916,6 +1055,9 @@
           "frontend_install_roots": {
             "type": "array"
           },
+          "issue_owner": {
+            "type": "object"
+          },
           "repo_source": {
             "type": "string"
           },
@@ -938,6 +1080,7 @@
               "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
               "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
             ],
+            "issue_owner": null,
             "repo_source": "/home/jonathan/Documents/Repos/Scanspac",
             "ticket": {
               "body": "${{gate-filter-7.ticket.body}}",
@@ -988,6 +1131,9 @@
           "frontend_install_roots": {
             "type": "array"
           },
+          "issue_owner": {
+            "type": "object"
+          },
           "repo_source": {
             "type": "string"
           },
@@ -1022,6 +1168,9 @@
           },
           "frontend_install_roots": {
             "type": "array"
+          },
+          "issue_owner": {
+            "type": "object"
           },
           "repo_source": {
             "type": "string"
@@ -1404,6 +1553,7 @@
             "ado_project": "${{gate-merge-1.ado_project}}",
             "directory_path": "${{gate-merge-1.directory_path}}",
             "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "issue_owner": "${{gate-merge-1.issue_owner ?? null}}",
             "issue_title": "${{gate-merge-1.ticket.title}}"
           },
           "model": "gpt-5.4",

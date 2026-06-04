@@ -749,6 +749,54 @@ def test_query_backlog_items_batch_uses_fields_without_expand() -> None:
     assert "$expand" not in batch_payload
 
 
+def test_query_backlog_items_exposes_assigned_to_identity_and_revision() -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 101,
+                        "rev": 7,
+                        "fields": {
+                            "System.Title": "Backlog item",
+                            "System.State": "To Do",
+                            "System.WorkItemType": "Task",
+                            "System.AssignedTo": {
+                                "displayName": "Ada Lovelace",
+                                "uniqueName": "ada@example.com",
+                                "mailAddress": "ada@users.example.com",
+                                "id": "identity-1",
+                                "descriptor": "aad.identity-1",
+                            },
+                        },
+                    }
+                ]
+            },
+        ),
+    ]
+
+    result = adapter._query_backlog_items_core(
+        _RecordingClient(calls, responses.copy()),
+        organization_url="https://dev.azure.com/example",
+        project="project-x",
+        auth_header="Basic secret",
+    )
+
+    assert result["items"][0]["rev"] == 7
+    assert result["items"][0]["assigned_to"] == "Ada Lovelace"
+    assert result["items"][0]["assigned_to_identity"] == {
+        "display_name": "Ada Lovelace",
+        "unique_name": "ada@example.com",
+        "email": "ada@example.com",
+        "id": "identity-1",
+        "descriptor": "aad.identity-1",
+    }
+
+
 def test_read_issues_batch_uses_workitemsbatch_without_comments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

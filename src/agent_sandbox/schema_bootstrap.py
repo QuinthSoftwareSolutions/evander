@@ -927,6 +927,15 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "started_at": {"type": ["string", "null"]},
         "finished_at": {"type": ["string", "null"]},
     },
+    "effect:ado:post-work-item-comment": {
+        "success": {"type": "boolean"},
+        "provider": {"type": "string"},
+        "work_item_id": {"type": "string"},
+        "comment_id": {"type": ["string", "null"]},
+        "comment_url": {"type": ["string", "null"]},
+        "comment": {"type": "object"},
+        "message": {"type": "string"},
+    },
     "effect:ado:update-work-item": {
         "success": {"type": "boolean"},
         "updated": {"type": "boolean"},
@@ -936,6 +945,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "previous_state": {"type": ["string", "null"]},
         "state": {"type": ["string", "null"]},
         "fields": {"type": "object"},
+        "remote_assigned_to_identity": {"type": ["object", "null"]},
+        "remote_work_item_rev": {"type": ["integer", "null"]},
         **_TICKET_OUTPUT_SCHEMA,
     },
     "effect:pull-request:update": {
