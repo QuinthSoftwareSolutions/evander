@@ -571,8 +571,11 @@ Storage layout for directory config:
   }
   ```
 - Public OpenAI remains the default when `openai_provider_mode` is omitted.
-- This first slice covers normal HTTP Responses API Codex requests only; WebSocket/realtime and
-  managed identity are not included.
+- The relay records provider-neutral model usage metadata for HTTP, SSE, and
+  WebSocket Responses/Completions traffic that exposes a provider `usage`
+  payload. It also records `usage_unavailable` when a completed response has no
+  usage block. Azure OpenAI WebSocket/realtime and managed identity are not
+  included.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
   to declare Responses `web_search` tools.

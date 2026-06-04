@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - OpenAI Relay Model Usage Coverage
+
+- Recorded model usage metadata for OpenAI relay WebSocket Responses traffic,
+  Azure OpenAI non-stream Responses traffic, and `/responses/compact`, keeping
+  prompt and completion text out of the persisted usage store.
+
 ## 2026-06-04 - DIDWW Realtime Playback Truncation
 
 - Truncated interrupted DIDWW/OpenAI Realtime assistant audio to the RTP-played
