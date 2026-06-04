@@ -115,8 +115,9 @@ _MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
 )
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
     "Tell the caller in one short sentence that you are checking with the originating agent. "
-    "Then ask, in one short sentence, whether they would like another brief interesting fact "
-    "while they wait. Do not provide any unrelated fact unless the caller asks for one."
+    "Then ask, in one short sentence, whether they would prefer to wait or continue with "
+    "something relevant to the current call while you wait. Do not introduce unrelated filler "
+    "or a new topic unless the caller asks for it."
 )
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",

@@ -7,8 +7,8 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-04 - DIDWW Origin Query Hold Policy
 
-- Replaced forced pending-origin-query filler with a short hold offer that asks
-  whether the caller wants an optional fact while waiting.
+- Replaced forced pending-origin-query filler with a short hold offer that lets
+  the caller choose between waiting and continuing with relevant call content.
 - Removed queued projected-task fallback responses when a real origin query is
   pending, and ignored short caller wait acknowledgements instead of queueing an
   extra reply.
