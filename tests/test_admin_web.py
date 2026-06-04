@@ -1555,6 +1555,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "clone_branch",
         "vm_user",
         "directory_path",
+        "git_author_name",
+        "git_author_email",
     ]
     agent_bootstrap_frontend = next(
         node

@@ -14,9 +14,9 @@ from agent_sandbox.execution import ExecutionStatusKind
 from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from agent_sandbox.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
+    GitAuthorIdentity,
     _container_reachable_git_remote_url,
 )
-from agent_sandbox.issue_owner import IssueOwnerGitIdentity
 from agent_sandbox.effects.providers.agent_session import (
     build_container_session_files,
     _codex_json_log_filter_script,
@@ -897,7 +897,63 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
     }
 
 
-def test_agent_clone_repo_libvirt_uses_issue_owner_git_identity() -> None:
+def test_agent_clone_repo_libvirt_uses_explicit_git_author_identity() -> None:
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone repo",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+        git_author_name="Ada Lovelace",
+        git_author_email="ada@example.com",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
+
+
+def test_agent_clone_repo_requires_complete_git_author_identity() -> None:
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone repo",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+        git_author_name="Ada Lovelace",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="git_author_name and git_author_email must both be set",
+    ):
+        factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls == []
+
+
+def test_agent_clone_repo_libvirt_does_not_use_session_issue_owner_metadata() -> None:
     effect = AgentCloneRepoEffectDefinition(
         id="agent-clone",
         display_name="Clone repo",
@@ -922,8 +978,8 @@ def test_agent_clone_repo_libvirt_uses_issue_owner_git_identity() -> None:
 
     factory.build(effect, directory_path="root/team-a").execute()
 
-    assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
-    assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] is None
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] is None
 
 
 def test_vm_bootstrap_python_provider_passes_expected_arguments() -> None:
@@ -2858,14 +2914,14 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
 
 
-def test_agent_clone_container_configures_issue_owner_git_identity() -> None:
+def test_agent_clone_container_configures_git_author_identity() -> None:
     command = AgentCloneRepoEffectProvider._container_git_config_command(
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
         remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git",
         clone_branch="main",
-        git_identity=IssueOwnerGitIdentity(
+        git_identity=GitAuthorIdentity(
             name="Ada Lovelace",
             email="ada@example.com",
         ),
@@ -2873,8 +2929,8 @@ def test_agent_clone_container_configures_issue_owner_git_identity() -> None:
 
     assert "git config user.name 'Ada Lovelace'" in command
     assert "git config user.email ada@example.com" in command
-    assert "git config agent-sandbox.issueOwnerName 'Ada Lovelace'" in command
-    assert "git config agent-sandbox.issueOwnerEmail ada@example.com" in command
+    assert "git config agent-sandbox.gitAuthorName 'Ada Lovelace'" in command
+    assert "git config agent-sandbox.gitAuthorEmail ada@example.com" in command
     assert "config alias.push-agent" in command
     assert "git config agent-sandbox.prNotesRef" in command
     assert "config alias.sync-base" in command

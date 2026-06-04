@@ -445,11 +445,11 @@ class VmAgentAdminSupport:
         )
         git_user_name = str(git_author_name or "Truman Bot").strip() or "Truman Bot"
         git_user_email = str(git_author_email or "truman@quinth.se").strip() or "truman@quinth.se"
-        issue_owner_config_line = ""
+        git_author_config_line = ""
         if git_author_name and git_author_email:
-            issue_owner_config_line = (
-                'git -C "${TARGET_DIR}" config agent-sandbox.issueOwnerName "${GIT_USER_NAME}"\n'
-                'git -C "${TARGET_DIR}" config agent-sandbox.issueOwnerEmail "${GIT_USER_EMAIL}"\n'
+            git_author_config_line = (
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorName "${GIT_USER_NAME}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorEmail "${GIT_USER_EMAIL}"\n'
             )
         remote_script = f"""
 set -euo pipefail
@@ -499,7 +499,7 @@ if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
 fi
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
 git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
-{issue_config_line}{branch_suffix_line}{issue_owner_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+{issue_config_line}{branch_suffix_line}{git_author_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
 import os

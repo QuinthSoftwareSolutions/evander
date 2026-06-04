@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 import posixpath
 import shlex
@@ -11,7 +12,6 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, Executi
 from agent_sandbox.events.provider_models import AgentCloneRepoEffectDefinition
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.git_mirror import ContainerGitMirrorResolver
-from agent_sandbox.issue_owner import IssueOwnerGitIdentity, issue_owner_git_identity
 
 from .agent_session import (
     container_shell_preamble,
@@ -28,6 +28,12 @@ from .agent_session import (
 from .base import EffectProviderBase
 
 
+@dataclass(frozen=True)
+class GitAuthorIdentity:
+    name: str
+    email: str
+
+
 class AgentCloneRepoEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
@@ -40,9 +46,12 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "clone_branch": effect.clone_branch,
             "vm_user": effect.vm_user,
             "directory_path": effect.directory_path,
+            "git_author_name": effect.git_author_name,
+            "git_author_email": effect.git_author_email,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
+        git_identity = _git_author_identity_from_payload(payload)
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -51,7 +60,11 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             context, payload, directory_path=directory_path
         )
         if execution_backend == "libvirt_vm":
-            return self._execute_libvirt(payload, execution_backend=execution_backend)
+            return self._execute_libvirt(
+                payload,
+                execution_backend=execution_backend,
+                git_identity=git_identity,
+            )
         if execution_backend != "container_worker_vm":
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
 
@@ -95,7 +108,6 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             target_dir=result.target_dir,
         )
-        git_identity = _issue_owner_identity_for_session(context, session_id, session=session)
         if result.cloned:
             self._configure_container_git(
                 backend=backend,
@@ -165,7 +177,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
-        git_identity: IssueOwnerGitIdentity | None,
+        git_identity: GitAuthorIdentity | None,
         timeout_seconds: float,
     ) -> None:
         execution_id = safe_effect_execution_id("clone-config", session_id)
@@ -239,7 +251,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
-        git_identity: IssueOwnerGitIdentity | None = None,
+        git_identity: GitAuthorIdentity | None = None,
     ) -> str:
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         push_remote_url = _container_reachable_git_remote_url(remote_url)
@@ -287,8 +299,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         if git_identity is not None:
             lines.extend(
                 [
-                    f"git config agent-sandbox.issueOwnerName {shlex.quote(git_identity.name)}",
-                    f"git config agent-sandbox.issueOwnerEmail {shlex.quote(git_identity.email)}",
+                    f"git config agent-sandbox.gitAuthorName {shlex.quote(git_identity.name)}",
+                    f"git config agent-sandbox.gitAuthorEmail {shlex.quote(git_identity.email)}",
                 ]
             )
         lines.extend(
@@ -305,7 +317,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             )
         return "\n".join(lines) + "\n"
 
-    def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
+    def _execute_libvirt(
+        self,
+        payload: dict[str, Any],
+        *,
+        execution_backend: str,
+        git_identity: GitAuthorIdentity | None,
+    ) -> dict[str, Any]:
         context = self._context()
         repo_cloner = getattr(context.vm_repo_cloner, "clone_repo_into_vm", None)
         if not callable(repo_cloner):
@@ -313,7 +331,6 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         vm_name, session_id = resolve_vm_target(
             context, payload, effect_type="effect:agent:clone-repo"
         )
-        git_identity = _issue_owner_identity_for_session(context, session_id)
         result = repo_cloner(
             vm_name=vm_name,
             session_id=session_id,
@@ -420,28 +437,13 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
     )
 
 
-def _issue_owner_identity_for_session(
-    context: Any,
-    session_id: str,
-    *,
-    session: Any | None = None,
-) -> IssueOwnerGitIdentity | None:
-    identity = issue_owner_git_identity(getattr(session, "metadata", None))
-    if identity is not None:
-        return identity
-    session_lookup = getattr(context, "session_lookup", None)
-    read_all_sessions = getattr(session_lookup, "read_all_sessions", None)
-    if not callable(read_all_sessions):
+def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitAuthorIdentity | None:
+    name = normalize_optional_string(payload.get("git_author_name"))
+    email = normalize_optional_string(payload.get("git_author_email"))
+    if name is None and email is None:
         return None
-    try:
-        sessions = read_all_sessions()
-    except Exception:
-        return None
-    candidate = sessions.get(session_id) if isinstance(sessions, Mapping) else None
-    if candidate is None:
-        return None
-    if isinstance(candidate, Mapping):
-        metadata = candidate.get("metadata")
-    else:
-        metadata = getattr(candidate, "metadata", None)
-    return issue_owner_git_identity(metadata)
+    if name is None or email is None:
+        raise ValueError(
+            "effect:agent:clone-repo git_author_name and git_author_email must both be set"
+        )
+    return GitAuthorIdentity(name=name, email=email)

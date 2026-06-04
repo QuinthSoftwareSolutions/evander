@@ -413,6 +413,14 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     )
     assert container_effects["effect-agent-clone-repo-1"]["type"] == "effect:agent:clone-repo"
     assert (
+        container_effects["effect-agent-clone-repo-1"]["config"]["git_author_name"]
+        == "${{gate-merge-1.issue_owner.display_name ?? null}}"
+    )
+    assert (
+        container_effects["effect-agent-clone-repo-1"]["config"]["git_author_email"]
+        == "${{gate-merge-1.issue_owner.email ?? null}}"
+    )
+    assert (
         container_effects["effect-agent-bootstrap-frontend-1"]["type"]
         == "effect:agent:bootstrap-frontend"
     )

@@ -1,27 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
-
-
-@dataclass(frozen=True)
-class IssueOwnerGitIdentity:
-    name: str
-    email: str
-
-
-def issue_owner_git_identity(metadata: Mapping[str, Any] | None) -> IssueOwnerGitIdentity | None:
-    if not isinstance(metadata, Mapping):
-        return None
-    owner = metadata.get("issue_owner")
-    if not isinstance(owner, Mapping):
-        return None
-    name = _non_empty_string(owner.get("display_name") or owner.get("name"))
-    email = _non_empty_string(owner.get("email") or owner.get("unique_name"))
-    if name is None or email is None or not _looks_like_email(email):
-        return None
-    return IssueOwnerGitIdentity(name=name, email=email)
 
 
 def assigned_to_identity(value: object) -> dict[str, Any] | None:
