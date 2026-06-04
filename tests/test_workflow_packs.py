@@ -348,6 +348,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         "issue_number": "${{gate-merge-1.ticket.issue_number}}",
         "issue_title": "${{gate-merge-1.ticket.title}}",
     }
+    expected_container_issue_create_metadata = {
+        **expected_issue_create_metadata,
+        "issue_owner": "${{gate-merge-1.issue_owner ?? null}}",
+    }
     for queries in (default_queries, container_queries):
         assert (
             queries["query-session-list-active-issue-1"]["type"]
@@ -405,7 +409,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     )
     assert (
         container_effects["effect-agent-create-1"]["config"]["metadata"]
-        == expected_issue_create_metadata
+        == expected_container_issue_create_metadata
     )
     assert container_effects["effect-agent-clone-repo-1"]["type"] == "effect:agent:clone-repo"
     assert (
@@ -738,10 +742,50 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert auto_dev_query["config"]["states"] == ["New", "To Do"]
     assert auto_dev_query["config"]["tags_any"] == ["auto-dev"]
     assert auto_dev_query["config"]["current_iteration"] is False
+    auto_dev_owner_predicate = {
+        "all": [
+            {
+                "is_not_null": True,
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.display_name ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? null}}",
+            },
+            {
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "matches_regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+            },
+            {
+                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "not_equals": "truman@quinth.se",
+            },
+        ]
+    }
+    assert (
+        container_gates["gate-filter-auto-dev-has-owner-1"]["config"]["when"]
+        == auto_dev_owner_predicate
+    )
+    assert container_gates["gate-filter-auto-dev-missing-owner-1"]["config"]["when"] == {
+        "not": auto_dev_owner_predicate
+    }
+    assert container_gates["gate-dedupe-auto-dev-missing-owner-comment-1"]["config"] == {
+        "key": "auto-dev-missing-owner:${{gate-filter-auto-dev-missing-owner-1.current_element.id}}:${{gate-filter-auto-dev-missing-owner-1.current_element.rev ?? gate-filter-auto-dev-missing-owner-1.current_element.changed_at ?? gate-filter-auto-dev-missing-owner-1.current_index}}",
+        "ttl": "PT168H",
+    }
+    auto_dev_owner_comment = container_effects[
+        "effect-ado-post-work-item-comment-auto-dev-owner-1"
+    ]
+    assert auto_dev_owner_comment["type"] == "effect:ado:post-work-item-comment"
+    assert (
+        auto_dev_owner_comment["config"]["work_item_id"]
+        == "${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}"
+    )
+    assert "System.AssignedTo" in auto_dev_owner_comment["config"]["comment"]
     auto_dev_claim = container_effects["effect-ado-update-work-item-auto-dev-1"]
     assert auto_dev_claim["type"] == "effect:ado:update-work-item"
     assert auto_dev_claim["config"]["work_item_id"] == (
-        "${{gate-for-auto-dev-1.current_element.id}}"
+        "${{gate-filter-auto-dev-has-owner-1.current_element.id}}"
     )
     assert auto_dev_claim["config"]["expected_states"] == ["New", "To Do"]
     assert auto_dev_claim["config"]["state"] == "In Progress"
@@ -752,9 +796,42 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     )
     assert (
         container_edges[
-            ("gate-for-auto-dev-1", "effect-ado-update-work-item-auto-dev-1")
+            ("gate-for-auto-dev-1", "gate-filter-auto-dev-has-owner-1")
         ]["source_port"]
         == "body"
+    )
+    assert (
+        container_edges[
+            ("gate-filter-auto-dev-has-owner-1", "effect-ado-update-work-item-auto-dev-1")
+        ]["target_id"]
+        == "effect-ado-update-work-item-auto-dev-1"
+    )
+    assert (
+        container_edges[
+            ("gate-for-auto-dev-1", "gate-filter-auto-dev-missing-owner-1")
+        ]["source_port"]
+        == "body"
+    )
+    assert (
+        container_edges[
+            ("gate-filter-auto-dev-missing-owner-1", "gate-dedupe-auto-dev-missing-owner-comment-1")
+        ]["target_id"]
+        == "gate-dedupe-auto-dev-missing-owner-comment-1"
+    )
+    assert (
+        container_edges[
+            (
+                "gate-dedupe-auto-dev-missing-owner-comment-1",
+                "effect-ado-post-work-item-comment-auto-dev-owner-1",
+            )
+        ]["target_id"]
+        == "effect-ado-post-work-item-comment-auto-dev-owner-1"
+    )
+    assert (
+        container_edges[
+            ("effect-ado-post-work-item-comment-auto-dev-owner-1", "gate-for-auto-dev-1")
+        ]["allow_cycle"]
+        is True
     )
     assert (
         container_edges[
@@ -780,6 +857,20 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"]["ticket"]
         == "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
     )
+    assert container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"][
+        "issue_owner"
+    ] == {
+        "display_name": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.display_name}}",
+        "email": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.email}}",
+        "provider": "azure_devops",
+        "resolved_at": "${{system.now.utc_timestamp}}",
+        "source": "System.AssignedTo",
+        "work_item_id": "${{effect-ado-update-work-item-auto-dev-1.work_item_id}}",
+        "work_item_rev": "${{effect-ado-update-work-item-auto-dev-1.remote_work_item_rev ?? null}}",
+    }
+    assert container_gates["gate-map-1"]["config"]["template"]["issue_owner"] is None
+    assert container_gates["gate-map-2"]["config"]["template"]["issue_owner"] is None
+    assert container_gates["gate-merge-1"]["outputs"]["issue_owner"] == {"type": "object"}
     assert (
         container_edges[("gate-map-auto-dev-ticket-1", "gate-merge-1")]["target_id"]
         == "gate-merge-1"

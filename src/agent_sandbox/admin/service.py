@@ -1819,6 +1819,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
+    "effect:ado:post-work-item-comment": (
+        "Post an HTML-formatted comment to an Azure DevOps work item."
+    ),
     "effect:pull-request:update": (
         "Update pull request metadata or tags with an optional status guard."
     ),
@@ -3922,6 +3925,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("fields", "Fields", "json", bindable=True),
             _field("expected_states", "Expected states", "string_list", bindable=True),
             _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:post-work-item-comment",
+        label="ADO post work item comment",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", required=True, bindable=True),
+            _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
+            _field("comment", "Comment", "string", required=True, bindable=True, multiline=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -18732,6 +18746,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         clone_branch: str | None = None,
         vm_user: str = "agent",
         directory_path: str = "root",
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
     ) -> VmActionResult:
         return self.vm_agent_admin.clone_repo_into_vm(
             vm_name=vm_name,
@@ -18740,6 +18756,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             clone_branch=clone_branch,
             vm_user=vm_user,
             directory_path=directory_path,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
         )
 
     def bootstrap_python_in_vm(

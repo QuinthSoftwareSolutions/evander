@@ -5,6 +5,9 @@ from agent_sandbox.gates.providers.default_schema import gate_node_schema_resolv
 from agent_sandbox.queries.providers.default_schema import query_node_schema_resolvers
 from agent_sandbox.triggers.providers.default_schema import trigger_node_schema_resolvers
 from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
+from agent_sandbox.effects.providers.ado_post_work_item_comment import (
+    AdoPostWorkItemCommentEffectProvider,
+)
 from agent_sandbox.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
@@ -216,6 +219,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
             "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectProvider,
             "effect:ado:pipeline-run": AdoPipelineRunEffectProvider,
+            "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectProvider,
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,

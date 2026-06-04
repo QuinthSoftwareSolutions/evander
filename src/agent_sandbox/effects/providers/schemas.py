@@ -698,6 +698,14 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
         return value
 
 
+class AdoPostWorkItemCommentEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:post-work-item-comment"]
+    directory_path: ConfigValue
+    project: ConfigValue
+    work_item_id: ConfigValue
+    comment: ConfigValue
+
+
 class AdoPipelineRunEffectDefinition(EffectDefinition):
     type: Literal["effect:ado:pipeline-run"]
     directory_path: ConfigValue

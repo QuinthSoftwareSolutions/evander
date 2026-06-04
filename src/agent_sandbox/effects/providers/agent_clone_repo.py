@@ -11,6 +11,7 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, Executi
 from agent_sandbox.events.provider_models import AgentCloneRepoEffectDefinition
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.git_mirror import ContainerGitMirrorResolver
+from agent_sandbox.issue_owner import IssueOwnerGitIdentity, issue_owner_git_identity
 
 from .agent_session import (
     container_shell_preamble,
@@ -94,6 +95,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             target_dir=result.target_dir,
         )
+        git_identity = _issue_owner_identity_for_session(context, session_id, session=session)
         if result.cloned:
             self._configure_container_git(
                 backend=backend,
@@ -103,6 +105,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 repo_source=mirror.canonical_repo_source,
                 remote_url=result.remote_url,
                 clone_branch=clone_branch,
+                git_identity=git_identity,
                 timeout_seconds=float(config.container_worker_job_timeout_seconds),
             )
         return {
@@ -162,6 +165,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
+        git_identity: IssueOwnerGitIdentity | None,
         timeout_seconds: float,
     ) -> None:
         execution_id = safe_effect_execution_id("clone-config", session_id)
@@ -171,6 +175,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             repo_source=repo_source,
             remote_url=remote_url,
             clone_branch=clone_branch,
+            git_identity=git_identity,
         )
         handle = backend.start(
             backend.prepare(
@@ -234,10 +239,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
+        git_identity: IssueOwnerGitIdentity | None = None,
     ) -> str:
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         push_remote_url = _container_reachable_git_remote_url(remote_url)
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
+        git_user_name = git_identity.name if git_identity is not None else "Truman Bot"
+        git_user_email = git_identity.email if git_identity is not None else "truman@quinth.se"
         lines = [
             container_shell_preamble().rstrip(),
             f"cd {shlex.quote(target_dir)}",
@@ -260,8 +268,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             '  git config --unset-all alias.push-agent >/dev/null 2>&1 || true',
             '  git config agent-sandbox.pushAgentAvailable "false"',
             "fi",
-            'git config user.name "Truman Bot"',
-            'git config user.email "truman@quinth.se"',
+            f"git config user.name {shlex.quote(git_user_name)}",
+            f"git config user.email {shlex.quote(git_user_email)}",
             'BASE_BRANCH=${CLONE_BRANCH:-}',
             'if [ -z "$BASE_BRANCH" ]; then BASE_BRANCH=$(git branch --show-current || true); fi',
             'if [ -n "$BASE_BRANCH" ]; then git config agent-sandbox.baseBranch "$BASE_BRANCH"; fi',
@@ -276,6 +284,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         ]
         if clone_branch:
             lines.insert(8, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
+        if git_identity is not None:
+            lines.extend(
+                [
+                    f"git config agent-sandbox.issueOwnerName {shlex.quote(git_identity.name)}",
+                    f"git config agent-sandbox.issueOwnerEmail {shlex.quote(git_identity.email)}",
+                ]
+            )
         lines.extend(
             [
                 'git config alias.agent-pr-note \'!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f\'',
@@ -298,6 +313,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         vm_name, session_id = resolve_vm_target(
             context, payload, effect_type="effect:agent:clone-repo"
         )
+        git_identity = _issue_owner_identity_for_session(context, session_id)
         result = repo_cloner(
             vm_name=vm_name,
             session_id=session_id,
@@ -308,6 +324,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             directory_path=normalize_optional_string(payload.get("directory_path"))
             or str(context.metadata.get("directory_path") or "root"),
+            git_author_name=git_identity.name if git_identity is not None else None,
+            git_author_email=git_identity.email if git_identity is not None else None,
         )
         return {
             "success": bool(result.success),
@@ -400,3 +418,30 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
         git_user=issue_setup.git_user,
         git_ssh_alias=issue_setup.git_ssh_alias,
     )
+
+
+def _issue_owner_identity_for_session(
+    context: Any,
+    session_id: str,
+    *,
+    session: Any | None = None,
+) -> IssueOwnerGitIdentity | None:
+    identity = issue_owner_git_identity(getattr(session, "metadata", None))
+    if identity is not None:
+        return identity
+    session_lookup = getattr(context, "session_lookup", None)
+    read_all_sessions = getattr(session_lookup, "read_all_sessions", None)
+    if not callable(read_all_sessions):
+        return None
+    try:
+        sessions = read_all_sessions()
+    except Exception:
+        return None
+    candidate = sessions.get(session_id) if isinstance(sessions, Mapping) else None
+    if candidate is None:
+        return None
+    if isinstance(candidate, Mapping):
+        metadata = candidate.get("metadata")
+    else:
+        metadata = getattr(candidate, "metadata", None)
+    return issue_owner_git_identity(metadata)

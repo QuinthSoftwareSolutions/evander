@@ -939,6 +939,8 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "clone_branch": "release/1.2",
                 "vm_user": "service",
                 "directory_path": "root/team",
+                "git_author_name": None,
+                "git_author_email": None,
             },
         ),
         CallRecord(

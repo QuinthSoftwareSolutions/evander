@@ -16,6 +16,7 @@ from agent_sandbox.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
     _container_reachable_git_remote_url,
 )
+from agent_sandbox.issue_owner import IssueOwnerGitIdentity
 from agent_sandbox.effects.providers.agent_session import (
     build_container_session_files,
     _codex_json_log_filter_script,
@@ -24,6 +25,9 @@ from agent_sandbox.effects.providers.agent_session import (
     selected_execution_backend_for_target,
 )
 from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
+from agent_sandbox.effects.providers.ado_post_work_item_comment import (
+    AdoPostWorkItemCommentEffectProvider,
+)
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
@@ -342,6 +346,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:issue:update-metadata",
         "effect:issue:upsert-ado-proxy",
         "effect:ado:pipeline-run",
+        "effect:ado:post-work-item-comment",
         "effect:ado:update-work-item",
         "effect:communication:send-message",
         "effect:notification:send",
@@ -360,6 +365,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:post-work-item-comment"]
+        is AdoPostWorkItemCommentEffectProvider
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
@@ -886,6 +895,35 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         "vm_user": "agent",
         "directory_path": "root/team-a",
     }
+
+
+def test_agent_clone_repo_libvirt_uses_issue_owner_git_identity() -> None:
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone repo",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service._sessions["session-42"].metadata["issue_owner"] = {
+        "display_name": "Ada Lovelace",
+        "email": "ada@example.com",
+    }
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
 
 
 def test_vm_bootstrap_python_provider_passes_expected_arguments() -> None:
@@ -2818,6 +2856,25 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
+
+
+def test_agent_clone_container_configures_issue_owner_git_identity() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        target_dir="/home/agent/repos/repo",
+        repo_source="https://dev.azure.com/org/project/_git/repo",
+        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git",
+        clone_branch="main",
+        git_identity=IssueOwnerGitIdentity(
+            name="Ada Lovelace",
+            email="ada@example.com",
+        ),
+    )
+
+    assert "git config user.name 'Ada Lovelace'" in command
+    assert "git config user.email ada@example.com" in command
+    assert "git config agent-sandbox.issueOwnerName 'Ada Lovelace'" in command
+    assert "git config agent-sandbox.issueOwnerEmail ada@example.com" in command
     assert "config alias.push-agent" in command
     assert "git config agent-sandbox.prNotesRef" in command
     assert "config alias.sync-base" in command

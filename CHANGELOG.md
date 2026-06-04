@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Truman Auto-dev Issue Owner Attribution
+
+- Added auto-dev workflow owner gating with `gate:filter`, requiring a valid
+  Azure DevOps `System.AssignedTo` identity before Truman claims a work item.
+- Frozen the resolved `issue_owner` into created issue-session metadata and
+  configured agent repo Git identity from that frozen owner for commit/blame
+  attribution.
+- Added an ADO work-item comment effect so the workflow can leave an assignment
+  request on unowned auto-dev items without creating an agent session.
+
 ## 2026-06-04 - Model Usage Cost Estimates
 
 - Added a versioned local OpenAI pricing catalog and query-time cost estimates
@@ -19,6 +29,9 @@ material. Newer entries are added incrementally as changes land.
   Admin Web pricing drafts tied to their original revision, reloading cached
   catalog data when the file changes, and preferring matching service-tier
   pricing rules over generic rules with the same effective date.
+- Made the Admin Web model pricing catalog panel collapsed by default, widened
+  source URL fields, and aligned pricing add buttons with the page action
+  styling.
 
 ## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
 
