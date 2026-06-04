@@ -1447,6 +1447,171 @@ def test_substantive_speech_truncates_only_confirmed_rtp_samples_when_send_cance
     ]
 
 
+def test_barge_in_after_response_done_skips_cancel_but_truncates_playback(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x27" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "content_index": 0,
+                    "delta": audio_delta,
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {"type": "response.done", "response": {"id": "resp-1", "status": "completed"}},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            await asyncio.sleep(1)
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == []
+    assert realtime.truncates == [
+        {"item_id": "assistant-item-1", "audio_end_ms": 20, "content_index": 0}
+    ]
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "barge_in_cancel_response_skipped" in event_types
+
+
+def test_response_cancel_not_active_error_is_non_fatal(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {
+                    "type": "error",
+                    "error": {
+                        "code": "response_cancel_not_active",
+                        "type": "invalid_request_error",
+                        "message": "Cancellation failed: no active response found",
+                    },
+                }
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            raise AssertionError("audio should not be sent")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> None:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                FakeRealtime(),  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+
+    asyncio.run(run())
+
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "error" in event_types
+    assert "response_cancel_not_active_ignored" in event_types
+
+
 def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
     tmp_path: Path,
 ) -> None:
@@ -2574,6 +2739,169 @@ def test_script_instruction_question_answers_from_projection_without_origin_quer
         ),
     }
     assert "projected calling task" in str(realtime.responses[0])
+
+
+def test_empty_origin_query_during_complete_startup_uses_projection_not_clarification(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = _phone_payload()
+    payload["projection"] = {
+        "task_prompt": (
+            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Ask whether the greeting sounded natural."
+        ),
+        "startup_contract": {"complete_objective": True},
+    }
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(payload))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.tool_outputs: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeController:
+        configured = True
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("empty startup tool call should not wake origin")
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-1",
+                name="query_origin_agent",
+                arguments={},
+            ),
+            realtime,  # type: ignore[arg-type]
+            FakeController(),  # type: ignore[arg-type]
+            set(),
+            asyncio.Event(),
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs[0]["output"] == {
+        "status": "answered",
+        "source": "projection",
+        "answer": (
+            "The projected calling task is already authoritative: Open with: Hi Jonathan, "
+            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+        ),
+    }
+    assert len(realtime.responses) == 1
+    assert "projected calling task" in str(realtime.responses[0])
+    assert "clarify the question" not in str(realtime.responses[0]).lower()
+    latest = store.get("voice-1")
+    assert latest is not None
+    assert "origin_query.empty_question_answered_from_projection" in [
+        event.event_type for event in latest.debug_events
+    ]
+
+
+def test_empty_origin_query_with_incomplete_startup_requests_keyed_call_objective_clarification(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = _phone_payload()
+    payload["projection"] = {
+        "task_prompt": "Call Jonathan.",
+        "startup_contract": {"complete_objective": False},
+    }
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(payload))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.tool_outputs: list[dict[str, object]] = []
+            self.responses: list[tuple[str | None, dict[str, object]]] = []
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+    async def request_response(
+        instructions: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        realtime.responses.append((instructions, kwargs))
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        query_tasks: set[asyncio.Task[None]] = set()
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-1",
+                name="query_origin_agent",
+                arguments={},
+            ),
+            realtime,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            request_response=request_response,
+        )
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-2",
+                name="query_origin_agent",
+                arguments={},
+            ),
+            realtime,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            request_response=request_response,
+        )
+        return realtime
+
+    realtime = FakeRealtime()
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {
+            "call_id": "tool-call-1",
+            "output": {"status": "failed", "error": "question is required"},
+        },
+        {
+            "call_id": "tool-call-2",
+            "output": {"status": "failed", "error": "question is required"},
+        },
+    ]
+    assert realtime.responses == [
+        (
+            "Ask exactly one concise caller-facing clarification question about the call objective.",
+            {
+                "reason": "missing_task_clarification",
+                "key": "projection:missing_task_clarification",
+            },
+        ),
+        (
+            "Ask exactly one concise caller-facing clarification question about the call objective.",
+            {
+                "reason": "missing_task_clarification",
+                "key": "projection:missing_task_clarification",
+            },
+        ),
+    ]
 
 
 def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:

@@ -698,11 +698,6 @@ def _voice_task_looks_actionable(prompt: str) -> bool:
     lowered = normalized.casefold().rstrip(".!?")
     if len(lowered.split()) < 5:
         return False
-    if re.fullmatch(
-        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
-        lowered,
-    ):
-        return False
     task_markers = {
         "ask",
         "tell",
@@ -724,7 +719,14 @@ def _voice_task_looks_actionable(prompt: str) -> bool:
         "objective",
         "prompt",
     }
-    return any(marker in lowered.split() for marker in task_markers)
+    if any(marker in lowered.split() for marker in task_markers):
+        return True
+    if re.fullmatch(
+        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
+        lowered,
+    ):
+        return False
+    return False
 
 
 class VoiceMediaBridgeClient:
