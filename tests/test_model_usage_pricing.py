@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -7,6 +8,7 @@ import pytest
 
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.pricing import (
+    clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
     estimate_model_usage_cost,
     extract_cached_input_tokens,
@@ -45,6 +47,25 @@ def _event(
         if raw_usage_metadata is not None
         else {"usage": usage, "request_metadata": {"path": "/v1/responses"}},
     )
+
+
+def _pricing_catalog_payload(*, version: str, model: str) -> dict:
+    return {
+        "version": version,
+        "currency": "usd",
+        "rules": [
+            {
+                "id": f"openai:{model}:text",
+                "provider": "openai",
+                "models": [model],
+                "currency": "usd",
+                "rates_per_1m_tokens": {
+                    "input": "1.00",
+                    "output": "2.00",
+                },
+            }
+        ],
+    }
 
 
 def test_openai_pricing_estimates_cached_input_costs() -> None:
@@ -119,6 +140,90 @@ def test_openai_pricing_rejects_rule_currency_mismatches() -> None:
                 ],
             }
         )
+
+
+def test_default_model_pricing_catalog_reloads_when_file_changes(
+    tmp_path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "pricing.json"
+    catalog_path.write_text(
+        json.dumps(_pricing_catalog_payload(version="cache-initial", model="test-model")),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    clear_model_pricing_catalog_cache()
+
+    assert default_model_pricing_catalog().version == "cache-initial"
+
+    catalog_path.write_text(
+        json.dumps(
+            _pricing_catalog_payload(
+                version="cache-updated-with-longer-version",
+                model="updated-model-with-longer-name",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert default_model_pricing_catalog().version == "cache-updated-with-longer-version"
+    clear_model_pricing_catalog_cache()
+
+
+def test_openai_pricing_prefers_service_tier_specific_rules() -> None:
+    catalog = load_model_pricing_catalog_payload(
+        {
+            "version": "tier-test-pricing",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "openai:tier-model:zz-generic",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2026-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {
+                        "input": "1.00",
+                        "output": "1.00",
+                    },
+                },
+                {
+                    "id": "openai:tier-model:aa-priority",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2026-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {
+                        "input": "3.00",
+                        "output": "5.00",
+                    },
+                    "service_tier": "priority",
+                },
+            ],
+        }
+    )
+    event = _event(
+        model="tier-model",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        total_tokens=2_000_000,
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "total_tokens": 2_000_000,
+            },
+            "request_metadata": {
+                "path": "/v1/responses",
+                "service_tier": "priority",
+            },
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, catalog)
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == "openai:tier-model:aa-priority"
+    assert estimate.estimated_total == Decimal("8.00")
 
 
 @pytest.mark.parametrize(

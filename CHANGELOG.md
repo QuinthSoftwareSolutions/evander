@@ -15,6 +15,10 @@ material. Newer entries are added incrementally as changes land.
 - Made the Admin Web model pricing catalog panel editable with structured rule
   controls, privileged-operation enforcement, revision conflict checks, catalog
   validation, and query-cost cache invalidation after saves.
+- Fixed pricing catalog concurrency and estimate correctness by keeping dirty
+  Admin Web pricing drafts tied to their original revision, reloading cached
+  catalog data when the file changes, and preferring matching service-tier
+  pricing rules over generic rules with the same effective date.
 
 ## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
 

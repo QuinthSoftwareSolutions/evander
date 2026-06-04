@@ -1116,6 +1116,7 @@ export function ConfigurationScreen() {
   const [state, setState] = useState<ConfigurationState | null>(null);
   const [modelPricingCatalog, setModelPricingCatalog] = useState<ModelPricingCatalogStatus | null>(null);
   const [modelPricingDraft, setModelPricingDraft] = useState<ModelPricingCatalogDraft | null>(null);
+  const [modelPricingDraftBaseRevision, setModelPricingDraftBaseRevision] = useState<string | null>(null);
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
@@ -1144,25 +1145,34 @@ export function ConfigurationScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
+  const modelPricingDirtyRef = useRef(false);
 
   async function loadModelPricingCatalog() {
     try {
+      const preserveDirtyDraft = modelPricingDirtyRef.current;
       const payload = await fetchJson<ModelPricingCatalogStatus>("/api/configuration/model-pricing");
       setModelPricingCatalog(payload);
       setModelPricingDraft((current) =>
-        modelPricingDirty && current ? current : modelPricingDraftFromStatus(payload),
+        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(payload),
       );
-      if (!modelPricingDirty) {
+      setModelPricingDraftBaseRevision((current) =>
+        preserveDirtyDraft ? current : payload.revision,
+      );
+      if (!preserveDirtyDraft) {
         setModelPricingError(null);
       }
     } catch (reason) {
+      const preserveDirtyDraft = modelPricingDirtyRef.current;
       const fallback = {
         ...MODEL_PRICING_FALLBACK_ERROR,
         error: reason instanceof Error ? reason.message : String(reason),
       };
       setModelPricingCatalog(fallback);
       setModelPricingDraft((current) =>
-        modelPricingDirty && current ? current : modelPricingDraftFromStatus(fallback),
+        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(fallback),
+      );
+      setModelPricingDraftBaseRevision((current) =>
+        preserveDirtyDraft ? current : fallback.revision,
       );
     }
   }
@@ -1210,6 +1220,8 @@ export function ConfigurationScreen() {
     setModelPricingDraft((current) =>
       updater(current ?? modelPricingDraftFromStatus(modelPricingCatalog)),
     );
+    setModelPricingDraftBaseRevision((current) => current ?? modelPricingCatalog?.revision ?? null);
+    modelPricingDirtyRef.current = true;
     setModelPricingDirty(true);
     setModelPricingError(null);
   }
@@ -1278,6 +1290,8 @@ export function ConfigurationScreen() {
 
   function discardModelPricingChanges() {
     setModelPricingDraft(modelPricingDraftFromStatus(modelPricingCatalog));
+    setModelPricingDraftBaseRevision(modelPricingCatalog?.revision ?? null);
+    modelPricingDirtyRef.current = false;
     setModelPricingDirty(false);
     setModelPricingError(null);
   }
@@ -1287,7 +1301,8 @@ export function ConfigurationScreen() {
       setModelPricingError("Model pricing catalog is not loaded.");
       return;
     }
-    if (!modelPricingCatalog.revision) {
+    const modelPricingExpectedRevision = modelPricingDraftBaseRevision;
+    if (!modelPricingExpectedRevision) {
       setModelPricingError("Model pricing catalog revision is unavailable.");
       return;
     }
@@ -1312,12 +1327,14 @@ export function ConfigurationScreen() {
           method: "PUT",
           body: JSON.stringify({
             catalog: catalogPayload,
-            expected_revision: modelPricingCatalog.revision,
+            expected_revision: modelPricingExpectedRevision,
           }),
         },
       );
       setModelPricingCatalog(payload);
       setModelPricingDraft(modelPricingDraftFromStatus(payload));
+      setModelPricingDraftBaseRevision(payload.revision);
+      modelPricingDirtyRef.current = false;
       setModelPricingDirty(false);
       setStatusMessage("Saved model pricing catalog.");
     } catch (reason) {
@@ -1388,7 +1405,7 @@ export function ConfigurationScreen() {
     mutationLocked ||
     !modelPricingDirty ||
     !modelPricingCatalog?.editable ||
-    !modelPricingCatalog?.revision;
+    !modelPricingDraftBaseRevision;
 
   async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
     try {

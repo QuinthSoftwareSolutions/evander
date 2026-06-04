@@ -116,7 +116,13 @@ def default_model_pricing_catalog_path() -> Path | None:
 
 
 @lru_cache(maxsize=16)
-def _load_model_pricing_catalog_cached(path_key: str) -> ModelPricingCatalog:
+def _load_model_pricing_catalog_cached(
+    path_key: str,
+    _mtime_ns: int,
+    _size: int,
+    _inode: int,
+    _device: int,
+) -> ModelPricingCatalog:
     return load_model_pricing_catalog(Path(path_key))
 
 
@@ -124,7 +130,15 @@ def default_model_pricing_catalog() -> ModelPricingCatalog:
     path = default_model_pricing_catalog_path()
     if path is None:
         raise FileNotFoundError(DEFAULT_MODEL_PRICING_FILENAME)
-    return _load_model_pricing_catalog_cached(str(path.resolve()))
+    resolved_path = path.resolve()
+    stat = resolved_path.stat()
+    return _load_model_pricing_catalog_cached(
+        str(resolved_path),
+        stat.st_mtime_ns,
+        stat.st_size,
+        stat.st_ino,
+        stat.st_dev,
+    )
 
 
 def clear_model_pricing_catalog_cache() -> None:
@@ -371,19 +385,8 @@ def _match_rule(
     occurred_at: datetime,
     service_tier: str | None,
 ) -> ModelPricingRule | None:
-    exact_matches = [
-        rule
-        for rule in catalog.rules
-        if model in rule.models
-        and rule.matches(
-            provider=provider,
-            model=model,
-            occurred_at=occurred_at,
-            service_tier=service_tier,
-        )
-    ]
-    matches = exact_matches or [
-        rule
+    matches = [
+        (rule, model in rule.models)
         for rule in catalog.rules
         if rule.matches(
             provider=provider,
@@ -396,12 +399,14 @@ def _match_rule(
         return None
     return sorted(
         matches,
-        key=lambda rule: (
-            rule.effective_from or datetime.min.replace(tzinfo=UTC),
-            rule.id,
+        key=lambda match: (
+            1 if match[1] else 0,
+            match[0].effective_from or datetime.min.replace(tzinfo=UTC),
+            1 if match[0].service_tier is not None else 0,
+            match[0].id,
         ),
         reverse=True,
-    )[0]
+    )[0][0]
 
 
 def _token_cost(tokens: int, rate_per_1m: Decimal) -> Decimal:

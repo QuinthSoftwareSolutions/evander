@@ -49,6 +49,10 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
   assert.match(configuration, /duplicateModelPricingRule/);
   assert.match(configuration, /deleteModelPricingRule/);
-  assert.match(configuration, /expected_revision: modelPricingCatalog\.revision/);
+  assert.match(configuration, /modelPricingDraftBaseRevision/);
+  assert.match(configuration, /const preserveDirtyDraft = modelPricingDirtyRef\.current/);
+  assert.match(configuration, /preserveDirtyDraft \? current : payload\.revision/);
+  assert.match(configuration, /preserveDirtyDraft \? current : fallback\.revision/);
+  assert.match(configuration, /expected_revision: modelPricingExpectedRevision/);
   assert.match(configuration, /pricingPathSourceLabel/);
 });
