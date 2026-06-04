@@ -57,10 +57,86 @@ def _session(
     )
 
 
-def _execute(query: SessionListQueryDefinition, store: _SessionStore) -> dict[str, Any]:
+def _execute(
+    query: SessionListQueryDefinition,
+    store: _SessionStore,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     provider = SessionListQueryProvider()
-    provider.initialize(query, QueryRuntimeContext(provider_config={}, session_lookup=store))
+    provider.initialize(
+        query,
+        QueryRuntimeContext(
+            provider_config={},
+            session_lookup=store,
+            metadata=metadata or {},
+        ),
+    )
     return provider.execute()
+
+
+def test_session_list_query_uses_context_directory_when_omitted() -> None:
+    store = _SessionStore(
+        {
+            "owner": _session("owner", directory_path="root/team-a"),
+            "reviewer": _session("reviewer", directory_path="root/team-a/reviews"),
+            "other": _session("other", directory_path="root/team-b"),
+        }
+    )
+
+    output = _execute(
+        SessionListQueryDefinition(
+            id="query-sessions",
+            display_name="Sessions",
+            type="query:session:list",
+        ),
+        store,
+        metadata={"directory_path": "root/team-a"},
+    )
+
+    assert [item["session_id"] for item in output["sessions"]] == ["owner", "reviewer"]
+
+
+def test_session_list_query_explicit_directory_overrides_context_directory() -> None:
+    store = _SessionStore(
+        {
+            "owner": _session("owner", directory_path="root/team-a"),
+            "other": _session("other", directory_path="root/team-b"),
+        }
+    )
+
+    output = _execute(
+        SessionListQueryDefinition(
+            id="query-sessions",
+            display_name="Sessions",
+            type="query:session:list",
+            directory_path="root/team-b",
+        ),
+        store,
+        metadata={"directory_path": "root/team-a"},
+    )
+
+    assert [item["session_id"] for item in output["sessions"]] == ["other"]
+
+
+def test_session_list_query_defaults_to_root_without_context_directory() -> None:
+    store = _SessionStore(
+        {
+            "owner": _session("owner", directory_path="root/team-a"),
+            "other": _session("other", directory_path="root/team-b"),
+        }
+    )
+
+    output = _execute(
+        SessionListQueryDefinition(
+            id="query-sessions",
+            display_name="Sessions",
+            type="query:session:list",
+        ),
+        store,
+    )
+
+    assert [item["session_id"] for item in output["sessions"]] == ["owner", "other"]
 
 
 def test_session_list_query_matches_arbitrary_metadata_and_directory_scope() -> None:

@@ -53,6 +53,7 @@ from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import SessionManifest, ToolName, VmSummary
 from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.queries.registry import QueryProviderFactory
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 
@@ -1351,6 +1352,118 @@ def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     assert record["status"] == "succeeded"
     assert record["outputs"] == {"state_code": "running"}
     assert record["binding_trace"]["entries"][0]["config_path"] == "$.session_id"
+
+
+def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    now = datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc)
+    sessions = {
+        "owner": SessionManifest(
+            session_id="owner",
+            vm_id="vm-owner",
+            directory_path="root/team-a",
+            model="gpt-5.4",
+            allowed_tools=[],
+            created_at=now,
+            expires_at=now + timedelta(hours=1),
+            metadata={"purpose": "spec"},
+        ),
+        "reviewer": SessionManifest(
+            session_id="reviewer",
+            vm_id="vm-reviewer",
+            directory_path="root/team-a/reviews",
+            model="gpt-5.4",
+            allowed_tools=[],
+            created_at=now + timedelta(minutes=1),
+            expires_at=now + timedelta(hours=1),
+            metadata={"purpose": "spec"},
+        ),
+        "other": SessionManifest(
+            session_id="other",
+            vm_id="vm-other",
+            directory_path="root/team-b",
+            model="gpt-5.4",
+            allowed_tools=[],
+            created_at=now + timedelta(minutes=2),
+            expires_at=now + timedelta(hours=1),
+            metadata={"purpose": "spec"},
+        ),
+    }
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-sessions",
+                    "display_name": "Sessions",
+                    "type": "query:session:list",
+                    "metadata_equals": {"purpose": "spec"},
+                    "outputs": {
+                        "sessions": {"type": "array"},
+                        "count": {"type": "integer"},
+                    },
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "query-sessions"),
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-1",
+                    "name": "Graph 1",
+                    "directory_paths": ["root/team-a"],
+                    "node_ids": ["trigger-1", "query-sessions"],
+                }
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    session_lookup = SimpleNamespace(read_all_sessions=lambda: sessions)
+    worker.query_provider_factory = QueryProviderFactory(
+        _ProviderConfigResolver(config),
+        provider_runtime=SimpleNamespace(session_lookup=session_lookup),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-query-sessions",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=now,
+            payload={},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(effect_payload.values()))
+
+    assert record["effect_id"] == "query-sessions"
+    assert record["effect_type"] == "query:session:list"
+    assert record["status"] == "succeeded"
+    assert record["outputs"]["count"] == 2
+    assert [item["session_id"] for item in record["outputs"]["sessions"]] == [
+        "owner",
+        "reviewer",
+    ]
 
 
 def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> None:

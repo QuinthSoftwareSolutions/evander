@@ -626,7 +626,9 @@ artifacts folder. The `path` value must be relative and stay inside that folder.
 session metadata. `metadata_equals` and `metadata_prefix` are JSON objects keyed
 by metadata key or dotted metadata path. `metadata_exists` may be a string, array,
 or object of key -> boolean. `directory_path` scopes to that directory and its
-descendants. `active_only=true` or `state=active` excludes expired sessions.
+descendants; when omitted, it defaults to the workflow graph directory context,
+falling back to `root`. `active_only=true` or `state=active` excludes expired
+sessions.
 
 `query:issue:list` reads tracked local and proxy issues from the local issue
 store. It defaults to the workflow runtime directory and `direct_only=true`,

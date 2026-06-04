@@ -28,6 +28,18 @@
       },
       {
         "source_id": "gate-merge-1",
+        "target_id": "gate-dedupe-issue-start-1"
+      },
+      {
+        "source_id": "gate-dedupe-issue-start-1",
+        "target_id": "query-session-list-active-issue-1"
+      },
+      {
+        "source_id": "query-session-list-active-issue-1",
+        "target_id": "gate-filter-no-active-issue-session-1"
+      },
+      {
+        "source_id": "gate-filter-no-active-issue-session-1",
         "target_id": "effect-vm-create-1"
       },
       {
@@ -675,6 +687,52 @@
       },
       {
         "config": {
+          "key": "issue-start:${{gate-merge-1.directory_path}}:${{gate-merge-1.ticket.issue_number}}",
+          "ttl": "PT15M"
+        },
+        "display_name": "Dedupe rapid issue starts",
+        "id": "gate-dedupe-issue-start-1",
+        "type": "gate:dedupe"
+      },
+      {
+        "config": {
+          "active_only": true,
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "limit": 1,
+          "metadata_equals": {
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "labels.vm-type": "issue"
+          }
+        },
+        "display_name": "Find active issue sessions",
+        "id": "query-session-list-active-issue-1",
+        "outputs": {
+          "count": {
+            "type": "integer"
+          },
+          "sessions": {
+            "type": "array"
+          }
+        },
+        "type": "query:session:list"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": 0,
+                "left": "${{query-session-list-active-issue-1.count}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Require no active issue session",
+        "id": "gate-filter-no-active-issue-session-1",
+        "type": "gate:filter"
+      },
+      {
+        "config": {
           "when": {
             "all": [
               {
@@ -995,6 +1053,12 @@
           "email_mailboxes": [],
           "labels": {
             "vm-type": "issue"
+          },
+          "metadata": {
+            "ado_project": "${{gate-merge-1.ado_project}}",
+            "directory_path": "${{gate-merge-1.directory_path}}",
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "issue_title": "${{gate-merge-1.ticket.title}}"
           },
           "model": "gpt-5.4",
           "mssql": true,
