@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -612,12 +613,21 @@ class VoiceProjectionService:
             "instead of immediately asking whether the caller is still there. Treat short "
             "acknowledgements such as ok, okay, uh-huh, good, thanks, and right as "
             "backchannels unless they include a new request; after a backchannel, do not "
-            "repeat the prior answer. If you need to check with the origin agent, say that "
-            "once briefly, then do not keep narrating the pending query unless the caller asks. "
-            "When the origin answer arrives, give the answer directly. Preserve decisions and "
-            "follow-up actions internally after the call, but do not narrate internal "
-            "bookkeeping, transcript cleanup, or handoff notes aloud."
+            "repeat the prior answer. Use the origin agent only for missing origin-side data "
+            "that is not already in the projected task/context, and do not fill pending time "
+            "with generic startup or context-check scaffolding. When the origin answer "
+            "arrives, give the answer directly. Preserve decisions and follow-up actions "
+            "internally after the call, but do not narrate internal bookkeeping, transcript "
+            "cleanup, or handoff notes aloud. For outbound phone "
+            "startup, treat the supplied current voice task as authoritative first-turn task "
+            "state. If it includes a complete opening or objective, begin with it immediately; "
+            "do not ask the origin agent for the same script, instructions, objective, "
+            "expected behavior, or call context, avoid context-check or task-missing "
+            "narration, and do not ask open-ended what-to-do questions. If the supplied "
+            "task is not actionable enough to start and caller input is required, ask one "
+            "concise caller-facing clarification question."
         )
+        complete_objective = _voice_task_looks_actionable(normalized_prompt)
         context_lines = [
             f"Origin session id: {session.session_id}",
             f"Directory path: {session.directory_path}",
@@ -643,6 +653,23 @@ class VoiceProjectionService:
             "task_prompt": normalized_prompt,
             "instructions": instructions,
             "context": "\n".join(context_lines),
+            "startup_contract": {
+                "authoritative_first_turn_state": True,
+                "complete_objective": complete_objective,
+                "policy": (
+                    "start_from_objective"
+                    if complete_objective
+                    else "ask_caller_clarification"
+                ),
+                "forbid_origin_query_for": [
+                    "same script",
+                    "same instructions",
+                    "same objective",
+                    "expected behavior",
+                    "call context already present in the prompt",
+                ],
+                "pending_origin_query_fallback": "silent_until_result",
+            },
             "delegation_policy": {
                 "tool_name": "query_origin_agent",
                 "delegate_when": [
@@ -651,8 +678,8 @@ class VoiceProjectionService:
                     "caller asks about context not included in this projection",
                 ],
                 "conversation_style": (
-                    "say once that you are checking, avoid pending-status narration, and "
-                    "answer directly when the origin result arrives"
+                    "do not fill pending time with generic startup or context-check "
+                    "scaffolding, and answer directly when the origin result arrives"
                 ),
             },
             "prompt": (
@@ -662,6 +689,42 @@ class VoiceProjectionService:
                 f"Current voice task:\n{normalized_prompt}"
             ),
         }
+
+
+def _voice_task_looks_actionable(prompt: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(prompt or "").strip())
+    if not normalized:
+        return False
+    lowered = normalized.casefold().rstrip(".!?")
+    if len(lowered.split()) < 5:
+        return False
+    if re.fullmatch(
+        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
+        lowered,
+    ):
+        return False
+    task_markers = {
+        "ask",
+        "tell",
+        "say",
+        "explain",
+        "summarize",
+        "request",
+        "confirm",
+        "verify",
+        "collect",
+        "give",
+        "open",
+        "start",
+        "begin",
+        "discuss",
+        "approve",
+        "approval",
+        "script",
+        "objective",
+        "prompt",
+    }
+    return any(marker in lowered.split() for marker in task_markers)
 
 
 class VoiceMediaBridgeClient:

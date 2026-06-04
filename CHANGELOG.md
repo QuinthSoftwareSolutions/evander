@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Outbound Voice Startup Contract
+
+- Treated complete `make_phone_call` prompts as authoritative first-turn task
+  state for DIDWW/OpenAI Realtime voice projections, preventing startup
+  script/objective origin queries and generic context-check narration.
+- Suppressed spoken pending-origin-query fallback while the origin answer is
+  outstanding, leaving only terminal answer/timeout responses caller-facing.
+
 ## 2026-06-04 - Explicit Clone Repo Git Author Inputs
 
 - Added explicit `git_author_name` and `git_author_email` inputs to

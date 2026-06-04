@@ -27,6 +27,7 @@ from agent_sandbox.didww_sip_bridge import (
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
+    initial_outbound_call_instructions,
     load_config,
     projection_to_instructions,
 )
@@ -131,13 +132,53 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
 
     lowered = instructions.lower()
     assert "one or two short spoken paragraphs" in lowered
+    assert "outbound startup contract" in lowered
+    assert "authoritative first-turn task state" in lowered
+    assert "do not ask the origin agent for the same script" in lowered
     assert "backchannels" in lowered
     assert "do not repeat the prior answer" in lowered
     assert "pause naturally after a long answer" in lowered
-    assert "do not keep telling the caller the query is pending" in lowered
+    assert "do not fill the call with generic startup scaffolding" in lowered
     assert "give the answer directly" in lowered
     assert "do not narrate internal bookkeeping" in lowered
     assert "for reconciliation" not in lowered
+
+
+def test_initial_outbound_call_uses_complete_objective_without_startup_scaffolding() -> None:
+    objective = (
+        "Open with: Hi Jonathan, this is Truman calling about the auto-dev approval queue. "
+        "Briefly summarize the candidate work items and ask which IDs should be approved."
+    )
+    instructions = initial_outbound_call_instructions(
+        {
+            "task_prompt": objective,
+            "startup_contract": {"complete_objective": True},
+        }
+    )
+    lowered = instructions.lower()
+
+    assert "authoritative first-turn task state" in lowered
+    assert f"caller-facing opening/objective:\n{objective}".lower() in lowered
+    assert "do not ask for the script" in lowered
+    assert "checking context" not in lowered
+    assert "missing task details" not in lowered
+    assert "what would you like to do" not in lowered
+
+
+def test_initial_outbound_call_with_incomplete_prompt_asks_caller_clarification() -> None:
+    instructions = initial_outbound_call_instructions(
+        {
+            "task_prompt": "Call Jonathan.",
+            "startup_contract": {"complete_objective": False},
+        }
+    )
+    lowered = instructions.lower()
+
+    assert "ask exactly one concise caller-facing clarification question" in lowered
+    assert "about the call objective" in lowered
+    assert "supplied task:\ncall jonathan." in lowered
+    assert "what would you like to do" not in lowered
+    assert "checking context" not in lowered
 
 
 def test_debug_events_are_exposed_without_changing_transcript_events(
@@ -2051,7 +2092,7 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
     assert len(requested.metadata["instruction_sha256"]) == 64
 
 
-def test_slow_origin_query_answer_supersedes_queued_checking_ack(
+def test_slow_origin_query_answer_does_not_speak_pending_fallback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2167,8 +2208,9 @@ def test_slow_origin_query_answer_supersedes_queued_checking_ack(
         for event in latest.debug_events
         if event.event_type == "origin_query.response_requested"
     ]
-    assert "query_ack" in requested_reasons
-    assert "query_result" in requested_reasons
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "origin_query.pending_fallback_suppressed" in event_types
+    assert requested_reasons == ["query_result"]
 
 
 def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_query(
@@ -2454,12 +2496,83 @@ def test_calling_task_question_answers_from_projection_without_origin_query(
                 "status": "answered",
                 "source": "projection",
                 "answer": (
-                    "The projected calling task is: "
+                    "The projected calling task is already authoritative: "
                     "Call Jonathan and discuss the deployment."
                 ),
             },
         }
     ]
+    assert "projected calling task" in str(realtime.responses[0])
+
+
+def test_script_instruction_question_answers_from_projection_without_origin_query(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = _phone_payload()
+    payload["projection"] = {
+        "task_prompt": (
+            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Ask whether the greeting sounded natural."
+        ),
+        "startup_contract": {"complete_objective": True},
+    }
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(payload))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.tool_outputs: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeController:
+        configured = True
+
+        def __init__(self) -> None:
+            self.create_count = 0
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            self.create_count += 1
+            raise AssertionError("projection should answer startup script questions")
+
+    async def run() -> tuple[FakeRealtime, FakeController]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-1",
+                name="query_origin_agent",
+                arguments={"question": "What exact instructions should I follow?"},
+            ),
+            realtime,  # type: ignore[arg-type]
+            controller,  # type: ignore[arg-type]
+            set(),
+            asyncio.Event(),
+        )
+        return realtime, controller
+
+    realtime, controller = asyncio.run(run())
+
+    assert controller.create_count == 0
+    assert realtime.tool_outputs[0]["output"] == {
+        "status": "answered",
+        "source": "projection",
+        "answer": (
+            "The projected calling task is already authoritative: Open with: Hi Jonathan, "
+            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+        ),
+    }
     assert "projected calling task" in str(realtime.responses[0])
 
 
@@ -2582,7 +2695,8 @@ def test_realtime_function_calls_wait_for_response_done_and_dedupe_queries(
         async def recv_json(self) -> dict[str, Any]:
             if self.events:
                 return self.events.pop(0)
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            stop_event.set()
             return {}
 
         async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
@@ -2641,24 +2755,21 @@ def test_realtime_function_calls_wait_for_response_done_and_dedupe_queries(
             "output": {"status": "pending", "query_id": "voice-query-1", "deduplicated": True},
         },
     ]
-    assert realtime.responses == [
-        "Tell the caller you are checking with the originating agent, then continue naturally."
-    ]
+    assert realtime.responses == []
     latest = store.get("voice-1")
     assert latest is not None
     assert len(latest.transcript_events) == 1
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "origin_query.pending_fallback_suppressed" in event_types
 
 
 def test_realtime_active_response_error_requeues_response_request(
     tmp_path: Path,
     caplog: Any,
-    monkeypatch,
 ) -> None:
-    monkeypatch.setattr(didww_sip_bridge, "_ORIGIN_QUERY_ACK_GRACE_SECONDS", 0.01)
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
     stop_event = asyncio.Event()
-    instruction = "Tell the caller you are checking with the originating agent, then continue naturally."
     caplog.set_level(logging.INFO, logger="agent_sandbox.didww_sip_bridge")
 
     class FakeRealtime:
@@ -2673,8 +2784,8 @@ def test_realtime_active_response_error_requeues_response_request(
                         "arguments": json.dumps({"question": "What changed?"}),
                     },
                 },
+                {"type": "__sleep__", "seconds": 0.03},
                 {"type": "response.done"},
-                {"type": "__sleep__", "seconds": 0.02},
                 {
                     "type": "error",
                     "error": {
@@ -2703,6 +2814,14 @@ def test_realtime_active_response_error_requeues_response_request(
         async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
             return None
 
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            return None
+
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
             if len(self.responses) == 2:
@@ -2715,8 +2834,12 @@ def test_realtime_active_response_error_requeues_response_request(
             return {"query_id": "voice-query-1", "status": "pending"}
 
         async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
-            await asyncio.sleep(0.5)
-            return {"query_id": query_id, "status": "pending"}
+            await asyncio.sleep(0.01)
+            return {
+                "query_id": query_id,
+                "status": "answered",
+                "answer": "The origin agent checked the deployment note.",
+            }
 
     class FakeRtp:
         async def recv_payload(self) -> bytes:
@@ -2744,20 +2867,21 @@ def test_realtime_active_response_error_requeues_response_request(
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses == [instruction, instruction]
+    assert len(realtime.responses) == 2
+    assert all("origin agent's answer is available" in str(item) for item in realtime.responses)
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
-    assert "bridge.response.requested" in event_types
+    assert "bridge.response.queued" in event_types
     assert "bridge.response.flushed" in event_types
     assert "bridge.response.requeued" in event_types
     assert "error" in event_types
-    requested = next(
-        event for event in latest.debug_events if event.event_type == "bridge.response.requested"
+    queued = next(
+        event for event in latest.debug_events if event.event_type == "bridge.response.queued"
     )
-    assert requested.metadata["reason"] == "query_ack"
-    assert len(requested.metadata["instruction_sha256"]) == 64
-    assert "checking with the originating agent" in requested.metadata["instruction_snippet"]
+    assert queued.metadata["request_reason"] == "query_result"
+    assert len(queued.metadata["instruction_sha256"]) == 64
+    assert "origin agent's answer is available" in queued.metadata["instruction_snippet"]
     requeued = next(event for event in latest.debug_events if event.event_type == "bridge.response.requeued")
     assert requeued.metadata["reason"] == "conversation_already_has_active_response"
     error_event = next(event for event in latest.debug_events if event.event_type == "error")

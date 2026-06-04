@@ -85,6 +85,19 @@ def test_voice_projection_contains_originating_agent_context() -> None:
     assert "Ask which approval item to release." in projection["prompt"]
     assert projection["origin_metadata"]["agent_thread_id"] == "thread-1"
     assert "query_origin_agent" in projection["instructions"]
+    assert projection["startup_contract"] == {
+        "authoritative_first_turn_state": True,
+        "complete_objective": True,
+        "policy": "start_from_objective",
+        "forbid_origin_query_for": [
+            "same script",
+            "same instructions",
+            "same objective",
+            "expected behavior",
+            "call context already present in the prompt",
+        ],
+        "pending_origin_query_fallback": "silent_until_result",
+    }
     assert "Origin metadata" in projection["context"]
 
 
@@ -102,11 +115,25 @@ def test_voice_projection_instructions_set_natural_phone_behavior() -> None:
     assert "do not repeat the prior answer" in instructions
     assert "one or two short spoken paragraphs" in instructions
     assert "pause naturally after a long answer" in instructions
-    assert "do not keep narrating the pending query" in instructions
+    assert "do not fill pending time with generic startup or context-check scaffolding" in instructions
     assert "give the answer directly" in instructions
     assert "do not narrate internal bookkeeping" in instructions
+    assert "authoritative first-turn task state" in instructions
+    assert "ask one concise caller-facing clarification question" in instructions
     assert "for reconciliation" not in instructions
     assert "for reconciliation" not in prompt
+
+
+def test_voice_projection_marks_incomplete_outbound_prompt_for_caller_clarification() -> None:
+    projection = VoiceProjectionService().build_projection(
+        session=_session(),
+        prompt="Call Jonathan.",
+        channel="phone",
+        metadata={"reason": "approval"},
+    )
+
+    assert projection["startup_contract"]["complete_objective"] is False
+    assert projection["startup_contract"]["policy"] == "ask_caller_clarification"
 
 
 def test_voice_query_delegator_schedules_origin_agent_wake_and_completes(
