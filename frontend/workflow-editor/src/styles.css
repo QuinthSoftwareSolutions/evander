@@ -5037,6 +5037,56 @@ select {
   grid-column: 1 / -1;
 }
 
+.model-pricing-panel-toggle {
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.model-pricing-panel-toggle + .detail-stack {
+  margin-top: 0.75rem;
+}
+
+.model-pricing-panel-toggle > div:first-child {
+  min-width: 0;
+}
+
+.model-pricing-panel-toggle-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+}
+
+.model-pricing-section-actions {
+  flex: 0 0 auto;
+}
+
+.model-pricing-source-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+}
+
+.model-pricing-source-row input {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .model-pricing-source-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-pricing-source-row button {
+    justify-self: start;
+  }
+}
+
 .configuration-diagnostics-grid {
   margin-top: 0.25rem;
 }
