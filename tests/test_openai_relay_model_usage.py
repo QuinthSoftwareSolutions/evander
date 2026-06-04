@@ -153,6 +153,7 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
                     "input_tokens": 11,
                     "output_tokens": 22,
                     "total_tokens": 33,
+                    "input_tokens_details": {"cached_tokens": 4},
                 },
             },
         )
@@ -209,6 +210,7 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
             "input_tokens": 11,
             "output_tokens": 22,
             "total_tokens": 33,
+            "input_tokens_details": {"cached_tokens": 4},
         },
         "response_metadata": {
             "status_code": 200,

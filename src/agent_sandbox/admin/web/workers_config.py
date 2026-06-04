@@ -1332,6 +1332,9 @@ def worker_config_routes(
             payload["tree"]["data"] = _normalize_directory_tree(tree_result.data)
         return JSONResponse(payload)
 
+    async def model_pricing_catalog(_: Request) -> JSONResponse:
+        return JSONResponse(service.read_model_pricing_catalog_status())
+
     async def create_directory(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
@@ -1487,6 +1490,7 @@ def worker_config_routes(
         Route("/api/workers/{worker_id:str}/config", write_worker_config, methods=["PUT"]),
         Route("/api/workers/{worker_id:str}/actions/{action:str}", worker_action, methods=["POST"]),
         Route("/api/configuration/state", configuration_state, methods=["GET"]),
+        Route("/api/configuration/model-pricing", model_pricing_catalog, methods=["GET"]),
         Route("/api/configuration/directories", create_directory, methods=["POST"]),
         Route("/api/configuration/directories", delete_directory, methods=["DELETE"]),
         Route("/api/configuration/domains/{domain:str}", write_directory_domain, methods=["PUT"]),

@@ -77,6 +77,43 @@ type ConfigurationState = {
   directory_overrides: DirectoryOverridesSnapshot;
 };
 
+type ModelPricingRuleSummary = {
+  id: string;
+  provider: string;
+  models: string[];
+  model_patterns: string[];
+  effective_from: string | null;
+  effective_to: string | null;
+  currency: string;
+  rates_per_1m_tokens: {
+    input: string | null;
+    cached_input: string | null;
+    output: string | null;
+  };
+  batch_multiplier: string | null;
+  service_tier: string | null;
+  long_context: {
+    input_tokens_over: number;
+    input_multiplier: string | null;
+    output_multiplier: string | null;
+  } | null;
+};
+
+type ModelPricingCatalogStatus = {
+  status: "ok" | "error";
+  path: string | null;
+  path_source: "env" | "default" | string;
+  env_var: string;
+  version: string | null;
+  currency: string | null;
+  description: string | null;
+  sources: string[];
+  rule_count: number;
+  rules: ModelPricingRuleSummary[];
+  error: string | null;
+  error_class: string | null;
+};
+
 type DraftFieldState = {
   include: boolean;
   clear: boolean;
@@ -103,6 +140,21 @@ const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
 };
 const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
 const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
+
+const MODEL_PRICING_FALLBACK_ERROR = {
+  status: "error",
+  path: null,
+  path_source: "unknown",
+  env_var: "AGENT_SANDBOX_MODEL_PRICING_PATH",
+  version: null,
+  currency: null,
+  description: null,
+  sources: [],
+  rule_count: 0,
+  rules: [],
+  error: "Model pricing catalog status is unavailable.",
+  error_class: null,
+} satisfies ModelPricingCatalogStatus;
 
 type ContactPhoneDraft = {
   label: string;
@@ -541,6 +593,46 @@ function formatJson(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
+function pricingPathSourceLabel(value: string): string {
+  if (value === "env") return "Environment override";
+  if (value === "default") return "Default catalog";
+  return value || "Unknown";
+}
+
+function formatPricingModels(rule: ModelPricingRuleSummary): string {
+  const values = [...rule.models, ...rule.model_patterns.map((pattern) => `pattern:${pattern}`)];
+  return values.length ? values.join(", ") : "n/a";
+}
+
+function formatPricingRates(rule: ModelPricingRuleSummary): string {
+  const rates = rule.rates_per_1m_tokens;
+  return `in ${rates.input ?? "n/a"} / cached ${rates.cached_input ?? "n/a"} / out ${rates.output ?? "n/a"}`;
+}
+
+function formatPricingPolicy(rule: ModelPricingRuleSummary): string {
+  const policies: string[] = [];
+  if (rule.batch_multiplier) {
+    policies.push(`batch x${rule.batch_multiplier}`);
+  }
+  if (rule.long_context) {
+    const inputMultiplier = rule.long_context.input_multiplier ?? "n/a";
+    const outputMultiplier = rule.long_context.output_multiplier ?? "n/a";
+    policies.push(
+      `>${rule.long_context.input_tokens_over} input tokens: in x${inputMultiplier}, out x${outputMultiplier}`,
+    );
+  }
+  if (rule.service_tier) {
+    policies.push(`tier ${rule.service_tier}`);
+  }
+  return policies.length ? policies.join("; ") : "standard";
+}
+
+function formatPricingEffectiveWindow(rule: ModelPricingRuleSummary): string {
+  const start = rule.effective_from ? formatTimestamp(rule.effective_from) : "Beginning";
+  const end = rule.effective_to ? formatTimestamp(rule.effective_to) : "Open ended";
+  return `${start} - ${end}`;
+}
+
 function normalizeFieldValue(field: ConfigurationField, value: unknown): string | boolean {
   if (field.kind === "bool") {
     return Boolean(value);
@@ -838,6 +930,7 @@ export function ConfigurationScreen() {
     refreshAdminState,
   } = useAdminUi();
   const [state, setState] = useState<ConfigurationState | null>(null);
+  const [modelPricingCatalog, setModelPricingCatalog] = useState<ModelPricingCatalogStatus | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
   const [selectedTab, setSelectedTab] = useState("communications");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
@@ -864,10 +957,23 @@ export function ConfigurationScreen() {
   const [saving, setSaving] = useState(false);
   const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
 
+  async function loadModelPricingCatalog() {
+    try {
+      const payload = await fetchJson<ModelPricingCatalogStatus>("/api/configuration/model-pricing");
+      setModelPricingCatalog(payload);
+    } catch (reason) {
+      setModelPricingCatalog({
+        ...MODEL_PRICING_FALLBACK_ERROR,
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+
   async function loadState(directoryPath: string, options?: { preserveDirty?: boolean }) {
     const payload = await fetchJson<ConfigurationState>(
       `/api/configuration/state?directory_path=${encodeURIComponent(directoryPath)}`,
     );
+    await loadModelPricingCatalog();
     setState((current) => {
       if (!options?.preserveDirty || !current) {
         return payload;
@@ -2416,6 +2522,84 @@ export function ConfigurationScreen() {
                 <div><span>Override fields</span><strong>{state?.directory_overrides.field_count ?? 0}</strong></div>
               </div>
             </div>
+          </article>
+          <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
+            <div className="panel-header">
+              <div>
+                <h3>Model pricing catalog</h3>
+                <p className="muted-text">
+                  Host-global OpenAI pricing rules used for query-time model usage cost estimates.
+                </p>
+              </div>
+              <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
+            </div>
+            {!modelPricingCatalog ? (
+              <div className="callout warning-callout">Loading model pricing catalog...</div>
+            ) : null}
+            {modelPricingCatalog?.status === "error" ? (
+              <div className="callout error-callout">
+                {modelPricingCatalog.error ?? "Model pricing catalog could not be loaded."}
+              </div>
+            ) : null}
+            {modelPricingCatalog ? (
+              <div className="detail-stack compact-detail-stack">
+                <div className="detail-grid">
+                  <div><span>Version</span><strong>{modelPricingCatalog.version ?? "n/a"}</strong></div>
+                  <div><span>Currency</span><strong>{modelPricingCatalog.currency ?? "n/a"}</strong></div>
+                  <div><span>Rules</span><strong>{modelPricingCatalog.rule_count}</strong></div>
+                  <div><span>Path source</span><strong>{pricingPathSourceLabel(modelPricingCatalog.path_source)}</strong></div>
+                  <div><span>Override env</span><strong>{modelPricingCatalog.env_var}</strong></div>
+                  <div><span>Error class</span><strong>{modelPricingCatalog.error_class ?? "n/a"}</strong></div>
+                </div>
+                <div className="detail-grid">
+                  <div><span>Catalog path</span><strong>{modelPricingCatalog.path ?? "n/a"}</strong></div>
+                  <div><span>Description</span><strong>{modelPricingCatalog.description ?? "n/a"}</strong></div>
+                </div>
+                {modelPricingCatalog.sources.length ? (
+                  <div className="detail-stack compact-detail-stack">
+                    <h4>Sources</h4>
+                    <div className="teams-auth-link-list">
+                      {modelPricingCatalog.sources.map((source) => (
+                        <div key={source}>
+                          <span>OpenAI docs</span>
+                          <a className="teams-auth-uri" href={source} target="_blank" rel="noreferrer">
+                            {source}
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {modelPricingCatalog.rules.length ? (
+                  <div className="table-wrap">
+                    <table className="admin-table model-pricing-table">
+                      <thead>
+                        <tr>
+                          <th>Rule</th>
+                          <th>Models</th>
+                          <th>Effective</th>
+                          <th>Per 1M tokens</th>
+                          <th>Policy</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {modelPricingCatalog.rules.map((rule) => (
+                          <tr key={rule.id}>
+                            <td><strong>{rule.id}</strong></td>
+                            <td>{formatPricingModels(rule)}</td>
+                            <td>{formatPricingEffectiveWindow(rule)}</td>
+                            <td>{formatPricingRates(rule)}</td>
+                            <td>{formatPricingPolicy(rule)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="empty-state">No pricing rules are available.</div>
+                )}
+              </div>
+            ) : null}
           </article>
         </div>
 

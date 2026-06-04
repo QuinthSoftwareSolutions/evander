@@ -1490,6 +1490,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 |---|---|---|
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
+| `AGENT_SANDBOX_MODEL_PRICING_PATH` | `src/agent_sandbox/model_usage/pricing.py` and Admin Web Configuration | Optional override for the local model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `config/model-pricing.openai.json`; Admin Web displays the active catalog read-only. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/services.py`. |
 

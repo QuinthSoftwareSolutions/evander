@@ -1268,6 +1268,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "occurred_after",
         "occurred_before",
         "limit",
+        "include_costs",
+        "cost_currency",
     ]
     model_usage_list_fields = {field["key"]: field for field in model_usage_list["fields"]}
     assert all(field["description"] for field in model_usage_list_fields.values())
@@ -1302,6 +1304,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     assert "ISO-8601" in model_usage_list_fields["occurred_after"]["description"]
     assert "positive integer" in model_usage_list_fields["limit"]["description"]
+    assert model_usage_list_fields["include_costs"]["kind"] == "boolean"
+    assert model_usage_list_fields["include_costs"]["default_value"] is True
+    assert model_usage_list_fields["cost_currency"]["kind"] == "enum"
+    assert model_usage_list_fields["cost_currency"]["default_value"] == "usd"
+    assert [option["value"] for option in model_usage_list_fields["cost_currency"]["options"]] == [
+        "usd"
+    ]
     pr_feedback = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )
@@ -8726,6 +8735,91 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     }
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
+
+
+def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("AGENT_SANDBOX_MODEL_PRICING_PATH", raising=False)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/configuration/model-pricing")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["path_source"] == "default"
+    assert payload["version"] == "openai-2026-06-04"
+    assert payload["currency"] == "usd"
+    assert payload["rule_count"] >= 1
+    assert payload["sources"]
+    first_rule = payload["rules"][0]
+    assert first_rule["id"].startswith("openai:")
+    assert first_rule["provider"] == "openai"
+    assert first_rule["rates_per_1m_tokens"]["input"]
+
+
+def test_admin_web_model_pricing_catalog_status_reports_env_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "runtime" / "pricing.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "version": "test-pricing",
+                "currency": "usd",
+                "description": "Test pricing catalog.",
+                "sources": ["https://platform.openai.com/docs/pricing"],
+                "rules": [
+                    {
+                        "id": "openai:test-model:text",
+                        "provider": "openai",
+                        "models": ["test-model"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "rates_per_1m_tokens": {
+                            "input": "1.00",
+                            "cached_input": "0.10",
+                            "output": "2.00",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/configuration/model-pricing")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["path"] == str(catalog_path)
+    assert payload["path_source"] == "env"
+    assert payload["version"] == "test-pricing"
+    assert payload["rules"][0]["models"] == ["test-model"]
+
+
+def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "runtime" / "pricing.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text("not-json", encoding="utf-8")
+    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/configuration/model-pricing")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "error"
+    assert payload["path"] == str(catalog_path)
+    assert payload["path_source"] == "env"
+    assert payload["error"]
+    assert payload["error_class"]
 
 
 def test_admin_web_contacts_tab_save_preserves_user_contact_links(
