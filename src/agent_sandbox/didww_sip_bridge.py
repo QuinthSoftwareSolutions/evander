@@ -104,6 +104,15 @@ _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
+_PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
+_PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
+    "Answer the caller from the projected calling task now. "
+    "Do not say you are checking with the origin agent."
+)
+_MISSING_TASK_CLARIFICATION_RESPONSE_KEY = "projection:missing_task_clarification"
+_MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
+    "Ask exactly one concise caller-facing clarification question about the call objective."
+)
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
     "okay",
@@ -1745,6 +1754,9 @@ class DidwwSipBridgeService:
             truncate_audio_end_ms = (
                 played_audio_end_ms(truncate_item_id) if truncate_item_id else 0
             )
+            cancel_response_id = (
+                active_response_id if active_response_id and response_active else None
+            )
             dropped_frames = drain_outbound_audio_queue()
             await restart_outbound_sender_after_cancel()
             self._append_debug_event(
@@ -1753,6 +1765,8 @@ class DidwwSipBridgeService:
                 metadata={
                     "reason": reason,
                     "response_id": active_response_id,
+                    "response_active": response_active,
+                    "cancel_response_id": cancel_response_id,
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
                     "dropped_audio_frames": dropped_frames,
@@ -1761,7 +1775,20 @@ class DidwwSipBridgeService:
                     "transcript_snippet": _debug_snippet(transcript_text),
                 },
             )
-            await realtime.cancel_response(active_response_id)
+            if cancel_response_id:
+                await realtime.cancel_response(cancel_response_id)
+            else:
+                self._append_debug_event(
+                    voice_session_id,
+                    "barge_in_cancel_response_skipped",
+                    metadata={
+                        "reason": "no_active_response",
+                        "trigger_reason": reason,
+                        "utterance_id": utterance_id,
+                        "truncate_item_id": truncate_item_id,
+                        "truncate_audio_end_ms": truncate_audio_end_ms,
+                    },
+                )
             if (
                 truncate_item_id
                 and truncate_audio_end_ms > 0
@@ -2212,6 +2239,19 @@ class DidwwSipBridgeService:
                     ):
                         await requeue_last_response_request()
                         continue
+                    if (
+                        isinstance(error, dict)
+                        and error.get("code") == "response_cancel_not_active"
+                    ):
+                        self._append_debug_event(
+                            voice_session_id,
+                            "response_cancel_not_active_ignored",
+                            metadata={
+                                "reason": "cancel_race",
+                                **_realtime_error_metadata(event),
+                            },
+                        )
+                        continue
                     raise RuntimeError(str(event.get("error") or event))
         finally:
             if idle_prompt_task is not None:
@@ -2265,17 +2305,47 @@ class DidwwSipBridgeService:
             or function_call.arguments.get("query")
             or ""
         ).strip()
+        record = self.store.get(voice_session_id)
+        projection = record.projection if record is not None else {}
         if not question:
+            projection_answer = _projected_startup_task_answer(projection)
+            if projection_answer is not None:
+                self._append_debug_event(
+                    voice_session_id,
+                    "origin_query.empty_question_answered_from_projection",
+                    metadata={
+                        "realtime_call_id": function_call.call_id,
+                        "reason": "projected_task",
+                        "answer_snippet": _debug_snippet(projection_answer),
+                    },
+                )
+                await realtime.send_tool_output(
+                    call_id=function_call.call_id,
+                    output={
+                        "status": "answered",
+                        "source": "projection",
+                        "answer": projection_answer,
+                    },
+                )
+                await request_response(
+                    _PROJECTED_TASK_RESPONSE_INSTRUCTIONS,
+                    reason="projected_task",
+                    key=_PROJECTED_TASK_RESPONSE_KEY,
+                )
+                return
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
                 output={"status": "failed", "error": "question is required"},
             )
-            await request_response("Ask the caller to clarify the question.")
+            await request_response(
+                _MISSING_TASK_CLARIFICATION_INSTRUCTIONS,
+                reason="missing_task_clarification",
+                key=_MISSING_TASK_CLARIFICATION_RESPONSE_KEY,
+            )
             return
-        record = self.store.get(voice_session_id)
         projection_answer = _projected_task_answer(
             question,
-            record.projection if record is not None else {},
+            projection,
         )
         if projection_answer is not None:
             self._append_debug_event(
@@ -2297,12 +2367,9 @@ class DidwwSipBridgeService:
                 },
             )
             await request_response(
-                (
-                    "Answer the caller from the projected calling task now. "
-                    "Do not say you are checking with the origin agent."
-                ),
+                _PROJECTED_TASK_RESPONSE_INSTRUCTIONS,
                 reason="projected_task",
-                key="projection:calling_task",
+                key=_PROJECTED_TASK_RESPONSE_KEY,
             )
             return
         query_key = _voice_query_key(question)
@@ -3126,8 +3193,14 @@ def _origin_query_tool_output(
 def _projected_task_answer(question: str, projection: dict[str, Any]) -> str | None:
     if not _question_asks_projected_task(question):
         return None
+    return _projected_startup_task_answer(projection)
+
+
+def _projected_startup_task_answer(projection: dict[str, Any]) -> str | None:
     task_prompt = _extract_projected_task_prompt(projection)
     if not task_prompt:
+        return None
+    if not _projection_has_complete_startup_objective(projection, task_prompt):
         return None
     return f"The projected calling task is already authoritative: {task_prompt}"
 
@@ -3148,11 +3221,6 @@ def _voice_task_looks_actionable(prompt: str) -> bool:
         return False
     lowered = normalized.casefold().rstrip(".!?")
     if len(lowered.split()) < 5:
-        return False
-    if re.fullmatch(
-        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
-        lowered,
-    ):
         return False
     task_markers = {
         "ask",
@@ -3175,7 +3243,14 @@ def _voice_task_looks_actionable(prompt: str) -> bool:
         "objective",
         "prompt",
     }
-    return any(marker in lowered.split() for marker in task_markers)
+    if any(marker in lowered.split() for marker in task_markers):
+        return True
+    if re.fullmatch(
+        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
+        lowered,
+    ):
+        return False
+    return False
 
 
 def _question_asks_projected_task(question: str) -> bool:
