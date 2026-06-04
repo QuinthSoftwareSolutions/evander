@@ -5,6 +5,21 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Model Usage Cost Estimates
+
+- Added a versioned local OpenAI pricing catalog and query-time cost estimates
+  to `query:model-usage:list`, including cached-input token handling and
+  aggregate token/cost totals without rewriting stored usage events.
+- Exposed the active model pricing catalog path, version, source URLs, rules,
+  and load errors in the Admin Web Configuration panel.
+- Made the Admin Web model pricing catalog panel editable with structured rule
+  controls, privileged-operation enforcement, revision conflict checks, catalog
+  validation, and query-cost cache invalidation after saves.
+- Fixed pricing catalog concurrency and estimate correctness by keeping dirty
+  Admin Web pricing drafts tied to their original revision, reloading cached
+  catalog data when the file changes, and preferring matching service-tier
+  pricing rules over generic rules with the same effective date.
+
 ## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
 
 - Counted DIDWW RTP playback only after payload samples are actually handed to

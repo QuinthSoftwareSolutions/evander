@@ -75,6 +75,14 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.pricing import (
+    MODEL_PRICING_PATH_ENV,
+    ModelPricingRule,
+    clear_model_pricing_catalog_cache,
+    default_model_pricing_catalog_path,
+    load_model_pricing_catalog_payload,
+    normalize_model_pricing_catalog_payload,
+)
 from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
@@ -1853,7 +1861,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
     "query:model-usage:list": (
-        "List persisted model usage events with session, workflow, directory, provider, and time filters."
+        "List persisted model usage events with optional query-time OpenAI cost estimates."
     ),
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
@@ -4531,6 +4539,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "results are ordered from oldest to newest."
                 ),
             ),
+            _field(
+                "include_costs",
+                "Include costs",
+                "boolean",
+                bindable=True,
+                default_value=True,
+                description=(
+                    "Value: boolean. When enabled, adds query-time OpenAI cost estimates using "
+                    "the configured local pricing catalog."
+                ),
+            ),
+            _field(
+                "cost_currency",
+                "Cost currency",
+                "enum",
+                bindable=True,
+                default_value="usd",
+                description=(
+                    "Currency for cost estimates. The built-in pricing catalog supports usd."
+                ),
+                options=[_field_option("usd", "usd")],
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -6622,6 +6652,30 @@ class PrivilegedHelperSession:
         return json.loads(line)
 
 
+def _admin_datetime_payload(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _admin_decimal_payload(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
+    return {
+        "version": "",
+        "currency": "usd",
+        "description": None,
+        "sources": [],
+        "rules": [],
+    }
+
+
 class AdminService:
     def __init__(
         self,
@@ -8286,6 +8340,130 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             occurred_before=occurred_before,
             limit=limit,
         )
+
+    def read_model_pricing_catalog_status(self) -> dict[str, Any]:
+        return self._read_model_pricing_catalog_status_unlocked()
+
+    def _read_model_pricing_catalog_status_unlocked(self) -> dict[str, Any]:
+        configured_path = str(os.environ.get(MODEL_PRICING_PATH_ENV) or "").strip()
+        path = default_model_pricing_catalog_path()
+        path_source = "env" if configured_path else "default"
+        base_payload: dict[str, Any] = {
+            "status": "error",
+            "path": str(path) if path is not None else None,
+            "path_source": path_source,
+            "env_var": MODEL_PRICING_PATH_ENV,
+            "version": None,
+            "currency": None,
+            "description": None,
+            "sources": [],
+            "rule_count": 0,
+            "rules": [],
+            "revision": None,
+            "catalog": _empty_model_pricing_catalog_payload(),
+            "editable": path is not None,
+            "write_requires_privileged_unlock": True,
+            "error": None,
+            "error_class": None,
+        }
+        if path is None:
+            base_payload["error"] = "No model pricing catalog path is configured."
+            base_payload["error_class"] = "FileNotFoundError"
+            return base_payload
+
+        try:
+            raw_payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw_payload, dict):
+                raise ValueError("model pricing catalog must be a JSON object")
+            catalog = load_model_pricing_catalog_payload(raw_payload, source_path=path)
+            normalized_payload = normalize_model_pricing_catalog_payload(raw_payload)
+        except Exception as exc:
+            base_payload["error"] = str(exc)
+            base_payload["error_class"] = exc.__class__.__name__
+            base_payload["revision"] = self._model_pricing_error_revision(path)
+            return base_payload
+
+        return {
+            **base_payload,
+            "status": "ok",
+            "version": catalog.version,
+            "currency": catalog.currency,
+            "description": normalized_payload["description"],
+            "sources": normalized_payload["sources"],
+            "rule_count": len(catalog.rules),
+            "rules": [self._model_pricing_rule_summary(rule) for rule in catalog.rules],
+            "revision": self._stable_json_revision(normalized_payload),
+            "catalog": normalized_payload,
+            "error": None,
+            "error_class": None,
+        }
+
+    def write_model_pricing_catalog(
+        self, payload: dict[str, Any], *, expected_revision: str
+    ) -> dict[str, Any]:
+        path = default_model_pricing_catalog_path()
+        if path is None:
+            raise ValueError("No model pricing catalog path is configured.")
+        normalized_payload = normalize_model_pricing_catalog_payload(payload)
+        with self.admin_config_mutation_lock():
+            current = self._read_model_pricing_catalog_status_unlocked()
+            if current.get("revision") != expected_revision:
+                raise AdminRevisionConflict(
+                    "Model pricing catalog changed before save. Reload the catalog before saving again.",
+                    details={
+                        "current_revision": current.get("revision"),
+                        "current": current,
+                    },
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(path, normalized_payload)
+            clear_model_pricing_catalog_cache()
+            return self._read_model_pricing_catalog_status_unlocked()
+
+    def _model_pricing_error_revision(self, path: Path) -> str:
+        try:
+            raw_value = path.read_text(encoding="utf-8")
+            revision_payload = {"path": str(path), "raw": raw_value}
+        except Exception as exc:
+            revision_payload = {
+                "path": str(path),
+                "missing_or_unreadable": True,
+                "error_class": exc.__class__.__name__,
+            }
+        return self._stable_json_revision(revision_payload)
+
+    @staticmethod
+    def _model_pricing_rule_summary(rule: ModelPricingRule) -> dict[str, Any]:
+        long_context = None
+        if rule.long_context_input_tokens_over is not None:
+            long_context = {
+                "input_tokens_over": rule.long_context_input_tokens_over,
+                "input_multiplier": _admin_decimal_payload(
+                    rule.long_context_input_multiplier
+                ),
+                "output_multiplier": _admin_decimal_payload(
+                    rule.long_context_output_multiplier
+                ),
+            }
+        return {
+            "id": rule.id,
+            "provider": rule.provider,
+            "models": list(rule.models),
+            "model_patterns": list(rule.model_patterns),
+            "effective_from": _admin_datetime_payload(rule.effective_from),
+            "effective_to": _admin_datetime_payload(rule.effective_to),
+            "currency": rule.currency,
+            "rates_per_1m_tokens": {
+                "input": _admin_decimal_payload(rule.input_per_1m_tokens),
+                "cached_input": _admin_decimal_payload(
+                    rule.cached_input_per_1m_tokens
+                ),
+                "output": _admin_decimal_payload(rule.output_per_1m_tokens),
+            },
+            "batch_multiplier": _admin_decimal_payload(rule.batch_multiplier),
+            "service_tier": rule.service_tier,
+            "long_context": long_context,
+        }
 
     def list_wake_schedules(
         self,

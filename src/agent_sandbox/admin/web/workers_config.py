@@ -1332,6 +1332,32 @@ def worker_config_routes(
             payload["tree"]["data"] = _normalize_directory_tree(tree_result.data)
         return JSONResponse(payload)
 
+    async def get_model_pricing_catalog(_: Request) -> JSONResponse:
+        return JSONResponse(service.read_model_pricing_catalog_status())
+
+    async def put_model_pricing_catalog(request: Request) -> JSONResponse:
+        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+            return _error_response("Privileged operations are locked.", status_code=403)
+        try:
+            payload = await _json_body(request)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=400)
+        catalog = payload.get("catalog")
+        if not isinstance(catalog, dict):
+            return _error_response("catalog must be a JSON object", status_code=400)
+        expected_revision = _expected_revision(payload)
+        if expected_revision is None:
+            return _error_response("expected_revision is required", status_code=428)
+        try:
+            status = service.write_model_pricing_catalog(
+                catalog, expected_revision=expected_revision
+            )
+        except AdminRevisionConflict as exc:
+            return _error_response(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=400)
+        return JSONResponse(status)
+
     async def create_directory(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
@@ -1487,6 +1513,8 @@ def worker_config_routes(
         Route("/api/workers/{worker_id:str}/config", write_worker_config, methods=["PUT"]),
         Route("/api/workers/{worker_id:str}/actions/{action:str}", worker_action, methods=["POST"]),
         Route("/api/configuration/state", configuration_state, methods=["GET"]),
+        Route("/api/configuration/model-pricing", get_model_pricing_catalog, methods=["GET"]),
+        Route("/api/configuration/model-pricing", put_model_pricing_catalog, methods=["PUT"]),
         Route("/api/configuration/directories", create_directory, methods=["POST"]),
         Route("/api/configuration/directories", delete_directory, methods=["DELETE"]),
         Route("/api/configuration/domains/{domain:str}", write_directory_domain, methods=["PUT"]),

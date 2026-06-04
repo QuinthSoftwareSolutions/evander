@@ -18,6 +18,8 @@ test("admin save requests include expected revisions", () => {
   assert.match(app, /setSavedDocument\(normalizedSavedDocument\)/);
   assert.match(workers, /expected_revision:\s*detail\?\.config\.revision/);
   assert.match(configuration, /expected_revision:\s*snapshot\.revision/);
+  assert.match(configuration, /const modelPricingExpectedRevision = modelPricingDraftBaseRevision/);
+  assert.match(configuration, /expected_revision:\s*modelPricingExpectedRevision/);
   assert.match(configuration, /removed_fields:\s*removedFields/);
   assert.match(configuration, /removedFields\.push\(field\.field_name\)/);
 });

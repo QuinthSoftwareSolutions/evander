@@ -73,6 +73,11 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `model-usage.db`: durable provider-neutral model usage store queried by
   `query:model-usage:list`; it records only usage/provider/correlation metadata
   and does not persist prompt or completion text.
+- `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
+  used by `query:model-usage:list` for query-time cost estimates. Override with
+  `AGENT_SANDBOX_MODEL_PRICING_PATH` when operating from a different rate card.
+  Admin Web exposes the loaded catalog status and structured editor on the
+  Configuration page and saves changes back to the active catalog path.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
@@ -134,10 +139,33 @@ supports filters for:
 - `normalized_usage_status` and `request_status`
 - `occurred_after`, `occurred_before`, and `limit`
 
-Each item includes the normalized token fields, correlation fields, and the raw
-usage metadata envelope. The store intentionally excludes request and response
-text, so it is safe to inspect for operational attribution without exposing
-prompt content.
+Each item includes the normalized token fields, correlation fields, the raw
+usage metadata envelope, and OpenAI-first query-time cost estimate fields when
+`include_costs` is enabled. The query also returns aggregate token totals and
+estimated cost totals for the matched rows.
+
+Cost estimates are derived from the local pricing catalog, model, event time,
+input/output token split, and cached-input token details when the provider
+reported them. They are operational estimates, not billing-grade truth: OpenAI
+does not expose a model price-rate catalog through the API, and the Admin Usage
+Costs API reports aggregated billed costs rather than the per-model rates used
+here. Keep `config/model-pricing.openai.json` current when OpenAI pricing
+changes. Built-in tool fees, non-text token modalities, regional uplift, and
+account-specific discounts are not inferred unless the needed quantities are
+recorded in the usage metadata.
+
+Admin Web Configuration includes a model pricing catalog panel that shows the
+active path, path source, version, currency, source URLs, rule count, rules, and
+any load/validation error. Operators can edit catalog metadata, source URLs, and
+pricing rules in the structured panel after unlocking privileged operations.
+Saves include the catalog revision and fail on stale revisions, so concurrent
+operator edits require a reload before retrying. The backend validates the
+catalog before writing and writes atomically to either
+`AGENT_SANDBOX_MODEL_PRICING_PATH` or the default
+`config/model-pricing.openai.json` path.
+
+The store intentionally excludes request and response text, so it is safe to
+inspect for operational attribution without exposing prompt content.
 
 ### Workflow pack operations
 

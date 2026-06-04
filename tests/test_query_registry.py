@@ -133,6 +133,8 @@ def test_model_usage_list_query_definition_materializes() -> None:
         config={
             "session_id": "session-1",
             "provider": "openai",
+            "include_costs": True,
+            "cost_currency": "usd",
         },
     )
 
@@ -141,6 +143,8 @@ def test_model_usage_list_query_definition_materializes() -> None:
     assert isinstance(materialized, ModelUsageListQueryDefinition)
     assert materialized.session_id == "session-1"
     assert materialized.provider == "openai"
+    assert materialized.include_costs is True
+    assert materialized.cost_currency == "usd"
 
 
 def test_factory_initializes_query_provider_with_runtime_context() -> None:

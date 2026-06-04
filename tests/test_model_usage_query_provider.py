@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.events.provider_models import ModelUsageListQueryDefinition
 from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
@@ -32,7 +34,11 @@ def _event(
     input_tokens: int | None = 10,
     output_tokens: int | None = 20,
     total_tokens: int | None = 30,
+    cached_input_tokens: int | None = None,
 ) -> ModelInferenceUsageEvent:
+    usage: dict[str, Any] = {"input_tokens": input_tokens}
+    if cached_input_tokens is not None:
+        usage["input_tokens_details"] = {"cached_tokens": cached_input_tokens}
     return ModelInferenceUsageEvent(
         event_id=event_id,
         occurred_at=occurred_at,
@@ -45,7 +51,7 @@ def _event(
         request_status=request_status,
         duration_ms=100,
         normalized_usage_status=normalized_usage_status,
-        raw_usage_metadata={"usage": {"input_tokens": input_tokens}},
+        raw_usage_metadata={"usage": usage},
         session_id=session_id,
         workflow_run_id=workflow_run_id,
         effect_id=effect_id,
@@ -201,3 +207,63 @@ def test_model_usage_list_query_provider_respects_limit(tmp_path: Path) -> None:
 
     assert result["count"] == 1
     assert [item["event_id"] for item in result["items"]] == ["event-1"]
+
+
+def test_model_usage_list_query_provider_adds_cost_estimates_and_totals(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    occurred_at = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+    store.upsert_event(
+        _event(
+            "event-1",
+            occurred_at=occurred_at,
+            directory_path="root",
+            input_tokens=1000,
+            output_tokens=500,
+            total_tokens=1500,
+            cached_input_tokens=200,
+        )
+    )
+    store.upsert_event(
+        _event(
+            "event-2",
+            occurred_at=occurred_at + timedelta(minutes=1),
+            directory_path="root",
+            provider="anthropic",
+            model="claude-3-7-sonnet",
+            input_tokens=10,
+            output_tokens=20,
+            total_tokens=30,
+        )
+    )
+
+    admin_service = _ModelUsageAdminServiceStub(store)
+    provider = ModelUsageListQueryProvider()
+    provider.initialize(
+        ModelUsageListQueryDefinition(
+            id="query-model-usage-costs",
+            display_name="Model usage costs",
+            type="query:model-usage:list",
+        ),
+        QueryRuntimeContext(provider_config={}, admin_service=admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["count"] == 2
+    assert result["total_input_tokens"] == 1010
+    assert result["total_cached_input_tokens"] == 200
+    assert result["total_output_tokens"] == 520
+    assert result["total_tokens"] == 1530
+    assert result["costs_estimated_count"] == 1
+    assert result["costs_unavailable_count"] == 1
+    assert result["total_estimated_cost"] == pytest.approx(0.008435)
+    assert result["items"][0]["estimated_cost"] == pytest.approx(0.008435)
+    assert result["items"][0]["estimated_input_cost"] == pytest.approx(0.0014)
+    assert result["items"][0]["estimated_cached_input_cost"] == pytest.approx(0.000035)
+    assert result["items"][0]["estimated_output_cost"] == pytest.approx(0.007)
+    assert result["items"][0]["cached_input_tokens"] == 200
+    assert result["items"][0]["cost_status"] == "estimated"
+    assert result["items"][0]["pricing_rule_id"] == "openai:gpt-5.2-codex:text:2025-12-11"
+    assert result["items"][0]["pricing_version"] == "openai-2026-06-04"
+    assert result["items"][1]["cost_status"] == "unsupported_provider"

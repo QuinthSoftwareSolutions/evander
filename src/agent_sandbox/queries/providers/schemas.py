@@ -83,6 +83,8 @@ class ModelUsageListQueryDefinition(QueryDefinition):
     occurred_after: ConfigValue | None = None
     occurred_before: ConfigValue | None = None
     limit: ConfigValue | None = None
+    include_costs: ConfigValue | None = None
+    cost_currency: ConfigValue | None = None
 
 
 class IssueListQueryDefinition(QueryDefinition):

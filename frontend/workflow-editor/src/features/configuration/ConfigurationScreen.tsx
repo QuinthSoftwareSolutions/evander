@@ -77,6 +77,80 @@ type ConfigurationState = {
   directory_overrides: DirectoryOverridesSnapshot;
 };
 
+type ModelPricingRuleSummary = {
+  id: string;
+  provider: string;
+  models: string[];
+  model_patterns: string[];
+  effective_from: string | null;
+  effective_to: string | null;
+  currency: string;
+  rates_per_1m_tokens: {
+    input: string | null;
+    cached_input: string | null;
+    output: string | null;
+  };
+  batch_multiplier: string | null;
+  service_tier: string | null;
+  long_context: {
+    input_tokens_over: number;
+    input_multiplier: string | null;
+    output_multiplier: string | null;
+  } | null;
+};
+
+type ModelPricingCatalogStatus = {
+  status: "ok" | "error";
+  path: string | null;
+  path_source: "env" | "default" | string;
+  env_var: string;
+  version: string | null;
+  currency: string | null;
+  description: string | null;
+  sources: string[];
+  rule_count: number;
+  rules: ModelPricingRuleSummary[];
+  revision: string | null;
+  catalog: ModelPricingCatalogPayload;
+  editable: boolean;
+  write_requires_privileged_unlock: boolean;
+  error: string | null;
+  error_class: string | null;
+};
+
+type ModelPricingCatalogPayload = {
+  version: string;
+  currency: string;
+  description: string | null;
+  sources: string[];
+  rules: ModelPricingRuleSummary[];
+};
+
+type ModelPricingRuleDraft = {
+  id: string;
+  provider: string;
+  modelsText: string;
+  modelPatternsText: string;
+  effectiveFrom: string;
+  effectiveTo: string;
+  inputRate: string;
+  cachedInputRate: string;
+  outputRate: string;
+  batchMultiplier: string;
+  serviceTier: string;
+  longContextInputTokensOver: string;
+  longContextInputMultiplier: string;
+  longContextOutputMultiplier: string;
+};
+
+type ModelPricingCatalogDraft = {
+  version: string;
+  currency: string;
+  description: string;
+  sources: string[];
+  rules: ModelPricingRuleDraft[];
+};
+
 type DraftFieldState = {
   include: boolean;
   clear: boolean;
@@ -103,6 +177,31 @@ const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
 };
 const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
 const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
+
+const MODEL_PRICING_FALLBACK_ERROR = {
+  status: "error",
+  path: null,
+  path_source: "unknown",
+  env_var: "AGENT_SANDBOX_MODEL_PRICING_PATH",
+  version: null,
+  currency: null,
+  description: null,
+  sources: [],
+  rule_count: 0,
+  rules: [],
+  revision: null,
+  catalog: {
+    version: "",
+    currency: "usd",
+    description: null,
+    sources: [],
+    rules: [],
+  },
+  editable: false,
+  write_requires_privileged_unlock: true,
+  error: "Model pricing catalog status is unavailable.",
+  error_class: null,
+} satisfies ModelPricingCatalogStatus;
 
 type ContactPhoneDraft = {
   label: string;
@@ -541,6 +640,183 @@ function formatJson(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
+function pricingPathSourceLabel(value: string): string {
+  if (value === "env") return "Environment override";
+  if (value === "default") return "Default catalog";
+  return value || "Unknown";
+}
+
+function stringListText(values: string[]): string {
+  return values.join("\n");
+}
+
+function stringListFromText(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function optionalString(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function decimalString(value: string, label: string, required = false): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    if (required) {
+      throw new Error(`${label} is required.`);
+    }
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative number.`);
+  }
+  return trimmed;
+}
+
+function optionalNonNegativeInteger(value: string, label: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed < 0 || String(parsed) !== trimmed) {
+    throw new Error(`${label} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
+function modelPricingRuleDraftFromPayload(rule: ModelPricingRuleSummary): ModelPricingRuleDraft {
+  return {
+    id: rule.id,
+    provider: rule.provider || "openai",
+    modelsText: stringListText(rule.models),
+    modelPatternsText: stringListText(rule.model_patterns),
+    effectiveFrom: rule.effective_from ?? "",
+    effectiveTo: rule.effective_to ?? "",
+    inputRate: rule.rates_per_1m_tokens.input ?? "",
+    cachedInputRate: rule.rates_per_1m_tokens.cached_input ?? "",
+    outputRate: rule.rates_per_1m_tokens.output ?? "",
+    batchMultiplier: rule.batch_multiplier ?? "",
+    serviceTier: rule.service_tier ?? "",
+    longContextInputTokensOver: rule.long_context?.input_tokens_over == null
+      ? ""
+      : String(rule.long_context.input_tokens_over),
+    longContextInputMultiplier: rule.long_context?.input_multiplier ?? "",
+    longContextOutputMultiplier: rule.long_context?.output_multiplier ?? "",
+  };
+}
+
+function modelPricingDraftFromStatus(
+  status: ModelPricingCatalogStatus | null,
+): ModelPricingCatalogDraft {
+  const catalog = status?.catalog ?? MODEL_PRICING_FALLBACK_ERROR.catalog;
+  return {
+    version: catalog.version ?? "",
+    currency: catalog.currency || "usd",
+    description: catalog.description ?? "",
+    sources: [...(catalog.sources ?? [])],
+    rules: (catalog.rules ?? []).map(modelPricingRuleDraftFromPayload),
+  };
+}
+
+function emptyModelPricingRuleDraft(index: number): ModelPricingRuleDraft {
+  return {
+    id: `openai:new-rule-${index}`,
+    provider: "openai",
+    modelsText: "",
+    modelPatternsText: "",
+    effectiveFrom: "",
+    effectiveTo: "",
+    inputRate: "",
+    cachedInputRate: "",
+    outputRate: "",
+    batchMultiplier: "",
+    serviceTier: "",
+    longContextInputTokensOver: "",
+    longContextInputMultiplier: "",
+    longContextOutputMultiplier: "",
+  };
+}
+
+function modelPricingPayloadFromDraft(
+  draft: ModelPricingCatalogDraft,
+): ModelPricingCatalogPayload {
+  const version = draft.version.trim();
+  if (!version) {
+    throw new Error("Pricing catalog version is required.");
+  }
+  const currency = draft.currency.trim().toLowerCase();
+  if (currency !== "usd") {
+    throw new Error("Pricing catalog currency must be usd.");
+  }
+  const rules = draft.rules.map((rule, index) => {
+    const id = rule.id.trim();
+    if (!id) {
+      throw new Error(`Pricing rule ${index + 1} requires an id.`);
+    }
+    const models = stringListFromText(rule.modelsText);
+    const modelPatterns = stringListFromText(rule.modelPatternsText);
+    if (!models.length && !modelPatterns.length) {
+      throw new Error(`Pricing rule ${id} requires at least one model or pattern.`);
+    }
+    const longContextInputTokensOver = optionalNonNegativeInteger(
+      rule.longContextInputTokensOver,
+      `Pricing rule ${id} long-context threshold`,
+    );
+    const longContext =
+      longContextInputTokensOver !== null ||
+      rule.longContextInputMultiplier.trim() ||
+      rule.longContextOutputMultiplier.trim()
+        ? {
+            input_tokens_over: longContextInputTokensOver ?? 0,
+            input_multiplier: decimalString(
+              rule.longContextInputMultiplier,
+              `Pricing rule ${id} long-context input multiplier`,
+            ),
+            output_multiplier: decimalString(
+              rule.longContextOutputMultiplier,
+              `Pricing rule ${id} long-context output multiplier`,
+            ),
+          }
+        : null;
+    return {
+      id,
+      provider: rule.provider.trim() || "openai",
+      models,
+      model_patterns: modelPatterns,
+      effective_from: optionalString(rule.effectiveFrom),
+      effective_to: optionalString(rule.effectiveTo),
+      currency,
+      rates_per_1m_tokens: {
+        input: decimalString(rule.inputRate, `Pricing rule ${id} input rate`, true),
+        cached_input: decimalString(
+          rule.cachedInputRate,
+          `Pricing rule ${id} cached input rate`,
+        ),
+        output: decimalString(rule.outputRate, `Pricing rule ${id} output rate`, true),
+      },
+      batch_multiplier: decimalString(
+        rule.batchMultiplier,
+        `Pricing rule ${id} batch multiplier`,
+      ),
+      service_tier: optionalString(rule.serviceTier),
+      long_context: longContext,
+    };
+  });
+  if (!rules.length) {
+    throw new Error("Pricing catalog requires at least one rule.");
+  }
+  return {
+    version,
+    currency,
+    description: optionalString(draft.description),
+    sources: draft.sources.map((source) => source.trim()).filter(Boolean),
+    rules,
+  };
+}
+
 function normalizeFieldValue(field: ConfigurationField, value: unknown): string | boolean {
   if (field.kind === "bool") {
     return Boolean(value);
@@ -838,6 +1114,12 @@ export function ConfigurationScreen() {
     refreshAdminState,
   } = useAdminUi();
   const [state, setState] = useState<ConfigurationState | null>(null);
+  const [modelPricingCatalog, setModelPricingCatalog] = useState<ModelPricingCatalogStatus | null>(null);
+  const [modelPricingDraft, setModelPricingDraft] = useState<ModelPricingCatalogDraft | null>(null);
+  const [modelPricingDraftBaseRevision, setModelPricingDraftBaseRevision] = useState<string | null>(null);
+  const [modelPricingDirty, setModelPricingDirty] = useState(false);
+  const [modelPricingSaving, setModelPricingSaving] = useState(false);
+  const [modelPricingError, setModelPricingError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
   const [selectedTab, setSelectedTab] = useState("communications");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
@@ -863,11 +1145,43 @@ export function ConfigurationScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
+  const modelPricingDirtyRef = useRef(false);
+
+  async function loadModelPricingCatalog() {
+    try {
+      const preserveDirtyDraft = modelPricingDirtyRef.current;
+      const payload = await fetchJson<ModelPricingCatalogStatus>("/api/configuration/model-pricing");
+      setModelPricingCatalog(payload);
+      setModelPricingDraft((current) =>
+        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(payload),
+      );
+      setModelPricingDraftBaseRevision((current) =>
+        preserveDirtyDraft ? current : payload.revision,
+      );
+      if (!preserveDirtyDraft) {
+        setModelPricingError(null);
+      }
+    } catch (reason) {
+      const preserveDirtyDraft = modelPricingDirtyRef.current;
+      const fallback = {
+        ...MODEL_PRICING_FALLBACK_ERROR,
+        error: reason instanceof Error ? reason.message : String(reason),
+      };
+      setModelPricingCatalog(fallback);
+      setModelPricingDraft((current) =>
+        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(fallback),
+      );
+      setModelPricingDraftBaseRevision((current) =>
+        preserveDirtyDraft ? current : fallback.revision,
+      );
+    }
+  }
 
   async function loadState(directoryPath: string, options?: { preserveDirty?: boolean }) {
     const payload = await fetchJson<ConfigurationState>(
       `/api/configuration/state?directory_path=${encodeURIComponent(directoryPath)}`,
     );
+    await loadModelPricingCatalog();
     setState((current) => {
       if (!options?.preserveDirty || !current) {
         return payload;
@@ -897,6 +1211,136 @@ export function ConfigurationScreen() {
     });
     if (!options?.preserveDirty) {
       setDirtyTabs({});
+    }
+  }
+
+  function updateModelPricingDraft(
+    updater: (draft: ModelPricingCatalogDraft) => ModelPricingCatalogDraft,
+  ) {
+    setModelPricingDraft((current) =>
+      updater(current ?? modelPricingDraftFromStatus(modelPricingCatalog)),
+    );
+    setModelPricingDraftBaseRevision((current) => current ?? modelPricingCatalog?.revision ?? null);
+    modelPricingDirtyRef.current = true;
+    setModelPricingDirty(true);
+    setModelPricingError(null);
+  }
+
+  function updateModelPricingSource(index: number, value: string) {
+    updateModelPricingDraft((draft) => ({
+      ...draft,
+      sources: draft.sources.map((source, sourceIndex) =>
+        sourceIndex === index ? value : source,
+      ),
+    }));
+  }
+
+  function addModelPricingSource() {
+    updateModelPricingDraft((draft) => ({ ...draft, sources: [...draft.sources, ""] }));
+  }
+
+  function removeModelPricingSource(index: number) {
+    updateModelPricingDraft((draft) => ({
+      ...draft,
+      sources: draft.sources.filter((_, sourceIndex) => sourceIndex !== index),
+    }));
+  }
+
+  function updateModelPricingRule(
+    index: number,
+    patch: Partial<ModelPricingRuleDraft>,
+  ) {
+    updateModelPricingDraft((draft) => ({
+      ...draft,
+      rules: draft.rules.map((rule, ruleIndex) =>
+        ruleIndex === index ? { ...rule, ...patch } : rule,
+      ),
+    }));
+  }
+
+  function addModelPricingRule() {
+    updateModelPricingDraft((draft) => ({
+      ...draft,
+      rules: [...draft.rules, emptyModelPricingRuleDraft(draft.rules.length + 1)],
+    }));
+  }
+
+  function duplicateModelPricingRule(index: number) {
+    updateModelPricingDraft((draft) => {
+      const source = draft.rules[index] ?? emptyModelPricingRuleDraft(draft.rules.length + 1);
+      return {
+        ...draft,
+        rules: [
+          ...draft.rules,
+          {
+            ...source,
+            id: source.id.trim() ? `${source.id.trim()}-copy` : `openai:new-rule-${draft.rules.length + 1}`,
+          },
+        ],
+      };
+    });
+  }
+
+  function deleteModelPricingRule(index: number) {
+    updateModelPricingDraft((draft) => ({
+      ...draft,
+      rules: draft.rules.filter((_, ruleIndex) => ruleIndex !== index),
+    }));
+  }
+
+  function discardModelPricingChanges() {
+    setModelPricingDraft(modelPricingDraftFromStatus(modelPricingCatalog));
+    setModelPricingDraftBaseRevision(modelPricingCatalog?.revision ?? null);
+    modelPricingDirtyRef.current = false;
+    setModelPricingDirty(false);
+    setModelPricingError(null);
+  }
+
+  async function saveModelPricingCatalog() {
+    if (!modelPricingCatalog || !modelPricingDraft) {
+      setModelPricingError("Model pricing catalog is not loaded.");
+      return;
+    }
+    const modelPricingExpectedRevision = modelPricingDraftBaseRevision;
+    if (!modelPricingExpectedRevision) {
+      setModelPricingError("Model pricing catalog revision is unavailable.");
+      return;
+    }
+    if (mutationLocked) {
+      setModelPricingError("Privileged operations are locked.");
+      return;
+    }
+    let catalogPayload: ModelPricingCatalogPayload;
+    try {
+      catalogPayload = modelPricingPayloadFromDraft(modelPricingDraft);
+    } catch (reason) {
+      setModelPricingError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    setModelPricingSaving(true);
+    setModelPricingError(null);
+    setStatusMessage(null);
+    try {
+      const payload = await fetchJson<ModelPricingCatalogStatus>(
+        "/api/configuration/model-pricing",
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            catalog: catalogPayload,
+            expected_revision: modelPricingExpectedRevision,
+          }),
+        },
+      );
+      setModelPricingCatalog(payload);
+      setModelPricingDraft(modelPricingDraftFromStatus(payload));
+      setModelPricingDraftBaseRevision(payload.revision);
+      modelPricingDirtyRef.current = false;
+      setModelPricingDirty(false);
+      setStatusMessage("Saved model pricing catalog.");
+    } catch (reason) {
+      setModelPricingError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setModelPricingSaving(false);
     }
   }
 
@@ -954,6 +1398,14 @@ export function ConfigurationScreen() {
   const saveBlockedByConfigMode = !state?.directory_scoped_config_enabled && !selectedTabHasGlobalFields;
   const teamsAuthBusy = teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut;
   const teamsAuthDirectoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+  const activeModelPricingDraft = modelPricingDraft ?? modelPricingDraftFromStatus(modelPricingCatalog);
+  const modelPricingSaveDisabled =
+    loading ||
+    modelPricingSaving ||
+    mutationLocked ||
+    !modelPricingDirty ||
+    !modelPricingCatalog?.editable ||
+    !modelPricingDraftBaseRevision;
 
   async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
     try {
@@ -2416,6 +2868,333 @@ export function ConfigurationScreen() {
                 <div><span>Override fields</span><strong>{state?.directory_overrides.field_count ?? 0}</strong></div>
               </div>
             </div>
+          </article>
+          <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
+            <div className="panel-header">
+              <div>
+                <h3>Model pricing catalog</h3>
+                <p className="muted-text">
+                  Host-global OpenAI pricing rules used for query-time model usage cost estimates.
+                </p>
+              </div>
+              <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
+            </div>
+            <div className="inline-actions compact-actions">
+              <button
+                type="button"
+                onClick={() => void loadModelPricingCatalog()}
+                disabled={loading || modelPricingSaving}
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={discardModelPricingChanges}
+                disabled={modelPricingSaving || !modelPricingDirty}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void saveModelPricingCatalog()}
+                disabled={modelPricingSaveDisabled}
+              >
+                {modelPricingSaving ? "Saving..." : "Save pricing"}
+              </button>
+            </div>
+            {!modelPricingCatalog ? (
+              <div className="callout warning-callout">Loading model pricing catalog...</div>
+            ) : null}
+            {mutationLocked ? (
+              <div className="callout warning-callout">
+                Privileged operations are locked. Unlock privileged operations to save pricing changes.
+              </div>
+            ) : null}
+            {modelPricingCatalog?.status === "error" ? (
+              <div className="callout error-callout">
+                {modelPricingCatalog.error ?? "Model pricing catalog could not be loaded."}
+              </div>
+            ) : null}
+            {modelPricingError ? <div className="callout error-callout">{modelPricingError}</div> : null}
+            {modelPricingCatalog ? (
+              <div className="detail-stack compact-detail-stack">
+                <div className="detail-grid">
+                  <div><span>Revision</span><strong>{modelPricingCatalog.revision?.slice(0, 12) ?? "n/a"}</strong></div>
+                  <div><span>Path source</span><strong>{pricingPathSourceLabel(modelPricingCatalog.path_source)}</strong></div>
+                  <div><span>Override env</span><strong>{modelPricingCatalog.env_var}</strong></div>
+                  <div><span>Error class</span><strong>{modelPricingCatalog.error_class ?? "n/a"}</strong></div>
+                  <div><span>Catalog path</span><strong>{modelPricingCatalog.path ?? "n/a"}</strong></div>
+                  <div><span>Current rules</span><strong>{modelPricingCatalog.rule_count}</strong></div>
+                </div>
+                <div className="config-field-grid">
+                  <label className="field-stack">
+                    <span>Version</span>
+                    <input
+                      type="text"
+                      value={activeModelPricingDraft.version}
+                      onChange={(event) =>
+                        updateModelPricingDraft((draft) => ({ ...draft, version: event.target.value }))
+                      }
+                      disabled={modelPricingSaving}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Currency</span>
+                    <select
+                      value={activeModelPricingDraft.currency}
+                      onChange={(event) =>
+                        updateModelPricingDraft((draft) => ({ ...draft, currency: event.target.value }))
+                      }
+                      disabled={modelPricingSaving}
+                    >
+                      <option value="usd">usd</option>
+                    </select>
+                  </label>
+                  <label className="field-stack wide-field">
+                    <span>Description</span>
+                    <textarea
+                      rows={3}
+                      value={activeModelPricingDraft.description}
+                      onChange={(event) =>
+                        updateModelPricingDraft((draft) => ({ ...draft, description: event.target.value }))
+                      }
+                      disabled={modelPricingSaving}
+                    />
+                  </label>
+                </div>
+
+                <div className="detail-stack compact-detail-stack">
+                  <div className="panel-header compact-panel-header">
+                    <div>
+                      <h4>Sources</h4>
+                      <p className="muted-text">OpenAI documentation URLs used to maintain this rate card.</p>
+                    </div>
+                    <button type="button" onClick={addModelPricingSource} disabled={modelPricingSaving}>
+                      Add source
+                    </button>
+                  </div>
+                  {activeModelPricingDraft.sources.length ? (
+                    <div className="detail-stack compact-detail-stack">
+                      {activeModelPricingDraft.sources.map((source, index) => (
+                        <div className="inline-actions compact-actions" key={`source-${index}`}>
+                          <input
+                            type="url"
+                            value={source}
+                            onChange={(event) => updateModelPricingSource(index, event.target.value)}
+                            disabled={modelPricingSaving}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeModelPricingSource(index)}
+                            disabled={modelPricingSaving}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-state">No source URLs are configured.</div>
+                  )}
+                </div>
+
+                <div className="detail-stack compact-detail-stack">
+                  <div className="panel-header compact-panel-header">
+                    <div>
+                      <h4>Pricing rules</h4>
+                      <p className="muted-text">
+                        Rates are expressed per 1M tokens. Models are newline-separated.
+                      </p>
+                    </div>
+                    <button type="button" onClick={addModelPricingRule} disabled={modelPricingSaving}>
+                      Add rule
+                    </button>
+                  </div>
+                  {activeModelPricingDraft.rules.length ? (
+                  <div className="detail-stack compact-detail-stack">
+                    {activeModelPricingDraft.rules.map((rule, index) => (
+                      <div className="config-field-card model-pricing-rule-card" key={`${rule.id}-${index}`}>
+                        <div className="feature-list-title-row">
+                          <strong>{rule.id || `Rule ${index + 1}`}</strong>
+                          <div className="inline-actions compact-actions">
+                            <button
+                              type="button"
+                              onClick={() => duplicateModelPricingRule(index)}
+                              disabled={modelPricingSaving}
+                            >
+                              Duplicate
+                            </button>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => deleteModelPricingRule(index)}
+                              disabled={modelPricingSaving}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                        <div className="config-field-grid">
+                          <label className="field-stack">
+                            <span>Rule id</span>
+                            <input
+                              type="text"
+                              value={rule.id}
+                              onChange={(event) => updateModelPricingRule(index, { id: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Provider</span>
+                            <input
+                              type="text"
+                              value={rule.provider}
+                              onChange={(event) => updateModelPricingRule(index, { provider: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Effective from</span>
+                            <input
+                              type="text"
+                              value={rule.effectiveFrom}
+                              onChange={(event) => updateModelPricingRule(index, { effectiveFrom: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="2026-06-04T00:00:00Z"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Effective to</span>
+                            <input
+                              type="text"
+                              value={rule.effectiveTo}
+                              onChange={(event) => updateModelPricingRule(index, { effectiveTo: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack wide-field">
+                            <span>Models</span>
+                            <textarea
+                              rows={3}
+                              value={rule.modelsText}
+                              onChange={(event) => updateModelPricingRule(index, { modelsText: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack wide-field">
+                            <span>Model patterns</span>
+                            <textarea
+                              rows={3}
+                              value={rule.modelPatternsText}
+                              onChange={(event) => updateModelPricingRule(index, { modelPatternsText: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Input rate</span>
+                            <input
+                              type="text"
+                              value={rule.inputRate}
+                              onChange={(event) => updateModelPricingRule(index, { inputRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Cached input rate</span>
+                            <input
+                              type="text"
+                              value={rule.cachedInputRate}
+                              onChange={(event) => updateModelPricingRule(index, { cachedInputRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Output rate</span>
+                            <input
+                              type="text"
+                              value={rule.outputRate}
+                              onChange={(event) => updateModelPricingRule(index, { outputRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Batch multiplier</span>
+                            <input
+                              type="text"
+                              value={rule.batchMultiplier}
+                              onChange={(event) => updateModelPricingRule(index, { batchMultiplier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Service tier</span>
+                            <input
+                              type="text"
+                              value={rule.serviceTier}
+                              onChange={(event) => updateModelPricingRule(index, { serviceTier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Long-context threshold</span>
+                            <input
+                              type="text"
+                              value={rule.longContextInputTokensOver}
+                              onChange={(event) => updateModelPricingRule(index, { longContextInputTokensOver: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Long-context input x</span>
+                            <input
+                              type="text"
+                              value={rule.longContextInputMultiplier}
+                              onChange={(event) => updateModelPricingRule(index, { longContextInputMultiplier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Long-context output x</span>
+                            <input
+                              type="text"
+                              value={rule.longContextOutputMultiplier}
+                              onChange={(event) => updateModelPricingRule(index, { longContextOutputMultiplier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="optional"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state">No pricing rules are configured.</div>
+                )}
+                </div>
+
+                {modelPricingCatalog.sources.length ? (
+                  <div className="detail-stack compact-detail-stack">
+                    <h4>Current source links</h4>
+                    <div className="teams-auth-link-list">
+                      {modelPricingCatalog.sources.map((source) => (
+                        <div key={source}>
+                          <span>OpenAI docs</span>
+                          <a className="teams-auth-uri" href={source} target="_blank" rel="noreferrer">
+                            {source}
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </article>
         </div>
 
