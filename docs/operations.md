@@ -36,7 +36,7 @@ service and configure `config/admin-web.env` before exposing it beyond localhost
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
 12. Optionally bootstrap generic guest Python packages into an offline tools virtualenv with `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]`.
 13. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-14. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+14. Optionally prewarm the shared host NuGet cache for libvirt VMs with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
 15. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
 16. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
 17. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
@@ -522,6 +522,26 @@ Storage layout for directory config:
   ./scripts/inspect_nuget_cache.sh
   ./scripts/inspect_nuget_cache.sh Acme.Product.Core 2026.3.6.1
   ```
+
+## Container Worker NuGet Fallback Cache
+
+- Container workers use a separate fallback cache, typically
+  `/var/lib/agent-worker/toolchain-cache/nuget-cache-ro` on each worker VM.
+- Prewarm that cache from the control plane, through the host NuGet relay, with:
+
+  ```bash
+  ./scripts/prewarm_container_worker_nuget_cache.sh \
+    --worker truman-worker-1 \
+    --target /opt/truman/runtime/repo-cache/acd57ed0241e2a600b46d33f743d5f25f35dca73ac822e6ce4619ac37b8f4def-worktree/Src/App.slnx
+  ```
+
+- The script restores into a temporary global-packages folder, includes the
+  worker restore-support package used by the offline smoke test, and extracts
+  the archive additively into each worker cache.
+- When the `.NET` toolchain and checkout are already on the worker, run the
+  same script on that worker with `--local --dotnet /var/lib/agent-worker/toolchain-cache/dotnet/dotnet`
+  and set `NUGET_RELAY_BASE_URL` to the control-plane relay URL visible from the
+  worker.
 
 ## Host-Side LLM Access
 

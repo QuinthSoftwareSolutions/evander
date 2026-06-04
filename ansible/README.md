@@ -513,8 +513,11 @@ directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback p
 `agent_sandbox_worker_dotnet_toolchain_archive_path`), and the .NET tools cache is seeded with
 `dotnet-ef` or copied from `agent_sandbox_worker_dotnet_tools_archive_path`. The playbook also
 stages `Microsoft.Extensions.FileSystemGlobbing` into the worker NuGet fallback cache, or copies a
-prebuilt `agent_sandbox_worker_dotnet_restore_support_archive_path`, and verifies an offline
-`dotnet restore` inside `agent-sandbox-runner:latest` using that fallback cache. The Node
+prebuilt `agent_sandbox_worker_nuget_fallback_archive_path` /
+`HOST_NUGET_FALLBACK_ARCHIVE`, and verifies an offline `dotnet restore` inside
+`agent-sandbox-runner:latest` using that fallback cache. The older
+`agent_sandbox_worker_dotnet_restore_support_archive_path` /
+`HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` names remain supported. The Node
 cache is seeded the same way
 (`HOST_NODE_ROOT`, `~/.nvm/versions/node/v24.14.0`, or
 `agent_sandbox_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
@@ -523,7 +526,9 @@ frontend `node_modules`, plus `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwri
 variables can provide prebuilt tarballs. Playwright-enabled container sessions resolve the seeded
 Chromium executable and export it as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and
 `CHROMIUM_BIN`. Populate the NuGet fallback cache before relying on fallback restores for
-project-specific packages beyond the playbook's restore-support seed. Docker `host` networking
+project-specific packages beyond the playbook's restore-support seed; use
+`scripts/prewarm_container_worker_nuget_cache.sh` from the control plane to restore through the
+host NuGet relay and additively update worker caches. Docker `host` networking
 remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.

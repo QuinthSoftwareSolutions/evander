@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Container Worker NuGet Cache Prewarm
+
+- Added a control-plane script for prewarming container-worker NuGet fallback
+  caches through the host NuGet relay and additively copying the resulting
+  global-packages archive to worker VMs.
+- Added worker deployment aliases for prebuilt NuGet fallback archives while
+  preserving the older restore-support archive variable names.
+
 ## 2026-06-04 - Azure DevOps Work Item Comment HTML Formatting
 
 - Rendered Azure DevOps work-item comments as ADO HTML, including resolved
