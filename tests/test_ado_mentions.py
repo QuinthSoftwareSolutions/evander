@@ -6,6 +6,7 @@ import pytest
 from agent_sandbox.ado_mentions import (
     AdoMentionResolver,
     AdoResolvedMention,
+    render_ado_mentions_html_prefix,
     render_ado_mentions_prefix,
 )
 
@@ -140,4 +141,30 @@ def test_render_ado_mentions_prefix_prepends_tokens_once() -> None:
         "@<11111111-1111-1111-1111-111111111111> "
         "@<22222222-2222-2222-2222-222222222222>\n\n"
         "Please take a look."
+    )
+
+
+def test_render_ado_mentions_html_prefix_uses_ado_mention_anchors() -> None:
+    body = render_ado_mentions_html_prefix(
+        "<p>Please take a look.</p>",
+        [
+            AdoResolvedMention(
+                input="ada@example.com",
+                id="11111111-1111-1111-1111-111111111111",
+                display_name="Ada <Lovelace>",
+            ),
+            AdoResolvedMention(
+                input="grace@example.com",
+                id="22222222-2222-2222-2222-222222222222",
+                display_name="Grace",
+            ),
+        ],
+    )
+
+    assert body == (
+        '<p><a href="#" data-vss-mention="version:2.0,'
+        '11111111-1111-1111-1111-111111111111">@Ada &lt;Lovelace&gt;</a> '
+        '<a href="#" data-vss-mention="version:2.0,'
+        '22222222-2222-2222-2222-222222222222">@Grace</a></p>\n'
+        "<p>Please take a look.</p>"
     )

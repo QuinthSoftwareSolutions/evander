@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 import re
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -90,6 +91,28 @@ def render_ado_mentions_prefix(
     if not body:
         return mention_line
     return f"{mention_line}\n\n{body}"
+
+
+def render_ado_mentions_html_prefix(
+    body_html: str,
+    mentions: list[AdoResolvedMention],
+) -> str:
+    body = str(body_html or "").strip()
+    if not mentions:
+        return body
+    mention_line = " ".join(_render_ado_html_mention(mention) for mention in mentions)
+    mention_block = f"<p>{mention_line}</p>"
+    if not body:
+        return mention_block
+    return f"{mention_block}\n{body}"
+
+
+def _render_ado_html_mention(mention: AdoResolvedMention) -> str:
+    mention_id = html.escape(mention.id, quote=True)
+    display_name = html.escape(
+        mention.display_name or mention.unique_name or mention.input or mention.id
+    )
+    return f'<a href="#" data-vss-mention="version:2.0,{mention_id}">@{display_name}</a>'
 
 
 class AdoMentionResolver:

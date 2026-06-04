@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Azure DevOps Work Item Comment HTML Formatting
+
+- Rendered Azure DevOps work-item comments as ADO HTML, including resolved
+  `data-vss-mention` anchors, and posted them with explicit `format=html` so
+  agent-authored Markdown-like text formats consistently in Azure Boards.
+
 ## 2026-06-04 - Session Metadata Rule Editor Controls
 
 - Hid the `query:session:list` metadata filter mode dropdowns from the

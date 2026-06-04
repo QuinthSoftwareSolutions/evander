@@ -597,8 +597,9 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Required MCP arguments: `id`, `comment`.
   - Optional MCP arguments: `project`, `mentions`, `artifact_ids`, `request_id`.
   - `mentions` accepts Azure DevOps identity IDs, descriptors, email/UPN values, or display/name
-    search text. The gateway resolves refs with the ADO identities API and prepends Markdown
-    `@<identity-id>` mention tokens before posting; unresolved or ambiguous refs fail the call.
+    search text. The gateway resolves refs with the ADO identities API, renders the comment as
+    ADO HTML with documented `data-vss-mention` anchors, and posts with explicit `format=html`;
+    unresolved or ambiguous refs fail the call.
 - Gateway tool name: `update_ado_backlog_text`.
   - Policy-gated with `update_ado_backlog_text`.
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
