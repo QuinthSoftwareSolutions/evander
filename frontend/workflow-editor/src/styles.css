@@ -5065,7 +5065,7 @@ select {
   flex: 0 0 auto;
 }
 
-.model-pricing-source-row {
+.inline-actions.model-pricing-source-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;

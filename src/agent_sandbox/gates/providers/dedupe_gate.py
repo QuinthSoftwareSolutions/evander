@@ -15,6 +15,7 @@ from agent_sandbox.workflow.validation import NodeCapability
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+_DROPPED_BRANCH_PORT = "dropped"
 
 logger = logging.getLogger(__name__)
 
@@ -81,16 +82,7 @@ class DedupeGateProvider(GateProviderBase):
                 key,
                 queue_record.event_id,
             )
-            outputs = {
-                item_key: value
-                for item_key, value in queue_record.payload.items()
-                if item_key
-                not in {
-                    NODE_OUTPUTS_CONTEXT_KEY,
-                    _BRANCH_PORT_PAYLOAD_KEY,
-                    _FOR_EXECUTION_IDS_PAYLOAD_KEY,
-                }
-            }
+            outputs = _passthrough_outputs(queue_record.payload)
             worker._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,
@@ -113,21 +105,68 @@ class DedupeGateProvider(GateProviderBase):
             key,
             queue_record.event_id,
         )
+        publish_dropped_event = _has_outbound_source_port(
+            graph=kwargs.get("graph"),
+            gate_id=gate.id,
+            source_port=_DROPPED_BRANCH_PORT,
+        )
         worker._write_gate_record(
             queue_record=queue_record,
             gate=gate,
             status="dropped",
             started_at=started_at,
             resolved_config=resolved_config,
-            outputs={},
+            outputs=(
+                _passthrough_outputs(queue_record.payload)
+                if publish_dropped_event
+                else {}
+            ),
             inputs_by_source=inputs_by_source,
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
             config_revision=config_revision,
             error="duplicate key suppressed within ttl",
             binding_trace=binding_trace_to_payload(resolved.trace),
+            publish_completion_event=publish_dropped_event,
+            branch_port=_DROPPED_BRANCH_PORT if publish_dropped_event else None,
         )
         return True
+
+
+def _passthrough_outputs(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        item_key: value
+        for item_key, value in payload.items()
+        if item_key
+        not in {
+            NODE_OUTPUTS_CONTEXT_KEY,
+            _BRANCH_PORT_PAYLOAD_KEY,
+            _FOR_EXECUTION_IDS_PAYLOAD_KEY,
+        }
+    }
+
+
+def _has_outbound_source_port(
+    *, graph: Any, gate_id: str, source_port: str
+) -> bool:
+    outbound_index = getattr(graph, "outbound_index", {})
+    if not isinstance(outbound_index, dict):
+        return False
+    return any(
+        _edge_source_port(edge) == source_port
+        for edge in outbound_index.get(gate_id, ())
+    )
+
+
+def _edge_source_port(edge: Any) -> str | None:
+    if isinstance(edge, dict):
+        value = edge.get("source_port")
+    else:
+        value = getattr(edge, "source_port", None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:

@@ -827,6 +827,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         ]["target_id"]
         == "effect-ado-post-work-item-comment-auto-dev-owner-1"
     )
+    auto_dev_missing_owner_dropped_loopback = container_edges[
+        ("gate-dedupe-auto-dev-missing-owner-comment-1", "gate-for-auto-dev-1")
+    ]
+    assert auto_dev_missing_owner_dropped_loopback["source_port"] == "dropped"
+    assert auto_dev_missing_owner_dropped_loopback["allow_cycle"] is True
     assert (
         container_edges[
             ("effect-ado-post-work-item-comment-auto-dev-owner-1", "gate-for-auto-dev-1")

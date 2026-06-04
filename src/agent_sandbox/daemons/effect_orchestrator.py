@@ -2431,7 +2431,7 @@ class EffectOrchestratorWorker:
                 return
             record.published_event_id = published_event_id
             record.status = status
-            record.error = None
+            record.error = error
             record.completion_event_enqueued_at = finished_at
         self.gate_execution_store.record_execution(record)
         if publish_completion_event:

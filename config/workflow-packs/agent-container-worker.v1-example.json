@@ -58,6 +58,12 @@
       },
       {
         "allow_cycle": true,
+        "source_id": "gate-dedupe-auto-dev-missing-owner-comment-1",
+        "source_port": "dropped",
+        "target_id": "gate-for-auto-dev-1"
+      },
+      {
+        "allow_cycle": true,
         "source_id": "effect-ado-post-work-item-comment-auto-dev-owner-1",
         "target_id": "gate-for-auto-dev-1"
       },

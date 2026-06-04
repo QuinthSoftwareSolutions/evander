@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Workflow Dedupe Loopbacks and Pricing Source Layout
+
+- Added an explicit `gate:dedupe` dropped branch for suppressed duplicates and
+  wired the auto-dev missing-owner workflow path back to its `gate:for` loop.
+- Fixed the Admin Web model pricing source URL row styling so its grid layout
+  is not overridden by shared inline action styles.
+
 ## 2026-06-04 - Truman Auto-dev Issue Owner Attribution
 
 - Added auto-dev workflow owner gating with `gate:filter`, requiring a valid
