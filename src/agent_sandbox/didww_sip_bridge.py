@@ -854,6 +854,24 @@ class OpenAIRealtimeSession:
             payload["response_id"] = response_id
         await self.send_json(payload)
 
+    async def truncate_assistant_audio(
+        self,
+        *,
+        item_id: str,
+        audio_end_ms: int,
+        content_index: int = 0,
+    ) -> None:
+        if not item_id:
+            return
+        await self.send_json(
+            {
+                "type": "conversation.item.truncate",
+                "item_id": item_id,
+                "content_index": max(0, int(content_index)),
+                "audio_end_ms": max(0, int(audio_end_ms)),
+            }
+        )
+
     async def inject_origin_query_result(
         self,
         query: dict[str, Any],
@@ -1002,6 +1020,7 @@ class OutboundAudioFrame:
     payload: bytes
     response_id: str | None = None
     item_id: str | None = None
+    content_index: int = 0
 
 
 class VoiceMediaControllerClient:
@@ -1469,9 +1488,14 @@ class DidwwSipBridgeService:
         audio_response_started_at: dict[str, float] = {}
         audio_delta_counts: dict[str, int] = {}
         audio_response_finished: set[str] = set()
+        audio_item_played_samples: dict[str, int] = {}
+        audio_item_content_index: dict[str, int] = {}
+        audio_item_response_id: dict[str, str] = {}
+        truncated_audio_items: set[str] = set()
         outbound_audio_queue: asyncio.Queue[OutboundAudioFrame] = asyncio.Queue()
         outbound_sender_active = False
         outbound_sender_task: asyncio.Task[None] | None = None
+        last_played_audio_item_id: str | None = None
         last_assistant_audio_at: float | None = None
         current_caller_utterance_id = 0
         caller_speech_active = False
@@ -1483,13 +1507,32 @@ class DidwwSipBridgeService:
         idle_prompt_sent_this_period = False
         idle_generation = 0
         loop = asyncio.get_running_loop()
+        bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
+
+        def payload_sample_count(payload: bytes) -> int:
+            if not payload:
+                return 0
+            return max(1, (len(payload) + bytes_per_sample - 1) // bytes_per_sample)
+
+        def played_audio_end_ms(item_id: str) -> int:
+            samples = max(0, audio_item_played_samples.get(item_id, 0))
+            return int((samples * 1000) // self.config.sample_rate_hz)
 
         async def send_outbound_audio() -> None:
-            nonlocal outbound_sender_active, last_assistant_audio_at
+            nonlocal outbound_sender_active, last_assistant_audio_at, last_played_audio_item_id
             while True:
                 frame = await outbound_audio_queue.get()
                 outbound_sender_active = True
                 try:
+                    samples = payload_sample_count(frame.payload)
+                    if frame.item_id and samples > 0:
+                        last_played_audio_item_id = frame.item_id
+                        audio_item_played_samples[frame.item_id] = (
+                            audio_item_played_samples.get(frame.item_id, 0) + samples
+                        )
+                        audio_item_content_index.setdefault(frame.item_id, frame.content_index)
+                        if frame.response_id:
+                            audio_item_response_id.setdefault(frame.item_id, frame.response_id)
                     await rtp.send_payload(frame.payload)
                 finally:
                     last_assistant_audio_at = loop.time()
@@ -1643,6 +1686,10 @@ class DidwwSipBridgeService:
                 )
                 * 1000
             )
+            truncate_item_id = last_played_audio_item_id
+            truncate_audio_end_ms = (
+                played_audio_end_ms(truncate_item_id) if truncate_item_id else 0
+            )
             dropped_frames = drain_outbound_audio_queue()
             await restart_outbound_sender_after_cancel()
             self._append_debug_event(
@@ -1654,10 +1701,39 @@ class DidwwSipBridgeService:
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
                     "dropped_audio_frames": dropped_frames,
+                    "truncate_item_id": truncate_item_id,
+                    "truncate_audio_end_ms": truncate_audio_end_ms,
                     "transcript_snippet": _debug_snippet(transcript_text),
                 },
             )
             await realtime.cancel_response(active_response_id)
+            if (
+                truncate_item_id
+                and truncate_audio_end_ms > 0
+                and truncate_item_id not in truncated_audio_items
+            ):
+                content_index = audio_item_content_index.get(truncate_item_id, 0)
+                await realtime.truncate_assistant_audio(
+                    item_id=truncate_item_id,
+                    content_index=content_index,
+                    audio_end_ms=truncate_audio_end_ms,
+                )
+                truncated_audio_items.add(truncate_item_id)
+                self._append_debug_event(
+                    voice_session_id,
+                    "assistant_audio_truncated",
+                    metadata={
+                        "reason": reason,
+                        "response_id": audio_item_response_id.get(
+                            truncate_item_id, active_response_id
+                        ),
+                        "item_id": truncate_item_id,
+                        "content_index": content_index,
+                        "audio_end_ms": truncate_audio_end_ms,
+                        "utterance_id": utterance_id,
+                        "dropped_audio_frames": dropped_frames,
+                    },
+                )
 
         async def delayed_barge_in_check(utterance_id: int) -> None:
             delay_seconds = self.config.barge_in_delay_ms / 1000
@@ -2014,6 +2090,7 @@ class DidwwSipBridgeService:
                             payload=base64.b64decode(audio_delta),
                             response_id=_realtime_response_id(event),
                             item_id=_realtime_item_id(event),
+                            content_index=_realtime_content_index(event),
                         )
                     )
                     await asyncio.sleep(0)
@@ -2023,21 +2100,29 @@ class DidwwSipBridgeService:
                 transcript_text = _realtime_transcript_text(event)
                 if transcript_text:
                     speaker = "assistant" if event_type.startswith("response.") else "caller"
-                    self.store.append_transcript_event(
-                        voice_session_id,
-                        speaker=speaker,
-                        text=transcript_text,
-                        metadata={"event_type": event_type},
-                    )
-                    self._append_debug_event(
-                        voice_session_id,
-                        (
-                            "assistant_transcript.completed"
-                            if speaker == "assistant"
-                            else "caller_transcript.completed"
-                        ),
-                        metadata=_realtime_transcript_metadata(event, transcript_text),
-                    )
+                    transcript_item_id = _realtime_item_id(event)
+                    if speaker == "assistant" and transcript_item_id in truncated_audio_items:
+                        self._append_debug_event(
+                            voice_session_id,
+                            "assistant_transcript.truncated_ignored",
+                            metadata=_realtime_transcript_metadata(event, transcript_text),
+                        )
+                    else:
+                        self.store.append_transcript_event(
+                            voice_session_id,
+                            speaker=speaker,
+                            text=transcript_text,
+                            metadata={"event_type": event_type},
+                        )
+                        self._append_debug_event(
+                            voice_session_id,
+                            (
+                                "assistant_transcript.completed"
+                                if speaker == "assistant"
+                                else "caller_transcript.completed"
+                            ),
+                            metadata=_realtime_transcript_metadata(event, transcript_text),
+                        )
                     if event_type == "conversation.item.input_audio_transcription.completed":
                         await mark_caller_turn_completed(transcript_text)
                 text_delta = _realtime_text_delta(event)
@@ -3120,6 +3205,14 @@ def _realtime_item_id(event: dict[str, Any]) -> str | None:
             return str(value)
     value = event.get("item_id")
     return str(value) if value else None
+
+
+def _realtime_content_index(event: dict[str, Any]) -> int:
+    value = event.get("content_index")
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _realtime_audio_key(event: dict[str, Any]) -> str:

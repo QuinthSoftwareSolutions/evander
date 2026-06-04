@@ -883,11 +883,12 @@ use a static payload codec. The default is A-law/PCMA:
 `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ=8000`. For u-law/PCMU, use `ulaw`, payload type `0`, and the same
 sample rate.
 
-For barge-in, the bridge keeps OpenAI Realtime `server_vad` and automatic caller-turn response
-creation enabled, but disables immediate Realtime interruption. The bridge waits
-`DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; short configured
-backchannels such as `ok` or `uh-huh` are stored in the transcript without cancelling current
-assistant playback.
+For barge-in, the bridge keeps OpenAI Realtime `server_vad` enabled while disabling automatic
+caller-turn response creation and immediate Realtime interruption. The bridge waits
+`DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; when substantive caller
+speech cancels playback, it also truncates the assistant audio item to the RTP-played prefix so the
+next model turn does not assume the caller heard queued audio. Short configured backchannels such as
+`ok` or `uh-huh` are stored in the transcript without cancelling current assistant playback.
 
 Minimum host setup:
 

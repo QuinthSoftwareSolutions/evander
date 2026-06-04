@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - DIDWW Realtime Playback Truncation
+
+- Truncated interrupted DIDWW/OpenAI Realtime assistant audio to the RTP-played
+  prefix when substantive caller barge-in cancels playback, keeping future model
+  turns from assuming the caller heard queued or generated-but-unsent audio.
+
 ## 2026-06-04 - Container Worker NuGet Cache Prewarm
 
 - Added a control-plane script for prewarming container-worker NuGet fallback
