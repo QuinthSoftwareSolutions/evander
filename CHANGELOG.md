@@ -5,6 +5,19 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - DIDWW Voice Turn-Taking Follow-Up
+
+- Treated in-progress Realtime responses as interruptible before their first
+  audio delta so caller speech can cancel pre-audio assistant generation.
+- Ignored short standalone acknowledgements such as `Okay, great.` as
+  backchannels instead of requesting near-empty model replies.
+
+## 2026-06-04 - Short Standalone PR Branch Override
+
+- Let standalone workflow PR creation honor `metadata.pr_origin_branch` so
+  scheduled/no-issue agents can publish to concise provider branch names instead
+  of defaulting to the full promoted review branch.
+
 ## 2026-06-04 - DIDWW Voice Startup Retry Hardening
 
 - Answered empty startup `query_origin_agent` tool calls from the authoritative

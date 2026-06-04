@@ -1185,6 +1185,7 @@
           "fill": true,
           "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
           "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+          "origin_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
           "provider": "azure_devops",
           "session_id": "${{trigger-git-push-1.session_id}}",
           "title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"

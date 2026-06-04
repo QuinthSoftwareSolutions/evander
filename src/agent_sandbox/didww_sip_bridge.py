@@ -1632,6 +1632,9 @@ class DidwwSipBridgeService:
                 return (loop.time() - last_assistant_audio_at) < _ASSISTANT_PLAYBACK_DRAIN_SECONDS
             return False
 
+        def interruptible_assistant_turn_active() -> bool:
+            return assistant_audio_active() or response_active or assistant_speaking
+
         def discard_pending_response_key(key: str) -> int:
             before = len(pending_responses)
             pending_responses[:] = [
@@ -1827,7 +1830,7 @@ class DidwwSipBridgeService:
                 return
             if not caller_speech_active or not caller_speech_started_during_assistant:
                 return
-            if not assistant_audio_active():
+            if not interruptible_assistant_turn_active():
                 return
             await send_barge_in_cancel(
                 reason="speech_delay_elapsed",
@@ -1846,7 +1849,10 @@ class DidwwSipBridgeService:
             current_caller_utterance_id += 1
             caller_speech_active = True
             caller_speech_started_at = loop.time()
-            caller_speech_started_during_assistant = assistant_audio_active()
+            audio_active = assistant_audio_active()
+            caller_speech_started_during_assistant = (
+                audio_active or response_active or assistant_speaking
+            )
             if not caller_speech_started_during_assistant:
                 return
             self._append_debug_event(
@@ -1857,6 +1863,9 @@ class DidwwSipBridgeService:
                     "response_id": active_response_id,
                     "utterance_id": current_caller_utterance_id,
                     "delay_ms": self.config.barge_in_delay_ms,
+                    "assistant_audio_active": audio_active,
+                    "response_active": response_active,
+                    "assistant_speaking": assistant_speaking,
                     **_realtime_vad_metadata(event),
                 },
             )
@@ -1951,14 +1960,25 @@ class DidwwSipBridgeService:
             await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
             last_caller_turn = transcript_text
             caller_speech_active = False
-            if not caller_speech_started_during_assistant:
-                await request_bridge_response(reason="caller_turn_completed")
-                return
             is_backchannel = _is_backchannel_transcript(
                 transcript_text,
                 phrases=self.config.backchannel_phrases,
                 max_words=self.config.backchannel_max_words,
             )
+            if not caller_speech_started_during_assistant:
+                if is_backchannel:
+                    self._append_debug_event(
+                        voice_session_id,
+                        "backchannel_ignored",
+                        metadata={
+                            "reason": "standalone_backchannel",
+                            "utterance_id": current_caller_utterance_id,
+                            "transcript_snippet": _debug_snippet(transcript_text),
+                        },
+                    )
+                    return
+                await request_bridge_response(reason="caller_turn_completed")
+                return
             elapsed_ms = int(
                 max(
                     0.0,
@@ -3159,7 +3179,9 @@ def _is_backchannel_transcript(
         for phrase in (_normalize_backchannel_phrase(item) for item in phrases)
         if phrase
     }
-    return normalized in normalized_phrases
+    if normalized in normalized_phrases:
+        return True
+    return all(word in normalized_phrases for word in normalized.split())
 
 
 def _origin_query_response_key(query_id: str, kind: str) -> str:
