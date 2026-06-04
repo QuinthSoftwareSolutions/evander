@@ -113,6 +113,11 @@ _MISSING_TASK_CLARIFICATION_RESPONSE_KEY = "projection:missing_task_clarificatio
 _MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
     "Ask exactly one concise caller-facing clarification question about the call objective."
 )
+_ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
+    "Tell the caller in one short sentence that you are checking with the originating agent. "
+    "Then ask, in one short sentence, whether they would like another brief interesting fact "
+    "while they wait. Do not provide any unrelated fact unless the caller asks for one."
+)
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
     "okay",
@@ -1635,6 +1640,17 @@ class DidwwSipBridgeService:
         def interruptible_assistant_turn_active() -> bool:
             return assistant_audio_active() or response_active or assistant_speaking
 
+        def origin_query_turn_active() -> bool:
+            if any(state.status == "pending" for state in origin_queries_by_id.values()):
+                return True
+            if any(state.status == "pending" for state in origin_queries_by_question.values()):
+                return True
+            if last_response_request is not None and _is_origin_query_response_key(
+                last_response_request.key
+            ):
+                return True
+            return any(_is_origin_query_response_key(request.key) for request in pending_responses)
+
         def discard_pending_response_key(key: str) -> int:
             before = len(pending_responses)
             pending_responses[:] = [
@@ -1955,6 +1971,28 @@ class DidwwSipBridgeService:
                 )
             await realtime.request_response(request.instructions)
 
+        async def discard_bridge_response_keys(
+            keys: set[str],
+            *,
+            reason: str,
+        ) -> int:
+            removed = 0
+            async with response_lock:
+                for key in keys:
+                    removed += discard_pending_response_key(key)
+            if removed:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.response.discarded",
+                    metadata={
+                        "reason": reason,
+                        "removed_count": removed,
+                        "request_keys": sorted(keys),
+                        "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                    },
+                )
+            return removed
+
         async def mark_caller_turn_completed(transcript_text: str) -> None:
             nonlocal caller_speech_active, caller_speech_started_during_assistant, last_caller_turn
             await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
@@ -1965,6 +2003,18 @@ class DidwwSipBridgeService:
                 phrases=self.config.backchannel_phrases,
                 max_words=self.config.backchannel_max_words,
             )
+            if origin_query_turn_active() and _is_origin_query_wait_ack(transcript_text):
+                caller_speech_started_during_assistant = False
+                self._append_debug_event(
+                    voice_session_id,
+                    "backchannel_ignored",
+                    metadata={
+                        "reason": "origin_query_wait_ack",
+                        "utterance_id": current_caller_utterance_id,
+                        "transcript_snippet": _debug_snippet(transcript_text),
+                    },
+                )
+                return
             if not caller_speech_started_during_assistant:
                 if is_backchannel:
                     self._append_debug_event(
@@ -2181,6 +2231,7 @@ class DidwwSipBridgeService:
                         origin_queries_by_question=origin_queries_by_question,
                         origin_queries_by_id=origin_queries_by_id,
                         request_response=request_bridge_response,
+                        discard_response_keys=discard_bridge_response_keys,
                     )
                     continue
                 audio_delta = _realtime_audio_delta(event)
@@ -2302,6 +2353,7 @@ class DidwwSipBridgeService:
         origin_queries_by_question: dict[str, OriginQueryState] | None = None,
         origin_queries_by_id: dict[str, OriginQueryState] | None = None,
         request_response: Callable[..., Awaitable[None]] | None = None,
+        discard_response_keys: Callable[..., Awaitable[int]] | None = None,
     ) -> None:
         if request_response is None:
             async def request_response(
@@ -2313,6 +2365,12 @@ class DidwwSipBridgeService:
             origin_queries_by_question = {}
         if origin_queries_by_id is None:
             origin_queries_by_id = {}
+        if discard_response_keys is None:
+            async def discard_response_keys(
+                keys: set[str],
+                **_: Any,
+            ) -> int:
+                return 0
         if function_call.name != "query_origin_agent":
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
@@ -2508,6 +2566,10 @@ class DidwwSipBridgeService:
         origin_queries_by_question[query_key] = state
         if query_id:
             origin_queries_by_id[query_id] = state
+        await discard_response_keys(
+            {_PROJECTED_TASK_RESPONSE_KEY},
+            reason="origin_query_created",
+        )
         if status in {"answered", "failed", "timeout"}:
             await self._handle_terminal_origin_query_result(
                 voice_session_id,
@@ -2633,17 +2695,22 @@ class DidwwSipBridgeService:
             await asyncio.sleep(_ORIGIN_QUERY_ACK_GRACE_SECONDS)
         if stop_event.is_set() or state.status != "pending" or state.ack_response_queued:
             return
-        # Pending origin queries stay silent. The terminal result path requests the
-        # caller-facing response, which keeps generic startup/context-check filler out
-        # of live outbound calls while an origin answer is pending.
         state.ack_response_queued = True
+        response_instructions = _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS
         self._append_debug_event(
             voice_session_id,
-            "origin_query.pending_fallback_suppressed",
+            "origin_query.hold_offer_requested",
             metadata={
                 "query_id": state.query_id,
-                "reason": "query_pending_silent",
+                "reason": "query_pending_hold_offer",
+                **_instruction_debug_metadata(response_instructions),
             },
+        )
+        await request_response(
+            response_instructions,
+            reason="query_pending_hold_offer",
+            key=_origin_query_response_key(state.query_id, "ack"),
+            supersede_keys={_PROJECTED_TASK_RESPONSE_KEY},
         )
 
     async def _handle_terminal_origin_query_result(
@@ -3182,6 +3249,33 @@ def _is_backchannel_transcript(
     if normalized in normalized_phrases:
         return True
     return all(word in normalized_phrases for word in normalized.split())
+
+
+def _is_origin_query_wait_ack(transcript_text: object) -> bool:
+    normalized = _normalize_backchannel_phrase(transcript_text)
+    if not normalized or _word_count(normalized) > 6:
+        return False
+    wait_ack_phrases = {
+        "ill wait",
+        "i will wait",
+        "ill just wait",
+        "i will just wait",
+        "nah ill wait",
+        "nah i will wait",
+        "nah ill just wait",
+        "nah i will just wait",
+        "no ill wait",
+        "no i will wait",
+        "no ill just wait",
+        "no i will just wait",
+        "no thanks ill wait",
+        "no thanks i will wait",
+    }
+    return normalized in wait_ack_phrases
+
+
+def _is_origin_query_response_key(key: object) -> bool:
+    return str(key or "").startswith("query:")
 
 
 def _origin_query_response_key(query_id: str, kind: str) -> str:
