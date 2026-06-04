@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -365,7 +366,10 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
     samples_per_frame = int(config.sample_rate_hz * config.frame_duration_ms / 1000)
     payload = b"\x55" * ((samples_per_frame * 2) + 80)
 
-    asyncio.run(endpoint.send_payload(payload))
+    reported_samples: list[int] = []
+    sent_samples = asyncio.run(
+        endpoint.send_payload(payload, on_samples_sent=reported_samples.append)
+    )
 
     packets = [RtpPacket.parse(data) for data, _addr in sent]
     assert [len(packet.payload) for packet in packets] == [
@@ -373,6 +377,8 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
         samples_per_frame,
         80,
     ]
+    assert reported_samples == [samples_per_frame, samples_per_frame, 80]
+    assert sent_samples == (samples_per_frame * 2) + 80
     assert [packet.sequence for packet in packets] == [1, 2, 3]
     assert [packet.timestamp for packet in packets] == [
         0,
@@ -380,6 +386,27 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
         samples_per_frame * 2,
     ]
     assert endpoint._timestamp == (samples_per_frame * 2) + 80
+
+
+def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    endpoint = RtpUdpEndpoint(config)
+    sent: list[tuple[bytes, tuple[str, int]]] = []
+    reported_samples: list[int] = []
+
+    class FakeTransport:
+        def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+            sent.append((data, addr))
+
+    endpoint.transport = FakeTransport()  # type: ignore[assignment]
+
+    sent_samples = asyncio.run(
+        endpoint.send_payload(b"\x55" * 160, on_samples_sent=reported_samples.append)
+    )
+
+    assert sent_samples == 0
+    assert reported_samples == []
+    assert sent == []
 
 
 def test_realtime_audio_delta_accepts_current_and_legacy_event_names() -> None:
@@ -1279,6 +1306,210 @@ def test_substantive_speech_truncates_assistant_audio_to_played_rtp_position(
     assert truncate_events[0].metadata["audio_end_ms"] == 20
 
 
+def test_substantive_speech_truncates_only_confirmed_rtp_samples_when_send_cancelled(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x25" * 320).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "content_index": 0,
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            if on_samples_sent is not None:
+                on_samples_sent(160)
+            await asyncio.sleep(1)
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == [
+        {"item_id": "assistant-item-1", "audio_end_ms": 20, "content_index": 0}
+    ]
+
+
+def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x26" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "content_index": 0,
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            del payload, on_samples_sent
+            return 0
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == []
+    latest = store.get("voice-1")
+    assert latest is not None
+    cancel_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_cancel_sent"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].metadata["truncate_item_id"] is None
+    assert cancel_events[0].metadata["truncate_audio_end_ms"] == 0
+
+
 def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     tmp_path: Path,
 ) -> None:
@@ -1354,12 +1585,20 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
         def __init__(self) -> None:
             self.sent: list[bytes] = []
 
-        async def send_payload(self, payload: bytes) -> None:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
             self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
             if payload == first:
                 await asyncio.sleep(1)
             if payload == later:
                 stop_event.set()
+            return len(payload)
 
     class FakeController:
         configured = False

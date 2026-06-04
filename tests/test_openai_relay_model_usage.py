@@ -221,6 +221,48 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
     }
 
 
+def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-usage-failure",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        )
+
+    def fail_record_usage(self: OpenAIRelay, **_: object) -> None:
+        raise OSError("usage store locked")
+
+    monkeypatch.setattr(OpenAIRelay, "_record_model_usage_event", fail_record_usage)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    caplog.set_level("WARNING", logger="agent_sandbox.relays.openai")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-usage-failure"
+    assert any(
+        record.message.startswith("relay_http_model_usage_record_failed")
+        for record in caplog.records
+    )
+    assert ModelUsageStore(runtime_dir / "model-usage.db").list_events() == []
+
+
 def test_openai_relay_marks_usage_unavailable_when_response_has_no_usage(
     tmp_path: Path, monkeypatch
 ) -> None:

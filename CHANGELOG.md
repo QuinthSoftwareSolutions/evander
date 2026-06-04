@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
+
+- Counted DIDWW RTP playback only after payload samples are actually handed to
+  the transport, including partial multi-frame sends interrupted by barge-in.
+- Kept successful non-streaming OpenAI relay responses from failing when model
+  usage recording raises.
+
 ## 2026-06-04 - OpenAI Relay Model Usage Coverage
 
 - Recorded model usage metadata for OpenAI relay WebSocket Responses traffic,

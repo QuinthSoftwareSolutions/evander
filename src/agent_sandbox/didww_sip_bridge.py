@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1205,9 +1206,14 @@ class RtpUdpEndpoint:
     async def recv_payload(self) -> bytes:
         return await self.incoming.get()
 
-    async def send_payload(self, payload: bytes) -> None:
+    async def send_payload(
+        self,
+        payload: bytes,
+        *,
+        on_samples_sent: Callable[[int], None] | None = None,
+    ) -> int:
         if not payload or self.transport is None or self.remote_addr is None:
-            return
+            return 0
         samples_per_frame = int(self.config.sample_rate_hz * self.config.frame_duration_ms / 1000)
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
         payload_bytes_per_frame = max(1, samples_per_frame * bytes_per_sample)
@@ -1215,6 +1221,7 @@ class RtpUdpEndpoint:
             payload[offset : offset + payload_bytes_per_frame]
             for offset in range(0, len(payload), payload_bytes_per_frame)
         ]
+        total_samples_sent = 0
         for index, chunk in enumerate(chunks):
             packet = RtpPacket(
                 sequence=self._sequence,
@@ -1227,8 +1234,12 @@ class RtpUdpEndpoint:
             self._sequence = (self._sequence + 1) & 0xFFFF
             samples_sent = max(1, (len(chunk) + bytes_per_sample - 1) // bytes_per_sample)
             self._timestamp = (self._timestamp + samples_sent) & 0xFFFFFFFF
+            total_samples_sent += samples_sent
+            if on_samples_sent is not None:
+                on_samples_sent(samples_sent)
             if index < len(chunks) - 1:
                 await asyncio.sleep(self.config.frame_duration_ms / 1000)
+        return total_samples_sent
 
     def close(self) -> None:
         if self.transport is not None:
@@ -1518,22 +1529,61 @@ class DidwwSipBridgeService:
             samples = max(0, audio_item_played_samples.get(item_id, 0))
             return int((samples * 1000) // self.config.sample_rate_hz)
 
+        def send_payload_accepts_sample_callback() -> bool:
+            send_payload = getattr(rtp, "send_payload", None)
+            if not callable(send_payload):
+                return False
+            try:
+                parameters = inspect.signature(send_payload).parameters
+            except (TypeError, ValueError):
+                return False
+            return "on_samples_sent" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+
+        rtp_send_supports_sample_callback = send_payload_accepts_sample_callback()
+
+        def mark_frame_samples_sent(frame: OutboundAudioFrame, samples: int) -> None:
+            nonlocal last_played_audio_item_id
+            sent_samples = max(0, samples)
+            if not frame.item_id or sent_samples <= 0:
+                return
+            last_played_audio_item_id = frame.item_id
+            audio_item_played_samples[frame.item_id] = (
+                audio_item_played_samples.get(frame.item_id, 0) + sent_samples
+            )
+            audio_item_content_index.setdefault(frame.item_id, frame.content_index)
+            if frame.response_id:
+                audio_item_response_id.setdefault(frame.item_id, frame.response_id)
+
+        def fallback_sent_sample_count(result: object, payload: bytes) -> int:
+            if result is None:
+                return payload_sample_count(payload)
+            try:
+                return max(0, int(result))
+            except (TypeError, ValueError):
+                return 0
+
         async def send_outbound_audio() -> None:
-            nonlocal outbound_sender_active, last_assistant_audio_at, last_played_audio_item_id
+            nonlocal outbound_sender_active, last_assistant_audio_at
             while True:
                 frame = await outbound_audio_queue.get()
                 outbound_sender_active = True
                 try:
-                    samples = payload_sample_count(frame.payload)
-                    if frame.item_id and samples > 0:
-                        last_played_audio_item_id = frame.item_id
-                        audio_item_played_samples[frame.item_id] = (
-                            audio_item_played_samples.get(frame.item_id, 0) + samples
+                    if rtp_send_supports_sample_callback:
+                        await rtp.send_payload(
+                            frame.payload,
+                            on_samples_sent=lambda samples: mark_frame_samples_sent(
+                                frame, samples
+                            ),
                         )
-                        audio_item_content_index.setdefault(frame.item_id, frame.content_index)
-                        if frame.response_id:
-                            audio_item_response_id.setdefault(frame.item_id, frame.response_id)
-                    await rtp.send_payload(frame.payload)
+                    else:
+                        result = await rtp.send_payload(frame.payload)
+                        mark_frame_samples_sent(
+                            frame,
+                            fallback_sent_sample_count(result, frame.payload),
+                        )
                 finally:
                     last_assistant_audio_at = loop.time()
                     outbound_sender_active = False

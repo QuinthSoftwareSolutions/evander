@@ -191,13 +191,22 @@ class OpenAIRelay:
                         headers=headers,
                         content=request_body,
                     )
-                    relay._record_model_usage_event(
-                        session_id=request_context.session_id,
-                        upstream_path=upstream_path,
-                        request_body=request_body,
-                        upstream_response=upstream_response,
-                        duration_ms=relay._duration_ms_since(started_at),
-                    )
+                    try:
+                        relay._record_model_usage_event(
+                            session_id=request_context.session_id,
+                            upstream_path=upstream_path,
+                            request_body=request_body,
+                            upstream_response=upstream_response,
+                            duration_ms=relay._duration_ms_since(started_at),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            request_context.session_id,
+                            request.url.path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
                     return Response(
                         content=upstream_response.content,
                         status_code=upstream_response.status_code,
@@ -249,13 +258,22 @@ class OpenAIRelay:
                     headers=headers,
                     content=request_body,
                 )
-                relay._record_model_usage_event(
-                    session_id=request_context.session_id,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                    upstream_response=upstream_response,
-                    duration_ms=relay._duration_ms_since(started_at),
-                )
+                try:
+                    relay._record_model_usage_event(
+                        session_id=request_context.session_id,
+                        upstream_path=upstream_path,
+                        request_body=request_body,
+                        upstream_response=upstream_response,
+                        duration_ms=relay._duration_ms_since(started_at),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        request_context.session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
                 return Response(
                     content=upstream_response.content,
                     status_code=upstream_response.status_code,
