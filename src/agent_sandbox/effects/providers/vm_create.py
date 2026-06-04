@@ -36,6 +36,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
             "directory_path": effect.directory_path,
+            "metadata": effect.metadata,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -75,6 +76,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             playwright=bool(payload.get("playwright", False)),
             codex_skills=codex_skills,
             directory_path=directory_path,
+            metadata=self._metadata_patch(payload.get("metadata")),
         )
 
         resolved_session_id = session_id or f"session-{vm_name}"
@@ -140,3 +142,11 @@ class VmCreateEffectProvider(EffectProviderBase):
             if mapped_value:
                 normalized[key] = mapped_value
         return normalized or None
+
+    @staticmethod
+    def _metadata_patch(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise ValueError("effect:vm:create metadata must resolve to a JSON object")
+        return dict(value)

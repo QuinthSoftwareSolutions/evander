@@ -36,7 +36,7 @@ service and configure `config/admin-web.env` before exposing it beyond localhost
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
 12. Optionally bootstrap generic guest Python packages into an offline tools virtualenv with `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]`.
 13. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-14. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+14. Optionally prewarm the shared host NuGet cache for libvirt VMs with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
 15. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
 16. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
 17. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
@@ -523,6 +523,26 @@ Storage layout for directory config:
   ./scripts/inspect_nuget_cache.sh Acme.Product.Core 2026.3.6.1
   ```
 
+## Container Worker NuGet Fallback Cache
+
+- Container workers use a separate fallback cache, typically
+  `/var/lib/agent-worker/toolchain-cache/nuget-cache-ro` on each worker VM.
+- Prewarm that cache from the control plane, through the host NuGet relay, with:
+
+  ```bash
+  ./scripts/prewarm_container_worker_nuget_cache.sh \
+    --worker truman-worker-1 \
+    --target /opt/truman/runtime/repo-cache/acd57ed0241e2a600b46d33f743d5f25f35dca73ac822e6ce4619ac37b8f4def-worktree/Src/App.slnx
+  ```
+
+- The script restores into a temporary global-packages folder, includes the
+  worker restore-support package used by the offline smoke test, and extracts
+  the archive additively into each worker cache.
+- When the `.NET` toolchain and checkout are already on the worker, run the
+  same script on that worker with `--local --dotnet /var/lib/agent-worker/toolchain-cache/dotnet/dotnet`
+  and set `NUGET_RELAY_BASE_URL` to the control-plane relay URL visible from the
+  worker.
+
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
@@ -551,8 +571,11 @@ Storage layout for directory config:
   }
   ```
 - Public OpenAI remains the default when `openai_provider_mode` is omitted.
-- This first slice covers normal HTTP Responses API Codex requests only; WebSocket/realtime and
-  managed identity are not included.
+- The relay records provider-neutral model usage metadata for HTTP, SSE, and
+  WebSocket Responses/Completions traffic that exposes a provider `usage`
+  payload. It also records `usage_unavailable` when a completed response has no
+  usage block. Azure OpenAI WebSocket/realtime and managed identity are not
+  included.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
   to declare Responses `web_search` tools.
@@ -597,8 +620,9 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Required MCP arguments: `id`, `comment`.
   - Optional MCP arguments: `project`, `mentions`, `artifact_ids`, `request_id`.
   - `mentions` accepts Azure DevOps identity IDs, descriptors, email/UPN values, or display/name
-    search text. The gateway resolves refs with the ADO identities API and prepends Markdown
-    `@<identity-id>` mention tokens before posting; unresolved or ambiguous refs fail the call.
+    search text. The gateway resolves refs with the ADO identities API, renders the comment as
+    ADO HTML with documented `data-vss-mention` anchors, and posts with explicit `format=html`;
+    unresolved or ambiguous refs fail the call.
 - Gateway tool name: `update_ado_backlog_text`.
   - Policy-gated with `update_ado_backlog_text`.
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
@@ -862,11 +886,12 @@ use a static payload codec. The default is A-law/PCMA:
 `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ=8000`. For u-law/PCMU, use `ulaw`, payload type `0`, and the same
 sample rate.
 
-For barge-in, the bridge keeps OpenAI Realtime `server_vad` and automatic caller-turn response
-creation enabled, but disables immediate Realtime interruption. The bridge waits
-`DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; short configured
-backchannels such as `ok` or `uh-huh` are stored in the transcript without cancelling current
-assistant playback.
+For barge-in, the bridge keeps OpenAI Realtime `server_vad` enabled while disabling automatic
+caller-turn response creation and immediate Realtime interruption. The bridge waits
+`DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; when substantive caller
+speech cancels playback, it also truncates the assistant audio item to the RTP-played prefix so the
+next model turn does not assume the caller heard queued audio. Short configured backchannels such as
+`ok` or `uh-huh` are stored in the transcript without cancelling current assistant playback.
 
 Minimum host setup:
 

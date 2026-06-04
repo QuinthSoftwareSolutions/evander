@@ -184,12 +184,29 @@ class OpenAIRelay:
                     timeout=request_context.config.openai_relay_timeout_seconds,
                     transport=relay.transport,
                 ) as client:
+                    started_at = time.perf_counter()
                     upstream_response = await client.request(
                         method=request.method,
                         url=upstream_url,
                         headers=headers,
                         content=request_body,
                     )
+                    try:
+                        relay._record_model_usage_event(
+                            session_id=request_context.session_id,
+                            upstream_path=upstream_path,
+                            request_body=request_body,
+                            upstream_response=upstream_response,
+                            duration_ms=relay._duration_ms_since(started_at),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            request_context.session_id,
+                            request.url.path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
                     return Response(
                         content=upstream_response.content,
                         status_code=upstream_response.status_code,
@@ -241,13 +258,22 @@ class OpenAIRelay:
                     headers=headers,
                     content=request_body,
                 )
-                relay._record_model_usage_event(
-                    session_id=request_context.session_id,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                    upstream_response=upstream_response,
-                    duration_ms=relay._duration_ms_since(started_at),
-                )
+                try:
+                    relay._record_model_usage_event(
+                        session_id=request_context.session_id,
+                        upstream_path=upstream_path,
+                        request_body=request_body,
+                        upstream_response=upstream_response,
+                        duration_ms=relay._duration_ms_since(started_at),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        request_context.session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
                 return Response(
                     content=upstream_response.content,
                     status_code=upstream_response.status_code,
@@ -307,6 +333,7 @@ class OpenAIRelay:
                     websocket,
                     upstream,
                     session_id=request_context.session_id,
+                    upstream_path=upstream_path,
                     path=websocket.url.path,
                     web_search_enabled=request_context.web_search_enabled,
                 )
@@ -455,41 +482,25 @@ class OpenAIRelay:
             return
 
         response_payload = self._json_payload_from_response(upstream_response)
-        request_status = self._request_status_for_response(upstream_response.status_code)
-        request_metadata = {
-            "method": "POST",
-            "path": f"/v1/{upstream_path}",
-        }
-        response_metadata = {
-            "status_code": upstream_response.status_code,
-            "content_type": upstream_response.headers.get("content-type"),
-        }
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
-        )
-        request_hash = sha256(request_body).hexdigest() if request_body else None
         response_body = upstream_response.content
-        response_hash = sha256(response_body).hexdigest() if response_body else None
-        extractor = MappingModelUsageExtractor(provider_name="openai")
-        result = extractor.extract(
-            ModelUsageExtractionRequest(
-                provider="openai",
-                provider_endpoint_identifier=upstream_path,
-                request_status=request_status,
-                model=response_payload.get("model"),
-                duration_ms=duration_ms,
-                request_body_bytes=len(request_body) if request_body else None,
-                request_body_sha256=request_hash,
-                response_body_bytes=len(response_body) if response_body else None,
-                response_body_sha256=response_hash,
-                response_payload=response_payload,
-                request_metadata=request_metadata,
-                response_metadata=response_metadata,
-                correlation_context=correlation_context,
-            )
+        self._record_model_usage_payload(
+            session_id=session_id,
+            upstream_path=upstream_path,
+            request_status=self._request_status_for_response(upstream_response.status_code),
+            request_body=request_body,
+            response_body_bytes=len(response_body) if response_body else None,
+            response_body_sha256=sha256(response_body).hexdigest() if response_body else None,
+            response_payload=response_payload,
+            request_metadata={
+                "method": "POST",
+                "path": f"/v1/{upstream_path}",
+            },
+            response_metadata={
+                "status_code": upstream_response.status_code,
+                "content_type": upstream_response.headers.get("content-type"),
+            },
+            duration_ms=duration_ms,
         )
-        self.model_usage_store.upsert_event(result.event)
 
     def _record_stream_model_usage_event(
         self,
@@ -506,7 +517,82 @@ class OpenAIRelay:
         if not self._is_model_usage_endpoint(upstream_path):
             return
 
-        request_status = self._request_status_for_response(upstream_response.status_code)
+        self._record_model_usage_payload(
+            session_id=session_id,
+            upstream_path=upstream_path,
+            request_status=self._request_status_for_response(upstream_response.status_code),
+            request_body=request_body,
+            response_body_bytes=response_body_bytes or None,
+            response_body_sha256=response_body_sha256,
+            response_payload=response_payload,
+            request_metadata={
+                "method": "POST",
+                "path": f"/v1/{upstream_path}",
+                "stream": True,
+            },
+            response_metadata={
+                "status_code": upstream_response.status_code,
+                "content_type": upstream_response.headers.get("content-type"),
+                "stream": True,
+            },
+            duration_ms=duration_ms,
+        )
+
+    def _record_websocket_model_usage_event(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        message: str | bytes,
+        response_payload: dict[str, Any],
+        event_type: str | None,
+        duration_ms: int | None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
+        if isinstance(message, bytes):
+            message_body = message
+        else:
+            message_body = message.encode("utf-8")
+        self._record_model_usage_payload(
+            session_id=session_id,
+            upstream_path=upstream_path,
+            request_status="success",
+            request_body=None,
+            response_body_bytes=len(message_body) if message_body else None,
+            response_body_sha256=sha256(message_body).hexdigest() if message_body else None,
+            response_payload=response_payload,
+            request_metadata={
+                "method": "WEBSOCKET",
+                "path": f"/v1/{upstream_path}",
+                "websocket": True,
+            },
+            response_metadata={
+                "websocket": True,
+                "event_type": event_type,
+                "message_bytes": len(message_body),
+            },
+            duration_ms=duration_ms,
+        )
+
+    def _record_model_usage_payload(
+        self,
+        *,
+        session_id: str,
+        upstream_path: str,
+        request_status: str,
+        request_body: bytes | None,
+        response_body_bytes: int | None,
+        response_body_sha256: str | None,
+        response_payload: dict[str, Any],
+        request_metadata: dict[str, Any],
+        response_metadata: dict[str, Any],
+        duration_ms: int | None,
+    ) -> None:
+        if not self._is_model_usage_endpoint(upstream_path):
+            return
+
         correlation_context = self.model_usage_store.get_active_correlation_context(
             session_id=session_id,
             agent_harness=MODEL_USAGE_AGENT_HARNESS,
@@ -522,19 +608,11 @@ class OpenAIRelay:
                 duration_ms=duration_ms,
                 request_body_bytes=len(request_body) if request_body else None,
                 request_body_sha256=request_hash,
-                response_body_bytes=response_body_bytes or None,
+                response_body_bytes=response_body_bytes,
                 response_body_sha256=response_body_sha256,
                 response_payload=response_payload,
-                request_metadata={
-                    "method": "POST",
-                    "path": f"/v1/{upstream_path}",
-                    "stream": True,
-                },
-                response_metadata={
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                    "stream": True,
-                },
+                request_metadata=request_metadata,
+                response_metadata=response_metadata,
                 correlation_context=correlation_context,
             )
         )
@@ -588,7 +666,12 @@ class OpenAIRelay:
     @staticmethod
     def _is_model_usage_endpoint(upstream_path: str) -> bool:
         normalized = upstream_path.lstrip("/")
-        return normalized in {"responses", "chat/completions", "completions"}
+        return normalized in {
+            "responses",
+            "responses/compact",
+            "chat/completions",
+            "completions",
+        }
 
     @staticmethod
     def _json_payload_from_response(response: httpx.Response) -> dict[str, Any]:
@@ -822,6 +905,7 @@ class OpenAIRelay:
         upstream: Any,
         *,
         session_id: str | None = None,
+        upstream_path: str = "",
         path: str = "",
         web_search_enabled: bool = True,
     ) -> None:
@@ -887,6 +971,8 @@ class OpenAIRelay:
                         return
                     await upstream.send(message["bytes"])
 
+        started_at = time.perf_counter()
+
         async def upstream_to_client() -> None:
             while True:
                 try:
@@ -898,6 +984,26 @@ class OpenAIRelay:
                     await safe_close_client(code=1011)
                     return
 
+                usage_payload = self._websocket_usage_payload_from_message(message)
+                if usage_payload is not None and session_id:
+                    response_payload, event_type = usage_payload
+                    try:
+                        self._record_websocket_model_usage_event(
+                            session_id=session_id,
+                            upstream_path=upstream_path,
+                            message=message,
+                            response_payload=response_payload,
+                            event_type=event_type,
+                            duration_ms=self._duration_ms_since(started_at),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_websocket_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            session_id,
+                            path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
                 if isinstance(message, bytes):
                     await websocket.send_bytes(message)
                 else:
@@ -915,6 +1021,47 @@ class OpenAIRelay:
             exc = task.exception()
             if exc is not None and not isinstance(exc, WebSocketDisconnect):
                 raise exc
+
+    @classmethod
+    def _websocket_usage_payload_from_message(
+        cls, message: str | bytes
+    ) -> tuple[dict[str, Any], str | None] | None:
+        if isinstance(message, bytes):
+            try:
+                text = message.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        else:
+            text = message
+        try:
+            event_payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event_payload, dict):
+            return None
+
+        candidate = event_payload.get("response")
+        if not isinstance(candidate, dict):
+            candidate = event_payload
+        event_type = event_payload.get("type") or candidate.get("type")
+        normalized_event_type = str(event_type or "").strip()
+        has_response_id = candidate.get("id") is not None
+        has_usage = isinstance(candidate.get("usage"), dict)
+        is_final_response_event = normalized_event_type in {
+            "response.completed",
+            "response.done",
+        }
+        is_response_payload_with_usage = has_response_id and has_usage
+        if not has_response_id or not (
+            is_final_response_event or is_response_payload_with_usage
+        ):
+            return None
+
+        payload: dict[str, Any] = {}
+        cls._merge_stream_event_dict(event_payload, payload)
+        if not payload.get("id"):
+            return None
+        return payload, normalized_event_type or None
 
 
 def create_app(

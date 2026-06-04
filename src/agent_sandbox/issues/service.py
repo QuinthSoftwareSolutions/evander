@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import httpx
 
 from agent_sandbox.ado_mentions import (
-    render_ado_mentions_prefix,
+    render_ado_mentions_html_prefix,
     resolve_ado_mentions,
 )
 from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
@@ -1087,13 +1087,17 @@ class AzureDevOpsIssueAdapter:
                 auth_header=auth_header,
                 attachments=attachments,
             )
-            comment_with_mentions = render_ado_mentions_prefix(comment, resolved_mentions)
-            formatted_comment = (
-                _append_html_attachment_links(comment_with_mentions, uploaded_attachments) or ""
+            formatted_comment = render_ado_mentions_html_prefix(
+                _format_ado_html_field(comment) or "",
+                resolved_mentions,
             )
+            if uploaded_attachments:
+                formatted_comment = (
+                    _append_html_attachment_links(formatted_comment, uploaded_attachments) or ""
+                )
             response = client.post(
                 comments_url,
-                params={"api-version": "7.1-preview.4"},
+                params={"api-version": "7.1-preview.4", "format": "html"},
                 headers={"Authorization": auth_header, "Content-Type": "application/json"},
                 json={"text": formatted_comment},
             )

@@ -2815,6 +2815,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("playwright", "Playwright", "boolean", bindable=True),
             _field("codex_skills", "Codex skills", "string_list"),
             _field("directory_path", "Directory path", "string", bindable=True),
+            _field("metadata", "Metadata", "json", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

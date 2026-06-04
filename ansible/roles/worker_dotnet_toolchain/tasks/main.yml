@@ -68,11 +68,11 @@
     fail_msg: >-
       Missing local dotnet restore support archive:
       {{ agent_sandbox_worker_dotnet_restore_support_archive_path }}. Set
-      agent_sandbox_worker_dotnet_restore_support_archive_path to a tar.gz
-      containing the contents of a NuGet global packages folder, or unset it so
-      the playbook restores {{ agent_sandbox_worker_dotnet_restore_support_package_id }}
-      locally with the SDK from
-      HOST_DOTNET_ROOT/agent_sandbox_worker_dotnet_toolchain_local_path.
+      agent_sandbox_worker_nuget_fallback_archive_path/HOST_NUGET_FALLBACK_ARCHIVE
+      or agent_sandbox_worker_dotnet_restore_support_archive_path/HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE
+      to a tar.gz containing the contents of a NuGet global-packages folder, or unset
+      both so the playbook restores {{ agent_sandbox_worker_dotnet_restore_support_package_id }}
+      locally with the SDK from HOST_DOTNET_ROOT/agent_sandbox_worker_dotnet_toolchain_local_path.
     success_msg: Local dotnet restore support archive is present.
   when:
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool

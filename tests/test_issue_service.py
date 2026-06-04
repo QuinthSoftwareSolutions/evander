@@ -231,6 +231,42 @@ def test_create_issue_uploads_description_artifact_and_links_relation(
     assert result["uploaded_attachments"][0]["filename"] == "screen.png"
 
 
+def test_post_comment_formats_markdownish_body_as_explicit_ado_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "text": "<p>Summary</p><ul><li>First item</li></ul>",
+                "_links": {"web": {"href": "https://dev.azure.com/comment/5"}},
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    adapter.post_comment(
+        directory_path="root",
+        remote_issue_id="77",
+        comment="Summary\n- First item",
+    )
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert calls[0]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
+    assert calls[0]["json"]["text"] == "<p>Summary</p><ul><li>First item</li></ul>"
+
+
 def test_post_comment_uploads_artifact_appends_image_and_links_relation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -283,6 +319,8 @@ def test_post_comment_uploads_artifact_appends_image_and_links_relation(
 
     assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/attachments"
     assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert calls[1]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
+    assert calls[1]["json"]["text"].startswith("<p>Comment</p>")
     assert (
         '<img src="https://dev.azure.com/example/project-x/_apis/wit/attachments/att-2"'
         in calls[1]["json"]["text"]
@@ -340,8 +378,11 @@ def test_post_comment_resolves_ado_mentions_before_posting(
     assert calls[0]["url"] == "https://vssps.dev.azure.com/example/_apis/identities"
     assert calls[0]["params"]["filterValue"] == "ada@example.com"
     assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert calls[1]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
     assert calls[1]["json"]["text"] == (
-        "@<11111111-1111-1111-1111-111111111111>\n\nComment"
+        '<p><a href="#" data-vss-mention="version:2.0,'
+        '11111111-1111-1111-1111-111111111111">@Ada Lovelace</a></p>\n'
+        "<p>Comment</p>"
     )
     assert result["resolved_mentions"] == [
         {

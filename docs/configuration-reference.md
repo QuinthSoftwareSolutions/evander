@@ -626,7 +626,9 @@ artifacts folder. The `path` value must be relative and stay inside that folder.
 session metadata. `metadata_equals` and `metadata_prefix` are JSON objects keyed
 by metadata key or dotted metadata path. `metadata_exists` may be a string, array,
 or object of key -> boolean. `directory_path` scopes to that directory and its
-descendants. `active_only=true` or `state=active` excludes expired sessions.
+descendants; when omitted, it defaults to the workflow graph directory context,
+falling back to `root`. `active_only=true` or `state=active` excludes expired
+sessions.
 
 `query:issue:list` reads tracked local and proxy issues from the local issue
 store. It defaults to the workflow runtime directory and `direct_only=true`,
@@ -1538,6 +1540,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/launch_agent_vm.sh` | `VM_STORAGE_DIR`, `GATEWAY_URL`, `SSH_PUBLIC_KEY_FILE`, `SSH_PRIVATE_KEY_PATH`, `LLM_BASE_URL`, `SHARED_NUGET_CACHE_DIR`, `SHARED_NUGET_CACHE_TAG`, `SHARED_NUGET_CACHE_MODE`, `RAM_MB`, `VCPUS`, `DISK_SIZE_GB` |
 | `scripts/lib/agent_status.sh` | `VM_AGENT_STATE_MAX_AGE_SECONDS` |
 | `scripts/list_running_vms.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS` |
+| `scripts/prewarm_container_worker_nuget_cache.sh` | `CONTAINER_WORKER_NUGET_CACHE_PATH`, `DOTNET_COMMAND`, `NUGET_RELAY_BASE_URL` |
 | `scripts/prewarm_nuget_cache.sh` | `SHARED_NUGET_CACHE_DIR`, `NUGET_CONFIG_FILE`, `NUGET_HTTP_CACHE_DIR`, `NUGET_TEMP_DIR` |
 | `scripts/resume_issue_agent.sh` | `SSH_PRIVATE_KEY_PATH`, `AGENT_PROVIDER`, `AGENT_MODEL`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS`, `RESUME_COMMAND_TIMEOUT_SECONDS` |
 | `scripts/setup_vm.sh` | `SSH_PUBLIC_KEY_FILE`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS`, `SSH_PRIVATE_KEY_PATH`, `AGENT_PROVIDER`, `AGENT_MODEL` |

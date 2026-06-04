@@ -321,6 +321,92 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     container_queries = {query["id"]: query for query in container.queries}
     assert default_effects["effect-vm-create-1"]["type"] == "effect:vm:create"
     assert container_effects["effect-agent-create-1"]["type"] == "effect:agent:create"
+    expected_issue_session_guard_query = {
+        "active_only": True,
+        "directory_path": "${{gate-merge-1.directory_path}}",
+        "limit": 1,
+        "metadata_equals": {
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "labels.vm-type": "issue",
+        },
+    }
+    expected_issue_start_dedupe = {
+        "key": "issue-start:${{gate-merge-1.directory_path}}:${{gate-merge-1.ticket.issue_number}}",
+        "ttl": "PT15M",
+    }
+    expected_issue_session_guard_filter = {
+        "all": [
+            {
+                "equals": 0,
+                "left": "${{query-session-list-active-issue-1.count}}",
+            }
+        ]
+    }
+    expected_issue_create_metadata = {
+        "ado_project": "${{gate-merge-1.ado_project}}",
+        "directory_path": "${{gate-merge-1.directory_path}}",
+        "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+        "issue_title": "${{gate-merge-1.ticket.title}}",
+    }
+    for queries in (default_queries, container_queries):
+        assert (
+            queries["query-session-list-active-issue-1"]["type"]
+            == "query:session:list"
+        )
+        assert (
+            queries["query-session-list-active-issue-1"]["config"]
+            == expected_issue_session_guard_query
+        )
+    for gates in (default_gates, container_gates):
+        assert gates["gate-dedupe-issue-start-1"]["type"] == "gate:dedupe"
+        assert gates["gate-dedupe-issue-start-1"]["config"] == expected_issue_start_dedupe
+        assert (
+            gates["gate-filter-no-active-issue-session-1"]["config"]["when"]
+            == expected_issue_session_guard_filter
+        )
+    for edges in (default_edges, container_edges):
+        assert ("gate-merge-1", "effect-vm-create-1") not in edges
+        assert ("gate-merge-1", "effect-agent-create-1") not in edges
+        assert ("gate-merge-1", "query-session-list-active-issue-1") not in edges
+        assert (
+            edges[("gate-merge-1", "gate-dedupe-issue-start-1")]["target_id"]
+            == "gate-dedupe-issue-start-1"
+        )
+        assert (
+            edges[("gate-dedupe-issue-start-1", "query-session-list-active-issue-1")][
+                "target_id"
+            ]
+            == "query-session-list-active-issue-1"
+        )
+        assert (
+            edges[
+                (
+                    "query-session-list-active-issue-1",
+                    "gate-filter-no-active-issue-session-1",
+                )
+            ]["target_id"]
+            == "gate-filter-no-active-issue-session-1"
+        )
+    assert (
+        default_edges[
+            ("gate-filter-no-active-issue-session-1", "effect-vm-create-1")
+        ]["target_id"]
+        == "effect-vm-create-1"
+    )
+    assert (
+        container_edges[
+            ("gate-filter-no-active-issue-session-1", "effect-agent-create-1")
+        ]["target_id"]
+        == "effect-agent-create-1"
+    )
+    assert (
+        default_effects["effect-vm-create-1"]["config"]["metadata"]
+        == expected_issue_create_metadata
+    )
+    assert (
+        container_effects["effect-agent-create-1"]["config"]["metadata"]
+        == expected_issue_create_metadata
+    )
     assert container_effects["effect-agent-clone-repo-1"]["type"] == "effect:agent:clone-repo"
     assert (
         container_effects["effect-agent-bootstrap-frontend-1"]["type"]

@@ -121,9 +121,11 @@ version, or set `HOST_DOTNET_TOOLS_ARCHIVE` /
 `agent_sandbox_worker_dotnet_tools_archive_path` to copy a prebuilt dotnet tool-path tarball.
 The same role seeds `Microsoft.Extensions.FileSystemGlobbing` into the worker NuGet fallback cache
 and runs an offline `dotnet restore` smoke test inside the runner. Use
-`HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
-`agent_sandbox_worker_dotnet_restore_support_archive_path` when deploys must use a prebuilt NuGet
-global-packages tarball instead of restoring that support package from the Ansible control machine.
+`HOST_NUGET_FALLBACK_ARCHIVE` /
+`agent_sandbox_worker_nuget_fallback_archive_path` when deploys must use a prebuilt NuGet
+global-packages tarball instead of restoring only that support package from the Ansible control
+machine. The older `HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
+`agent_sandbox_worker_dotnet_restore_support_archive_path` names remain accepted for compatibility.
 Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
 `agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
@@ -135,7 +137,12 @@ seeded Chromium executable for Karma-style browser launchers. This lets browser 
 binary instead of looking for system Chrome under `/opt/google/chrome` or downloading a browser at
 task time.
 Project-specific NuGet fallback packages remain operator-controlled and
-are not baked into the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+are not baked into the image. Populate them from the control plane with
+`scripts/prewarm_container_worker_nuget_cache.sh --worker <worker-host> --target <solution-or-project>`
+so restores use the control-plane NuGet relay and workers receive an additive global-packages
+archive. If the restore target and .NET toolchain are on the worker itself, run the script there
+with `--local --dotnet <worker-dotnet-path>` and point `NUGET_RELAY_BASE_URL` at the control-plane
+relay. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 

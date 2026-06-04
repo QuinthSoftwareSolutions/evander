@@ -150,6 +150,8 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "HOST_DOTNET_TOOLS_ARCHIVE" in text
     assert "agent_sandbox_worker_dotnet_ef_version" in text
     assert "HOST_DOTNET_EF_VERSION" in text
+    assert "agent_sandbox_worker_nuget_fallback_archive_path" in text
+    assert "HOST_NUGET_FALLBACK_ARCHIVE" in text
     assert "agent_sandbox_worker_dotnet_restore_support_archive_path" in text
     assert "HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE" in text
     assert "Microsoft.Extensions.FileSystemGlobbing" in text
@@ -471,6 +473,7 @@ def test_worker_dotnet_toolchain_role_seeds_and_verifies_runner_dotnet_cache() -
     assert "Install dotnet EF tool into local staging directory" in role
     assert "Pack local dotnet tools directory" in role
     assert "Restore local dotnet restore support package into staging directory" in role
+    assert "agent_sandbox_worker_nuget_fallback_archive_path/HOST_NUGET_FALLBACK_ARCHIVE" in role
     assert "Pack local dotnet restore support packages" in role
     assert "Copy dotnet toolchain archive to worker" in role
     assert "Copy dotnet tools archive to worker" in role

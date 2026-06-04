@@ -1343,6 +1343,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
+    assert any(field["key"] == "metadata" for field in vm_create["fields"])
     agent_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
@@ -1578,6 +1579,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
+        "metadata",
     }
 
 

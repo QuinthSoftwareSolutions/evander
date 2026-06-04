@@ -32,6 +32,7 @@ SCRIPTS = [
     "handle_agent_push.sh",
     "handle_git_push_trigger.sh",
     "mirror_issue_repo.sh",
+    "prewarm_container_worker_nuget_cache.sh",
     "prewarm_nuget_cache.sh",
     "provision_exampleindustry_app_demo_environment.sh",
     "seed_workflow_run_inspector_demo.sh",

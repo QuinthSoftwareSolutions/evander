@@ -5,6 +5,60 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
+
+- Counted DIDWW RTP playback only after payload samples are actually handed to
+  the transport, including partial multi-frame sends interrupted by barge-in.
+- Kept successful non-streaming OpenAI relay responses from failing when model
+  usage recording raises.
+
+## 2026-06-04 - OpenAI Relay Model Usage Coverage
+
+- Recorded model usage metadata for OpenAI relay WebSocket Responses traffic,
+  Azure OpenAI non-stream Responses traffic, and `/responses/compact`, keeping
+  prompt and completion text out of the persisted usage store.
+
+## 2026-06-04 - DIDWW Realtime Playback Truncation
+
+- Truncated interrupted DIDWW/OpenAI Realtime assistant audio to the RTP-played
+  prefix when substantive caller barge-in cancels playback, keeping future model
+  turns from assuming the caller heard queued or generated-but-unsent audio.
+
+## 2026-06-04 - Issue Session Start Guard
+
+- Added active-session guards to the issue-start workflow packs so repeated
+  Azure DevOps work-item revisions for the same issue do not create another
+  issue agent while an active issue session already exists.
+- Added a short issue-keyed dedupe gate ahead of the active-session guard to
+  suppress rapid duplicate starts before session creation has finished.
+- Allowed `effect:vm:create` workflow nodes to stamp session metadata at create
+  time, matching the existing `effect:agent:create` behavior used by the guard.
+
+## 2026-06-04 - Azure DevOps Work Item Comment HTML Formatting
+
+- Rendered Azure DevOps work-item comments as ADO HTML, including resolved
+  `data-vss-mention` anchors, and posted them with explicit `format=html` so
+  agent-authored Markdown-like text formats consistently in Azure Boards.
+
+## 2026-06-04 - Container Worker NuGet Cache Prewarm
+
+- Added a control-plane script for prewarming container-worker NuGet fallback
+  caches through the host NuGet relay and additively copying the resulting
+  global-packages archive to worker VMs.
+- Added worker deployment aliases for prebuilt NuGet fallback archives while
+  preserving the older restore-support archive variable names.
+
+## 2026-06-04 - Session List Query Graph Directory Scope
+
+- Fixed `query:session:list` so omitted `directory_path` inherits the workflow
+  graph directory context instead of searching every session globally.
+
+## 2026-06-04 - Session Metadata Rule Editor Controls
+
+- Hid the `query:session:list` metadata filter mode dropdowns from the
+  structured metadata rule editor and kept raw JSON/binding controls behind an
+  explicit raw-filter action.
+
 ## 2026-06-03 - Workflow Trigger Graph Directory Scope
 
 - Fixed trigger provider initialization so graph-scoped triggers inherit their

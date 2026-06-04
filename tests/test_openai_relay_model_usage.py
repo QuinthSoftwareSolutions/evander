@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -8,11 +11,12 @@ import httpx
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.relays.openai import create_app
+from agent_sandbox.relays.openai import OpenAIRelay, create_app
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
@@ -32,6 +36,29 @@ class _UsageStream(httpx.AsyncByteStream):
         return None
 
 
+class _FakeUpstreamWebSocket:
+    def __init__(self) -> None:
+        self.sent_messages: list[str | bytes] = []
+        self._recv_queue: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, message: str | bytes) -> None:
+        self.sent_messages.append(message)
+
+    async def recv(self) -> str | bytes:
+        message = await self._recv_queue.get()
+        if message is None:
+            raise RuntimeError("upstream closed")
+        return message
+
+    async def push(self, message: str | bytes) -> None:
+        await self._recv_queue.put(message)
+
+    async def close(self) -> None:
+        self.closed = True
+        await self._recv_queue.put(None)
+
+
 def make_config(tmp_path: Path) -> GatewayConfig:
     return GatewayConfig(
         runtime_dir=tmp_path,
@@ -43,6 +70,16 @@ def make_config(tmp_path: Path) -> GatewayConfig:
         discord_command_store_path=tmp_path / "discord.json",
         openai_api_base_url="https://api.openai.com/v1",
         openai_api_key_env="OPENAI_API_KEY",
+    )
+
+
+def write_provider_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload=payload,
     )
 
 
@@ -69,6 +106,15 @@ def ensure_directory(config: GatewayConfig, directory_path: str = "root/team-a")
     directory_service = DirectoryService(directory_store)
     parent, name = directory_path.rsplit("/", 1)
     directory_service.create(parent=parent, name=name)
+
+
+def wait_for_upstream_messages(
+    upstream: _FakeUpstreamWebSocket, expected: list[str | bytes]
+) -> None:
+    deadline = time.time() + 1.0
+    while time.time() < deadline and upstream.sent_messages != expected:
+        time.sleep(0.01)
+    assert upstream.sent_messages == expected
 
 
 def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
@@ -175,6 +221,48 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
     }
 
 
+def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-usage-failure",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        )
+
+    def fail_record_usage(self: OpenAIRelay, **_: object) -> None:
+        raise OSError("usage store locked")
+
+    monkeypatch.setattr(OpenAIRelay, "_record_model_usage_event", fail_record_usage)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    caplog.set_level("WARNING", logger="agent_sandbox.relays.openai")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-usage-failure"
+    assert any(
+        record.message.startswith("relay_http_model_usage_record_failed")
+        for record in caplog.records
+    )
+    assert ModelUsageStore(runtime_dir / "model-usage.db").list_events() == []
+
+
 def test_openai_relay_marks_usage_unavailable_when_response_has_no_usage(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -268,6 +356,118 @@ def test_openai_relay_maps_chat_completion_token_names(tmp_path: Path, monkeypat
     assert "secret completion text" not in event_json
 
 
+def test_openai_relay_records_responses_compact_usage(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-compact",
+        workflow_run_id="workflow-compact",
+        effect_id="effect-compact",
+        execution_backend="libvirt_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/responses/compact"
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-compact",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+            },
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses/compact",
+        json={"model": "gpt-5.2-codex", "input": "secret prompt text"},
+    )
+
+    assert response.status_code == 200
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-compact")
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.provider_endpoint_identifier == "responses/compact"
+    assert event.total_tokens == 5
+    assert event.workflow_run_id == "workflow-compact"
+    assert "secret prompt text" not in event_json
+
+
+def test_openai_relay_records_azure_http_usage(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "openai_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-azure",
+        dispatch_id="dispatch-azure",
+        workflow_run_id="workflow-azure",
+        effect_id="effect-azure",
+        execution_backend="libvirt_vm",
+        directory_path="root/team-a",
+        model="gpt-5.4",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = request.url.query.decode("utf-8")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-azure",
+                "type": "response",
+                "model": "deployment-root",
+                "usage": {"input_tokens": 6, "output_tokens": 7, "total_tokens": 13},
+            },
+        )
+
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-azure/responses",
+        json={"model": "gpt-5.4", "input": "secret prompt text"},
+    )
+
+    assert response.status_code == 200
+    assert captured["path"] == "/openai/v1/responses"
+    assert "api-version=preview" in str(captured["query"])
+    assert captured["payload"] == {"model": "deployment-root", "input": "secret prompt text"}
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-azure")
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.provider == "openai"
+    assert event.provider_endpoint_identifier == "responses"
+    assert event.model == "deployment-root"
+    assert event.total_tokens == 13
+    assert event.session_id == "session-azure"
+    assert event.workflow_run_id == "workflow-azure"
+    assert "secret prompt text" not in event_json
+
+
 def test_openai_relay_records_streaming_final_usage_without_raw_text(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -309,6 +509,213 @@ def test_openai_relay_records_streaming_final_usage_without_raw_text(
     assert event.response_body_sha256 is not None
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
+
+
+def test_openai_relay_records_websocket_final_usage_without_raw_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    context_started_at = datetime.now(UTC)
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-websocket",
+        workflow_run_id="workflow-websocket",
+        effect_id="effect-websocket",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+        trace_id="trace-websocket",
+        started_at=context_started_at,
+        expires_at=context_started_at + timedelta(hours=1),
+    )
+    upstream = _FakeUpstreamWebSocket()
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = TestClient(relay.create_app())
+    request_message = json.dumps(
+        {
+            "type": "response.create",
+            "response": {"instructions": "secret prompt text"},
+        }
+    )
+    delta_message = json.dumps(
+        {
+            "type": "response.output_text.delta",
+            "delta": "secret completion text",
+        }
+    )
+    final_message = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-websocket",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "output_text": "secret completion text",
+                "usage": {
+                    "input_tokens": 13,
+                    "output_tokens": 21,
+                    "total_tokens": 34,
+                },
+            },
+        }
+    )
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text(request_message)
+        wait_for_upstream_messages(upstream, [request_message])
+        asyncio.run(upstream.push(delta_message))
+        assert websocket.receive_text() == delta_message
+        asyncio.run(upstream.push(final_message))
+        assert websocket.receive_text() == final_message
+
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-websocket")
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.provider == "openai"
+    assert event.provider_endpoint_identifier == "responses"
+    assert event.normalized_usage_status == "available"
+    assert event.input_tokens == 13
+    assert event.output_tokens == 21
+    assert event.total_tokens == 34
+    assert event.session_id == "session-1"
+    assert event.workflow_run_id == "workflow-websocket"
+    assert event.effect_id == "effect-websocket"
+    assert event.dispatch_id == "dispatch-websocket"
+    assert event.execution_backend == "container_worker_vm"
+    assert event.directory_path == "root/team-a"
+    assert event.trace_id == "trace-websocket"
+    assert event.request_body_sha256 is None
+    assert event.response_body_sha256 is not None
+    assert event.raw_usage_metadata["request_metadata"] == {
+        "method": "WEBSOCKET",
+        "path": "/v1/responses",
+        "websocket": True,
+    }
+    assert event.raw_usage_metadata["response_metadata"]["websocket"] is True
+    assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.completed"
+    assert "secret prompt text" not in event_json
+    assert "secret completion text" not in event_json
+
+
+def test_openai_relay_records_websocket_usage_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-websocket-empty",
+        workflow_run_id="workflow-websocket",
+        effect_id="effect-websocket",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    upstream = _FakeUpstreamWebSocket()
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = TestClient(relay.create_app())
+    final_message = json.dumps(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-websocket-empty",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "output_text": "secret completion text",
+            },
+        }
+    )
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        asyncio.run(upstream.push(final_message))
+        assert websocket.receive_text() == final_message
+
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event(
+        "resp-websocket-empty"
+    )
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.normalized_usage_status == "usage_unavailable"
+    assert event.input_tokens is None
+    assert event.output_tokens is None
+    assert event.total_tokens is None
+    assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.done"
+    assert "secret completion text" not in event_json
+
+
+def test_openai_relay_websocket_duplicate_final_events_upsert(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-websocket-duplicate",
+        workflow_run_id="workflow-websocket",
+        effect_id="effect-websocket",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    upstream = _FakeUpstreamWebSocket()
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = TestClient(relay.create_app())
+    final_message = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-websocket-duplicate",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        }
+    )
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        asyncio.run(upstream.push(final_message))
+        assert websocket.receive_text() == final_message
+        asyncio.run(upstream.push(final_message))
+        assert websocket.receive_text() == final_message
+
+    events = ModelUsageStore(runtime_dir / "model-usage.db").list_events(
+        session_id="session-1"
+    )
+    assert [event.event_id for event in events] == ["resp-websocket-duplicate"]
 
 
 def test_openai_relay_correlates_container_context_without_backend_filter(

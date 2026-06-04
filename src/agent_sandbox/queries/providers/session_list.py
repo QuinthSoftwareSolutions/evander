@@ -19,7 +19,7 @@ class SessionListQueryProvider(QueryProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        directory_path = self._normalize_directory_path(payload.get("directory_path"))
+        directory_path = self._resolve_directory_path(payload.get("directory_path"))
         metadata_equals = self._coerce_mapping(payload.get("metadata_equals"), "metadata_equals")
         metadata_prefix = self._coerce_mapping(payload.get("metadata_prefix"), "metadata_prefix")
         metadata_exists = self._coerce_exists_selectors(payload.get("metadata_exists"))
@@ -223,6 +223,17 @@ class SessionListQueryProvider(QueryProviderBase):
         if text is None:
             return None
         return DirectoryPath(segments=text).as_posix()
+
+    def _resolve_directory_path(self, value: Any) -> str:
+        directory_path = self._normalize_directory_path(value)
+        if directory_path is not None:
+            return directory_path
+        context = self.runtime_context
+        metadata_directory_path = None
+        if context is not None and isinstance(context.metadata, Mapping):
+            metadata_directory_path = context.metadata.get("directory_path")
+        directory_path = self._normalize_directory_path(metadata_directory_path)
+        return directory_path or "root"
 
     @staticmethod
     def _coerce_mapping(value: Any, field_name: str) -> Mapping[str, Any]:

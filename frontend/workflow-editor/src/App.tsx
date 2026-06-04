@@ -3760,6 +3760,7 @@ export default function App() {
   const [inspectorSessionListMetadataRules, setInspectorSessionListMetadataRules] = useState<
     SessionListMetadataRuleDraftRow[]
   >([]);
+  const [inspectorSessionListMetadataRawMode, setInspectorSessionListMetadataRawMode] = useState(false);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [inspectorEffectTargetKey, setInspectorEffectTargetKey] = useState<EffectTargetKey>("target");
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
@@ -5283,6 +5284,7 @@ export default function App() {
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
       setInspectorSessionListMetadataRules([]);
+      setInspectorSessionListMetadataRawMode(false);
       setInspectorFieldModes({});
       setInspectorEffectTargetKey("target");
       setRawJsonDraft("{}");
@@ -5374,6 +5376,7 @@ export default function App() {
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
+    setInspectorSessionListMetadataRawMode(false);
     setInspectorFieldModes(nextFieldModes);
     setInspectorEffectTargetKey(activeEffectTargetKey(nextKnownValues));
     setRawJsonDraft(JSON.stringify(extras, null, 2));
@@ -7930,6 +7933,7 @@ export default function App() {
       metadata_exists: "literal",
       metadata_prefix: "literal",
     }));
+    setInspectorSessionListMetadataRawMode(false);
     stageInspectorDraft({
       knownValues: nextKnownValues,
       jsonDrafts: nextJsonDrafts,
@@ -7999,6 +8003,7 @@ export default function App() {
     });
     const supportedByValues = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).supported;
     const structured = !unsupportedByMode && supportedByValues;
+    const showRawFields = !structured || inspectorSessionListMetadataRawMode;
     const headerField: WorkflowEditorFieldDefinition = {
       key: "metadata_rules",
       label: "Metadata rules",
@@ -8015,11 +8020,20 @@ export default function App() {
       item_fields: [],
     };
 
-    if (!structured) {
+    if (showRawFields) {
       return (
         <div key="metadata_rules" className="inspector-field metadata-rule-editor">
           <div className="field-toolbar">
             {renderFieldHeader(headerField)}
+            {structured ? (
+              <button
+                type="button"
+                className="subtle-button metadata-rule-mode-toggle"
+                onClick={() => setInspectorSessionListMetadataRawMode(false)}
+              >
+                Rule editor
+              </button>
+            ) : null}
           </div>
           <div className="metadata-rule-raw-fields">
             {metadataFields.map((field) => {
@@ -8042,23 +8056,13 @@ export default function App() {
       <div key="metadata_rules" className="inspector-field metadata-rule-editor">
         <div className="field-toolbar">
           {renderFieldHeader(headerField)}
-        </div>
-        <div className="metadata-rule-field-modes">
-          {metadataFields.map((field) => {
-            const fieldValue = inspectorKnownValues[field.key];
-            const fieldMode = inspectorFieldModes[field.key] ?? fieldValueMode(field, fieldValue);
-            return (
-              <div key={`${field.key}-mode`} className="metadata-rule-field-mode">
-                {renderFieldHeader(field)}
-                {renderModeSelect(
-                  field,
-                  fieldMode,
-                  (nextMode) => updateMetadataFieldMode(field, fieldValue, nextMode),
-                  isDisabled,
-                )}
-              </div>
-            );
-          })}
+          <button
+            type="button"
+            className="subtle-button metadata-rule-mode-toggle"
+            onClick={() => setInspectorSessionListMetadataRawMode(true)}
+          >
+            Raw filters
+          </button>
         </div>
         <div className="metadata-rule-list">
           {metadataRuleRows.map((row, index) => {

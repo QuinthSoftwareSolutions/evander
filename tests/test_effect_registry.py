@@ -539,6 +539,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         type="effect:vm:create",
         vm_name="lab-vm",
         labels={"workflow": "issue-worker", "role": "issue"},
+        metadata={"issue_number": "42", "issue_title": "Fix picker"},
         dotnet=True,
     )
     admin_service = _AdminServiceStub(
@@ -567,6 +568,10 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     assert admin_service.create_vm_calls[0]["labels"] == {
         "workflow": "issue-worker",
         "role": "issue",
+    }
+    assert admin_service.create_vm_calls[0]["metadata"] == {
+        "issue_number": "42",
+        "issue_title": "Fix picker",
     }
     assert admin_service.create_vm_calls[0]["dotnet"] is True
 
