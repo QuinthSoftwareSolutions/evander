@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Explicit Clone Repo Git Author Inputs
+
+- Added explicit `git_author_name` and `git_author_email` inputs to
+  `effect:agent:clone-repo`, replacing the hidden `metadata.issue_owner`
+  lookup for Git attribution.
+- Bound the container-worker issue workflow's resolved issue owner into the new
+  clone-repo inputs and documented the paired-field behavior.
+
 ## 2026-06-04 - Workflow Dedupe Loopbacks and Pricing Source Layout
 
 - Added an explicit `gate:dedupe` dropped branch for suppressed duplicates and

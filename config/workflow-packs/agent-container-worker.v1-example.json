@@ -1570,6 +1570,8 @@
         "config": {
           "clone_branch": "${{gate-merge-1.branch}}",
           "directory_path": "${{gate-merge-1.directory_path}}",
+          "git_author_email": "${{gate-merge-1.issue_owner.email ?? null}}",
+          "git_author_name": "${{gate-merge-1.issue_owner.display_name ?? null}}",
           "repo_source": "${{gate-merge-1.repo_source}}",
           "target": "${{effect-agent-create-1.session_id}}",
           "vm_user": "agent"

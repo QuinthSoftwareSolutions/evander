@@ -3157,6 +3157,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("clone_branch", "Clone branch", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("directory_path", "Directory path", "string", bindable=True),
+            _field(
+                "git_author_name",
+                "Git author name",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional git user.name for cloned repositories. "
+                    "Set together with git_author_email."
+                ),
+            ),
+            _field(
+                "git_author_email",
+                "Git author email",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional git user.email for cloned repositories. "
+                    "Set together with git_author_name."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
