@@ -2671,6 +2671,9 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
     }
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
     assert "projected calling task" not in str(realtime.responses[0]).lower()
+    assert "interesting fact" not in str(realtime.responses[0]).lower()
+    assert "current call" in str(realtime.responses[0]).lower()
+    assert "unrelated filler" in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
