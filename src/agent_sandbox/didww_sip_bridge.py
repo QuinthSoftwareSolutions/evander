@@ -964,14 +964,20 @@ class OpenAIRealtimeSession:
                     "name": "query_origin_agent",
                     "description": (
                         "Ask the originating Truman agent a live-context question that requires "
-                        "its files, tools, repository state, or memory."
+                        "its files, tools, repository state, or memory and is not already "
+                        "answered by the Current task or Context. Do not use this tool to ask "
+                        "for the outbound call objective, opening, script, instructions, "
+                        "expected behavior, or call context already present in the projection."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "question": {
                                 "type": "string",
-                                "description": "The caller-facing question to ask the origin agent.",
+                                "description": (
+                                    "The caller-facing origin-side question that cannot be "
+                                    "answered from projected task/context."
+                                ),
                             },
                             "reason": {
                                 "type": "string",
@@ -1380,9 +1386,8 @@ class DidwwSipBridgeService:
                         )
                         if handles.external_media_local_addr is not None:
                             rtp.remote_addr = handles.external_media_local_addr
-                        initial_instructions = (
-                            "Start the phone call now. Briefly greet the caller and begin the "
-                            "projected calling task."
+                        initial_instructions = initial_outbound_call_instructions(
+                            payload.projection
                         )
                         self._append_debug_event(
                             record.voice_session_id,
@@ -2541,23 +2546,17 @@ class DidwwSipBridgeService:
             await asyncio.sleep(_ORIGIN_QUERY_ACK_GRACE_SECONDS)
         if stop_event.is_set() or state.status != "pending" or state.ack_response_queued:
             return
-        response_instructions = (
-            "Tell the caller you are checking with the originating agent, then continue naturally."
-        )
+        # Pending origin queries stay silent. The terminal result path requests the
+        # caller-facing response, which keeps generic startup/context-check filler out
+        # of live outbound calls while an origin answer is pending.
         state.ack_response_queued = True
         self._append_debug_event(
             voice_session_id,
-            "origin_query.response_requested",
+            "origin_query.pending_fallback_suppressed",
             metadata={
                 "query_id": state.query_id,
-                "reason": "query_ack",
-                **_instruction_debug_metadata(response_instructions),
+                "reason": "query_pending_silent",
             },
-        )
-        await request_response(
-            response_instructions,
-            reason="query_ack",
-            key=_origin_query_response_key(state.query_id, "ack"),
         )
 
     async def _handle_terminal_origin_query_result(
@@ -2890,6 +2889,14 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
         "You are the same Truman agent represented by this projected voice session.",
         "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
         (
+            "Outbound startup contract: treat the supplied Current task as authoritative "
+            "first-turn task state. If it includes a complete opening or objective, begin "
+            "with it immediately. Do not ask the origin agent for the same script, "
+            "instructions, objective, expected behavior, or call context. Do not say you "
+            "are doing a context check, narrate task-missing state, or ask open-ended "
+            "what-to-do questions when the Current task already provides the task."
+        ),
+        (
             "Speak like a natural phone participant: keep normal answers to one or two short "
             "spoken paragraphs unless the caller asks for detail, avoid repeating yourself, "
             "and pause naturally after a long answer instead of immediately asking whether "
@@ -2901,10 +2908,17 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
             "repeat the prior answer; continue only if you were mid-thought, otherwise pause."
         ),
         (
-            "If you need the query_origin_agent tool, say once briefly that you are checking "
-            "with the origin agent. Do not keep telling the caller the query is pending unless "
-            "they ask. When the origin answer arrives, give the answer directly without "
-            "recapping the pending state."
+            "Use the query_origin_agent tool only for missing origin-side files, tools, "
+            "repository state, memory, or live session state that is not already in the "
+            "projected task/context. While an origin query is pending, do not fill the call "
+            "with generic startup scaffolding such as asking what to do, saying you are "
+            "doing a context check, or narrating task-missing state. When the origin answer "
+            "arrives, give the answer directly without recapping the pending state."
+        ),
+        (
+            "If the supplied Current task is not actionable enough to start and the missing "
+            "data must come from the caller, ask exactly one concise caller-facing "
+            "clarification question, then wait."
         ),
         (
             "Preserve decisions and follow-up actions internally after the call, but do not "
@@ -2921,6 +2935,28 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
     if isinstance(context, str) and context.strip():
         instructions.append(f"Context:\n{context.strip()}")
     return "\n\n".join(instructions)
+
+
+def initial_outbound_call_instructions(projection: dict[str, Any]) -> str:
+    task_prompt = _extract_projected_task_prompt(projection) or ""
+    if _projection_has_complete_startup_objective(projection, task_prompt):
+        return (
+            "Start the outbound phone call now using the supplied Current task as "
+            "authoritative first-turn task state. The first audible assistant turn must "
+            "begin from the task-specific opening/objective below. Do not ask for the "
+            "script, instructions, expected behavior, or call context; do not say you are "
+            "doing a context check or narrate task-missing state; do not ask open-ended "
+            "what-to-do questions.\n\n"
+            f"Caller-facing opening/objective:\n{task_prompt}"
+        )
+    supplied = task_prompt or "<missing>"
+    return (
+        "Start the outbound phone call now. The supplied Current task is not actionable "
+        "enough to start, so ask exactly one concise caller-facing clarification question "
+        "about the call objective, then wait. Do not mention origin context, missing task "
+        "state, internal handoff, or context-check narration.\n\n"
+        f"Supplied task:\n{supplied}"
+    )
 
 
 def transcript_from_events(events: list[VoiceTranscriptEvent]) -> str | None:
@@ -3093,7 +3129,53 @@ def _projected_task_answer(question: str, projection: dict[str, Any]) -> str | N
     task_prompt = _extract_projected_task_prompt(projection)
     if not task_prompt:
         return None
-    return f"The projected calling task is: {task_prompt}"
+    return f"The projected calling task is already authoritative: {task_prompt}"
+
+
+def _projection_has_complete_startup_objective(
+    projection: dict[str, Any],
+    task_prompt: str,
+) -> bool:
+    contract = projection.get("startup_contract")
+    if isinstance(contract, dict) and "complete_objective" in contract:
+        return bool(contract.get("complete_objective"))
+    return _voice_task_looks_actionable(task_prompt)
+
+
+def _voice_task_looks_actionable(prompt: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(prompt or "").strip())
+    if not normalized:
+        return False
+    lowered = normalized.casefold().rstrip(".!?")
+    if len(lowered.split()) < 5:
+        return False
+    if re.fullmatch(
+        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
+        lowered,
+    ):
+        return False
+    task_markers = {
+        "ask",
+        "tell",
+        "say",
+        "explain",
+        "summarize",
+        "request",
+        "confirm",
+        "verify",
+        "collect",
+        "give",
+        "open",
+        "start",
+        "begin",
+        "discuss",
+        "approve",
+        "approval",
+        "script",
+        "objective",
+        "prompt",
+    }
+    return any(marker in lowered.split() for marker in task_markers)
 
 
 def _question_asks_projected_task(question: str) -> bool:
@@ -3103,17 +3185,53 @@ def _question_asks_projected_task(question: str) -> bool:
     task_terms = (
         "calling task",
         "call task",
+        "call objective",
         "current task",
         "voice task",
         "task prompt",
+        "task details",
         "why am i calling",
         "why are we calling",
         "what am i calling",
         "what are we calling",
         "what is this call about",
         "what's this call about",
+        "what am i supposed to do",
+        "what are we supposed to do",
+        "what should i do",
+        "what do you want me to do",
+        "what would you like me to do",
     )
-    return any(term in normalized for term in task_terms)
+    if any(term in normalized for term in task_terms):
+        return True
+    standalone_startup_terms = (
+        "what are my instructions",
+        "what are the instructions",
+        "what instructions should i follow",
+        "what exact instructions",
+        "exact instructions",
+        "same exact instructions",
+        "what is the expected behavior",
+        "what behavior is expected",
+        "what opening should i use",
+        "what script should i use",
+    )
+    if any(term in normalized for term in standalone_startup_terms):
+        return True
+    script_terms = (
+        "script",
+        "opening",
+        "instructions",
+        "expected behavior",
+        "what should i say",
+        "what do i say",
+        "how should i start",
+        "how do i start",
+    )
+    call_terms = ("call", "caller", "phone", "voice", "task", "objective", "prompt")
+    return any(term in normalized for term in script_terms) and any(
+        term in normalized for term in call_terms
+    )
 
 
 def _extract_projected_task_prompt(projection: dict[str, Any]) -> str | None:

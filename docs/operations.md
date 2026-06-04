@@ -887,13 +887,19 @@ Realtime connection metadata. It owns SIP trunk origination and raw audio forwar
 returns a terminal call state, the control plane schedules a same-context wake for the originating
 agent with the transcript, summary, decisions, and follow-up actions.
 
+For outbound startup, the bridge treats `make_phone_call.prompt` as authoritative first-turn task
+state. When that prompt contains a complete opening or objective, the projected Realtime agent must
+begin from that task instead of asking the origin agent for the same script, instructions, expected
+behavior, or call context. If the prompt is too incomplete to start and the missing data must come
+from the caller, the initial turn asks one concise caller-facing clarification question.
+
 When `voice_media_controller_url` is configured, the Realtime voice agent also gets a
 `query_origin_agent` function tool. It uses that tool when the caller asks for files, repository
 state, live tools, or memory that is not in the projected context. The bridge creates a pending
 voice query through the gateway, the gateway schedules a same-context wake for the originating
 agent, and the origin agent answers with `submit_voice_query_response`. The voice call keeps going
-while that answer is pending; when the answer arrives, the bridge injects it back into the Realtime
-conversation.
+silently while that answer is pending; it does not generate generic startup or context-check filler.
+When the answer arrives, the bridge injects it back into the Realtime conversation.
 
 ### DIDWW SIP/OpenAI Realtime bridge
 
