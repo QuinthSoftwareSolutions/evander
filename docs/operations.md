@@ -76,8 +76,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
   used by `query:model-usage:list` for query-time cost estimates. Override with
   `AGENT_SANDBOX_MODEL_PRICING_PATH` when operating from a different rate card.
-  Admin Web exposes the loaded catalog status and rules as a read-only panel on
-  the Configuration page.
+  Admin Web exposes the loaded catalog status and structured editor on the
+  Configuration page and saves changes back to the active catalog path.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
@@ -154,9 +154,15 @@ changes. Built-in tool fees, non-text token modalities, regional uplift, and
 account-specific discounts are not inferred unless the needed quantities are
 recorded in the usage metadata.
 
-Admin Web Configuration includes a read-only model pricing catalog panel that
-shows the active path, path source, version, currency, source URLs, rule count,
-rules, and any load/validation error. Catalog edits remain file/env based.
+Admin Web Configuration includes a model pricing catalog panel that shows the
+active path, path source, version, currency, source URLs, rule count, rules, and
+any load/validation error. Operators can edit catalog metadata, source URLs, and
+pricing rules in the structured panel after unlocking privileged operations.
+Saves include the catalog revision and fail on stale revisions, so concurrent
+operator edits require a reload before retrying. The backend validates the
+catalog before writing and writes atomically to either
+`AGENT_SANDBOX_MODEL_PRICING_PATH` or the default
+`config/model-pricing.openai.json` path.
 
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.

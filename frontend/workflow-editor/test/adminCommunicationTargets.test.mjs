@@ -41,10 +41,14 @@ test("configuration screen does not render raw secret-bearing Teams auth fields"
   assert.doesNotMatch(configuration, /refresh_token/i);
 });
 
-test("configuration screen exposes read-only model pricing catalog status", () => {
+test("configuration screen exposes editable model pricing catalog controls", () => {
   assert.match(configuration, /\/api\/configuration\/model-pricing/);
   assert.match(configuration, /Model pricing catalog/);
-  assert.match(configuration, /modelPricingCatalog\.rules\.map/);
-  assert.match(configuration, /formatPricingRates/);
+  assert.match(configuration, /modelPricingPayloadFromDraft/);
+  assert.match(configuration, /saveModelPricingCatalog/);
+  assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
+  assert.match(configuration, /duplicateModelPricingRule/);
+  assert.match(configuration, /deleteModelPricingRule/);
+  assert.match(configuration, /expected_revision: modelPricingCatalog\.revision/);
   assert.match(configuration, /pricingPathSourceLabel/);
 });

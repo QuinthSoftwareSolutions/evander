@@ -11,7 +11,10 @@ material. Newer entries are added incrementally as changes land.
   to `query:model-usage:list`, including cached-input token handling and
   aggregate token/cost totals without rewriting stored usage events.
 - Exposed the active model pricing catalog path, version, source URLs, rules,
-  and load errors as a read-only Admin Web Configuration panel.
+  and load errors in the Admin Web Configuration panel.
+- Made the Admin Web model pricing catalog panel editable with structured rule
+  controls, privileged-operation enforcement, revision conflict checks, catalog
+  validation, and query-cost cache invalidation after saves.
 
 ## 2026-06-04 - RTP Playback Accounting and Relay Usage Isolation
 

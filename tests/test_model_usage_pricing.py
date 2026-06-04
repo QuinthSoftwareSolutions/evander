@@ -10,6 +10,7 @@ from agent_sandbox.model_usage.pricing import (
     default_model_pricing_catalog,
     estimate_model_usage_cost,
     extract_cached_input_tokens,
+    load_model_pricing_catalog_payload,
 )
 
 
@@ -96,6 +97,28 @@ def test_openai_pricing_applies_long_context_and_batch_multipliers() -> None:
     assert estimate.input_cost == Decimal("0.75")
     assert estimate.output_cost == Decimal("0.01125")
     assert estimate.estimated_total == Decimal("0.76125")
+
+
+def test_openai_pricing_rejects_rule_currency_mismatches() -> None:
+    with pytest.raises(ValueError, match="rule currency must match catalog currency"):
+        load_model_pricing_catalog_payload(
+            {
+                "version": "test-pricing",
+                "currency": "usd",
+                "rules": [
+                    {
+                        "id": "openai:test-model:text",
+                        "provider": "openai",
+                        "models": ["test-model"],
+                        "currency": "eur",
+                        "rates_per_1m_tokens": {
+                            "input": "1.00",
+                            "output": "2.00",
+                        },
+                    }
+                ],
+            }
+        )
 
 
 @pytest.mark.parametrize(

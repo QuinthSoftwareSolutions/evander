@@ -78,8 +78,10 @@ from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
 from agent_sandbox.model_usage.pricing import (
     MODEL_PRICING_PATH_ENV,
     ModelPricingRule,
+    clear_model_pricing_catalog_cache,
     default_model_pricing_catalog_path,
-    load_model_pricing_catalog,
+    load_model_pricing_catalog_payload,
+    normalize_model_pricing_catalog_payload,
 )
 from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.directories import DirectoryService, DirectoryStore
@@ -6664,6 +6666,16 @@ def _admin_decimal_payload(value: object | None) -> str | None:
     return str(value)
 
 
+def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
+    return {
+        "version": "",
+        "currency": "usd",
+        "description": None,
+        "sources": [],
+        "rules": [],
+    }
+
+
 class AdminService:
     def __init__(
         self,
@@ -8330,6 +8342,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def read_model_pricing_catalog_status(self) -> dict[str, Any]:
+        return self._read_model_pricing_catalog_status_unlocked()
+
+    def _read_model_pricing_catalog_status_unlocked(self) -> dict[str, Any]:
         configured_path = str(os.environ.get(MODEL_PRICING_PATH_ENV) or "").strip()
         path = default_model_pricing_catalog_path()
         path_source = "env" if configured_path else "default"
@@ -8344,6 +8359,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "sources": [],
             "rule_count": 0,
             "rules": [],
+            "revision": None,
+            "catalog": _empty_model_pricing_catalog_payload(),
+            "editable": path is not None,
+            "write_requires_privileged_unlock": True,
             "error": None,
             "error_class": None,
         }
@@ -8356,31 +8375,62 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw_payload, dict):
                 raise ValueError("model pricing catalog must be a JSON object")
-            catalog = load_model_pricing_catalog(path)
+            catalog = load_model_pricing_catalog_payload(raw_payload, source_path=path)
+            normalized_payload = normalize_model_pricing_catalog_payload(raw_payload)
         except Exception as exc:
             base_payload["error"] = str(exc)
             base_payload["error_class"] = exc.__class__.__name__
+            base_payload["revision"] = self._model_pricing_error_revision(path)
             return base_payload
 
-        sources_payload = raw_payload.get("sources")
-        sources = (
-            [str(source).strip() for source in sources_payload if str(source).strip()]
-            if isinstance(sources_payload, list)
-            else []
-        )
-        description = str(raw_payload.get("description") or "").strip() or None
         return {
             **base_payload,
             "status": "ok",
             "version": catalog.version,
             "currency": catalog.currency,
-            "description": description,
-            "sources": sources,
+            "description": normalized_payload["description"],
+            "sources": normalized_payload["sources"],
             "rule_count": len(catalog.rules),
             "rules": [self._model_pricing_rule_summary(rule) for rule in catalog.rules],
+            "revision": self._stable_json_revision(normalized_payload),
+            "catalog": normalized_payload,
             "error": None,
             "error_class": None,
         }
+
+    def write_model_pricing_catalog(
+        self, payload: dict[str, Any], *, expected_revision: str
+    ) -> dict[str, Any]:
+        path = default_model_pricing_catalog_path()
+        if path is None:
+            raise ValueError("No model pricing catalog path is configured.")
+        normalized_payload = normalize_model_pricing_catalog_payload(payload)
+        with self.admin_config_mutation_lock():
+            current = self._read_model_pricing_catalog_status_unlocked()
+            if current.get("revision") != expected_revision:
+                raise AdminRevisionConflict(
+                    "Model pricing catalog changed before save. Reload the catalog before saving again.",
+                    details={
+                        "current_revision": current.get("revision"),
+                        "current": current,
+                    },
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(path, normalized_payload)
+            clear_model_pricing_catalog_cache()
+            return self._read_model_pricing_catalog_status_unlocked()
+
+    def _model_pricing_error_revision(self, path: Path) -> str:
+        try:
+            raw_value = path.read_text(encoding="utf-8")
+            revision_payload = {"path": str(path), "raw": raw_value}
+        except Exception as exc:
+            revision_payload = {
+                "path": str(path),
+                "missing_or_unreadable": True,
+                "error_class": exc.__class__.__name__,
+            }
+        return self._stable_json_revision(revision_payload)
 
     @staticmethod
     def _model_pricing_rule_summary(rule: ModelPricingRule) -> dict[str, Any]:

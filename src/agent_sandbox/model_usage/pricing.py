@@ -127,14 +127,26 @@ def default_model_pricing_catalog() -> ModelPricingCatalog:
     return _load_model_pricing_catalog_cached(str(path.resolve()))
 
 
+def clear_model_pricing_catalog_cache() -> None:
+    _load_model_pricing_catalog_cached.cache_clear()
+
+
 def load_model_pricing_catalog(path: Path | str) -> ModelPricingCatalog:
     catalog_path = Path(path)
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    return load_model_pricing_catalog_payload(payload, source_path=catalog_path)
+
+
+def load_model_pricing_catalog_payload(
+    payload: Any, *, source_path: Path | None = None
+) -> ModelPricingCatalog:
     if not isinstance(payload, dict):
         raise ValueError("model pricing catalog must be a JSON object")
 
     version = _required_text(payload.get("version"), field_name="version")
     currency = _required_text(payload.get("currency"), field_name="currency").lower()
+    if currency != "usd":
+        raise ValueError("model pricing catalog currency must be usd")
     rules_payload = payload.get("rules")
     if not isinstance(rules_payload, list) or not rules_payload:
         raise ValueError("model pricing catalog requires a non-empty rules array")
@@ -143,12 +155,34 @@ def load_model_pricing_catalog(path: Path | str) -> ModelPricingCatalog:
         _parse_pricing_rule(entry, default_currency=currency)
         for entry in rules_payload
     )
+    for rule in rules:
+        if rule.currency != currency:
+            raise ValueError("model pricing rule currency must match catalog currency")
     return ModelPricingCatalog(
         version=version,
         currency=currency,
         rules=rules,
-        source_path=catalog_path,
+        source_path=source_path,
     )
+
+
+def normalize_model_pricing_catalog_payload(payload: Any) -> dict[str, Any]:
+    catalog = load_model_pricing_catalog_payload(payload)
+    raw_payload = payload if isinstance(payload, dict) else {}
+    description = _optional_text(raw_payload.get("description"))
+    sources_payload = raw_payload.get("sources")
+    sources = (
+        [str(source).strip() for source in sources_payload if str(source).strip()]
+        if isinstance(sources_payload, list)
+        else []
+    )
+    return {
+        "version": catalog.version,
+        "currency": catalog.currency,
+        "description": description,
+        "sources": sources,
+        "rules": [_pricing_rule_payload(rule) for rule in catalog.rules],
+    }
 
 
 def estimate_model_usage_cost(
@@ -374,6 +408,47 @@ def _token_cost(tokens: int, rate_per_1m: Decimal) -> Decimal:
     return (Decimal(tokens) * rate_per_1m) / TOKENS_PER_MILLION
 
 
+def _pricing_rule_payload(rule: ModelPricingRule) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": rule.id,
+        "provider": rule.provider,
+        "models": list(rule.models),
+        "model_patterns": list(rule.model_patterns),
+        "effective_from": _datetime_payload(rule.effective_from),
+        "effective_to": _datetime_payload(rule.effective_to),
+        "currency": rule.currency,
+        "rates_per_1m_tokens": {
+            "input": str(rule.input_per_1m_tokens),
+            "cached_input": (
+                str(rule.cached_input_per_1m_tokens)
+                if rule.cached_input_per_1m_tokens is not None
+                else None
+            ),
+            "output": str(rule.output_per_1m_tokens),
+        },
+        "batch_multiplier": (
+            str(rule.batch_multiplier) if rule.batch_multiplier is not None else None
+        ),
+        "service_tier": rule.service_tier,
+        "long_context": None,
+    }
+    if rule.long_context_input_tokens_over is not None:
+        payload["long_context"] = {
+            "input_tokens_over": rule.long_context_input_tokens_over,
+            "input_multiplier": (
+                str(rule.long_context_input_multiplier)
+                if rule.long_context_input_multiplier is not None
+                else None
+            ),
+            "output_multiplier": (
+                str(rule.long_context_output_multiplier)
+                if rule.long_context_output_multiplier is not None
+                else None
+            ),
+        }
+    return payload
+
+
 def _is_batch_event(event: ModelInferenceUsageEvent) -> bool:
     metadata = event.raw_usage_metadata.get("request_metadata")
     if not isinstance(metadata, dict):
@@ -415,6 +490,12 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _datetime_payload(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return _as_utc(value).isoformat().replace("+00:00", "Z")
 
 
 def _optional_datetime(value: Any) -> datetime | None:
@@ -501,9 +582,12 @@ __all__ = [
     "ModelCostStatus",
     "ModelPricingCatalog",
     "ModelPricingRule",
+    "clear_model_pricing_catalog_cache",
     "default_model_pricing_catalog",
     "default_model_pricing_catalog_path",
     "estimate_model_usage_cost",
     "extract_cached_input_tokens",
     "load_model_pricing_catalog",
+    "load_model_pricing_catalog_payload",
+    "normalize_model_pricing_catalog_payload",
 ]
