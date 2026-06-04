@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - DIDWW Origin Query Hold Policy
+
+- Replaced forced pending-origin-query filler with a short hold offer that asks
+  whether the caller wants an optional fact while waiting.
+- Removed queued projected-task fallback responses when a real origin query is
+  pending, and ignored short caller wait acknowledgements instead of queueing an
+  extra reply.
+
 ## 2026-06-04 - DIDWW Voice Turn-Taking Follow-Up
 
 - Treated in-progress Realtime responses as interruptible before their first
