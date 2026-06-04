@@ -650,6 +650,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         )
         assert standalone_pr["type"] == "effect:pr:create"
         assert standalone_pr["config"]["title"] == expected_standalone_title
+        assert (
+            standalone_pr["config"]["origin_branch"]
+            == "${{query-session-context-1.metadata.pr_origin_branch ?? null}}"
+        )
         assert "issue_number" not in standalone_pr["config"]["title"]
         assert "issue_title" not in standalone_pr["config"]["title"]
         assert "${{query-git-pr-note-standalone.body}}" in standalone_pr["config"]["body"]

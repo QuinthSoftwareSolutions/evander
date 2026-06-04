@@ -1136,6 +1136,187 @@ def test_short_backchannel_during_assistant_audio_does_not_cancel_or_request_res
     assert "backchannel_ignored" in event_types
 
 
+def test_standalone_backchannel_does_not_request_response(tmp_path: Path) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.done", "response": {"id": "resp-1", "status": "completed"}},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 360},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Okay, great.",
+                },
+            ]
+            self.responses: list[str | None] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            raise AssertionError("standalone backchannels should not cancel responses")
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            raise AssertionError("standalone backchannels should not truncate audio")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.responses == []
+    latest = store.get("voice-1")
+    assert latest is not None
+    backchannel_events = [
+        event for event in latest.debug_events if event.event_type == "backchannel_ignored"
+    ]
+    assert len(backchannel_events) == 1
+    assert backchannel_events[0].metadata["reason"] == "standalone_backchannel"
+
+
+def test_substantive_speech_during_pre_audio_response_cancels_generation(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 900},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Stop, I need to ask about the outage.",
+                },
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            raise AssertionError("pre-audio cancellation should not play assistant audio")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == []
+    assert realtime.responses == [None]
+    latest = store.get("voice-1")
+    assert latest is not None
+    delay_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_delay_started"
+    ]
+    assert len(delay_events) == 1
+    assert delay_events[0].metadata["assistant_audio_active"] is False
+    assert delay_events[0].metadata["response_active"] is True
+    cancel_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_cancel_sent"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].metadata["cancel_response_id"] == "resp-1"
+
+
 def test_substantive_speech_during_assistant_audio_sends_one_cancel(
     tmp_path: Path,
 ) -> None:
