@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-04 - Session Metadata Rule Editor Controls
+
+- Hid the `query:session:list` metadata filter mode dropdowns from the
+  structured metadata rule editor and kept raw JSON/binding controls behind an
+  explicit raw-filter action.
+
 ## 2026-06-03 - Workflow Trigger Graph Directory Scope
 
 - Fixed trigger provider initialization so graph-scoped triggers inherit their

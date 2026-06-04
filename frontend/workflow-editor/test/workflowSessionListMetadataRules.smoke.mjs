@@ -332,7 +332,8 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   await inspector.waitFor({ state: "visible" });
   await inspector.getByText("Metadata rules").waitFor({ state: "visible" });
   assert.equal(await inspector.locator(".metadata-rule-raw-fields").count(), 0);
-  assert.equal(await inspector.locator(".metadata-rule-field-mode").count(), 3);
+  assert.equal(await inspector.locator(".metadata-rule-field-mode").count(), 0);
+  await inspector.getByRole("button", { name: "Raw filters" }).waitFor({ state: "visible" });
 
   const rows = inspector.locator(".metadata-rule-row");
   await rows.first().waitFor({ state: "visible" });
@@ -380,10 +381,10 @@ test("workflow editor exposes query session metadata filters as metadata rules",
     "task.branch": "feature/",
   });
 
-  const prefixModeControl = inspector.locator(".metadata-rule-field-mode").filter({ hasText: "Metadata prefix" });
-  await prefixModeControl.locator(".mode-select select").selectOption("bind");
+  await inspector.getByRole("button", { name: "Raw filters" }).click();
   const rawPrefixField = inspector.locator(".metadata-rule-raw-fields .inspector-field").filter({ hasText: "Metadata prefix" });
   await rawPrefixField.waitFor({ state: "visible" });
+  await rawPrefixField.locator(".mode-select select").selectOption("bind");
   await rawPrefixField.locator(".binding-editor input").fill("${{trigger-1.feedback.metadata.prefix_filter}}");
 
   const stateField = inspector.locator(".inspector-field").filter({ hasText: "State" }).last();
