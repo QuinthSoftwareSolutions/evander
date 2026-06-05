@@ -95,7 +95,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "didww_sip_bridge_url"): "DIDWW SIP bridge URL",
     ("providers", "didww_sip_bridge_token_env"): "DIDWW SIP bridge token env",
     ("providers", "didww_from_number"): "DIDWW from number",
-    ("providers", "container_worker_images"): "Container worker image catalog",
+    ("providers", "container_worker_images"): "Approved container image catalog",
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }

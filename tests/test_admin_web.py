@@ -8688,7 +8688,13 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         for field in section["fields"]
     }
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
+    assert "Fallback runner container image" in provider_fields["container_worker_default_image"][
+        "tooltip"
+    ]
     assert "catalog" in provider_fields["container_worker_images"]["tooltip"]
+    assert "runtime dispatch never pulls or builds images" in provider_fields[
+        "container_worker_images"
+    ]["tooltip"]
     assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
     for tab in payload["tabs"]:
         for section in tab["sections"]:

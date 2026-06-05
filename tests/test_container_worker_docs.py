@@ -37,6 +37,12 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "container_worker_guest_http_target_relay_base_url" in docs
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
+    assert "container_worker_images" in docs
+    assert "dotnet-playwright" in docs
+    assert "`container_worker_default_image` is the fallback" in docs
+    assert "does not pull or build images" in docs
+    assert "Directory-scoped `providers.json` overlays" in docs
+    assert "inherit the root catalog" in docs
     assert "agent-sandbox-npm-audit-facade" in docs
     assert "11881" in docs
     assert "npm audit POSTs" in docs
@@ -59,6 +65,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "./scripts/build_agent_sandbox_runner_image.sh --force" in docs
     assert "ubuntu:24.04" in docs
     assert "cached archive was reused" in docs
+    assert "approved refs must already be present on the worker VM" in docs
     assert "worker-side remote manifest comparison" in docs
     assert "tar-copy/load deployment model" in docs
 
@@ -73,5 +80,7 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
     assert "## Current Scope" in docs
     assert "backend-aware `effect:agent:*` workflow nodes" in docs
     assert "agent_sandbox_worker_egress_policy_enabled: true" in docs
+    assert "container_worker_images" in docs
+    assert "stored image" in docs
     assert "## Remaining Migration Work" in docs
     assert "Phase 5" in docs

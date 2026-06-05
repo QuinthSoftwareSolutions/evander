@@ -496,6 +496,9 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://<worker-private-ip>:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_images:
+  default: "agent-sandbox-runner:latest"
+  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
@@ -503,6 +506,12 @@ container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:
 container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
 ```
+
+Use `container_worker_images` for the approved alias-to-image catalog. Keep
+`container_worker_default_image` as the fallback image reference for sessions that do not select an
+alias. The worker playbook does not pull or build images during runtime dispatch, so any approved
+image refs that are not already included in the repo runner tarball should be listed in
+`agent_sandbox_worker_preload_images` and pre-pulled during deployment.
 
 The runner image is deployed from `dist/agent-sandbox-runner.tar`; the worker playbook copies it to
 the worker and runs `docker load`. The same playbook creates worker-level read-only cache
