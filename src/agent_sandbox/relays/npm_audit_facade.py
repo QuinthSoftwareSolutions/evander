@@ -18,7 +18,6 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 HOP_BY_HOP_HEADERS = {
     "authorization",
     "connection",
-    "content-encoding",
     "content-length",
     "host",
     "keep-alive",
@@ -29,6 +28,8 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+
+RESPONSE_HEADER_EXCLUDES = HOP_BY_HOP_HEADERS | {"content-encoding"}
 
 AUDIT_ENDPOINTS = {
     "/-/npm/v1/security/advisories/bulk",
@@ -165,9 +166,30 @@ class NpmAuditFacade:
 
     @staticmethod
     def _upstream_http_url(*, base_url: str, raw_path: str, raw_query: str) -> str:
-        normalized_base = base_url.rstrip("/")
-        normalized_path = raw_path.lstrip("/")
-        upstream_url = normalized_base if not normalized_path else f"{normalized_base}/{normalized_path}"
+        parts = urlsplit(base_url)
+        base_path = parts.path.rstrip("/")
+        normalized_path = "/" + raw_path.lstrip("/")
+        if base_path and (
+            normalized_path == base_path or normalized_path.startswith(f"{base_path}/")
+        ):
+            upstream_base = urlunsplit(
+                SplitResult(
+                    scheme=parts.scheme,
+                    netloc=parts.netloc,
+                    path="",
+                    query="",
+                    fragment="",
+                )
+            ).rstrip("/")
+            upstream_url = f"{upstream_base}{normalized_path}"
+        else:
+            normalized_base = base_url.rstrip("/")
+            normalized_path_without_slash = raw_path.lstrip("/")
+            upstream_url = (
+                normalized_base
+                if not normalized_path_without_slash
+                else f"{normalized_base}/{normalized_path_without_slash}"
+            )
         if raw_query:
             upstream_url = f"{upstream_url}?{raw_query}"
         return upstream_url
@@ -189,7 +211,7 @@ class NpmAuditFacade:
         return {
             key: value
             for key, value in response.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS
+            if key.lower() not in RESPONSE_HEADER_EXCLUDES
         }
 
 
