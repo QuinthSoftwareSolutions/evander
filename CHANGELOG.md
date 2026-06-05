@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-05 - Deserialize Output Persistence
+
+- Kept editable `gate:deserialize` outputs ahead of stale backend schema
+  records during frontend output-schema derivation so declared downstream
+  bindings survive local patching and reload normalization.
+
 ## 2026-06-05 - Compact Model Usage Attribution
 
 - Filled omitted `/responses/compact` model names from the request model or

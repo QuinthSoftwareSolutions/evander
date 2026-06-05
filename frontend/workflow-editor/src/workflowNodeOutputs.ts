@@ -61,6 +61,10 @@ function nodeCollections(config: WorkflowConfig) {
   };
 }
 
+function hasDeclaredOutputs(node: WorkflowNodeConfig | undefined): node is WorkflowNodeConfig & { outputs: Record<string, unknown> } {
+  return Boolean(node && isRecord(node.outputs) && Object.keys(node.outputs).length > 0);
+}
+
 export function workflowNodes(config: WorkflowConfig): WorkflowNodeConfig[] {
   const collections = nodeCollections(config);
   return [
@@ -111,7 +115,12 @@ export function deriveWorkflowOutputSchemas(
       schema = aggregateMetricOutputSchema(node.metrics);
     } else {
       const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
-      schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
+      const nodeOutputs = isRecord(node.outputs) ? node.outputs : undefined;
+      schema = copyOutputSchema(
+        node.type === "gate:deserialize" && hasDeclaredOutputs(node)
+          ? nodeOutputs
+          : backendSchema ?? nodeOutputs,
+      );
     }
     visiting.delete(nodeId);
     cache.set(nodeId, schema);
