@@ -297,7 +297,7 @@
       font-size: 0.84rem;
     }
 
-    .metric-card.unassigned {
+    .metric-card.not-started {
       --metric-color: var(--red);
     }
 
@@ -819,16 +819,16 @@
           <div class="section-heading">
             <div>
               <h2 id="item-heading">Work Item Snapshot</h2>
-              <p class="section-note">Current ownership, delivery, and review posture.</p>
+              <p class="section-note">Current status, delivery, and review posture.</p>
             </div>
             <p class="section-note"><strong id="total-items-heading">65</strong> total items</p>
           </div>
 
           <div class="metric-grid">
-            <div class="metric-card unassigned">
-              <p class="metric-label">Unassigned items</p>
-              <p class="metric-value" id="unassigned-count">9</p>
-              <p class="metric-subtext" id="unassigned-share">13.8% of all items</p>
+            <div class="metric-card not-started">
+              <p class="metric-label">Not started</p>
+              <p class="metric-value" id="not-started-count">15</p>
+              <p class="metric-subtext" id="not-started-share">23.1% of all items</p>
             </div>
 
             <div class="metric-card progress">
@@ -953,7 +953,6 @@
     }
 
     const totalItems = Number(data.items.total || 0);
-    const unassigned = Number(data.items.unassigned || 0);
     const inProgress = Number(data.items.inProgress || 0);
     const withPrs = Number(data.items.withPrs || 0);
     const done = Number(data.items.done || 0);
@@ -975,7 +974,7 @@
     setText("done-effort", formatNumber(doneEffort));
     setText("total-effort", formatNumber(totalEffort));
 
-    setText("unassigned-count", formatNumber(unassigned));
+    setText("not-started-count", formatNumber(notStarted));
     setText("in-progress-count", formatNumber(inProgress));
     setText("pr-count", formatNumber(withPrs));
     setText("done-count", formatNumber(done));
@@ -983,7 +982,7 @@
     setText("legend-progress", formatNumber(inProgress));
     setText("legend-done", formatNumber(done));
 
-    setText("unassigned-share", `${formatPercent(pct(unassigned, totalItems))} of all items`);
+    setText("not-started-share", `${formatPercent(pct(notStarted, totalItems))} of all items`);
     setText("in-progress-share", `${formatPercent(pct(inProgress, totalItems))} of all items`);
     setText("pr-share", `${formatPercent(pct(withPrs, totalItems))} of all items`);
     setText("done-share", `${formatPercent(pct(done, totalItems))} of all items`);
