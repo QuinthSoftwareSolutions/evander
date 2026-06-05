@@ -42,6 +42,8 @@ from .vm_targeting import (
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
+DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
+DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
 _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -56,6 +58,17 @@ def normalize_optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def default_agent_model_for_provider(
+    agent_provider: str | None = None,
+    config: GatewayConfig | None = None,
+) -> str:
+    if normalize_optional_string(agent_provider) == "claude":
+        return DEFAULT_CLAUDE_AGENT_MODEL
+    if normalize_optional_string(getattr(config, "openai_provider_mode", None)) == "anthropic":
+        return DEFAULT_CLAUDE_AGENT_MODEL
+    return DEFAULT_CODEX_AGENT_MODEL
 
 
 def normalize_optional_http_url(value: Any, *, field_name: str) -> str | None:
@@ -620,11 +633,8 @@ def build_container_session_files(
     playwright: bool,
     npm_registry_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    resolved_model = model or (
-        "claude-sonnet-4-6"
-        if config.openai_provider_mode == "anthropic"
-        else "gpt-5.4"
-    )
+    resolved_agent_provider = normalize_optional_string(agent_provider) or "codex"
+    resolved_model = model or default_agent_model_for_provider(resolved_agent_provider, config)
     openai_base_url = container_worker_guest_openai_base_url(config)
     anthropic_base_url = container_worker_guest_anthropic_base_url(config)
     gateway_url = container_worker_guest_gateway_url(config)
@@ -639,7 +649,6 @@ def build_container_session_files(
     session_openai_base_url = container_session_openai_base_url(config, session_id)
     session_anthropic_base_url = container_session_anthropic_base_url(config, session_id)
     session_gateway_url = container_session_gateway_url(config, session_id)
-    resolved_agent_provider = normalize_optional_string(agent_provider) or "codex"
     session_env_values = {
         "AGENT_SANDBOX_SESSION_ID": session_id,
         "AGENT_PROVIDER": resolved_agent_provider,

@@ -1677,6 +1677,66 @@ def test_container_session_files_include_claude_provider_config() -> None:
     )
 
 
+def test_container_prompt_uses_claude_default_model_for_claude_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="claude-session",
+            vm_id=None,
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model=None,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "truman",
+                "agent_provider": "claude",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentPromptEffectDefinition(
+            id="agent-prompt",
+            display_name="Prompt",
+            type="effect:agent:prompt",
+            session_id="claude-session",
+            prompt="continue",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    command = str(backend.started_specs[0].command)
+    assert "claude -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "--model gpt-5.4" not in command
+
+
 def test_claude_json_log_filter_handles_stream_json_events() -> None:
     events = [
         {

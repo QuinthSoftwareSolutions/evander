@@ -1011,7 +1011,7 @@ printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
 chown "${AGENT_USER}:${AGENT_USER}" "${PID_FILE}"
 chmod 0600 "${PID_FILE}"
 THREAD_ID_RESULT="${RESUME_THREAD_ID:-}"
-if [[ -z "${THREAD_ID_RESULT}" && "${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context" ]]; then
+if [[ -z "${THREAD_ID_RESULT}" && "${RESUME_MODE}" == "new_context" ]]; then
   for _ in $(seq 1 150); do
     if [[ -f "${RUN_LOG_FILE}" ]]; then
       THREAD_ID_RESULT="$(

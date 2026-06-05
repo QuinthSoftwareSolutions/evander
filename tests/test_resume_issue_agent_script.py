@@ -20,6 +20,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_provider_assets_lib = root / "scripts" / "lib" / "agent_provider_assets.sh"
     source_runner_codex_lib = root / "scripts" / "lib" / "agent_runner_codex.sh"
     source_runner_copilot_lib = root / "scripts" / "lib" / "agent_runner_copilot.sh"
+    source_runner_claude_lib = root / "scripts" / "lib" / "agent_runner_claude.sh"
     source_state_lib = root / "scripts" / "lib" / "agent_state.sh"
 
     sandbox_root = tmp_path / "sandbox"
@@ -52,6 +53,11 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     runner_copilot_lib_path = lib_dir / "agent_runner_copilot.sh"
     runner_copilot_lib_path.write_text(
         source_runner_copilot_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    runner_claude_lib_path = lib_dir / "agent_runner_claude.sh"
+    runner_claude_lib_path.write_text(
+        source_runner_claude_lib.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     state_lib_path = lib_dir / "agent_state.sh"
@@ -386,6 +392,82 @@ exit 0
     assert "AGENT_PROVIDER=copilot" in run_call
 
 
+def test_resume_issue_agent_accepts_claude_provider_and_emits_thread_id(
+    tmp_path: Path,
+) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_log = tmp_path / "ssh.log"
+    _write_fake_sudo(fake_bin / "sudo")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  dominfo)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    cat <<'EOF'
+Id:             7
+Name:           vm-14084
+State:          running
+EOF
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ssh_log}"
+if [[ "${{@: -1}}" == "true" ]]; then
+  exit 0
+fi
+cat > /dev/null
+printf 'thread_id=claude-thread-1\\n'
+printf 'resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["AGENT_PROVIDER"] = "claude"
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "Resume work now", "14084"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == (
+        "thread_id=claude-thread-1\n"
+        "Agent resumed for vm-14084 "
+        "(resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
+    )
+    run_call = next(
+        call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
+    )
+    assert "AGENT_PROVIDER=claude" in run_call
+
+
 def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     script_text = (
         Path(__file__).resolve().parents[1] / "scripts" / "resume_issue_agent.sh"
@@ -406,6 +488,14 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     )
     assert "AGENT_RUNNER_CODEX_LIB_B64" not in script_text
     assert "ensure_agent_enabled" in script_text
+    assert (
+        '[[ -z "${THREAD_ID_RESULT}" && "${RESUME_MODE}" == "new_context" ]]'
+        in script_text
+    )
+    assert (
+        '"${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context"'
+        not in script_text
+    )
     assert 'write_state "running" "resume"' in script_text
     assert "trap on_exit_write_idle EXIT" in script_text
     assert 'STATE_PATH="${STATE_PATH}" \\' in script_text

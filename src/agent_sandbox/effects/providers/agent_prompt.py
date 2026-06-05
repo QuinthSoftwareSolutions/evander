@@ -36,6 +36,7 @@ from .agent_session import (
     container_prompt_command,
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
+    default_agent_model_for_provider,
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
@@ -323,7 +324,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id,
             fallback_directory_path=session.directory_path if session is not None else None,
         )
-        resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        agent_harness = self._agent_harness_from_session(session)
+        resolved_model = (
+            model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -338,7 +344,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=effective_resume_thread_id,
-            agent_provider=self._agent_harness_from_session(session),
+            agent_provider=agent_harness,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=effective_config,
                 target=session_id,

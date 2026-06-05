@@ -164,6 +164,17 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert "HOST_CLAUDE_BIN" in script
     assert "ANTHROPIC_BASE_URL" in script
     assert "ANTHROPIC_AUTH_TOKEN" in script
+    assert 'source "${SCRIPT_DIR}/lib/guest_ssh.sh"' in script
+    assert "resolve_private_key_path" not in script
+    assert (
+        'SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"'
+        in script
+    )
+    assert (
+        "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
+        in script
+    )
+    assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
     assert "DISABLE_TELEMETRY" in script
     assert '"type": "http"' in script

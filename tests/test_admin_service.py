@@ -2655,6 +2655,41 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(
     assert watcher == {}
 
 
+def test_resume_agent_passes_session_agent_provider(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="claude-session",
+            vm_id="agent-sandbox-claude-vm",
+            model="claude-sonnet-4-6",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"agent_provider": "claude"},
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="thread_id=claude-thread-1\nok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+
+    result = service.resume_agent("agent-sandbox-claude-vm", "Resume now")
+
+    assert result.success is True
+    assert captured["env"]["AGENT_MODEL"] == "claude-sonnet-4-6"
+    assert captured["env"]["AGENT_PROVIDER"] == "claude"
+    assert "--resume-mode" in captured["cmd"]
+
+
 def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

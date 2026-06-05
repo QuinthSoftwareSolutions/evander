@@ -13,6 +13,9 @@ material. Newer entries are added incrementally as changes land.
 - Added Claude provider metadata, container session files, runner commands,
   guest bootstrap script, cloud-init relay env, Admin Web config fields, model
   usage attribution, and docs for the first Claude agent-model support slice.
+- Fixed Claude VM bootstrap key resolution, libvirt resume provider dispatch,
+  provider-neutral resume thread capture, and provider-aware container prompt
+  model defaults.
 
 ## 2026-06-05 - Compact Model Usage Attribution
 

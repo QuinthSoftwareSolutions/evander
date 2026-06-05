@@ -31,11 +31,22 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 # shellcheck source=lib/agent_provider_assets.sh
 source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+CALLER_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+if [[ -z "${SSH_PRIVATE_KEY_PATH:-}" && -n "${SSH_KEY_PATH:-}" ]]; then
+  SSH_PRIVATE_KEY_PATH="${SSH_KEY_PATH}"
+fi
+SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" && -z "${SSH_KEY_PATH:-}" ]]; then
+  SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
+fi
 HOST_CLAUDE_BIN="${HOST_CLAUDE_BIN:-$(command -v claude || true)}"
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 GATEWAY_URL="${GATEWAY_URL:-}"
@@ -45,8 +56,9 @@ if [[ -z "${HOST_CLAUDE_BIN}" || ! -f "${HOST_CLAUDE_BIN}" ]]; then
   exit 1
 fi
 
-if ! resolve_private_key_path; then
-  echo "Missing SSH private key: ${SSH_PRIVATE_KEY_PATH:-unset}" >&2
+if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
+  echo "Missing SSH private key: ${SSH_PRIVATE_KEY_PATH}" >&2
+  echo "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key." >&2
   exit 1
 fi
 
@@ -56,7 +68,7 @@ if ! vm_network_vm_exists "${VM_NAME}"; then
 fi
 
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS:-180}")"
-mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME:-${HOME:-}}")
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 
 PROVIDER_RUNNER_LIB_NAME="$(agent_provider_runner_lib_name claude)"
 PROVIDER_RUNNER_LIB_PATH="$(agent_provider_runner_lib_path "${ROOT_DIR}/scripts/lib" claude)"
