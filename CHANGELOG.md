@@ -7,9 +7,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-05 - Deserialize Output Persistence
 
-- Kept editable `gate:deserialize` outputs ahead of stale backend schema
-  records during frontend output-schema derivation so declared downstream
-  bindings survive local patching and reload normalization.
+- Kept editable `gate:deserialize` outputs ahead of stale empty backend schema
+  records for bound content while preserving backend-inferred literal-content
+  schemas during frontend output-schema derivation.
 
 ## 2026-06-05 - Compact Model Usage Attribution
 

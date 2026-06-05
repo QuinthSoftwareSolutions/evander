@@ -412,6 +412,71 @@ test("deserialize outputs override stale empty backend schemas for downstream bi
   assert.ok(bindingOptions.some((option) => option.value === "${{gate-deserialize-1.title}}"));
 });
 
+test("deserialize literal content keeps backend-inferred schemas over stale declared outputs", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-event-main",
+        display_name: "Incoming event",
+        type: "trigger:manual",
+        outputs: {
+          payload_text: { type: "string" },
+        },
+      },
+    ],
+    gates: [
+      {
+        id: "gate-deserialize-1",
+        display_name: "Deserialize payload",
+        type: "gate:deserialize",
+        content: "{\"title\":\"Ready\",\"metadata\":{\"priority\":3}}",
+        format: "json",
+        outputs: {
+          stale_title: { type: "string" },
+          stale_metadata: {
+            type: "object",
+            properties: {
+              source: { type: "string" },
+            },
+          },
+        },
+      },
+    ],
+    effects: [
+      {
+        id: "prompt-agent",
+        display_name: "Prompt agent",
+        type: "effect:agent:prompt",
+        prompt: "Use the literal payload fields.",
+      },
+    ],
+    queries: [],
+    edges: [
+      { source_id: "trigger-event-main", target_id: "gate-deserialize-1" },
+      { source_id: "gate-deserialize-1", target_id: "prompt-agent" },
+    ],
+  };
+  const baseOutputSchemas = {
+    "gate-deserialize-1": {
+      title: { type: "string" },
+      metadata: {
+        type: "object",
+        properties: {
+          priority: { type: "integer" },
+        },
+      },
+    },
+  };
+
+  const outputSchemas = deriveWorkflowOutputSchemas(config, baseOutputSchemas);
+
+  assert.deepEqual(outputSchemas["gate-deserialize-1"], baseOutputSchemas["gate-deserialize-1"]);
+
+  const bindingOptions = upstreamBindingOptions(config, "prompt-agent", outputSchemas);
+  assert.ok(bindingOptions.some((option) => option.value === "${{gate-deserialize-1.metadata.priority}}"));
+  assert.ok(!bindingOptions.some((option) => option.value === "${{gate-deserialize-1.stale_title}}"));
+});
+
 test("state node output schemas expose graph-local bindings", () => {
   const config = {
     triggers: [
