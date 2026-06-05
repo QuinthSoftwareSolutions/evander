@@ -21,6 +21,8 @@ from pydantic import (
 )
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS = 1000
+ADO_DAILY_STATUS_REPORT_MAX_ITEMS_LIMIT = 5000
 
 
 def utc_now() -> datetime:
@@ -2118,7 +2120,9 @@ class AdoDailyStatusReportRequest(BaseModel):
     team: str | None = None
     area_path: str | None = None
     states: list[str] = Field(default_factory=list)
-    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(
+        default_factory=lambda: [AdoBacklogItemType.PRODUCT_BACKLOG_ITEM, AdoBacklogItemType.BUG]
+    )
     exclude_types: list[AdoBacklogItemType] = Field(
         default_factory=lambda: [AdoBacklogItemType.TASK]
     )
@@ -2136,7 +2140,11 @@ class AdoDailyStatusReportRequest(BaseModel):
     done_states: list[str] = Field(default_factory=list)
     in_progress_states: list[str] = Field(default_factory=list)
     effort_fields: list[str] = Field(default_factory=list)
-    max_items: int = Field(default=1000, ge=1, le=5000)
+    max_items: int = Field(
+        default=ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
+        ge=1,
+        le=ADO_DAILY_STATUS_REPORT_MAX_ITEMS_LIMIT,
+    )
 
     @field_validator(
         "project",
@@ -2186,9 +2194,8 @@ class AdoDailyStatusReportRequest(BaseModel):
             deduped.append(normalized)
         return deduped
 
-    @field_validator("types", "exclude_types", mode="before")
     @classmethod
-    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+    def _normalize_type_list(cls, value: object) -> list[AdoBacklogItemType]:
         if value is None:
             return []
         if not isinstance(value, list):
@@ -2207,6 +2214,17 @@ class AdoDailyStatusReportRequest(BaseModel):
             normalized.append(resolved)
         return normalized
 
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_report_types(cls, value: object) -> list[AdoBacklogItemType]:
+        normalized = cls._normalize_type_list(value)
+        return normalized or [AdoBacklogItemType.PRODUCT_BACKLOG_ITEM, AdoBacklogItemType.BUG]
+
+    @field_validator("exclude_types", mode="before")
+    @classmethod
+    def normalize_exclude_types(cls, value: object) -> list[AdoBacklogItemType]:
+        return cls._normalize_type_list(value)
+
     @field_validator("elapsed_time_mode")
     @classmethod
     def validate_elapsed_time_mode(cls, value: str | None) -> str:
@@ -2216,6 +2234,11 @@ class AdoDailyStatusReportRequest(BaseModel):
         if normalized in {"swedish_work_time", "sweden_work_time", ""}:
             return "swedish_work_time"
         raise ValueError("elapsed_time_mode must be calendar_time or swedish_work_time")
+
+    @field_validator("max_items")
+    @classmethod
+    def normalize_max_items(cls, value: int) -> int:
+        return max(value, ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS)
 
     @field_validator("workday_start", "workday_end")
     @classmethod

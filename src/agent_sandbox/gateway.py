@@ -78,6 +78,7 @@ from agent_sandbox.pr_feedback.providers import (
     GitHubFeedbackAdapter,
 )
 from agent_sandbox.models import (
+    ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
     AdoBacklogCommentRequest,
@@ -4360,7 +4361,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         done_states: list[str] | None = None,
         in_progress_states: list[str] | None = None,
         effort_fields: list[str] | None = None,
-        max_items: int = 1000,
+        max_items: int = ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,

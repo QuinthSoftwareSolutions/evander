@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-05 - ADO Daily Status Report Item Floor
+
+- Normalized daily status report `max_items` values below 1000 up to 1000 so
+  agent-selected small caps do not truncate sprint totals.
+- Scoped daily status reports to Product Backlog Items and Bugs by default so
+  feature work items do not inflate sprint delivery counts.
+
 ## 2026-06-04 - DIDWW Origin Query Hold Policy
 
 - Replaced forced pending-origin-query filler with a short hold offer that lets
