@@ -144,6 +144,10 @@ def test_launch_script_can_derive_public_key_from_private_key() -> None:
     assert (
         '-e "s|__HTTP_TARGET_RELAY_BASE_URL__|${ESCAPED_HTTP_TARGET_RELAY_BASE_URL}|g" \\' in script
     )
+    assert 'ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}"' in script
+    assert (
+        '-e "s|__ANTHROPIC_BASE_URL__|${ESCAPED_ANTHROPIC_BASE_URL}|g" \\' in script
+    )
     assert (
         'SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"' in script
     )
@@ -151,6 +155,32 @@ def test_launch_script_can_derive_public_key_from_private_key() -> None:
     assert (
         "Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically." in script
     )
+
+
+def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
+    script = (ROOT / "scripts" / "bootstrap_claude_vm.sh").read_text(encoding="utf-8")
+
+    assert "Usage: bootstrap_claude_vm.sh <vm-name> [vm-user]" in script
+    assert "HOST_CLAUDE_BIN" in script
+    assert "ANTHROPIC_BASE_URL" in script
+    assert "ANTHROPIC_AUTH_TOKEN" in script
+    assert 'source "${SCRIPT_DIR}/lib/guest_ssh.sh"' in script
+    assert "resolve_private_key_path" not in script
+    assert (
+        'SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"'
+        in script
+    )
+    assert (
+        "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
+        in script
+    )
+    assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
+    assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
+    assert "DISABLE_TELEMETRY" in script
+    assert '"type": "http"' in script
+    assert '"tools": ["*"]' in script
+    assert 'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"' in script
+    assert "claude --version" in script
 
 
 def test_guest_heartbeat_assets_exist() -> None:

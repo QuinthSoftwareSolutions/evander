@@ -5,6 +5,23 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-05 - Claude Agent Provider Planning Support
+
+- Added an Anthropic relay mode to the host OpenAI relay so Claude Code can use
+  session-scoped `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models`
+  paths while the real Anthropic API key stays host-side.
+- Added Claude provider metadata, container session files, runner commands,
+  guest bootstrap script, cloud-init relay env, Admin Web config fields, model
+  usage attribution, and docs for the first Claude agent-model support slice.
+- Fixed Claude VM bootstrap key resolution, libvirt resume provider dispatch,
+  provider-neutral resume thread capture, and provider-aware container prompt
+  model defaults.
+- Preserved Claude libvirt resume thread IDs and approval-scoped MCP gateway
+  overrides, and made Anthropic container configs infer the Claude harness when
+  no agent provider is explicitly requested.
+- Renamed relay upstream selection to `model_provider_mode` while preserving
+  `openai_provider_mode` as a backwards-compatible config alias.
+
 ## 2026-06-05 - Deserialize Output Persistence
 
 - Kept editable `gate:deserialize` outputs ahead of stale empty backend schema

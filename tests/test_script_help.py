@@ -3,6 +3,7 @@ from pathlib import Path
 
 SCRIPTS = [
     "apply_firewall.sh",
+    "bootstrap_claude_vm.sh",
     "bootstrap_codex_vm.sh",
     "bootstrap_copilot_vm.sh",
     "bootstrap_frontend_deps_vm.sh",

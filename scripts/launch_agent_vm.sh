@@ -19,6 +19,7 @@ Environment:
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
   SSH_PRIVATE_KEY_PATH Private key used to derive a temporary public key when needed.
   LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
+  ANTHROPIC_BASE_URL   Host Anthropic-compatible base URL exposed to the guest.
   SHARED_NUGET_CACHE_DIR  Host read-only NuGet package cache directory mounted into the guest.
   SHARED_NUGET_CACHE_TAG  Guest mount tag/path name for the shared NuGet cache. Default: agent-sandbox-nuget-cache
   SHARED_NUGET_CACHE_MODE Filesystem sharing mode: auto, virtiofs, or 9p. Default: auto
@@ -83,6 +84,7 @@ fi
 GATEWAY_URL="${GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
 HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}"
 
 mkdir -p "${VM_DIR}"
 mkdir -p "${STATE_DIR}"
@@ -126,6 +128,8 @@ ESCAPED_HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL//&/\\&}"
 ESCAPED_HTTP_TARGET_RELAY_BASE_URL="${ESCAPED_HTTP_TARGET_RELAY_BASE_URL//|/\\|}"
 ESCAPED_LLM_BASE_URL="${LLM_BASE_URL//&/\\&}"
 ESCAPED_LLM_BASE_URL="${ESCAPED_LLM_BASE_URL//|/\\|}"
+ESCAPED_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL//&/\\&}"
+ESCAPED_ANTHROPIC_BASE_URL="${ESCAPED_ANTHROPIC_BASE_URL//|/\\|}"
 ESCAPED_NUGET_FALLBACK_PACKAGES="${GUEST_NUGET_FALLBACK_PACKAGES//&/\\&}"
 ESCAPED_NUGET_FALLBACK_PACKAGES="${ESCAPED_NUGET_FALLBACK_PACKAGES//|/\\|}"
 ESCAPED_NUGET_PACKAGES="${GUEST_NUGET_PACKAGES//&/\\&}"
@@ -180,6 +184,7 @@ sed \
   -e "s|__SESSION_ID__|${SESSION_ID}|g" \
   -e "s|__SSH_PUBLIC_KEY__|${ESCAPED_SSH_PUBLIC_KEY}|g" \
   -e "s|__LLM_BASE_URL__|${ESCAPED_LLM_BASE_URL}|g" \
+  -e "s|__ANTHROPIC_BASE_URL__|${ESCAPED_ANTHROPIC_BASE_URL}|g" \
   -e "s|__NUGET_FALLBACK_PACKAGES__|${ESCAPED_NUGET_FALLBACK_PACKAGES}|g" \
   -e "s|__NUGET_PACKAGES__|${ESCAPED_NUGET_PACKAGES}|g" \
   -e "s|__NUGET_HTTP_CACHE_PATH__|${ESCAPED_NUGET_HTTP_CACHE_PATH}|g" \

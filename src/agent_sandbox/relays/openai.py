@@ -51,6 +51,7 @@ HOP_BY_HOP_HEADERS = {
     "trailers",
     "transfer-encoding",
     "upgrade",
+    "x-api-key",
 }
 
 HOSTED_WEB_SEARCH_TOOL_TYPES = {
@@ -86,11 +87,15 @@ class OpenAIRelay:
         relay = self
 
         async def health(_: Request) -> JSONResponse:
-            has_api_key = bool(os.environ.get(relay.config.openai_api_key_env))
+            api_key_env = relay._resolved_api_key_env(relay.config)
+            has_api_key = bool(os.environ.get(api_key_env))
             return JSONResponse(
                 {
                     "status": "ok",
+                    "provider_mode": relay.config.model_provider_mode,
                     "upstream": relay.config.openai_api_base_url,
+                    "anthropic_upstream": relay.config.anthropic_api_base_url,
+                    "api_key_env": api_key_env,
                     "api_key_loaded": has_api_key,
                 }
             )
@@ -124,7 +129,15 @@ class OpenAIRelay:
                     status_code=403,
                 )
 
-            if request_context.config.openai_provider_mode == "azure_openai":
+            if request_context.config.model_provider_mode == "anthropic":
+                return await relay._proxy_anthropic_http(
+                    request=request,
+                    request_context=request_context,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                )
+
+            if request_context.config.model_provider_mode == "azure_openai":
                 if request.method != "POST" or upstream_path != "responses":
                     return JSONResponse(
                         {
@@ -178,6 +191,7 @@ class OpenAIRelay:
                         headers=headers,
                         request_body=request_body,
                         timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                        provider_name="openai",
                     )
 
                 async with httpx.AsyncClient(
@@ -198,6 +212,7 @@ class OpenAIRelay:
                             request_body=request_body,
                             upstream_response=upstream_response,
                             duration_ms=relay._duration_ms_since(started_at),
+                            provider_name="openai",
                         )
                     except Exception as exc:
                         logger.warning(
@@ -245,6 +260,7 @@ class OpenAIRelay:
                     headers=headers,
                     request_body=request_body,
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                    provider_name="openai",
                 )
 
             async with httpx.AsyncClient(
@@ -265,6 +281,7 @@ class OpenAIRelay:
                         request_body=request_body,
                         upstream_response=upstream_response,
                         duration_ms=relay._duration_ms_since(started_at),
+                        provider_name="openai",
                     )
                 except Exception as exc:
                     logger.warning(
@@ -291,12 +308,22 @@ class OpenAIRelay:
                 await websocket.close(code=1008, reason=str(exc))
                 return
 
-            if request_context.config.openai_provider_mode == "azure_openai":
+            if request_context.config.model_provider_mode == "azure_openai":
                 reason = (
                     "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
                 )
                 logger.warning(
                     "relay_rejected_azure_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
+            if request_context.config.model_provider_mode == "anthropic":
+                reason = "Anthropic relay does not support websocket/realtime requests"
+                logger.warning(
+                    "relay_rejected_anthropic_websocket session_id=%s path=%s reason=%s",
                     request_context.session_id,
                     websocket.url.path,
                     reason,
@@ -347,11 +374,113 @@ class OpenAIRelay:
                     proxy,
                     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
                 ),
+                Route(
+                    "/session/{session_id}/v1/{path:path}",
+                    proxy,
+                    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                ),
                 Route("/v1/{path:path}", proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
                 WebSocketRoute("/v1/session/{session_id}/{path:path}", websocket_proxy),
                 WebSocketRoute("/v1/{path:path}", websocket_proxy),
             ],
         )
+
+    async def _proxy_anthropic_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> Response:
+        normalized_path = self._anthropic_upstream_path(upstream_path)
+        if not self._is_supported_anthropic_endpoint(
+            method=request.method,
+            upstream_path=normalized_path,
+        ):
+            return JSONResponse(
+                {
+                    "error": (
+                        "Anthropic relay currently supports GET /v1/models, "
+                        "POST /v1/messages, and POST /v1/messages/count_tokens"
+                    )
+                },
+                status_code=501,
+            )
+
+        api_key = os.environ.get(request_context.config.anthropic_api_key_env)
+        if not api_key:
+            return JSONResponse(
+                {
+                    "error": (
+                        "Host environment variable "
+                        f"{request_context.config.anthropic_api_key_env} is not set."
+                    )
+                },
+                status_code=503,
+            )
+
+        upstream_url = self._anthropic_upstream_http_url(
+            base_url=request_context.config.anthropic_api_base_url,
+            upstream_path=normalized_path,
+            query_items=request.query_params.multi_items(),
+        )
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        }
+        headers["accept-encoding"] = "identity"
+        headers["x-api-key"] = api_key
+        if not any(key.lower() == "anthropic-version" for key in headers):
+            headers["anthropic-version"] = request_context.config.anthropic_api_version
+
+        if self._should_stream_http_response(request=request, request_body=request_body):
+            return await self._stream_response(
+                request=request,
+                session_id=request_context.session_id,
+                upstream_path=normalized_path,
+                upstream_url=upstream_url,
+                headers=headers,
+                request_body=request_body,
+                timeout_seconds=request_context.config.anthropic_relay_timeout_seconds,
+                provider_name="anthropic",
+            )
+
+        async with httpx.AsyncClient(
+            timeout=request_context.config.anthropic_relay_timeout_seconds,
+            transport=self.transport,
+        ) as client:
+            started_at = time.perf_counter()
+            upstream_response = await client.request(
+                method=request.method,
+                url=upstream_url,
+                headers=headers,
+                content=request_body,
+            )
+            try:
+                self._record_model_usage_event(
+                    session_id=request_context.session_id,
+                    upstream_path=normalized_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    duration_ms=self._duration_ms_since(started_at),
+                    provider_name="anthropic",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                    request_context.session_id,
+                    request.url.path,
+                    exc.__class__.__name__,
+                    str(exc),
+                )
+            return Response(
+                content=upstream_response.content,
+                status_code=upstream_response.status_code,
+                headers=self._response_headers(upstream_response),
+                media_type=upstream_response.headers.get("content-type"),
+            )
 
     async def _stream_response(
         self,
@@ -362,6 +491,7 @@ class OpenAIRelay:
         headers: dict[str, str],
         request_body: bytes,
         timeout_seconds: float,
+        provider_name: str = "openai",
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -450,6 +580,7 @@ class OpenAIRelay:
                     response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
                     response_payload=stream_payload,
                     duration_ms=self._duration_ms_since(started_at),
+                    provider_name=provider_name,
                 )
                 await upstream_stream.__aexit__(None, None, None)
                 await client.aclose()
@@ -477,6 +608,7 @@ class OpenAIRelay:
         request_body: bytes,
         upstream_response: httpx.Response,
         duration_ms: int | None = None,
+        provider_name: str = "openai",
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -500,6 +632,7 @@ class OpenAIRelay:
                 "content_type": upstream_response.headers.get("content-type"),
             },
             duration_ms=duration_ms,
+            provider_name=provider_name,
         )
 
     def _record_stream_model_usage_event(
@@ -513,6 +646,7 @@ class OpenAIRelay:
         response_body_sha256: str | None,
         response_payload: dict[str, Any],
         duration_ms: int | None,
+        provider_name: str = "openai",
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -536,6 +670,7 @@ class OpenAIRelay:
                 "stream": True,
             },
             duration_ms=duration_ms,
+            provider_name=provider_name,
         )
 
     def _record_websocket_model_usage_event(
@@ -589,6 +724,7 @@ class OpenAIRelay:
         request_metadata: dict[str, Any],
         response_metadata: dict[str, Any],
         duration_ms: int | None,
+        provider_name: str = "openai",
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -597,11 +733,15 @@ class OpenAIRelay:
             session_id=session_id,
             agent_harness=MODEL_USAGE_AGENT_HARNESS,
         )
+        if correlation_context is None:
+            correlation_context = self.model_usage_store.get_active_correlation_context(
+                session_id=session_id,
+            )
         request_hash = sha256(request_body).hexdigest() if request_body else None
-        extractor = MappingModelUsageExtractor(provider_name="openai")
+        extractor = MappingModelUsageExtractor(provider_name=provider_name)
         result = extractor.extract(
             ModelUsageExtractionRequest(
-                provider="openai",
+                provider=provider_name,
                 provider_endpoint_identifier=upstream_path,
                 request_status=request_status,
                 model=response_payload.get("model") or self._model_from_request_body(request_body),
@@ -651,6 +791,8 @@ class OpenAIRelay:
     def _merge_stream_event_dict(event_payload: dict[str, Any], payload: dict[str, Any]) -> None:
         candidate = event_payload.get("response")
         if not isinstance(candidate, dict):
+            candidate = event_payload.get("message")
+        if not isinstance(candidate, dict):
             candidate = event_payload
         for key in ("id", "model", "deployment"):
             value = candidate.get(key)
@@ -659,9 +801,12 @@ class OpenAIRelay:
         event_type = candidate.get("type") or event_payload.get("type")
         if event_type is not None:
             payload["type"] = event_type
-        usage = candidate.get("usage")
-        if isinstance(usage, dict):
-            payload["usage"] = dict(usage)
+        for usage in (candidate.get("usage"), event_payload.get("usage")):
+            if isinstance(usage, dict):
+                existing_usage = payload.get("usage")
+                merged_usage = dict(existing_usage) if isinstance(existing_usage, dict) else {}
+                merged_usage.update(usage)
+                payload["usage"] = merged_usage
 
     @staticmethod
     def _is_model_usage_endpoint(upstream_path: str) -> bool:
@@ -671,7 +816,58 @@ class OpenAIRelay:
             "responses/compact",
             "chat/completions",
             "completions",
+            "messages",
         }
+
+    @staticmethod
+    def _anthropic_upstream_path(upstream_path: str) -> str:
+        normalized = upstream_path.strip().lstrip("/")
+        if normalized == "v1":
+            return ""
+        if normalized.startswith("v1/"):
+            normalized = normalized[len("v1/") :]
+        return normalized
+
+    @staticmethod
+    def _is_supported_anthropic_endpoint(*, method: str, upstream_path: str) -> bool:
+        normalized_method = str(method or "").upper()
+        normalized_path = upstream_path.strip().lstrip("/")
+        if normalized_method == "GET" and normalized_path == "models":
+            return True
+        return normalized_method == "POST" and normalized_path in {
+            "messages",
+            "messages/count_tokens",
+        }
+
+    @classmethod
+    def _anthropic_upstream_http_url(
+        cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]
+    ) -> str:
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            upstream_url = f"{base}/{upstream_path}"
+        else:
+            upstream_url = f"{base}/v1/{upstream_path}"
+        filtered_query = cls._filtered_query_string(query_items)
+        if filtered_query:
+            upstream_url = f"{upstream_url}?{filtered_query}"
+        return upstream_url
+
+    @classmethod
+    def _should_stream_http_response(cls, *, request: Request, request_body: bytes) -> bool:
+        if "text/event-stream" in request.headers.get("accept", ""):
+            return True
+        return cls._request_body_declares_stream(request_body)
+
+    @staticmethod
+    def _request_body_declares_stream(request_body: bytes) -> bool:
+        if not request_body:
+            return False
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return isinstance(payload, dict) and bool(payload.get("stream"))
 
     @staticmethod
     def _json_payload_from_response(response: httpx.Response) -> dict[str, Any]:
@@ -778,8 +974,10 @@ class OpenAIRelay:
 
     @staticmethod
     def _resolved_api_key_env(config: GatewayConfig) -> str:
-        if config.openai_provider_mode == "azure_openai":
+        if config.model_provider_mode == "azure_openai":
             return config.azure_openai_api_key_env or config.openai_api_key_env
+        if config.model_provider_mode == "anthropic":
+            return config.anthropic_api_key_env
         return config.openai_api_key_env
 
     @staticmethod

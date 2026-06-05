@@ -42,6 +42,8 @@ from .vm_targeting import (
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
+DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
+DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
 _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -56,6 +58,22 @@ def normalize_optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def default_agent_model_for_provider(
+    agent_provider: str | None = None,
+    config: GatewayConfig | None = None,
+) -> str:
+    provider = normalize_optional_string(agent_provider) or default_agent_provider_for_config(config)
+    if provider == "claude":
+        return DEFAULT_CLAUDE_AGENT_MODEL
+    return DEFAULT_CODEX_AGENT_MODEL
+
+
+def default_agent_provider_for_config(config: GatewayConfig | None = None) -> str:
+    if normalize_optional_string(getattr(config, "model_provider_mode", None)) == "anthropic":
+        return "claude"
+    return "codex"
 
 
 def normalize_optional_http_url(value: Any, *, field_name: str) -> str | None:
@@ -526,6 +544,13 @@ def container_worker_guest_openai_base_url(config: GatewayConfig) -> str:
     )
 
 
+def container_worker_guest_anthropic_base_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(config.container_worker_guest_anthropic_base_url)
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(config.gateway_url, port=config.openai_relay_port, path="")
+
+
 def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
     configured = normalize_optional_string(config.container_worker_guest_nuget_relay_base_url)
     if configured:
@@ -573,6 +598,10 @@ def container_session_openai_base_url(config: GatewayConfig, session_id: str) ->
     return f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
 
 
+def container_session_anthropic_base_url(config: GatewayConfig, session_id: str) -> str:
+    return f"{container_worker_guest_anthropic_base_url(config).rstrip('/')}/session/{session_id}"
+
+
 def container_session_gateway_url(config: GatewayConfig, session_id: str) -> str:
     return gateway_url_with_session_context(
         container_worker_guest_gateway_url(config),
@@ -602,14 +631,19 @@ def build_container_session_files(
     config: GatewayConfig,
     session_id: str,
     model: str | None,
+    agent_provider: str | None = None,
     web_search_enabled: bool = False,
     dotnet: bool,
     nuget: bool,
     playwright: bool,
     npm_registry_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    resolved_model = model or "gpt-5.4"
+    resolved_agent_provider = normalize_optional_string(
+        agent_provider
+    ) or default_agent_provider_for_config(config)
+    resolved_model = model or default_agent_model_for_provider(resolved_agent_provider, config)
     openai_base_url = container_worker_guest_openai_base_url(config)
+    anthropic_base_url = container_worker_guest_anthropic_base_url(config)
     gateway_url = container_worker_guest_gateway_url(config)
     http_target_relay_base_url = container_worker_guest_http_target_relay_base_url(config)
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
@@ -620,13 +654,17 @@ def build_container_session_files(
     if resolved_npm_registry_url is None:
         resolved_npm_registry_url = container_worker_guest_npm_registry_url(config)
     session_openai_base_url = container_session_openai_base_url(config, session_id)
+    session_anthropic_base_url = container_session_anthropic_base_url(config, session_id)
     session_gateway_url = container_session_gateway_url(config, session_id)
     session_env_values = {
         "AGENT_SANDBOX_SESSION_ID": session_id,
+        "AGENT_PROVIDER": resolved_agent_provider,
         "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
         "AGENT_SANDBOX_HTTP_TARGET_RELAY_BASE_URL": http_target_relay_base_url,
         "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
+        "AGENT_SANDBOX_ANTHROPIC_BASE_URL": anthropic_base_url,
         "OPENAI_BASE_URL": openai_base_url,
+        "ANTHROPIC_BASE_URL": session_anthropic_base_url,
         "HTTP_TARGET_RELAY_BASE_URL": http_target_relay_base_url,
         "AGENT_SANDBOX_ARTIFACTS_DIR": "/artifacts",
         "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
@@ -697,6 +735,11 @@ def build_container_session_files(
                 web_search_enabled=web_search_enabled,
             ),
         },
+        {
+            "destination_path": "/home/agent/.claude/mcp-config.json",
+            "mode": "0600",
+            "content": _claude_mcp_config_content(gateway_url=session_gateway_url),
+        },
     ]
     if dotnet:
         files.extend(
@@ -739,6 +782,7 @@ def container_shell_preamble() -> str:
         "  . /home/agent/.profile\n"
         "fi\n"
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"\n'
+        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"\n'
     )
 
 
@@ -790,10 +834,22 @@ def container_prompt_command(
     prompt: str,
     model: str,
     resume_thread_id: str | None,
+    agent_provider: str | None = None,
     resume_mode: str | None = None,
     mcp_gateway_url: str | None = None,
     web_search_enabled: bool = False,
 ) -> str:
+    provider = normalize_optional_string(agent_provider) or "codex"
+    if provider == "claude":
+        return _container_claude_prompt_command(
+            prompt=prompt,
+            model=model,
+            resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
+            mcp_gateway_url=mcp_gateway_url,
+        )
+    if provider != "codex":
+        raise ValueError(f"Unsupported container agent_provider: {provider}")
     effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
     effective_resume_mode = normalize_optional_string(resume_mode)
     common_args = [
@@ -836,6 +892,44 @@ def container_prompt_command(
     )
 
 
+def _container_claude_prompt_command(
+    *,
+    prompt: str,
+    model: str,
+    resume_thread_id: str | None,
+    resume_mode: str | None = None,
+    mcp_gateway_url: str | None = None,
+) -> str:
+    effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
+    effective_resume_mode = normalize_optional_string(resume_mode)
+    common_args = [
+        "--dangerously-skip-permissions",
+        "--model",
+        model,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--mcp-config",
+        "/home/agent/.claude/mcp-config.json",
+    ]
+    if effective_resume_thread_id:
+        args = ["claude", "--resume", effective_resume_thread_id, "-p", *common_args, prompt]
+    elif effective_resume_mode == "same_context":
+        args = ["claude", "--continue", "-p", *common_args, prompt]
+    else:
+        args = ["claude", "-p", *common_args, prompt]
+    preamble = container_shell_preamble()
+    if mcp_gateway_url:
+        preamble += _write_claude_mcp_config_shell(mcp_gateway_url)
+    return (
+        preamble
+        + "cd /home/agent\n"
+        + _claude_json_log_filter_shell()
+        + shlex.join(args)
+        + " | agent_sandbox_claude_json_to_log\n"
+    )
+
+
 def _container_resume_thread_id(resume_thread_id: str | None) -> str | None:
     normalized = normalize_optional_string(resume_thread_id)
     if normalized is None:
@@ -852,6 +946,15 @@ def container_thread_id_from_logs(logs: str) -> str | None:
     if match is None:
         return None
     return match.group("thread_id").strip() or None
+
+
+def _write_claude_mcp_config_shell(gateway_url: str) -> str:
+    return (
+        "mkdir -p /home/agent/.claude\n"
+        + "cat > /home/agent/.claude/mcp-config.json <<'EOF_AGENT_SANDBOX_CLAUDE_MCP'\n"
+        + _claude_mcp_config_content(gateway_url=gateway_url)
+        + "EOF_AGENT_SANDBOX_CLAUDE_MCP\n"
+    )
 
 
 def _codex_json_log_filter_script() -> str:
@@ -1021,6 +1124,109 @@ def _codex_json_log_filter_shell() -> str:
     )
 
 
+def _claude_json_log_filter_script() -> str:
+    return r"""
+import json
+import sys
+
+thread_id_printed = False
+printed_messages = set()
+
+
+def first_string(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def content_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            text = first_string(item.get("text"), item.get("content"), item.get("message"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return first_string(value.get("text"), value.get("content"), value.get("message"))
+    return ""
+
+
+def print_message(message):
+    if not isinstance(message, str) or not message:
+        return
+    if message in printed_messages:
+        return
+    printed_messages.add(message)
+    if message.endswith("\n"):
+        print(message, end="", flush=True)
+    else:
+        print(message, flush=True)
+
+
+for line in sys.stdin:
+    stripped = line.strip()
+    if not stripped:
+        continue
+    try:
+        event = json.loads(stripped)
+    except json.JSONDecodeError:
+        print(stripped, flush=True)
+        continue
+    if not isinstance(event, dict):
+        continue
+
+    thread_id = first_string(
+        event.get("session_id"),
+        event.get("sessionId"),
+        event.get("conversation_id"),
+        event.get("conversationId"),
+    )
+    if thread_id and not thread_id_printed:
+        print(f"session id: {thread_id}", flush=True)
+        thread_id_printed = True
+
+    event_type = first_string(event.get("type"))
+    if event_type in {"assistant", "assistant_message", "message"}:
+        message = event.get("message")
+        if isinstance(message, dict):
+            print_message(content_text(message.get("content")))
+        else:
+            print_message(content_text(event.get("content")))
+        continue
+    if event_type in {"result", "final"}:
+        print_message(first_string(event.get("result"), event.get("text"), event.get("content")))
+        continue
+    if event_type in {"error", "failed"}:
+        message = event.get("error")
+        if isinstance(message, dict):
+            message = first_string(message.get("message"), message.get("type"))
+        print_message("claude error: " + first_string(message, event.get("message")))
+"""
+
+
+def _claude_json_log_filter_shell() -> str:
+    script = _claude_json_log_filter_script()
+    return (
+        "agent_sandbox_claude_json_to_log() {\n"
+        "  if command -v python3 >/dev/null 2>&1; then\n"
+        f"    python3 -u -c {shlex.quote(script)}\n"
+        "  else\n"
+        "    cat\n"
+        "  fi\n"
+        "}\n\n"
+    )
+
+
 def safe_effect_execution_id(prefix: str, session_id: str) -> str:
     safe_session = "".join(char if char.isalnum() or char in "._-" else "-" for char in session_id)
     return f"{prefix}-{safe_session}-{uuid.uuid4().hex[:12]}"
@@ -1041,6 +1247,7 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
         "  set +a",
         "fi",
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"',
+        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"',
         'export AGENT_SANDBOX_NODE_ROOT="/opt/agent-sandbox/toolchains/node-v24.14.0"',
         'export PATH="$AGENT_SANDBOX_NODE_ROOT/bin:$PATH"',
     ]
@@ -1102,6 +1309,25 @@ def _codex_config_content(
         "\n"
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
+    )
+
+
+def _claude_mcp_config_content(*, gateway_url: str) -> str:
+    return (
+        json.dumps(
+            {
+                "mcpServers": {
+                    "agent_sandbox": {
+                        "type": "http",
+                        "url": gateway_url,
+                        "tools": ["*"],
+                    }
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
 
 

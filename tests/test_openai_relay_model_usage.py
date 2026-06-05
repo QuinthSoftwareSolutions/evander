@@ -36,6 +36,20 @@ class _UsageStream(httpx.AsyncByteStream):
         return None
 
 
+class _AnthropicUsageStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield (
+            b'data: {"type":"message_start","message":{"id":"msg-stream",'
+            b'"type":"message","model":"claude-sonnet-4-6",'
+            b'"usage":{"input_tokens":7}}}\n\n'
+        )
+        yield b'data: {"type":"content_block_delta","delta":{"text":"secret completion text"}}\n\n'
+        yield b'data: {"type":"message_delta","usage":{"output_tokens":8}}\n\n'
+
+    async def aclose(self) -> None:
+        return None
+
+
 class _FakeUpstreamWebSocket:
     def __init__(self) -> None:
         self.sent_messages: list[str | bytes] = []
@@ -412,7 +426,7 @@ def test_openai_relay_records_azure_http_usage(tmp_path: Path, monkeypatch) -> N
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -468,6 +482,144 @@ def test_openai_relay_records_azure_http_usage(tmp_path: Path, monkeypatch) -> N
     assert event.session_id == "session-azure"
     assert event.workflow_run_id == "workflow-azure"
     assert "secret prompt text" not in event_json
+
+
+def test_openai_relay_records_anthropic_http_usage(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        workflow_run_id="workflow-anthropic",
+        effect_id="effect-anthropic",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="claude-sonnet-4-6",
+        agent_harness="claude",
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "secret completion text"}],
+                "usage": {"input_tokens": 6, "output_tokens": 7},
+            },
+        )
+
+    monkeypatch.setenv("ANTHROPIC_TEST_KEY", "anthropic-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "secret prompt text"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("msg-1")
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.provider == "anthropic"
+    assert event.provider_endpoint_identifier == "messages"
+    assert event.model == "claude-sonnet-4-6"
+    assert event.input_tokens == 6
+    assert event.output_tokens == 7
+    assert event.total_tokens is None
+    assert event.normalized_usage_status == "available"
+    assert event.session_id == "session-anthropic"
+    assert event.workflow_run_id == "workflow-anthropic"
+    assert event.dispatch_id == "dispatch-anthropic"
+    assert event.agent_harness == "claude"
+    assert event.execution_backend == "container_worker_vm"
+    assert event.directory_path == "root/team-a"
+    assert event.raw_usage_metadata["request_metadata"]["path"] == "/v1/messages"
+    assert "secret prompt text" not in event_json
+    assert "secret completion text" not in event_json
+
+
+def test_openai_relay_records_anthropic_streaming_usage(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic-stream",
+        workflow_run_id="workflow-anthropic",
+        effect_id="effect-anthropic",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="claude-sonnet-4-6",
+        agent_harness="claude",
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_AnthropicUsageStream(),
+        )
+
+    monkeypatch.setenv("ANTHROPIC_TEST_KEY", "anthropic-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/session/session-anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "secret prompt text"}],
+            "max_tokens": 64,
+            "stream": True,
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"secret completion text" in body
+
+    event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("msg-stream")
+    assert event is not None
+    event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.provider == "anthropic"
+    assert event.provider_endpoint_identifier == "messages"
+    assert event.input_tokens == 7
+    assert event.output_tokens == 8
+    assert event.total_tokens is None
+    assert event.normalized_usage_status == "available"
+    assert event.raw_usage_metadata["request_metadata"]["stream"] is True
+    assert event.agent_harness == "claude"
+    assert "secret prompt text" not in event_json
+    assert "secret completion text" not in event_json
 
 
 def test_openai_relay_records_streaming_final_usage_without_raw_text(

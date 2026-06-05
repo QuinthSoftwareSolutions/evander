@@ -8638,11 +8638,11 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
 
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     openai_section = next(
-        section for section in providers["sections"] if section["title"] == "OpenAI"
+        section for section in providers["sections"] if section["title"] == "LLM providers"
     )
     openai_fields = {field["field_name"]: field for field in openai_section["fields"]}
     assert {
-        "openai_provider_mode",
+        "model_provider_mode",
         "openai_api_base_url",
         "openai_api_key_env",
         "openai_relay_timeout_seconds",
@@ -8651,9 +8651,15 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "azure_openai_api_key_env",
         "azure_openai_api_version",
         "azure_openai_model_deployments",
+        "anthropic_api_base_url",
+        "anthropic_api_key_env",
+        "anthropic_api_version",
+        "anthropic_relay_timeout_seconds",
     }.issubset(openai_fields)
-    assert "azure_openai" in openai_fields["openai_provider_mode"]["tooltip"]
+    assert "azure_openai" in openai_fields["model_provider_mode"]["tooltip"]
+    assert "anthropic" in openai_fields["model_provider_mode"]["tooltip"]
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
+    assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
     assistant = next(
         section for section in communications["sections"] if section["title"] == "Assistant"
     )

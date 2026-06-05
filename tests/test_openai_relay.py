@@ -331,7 +331,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
         "root/team-a",
         domain="providers",
         payload={
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_model_deployments": {
                 "gpt-5.4": "deployment-team-a",
             },
@@ -385,7 +385,7 @@ def test_relay_returns_503_when_azure_openai_api_key_env_is_missing(tmp_path: Pa
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -419,7 +419,7 @@ def test_relay_returns_400_when_azure_openai_model_mapping_is_missing(tmp_path: 
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -456,7 +456,7 @@ def test_relay_rejects_azure_hosted_web_search_before_forwarding(
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -499,7 +499,7 @@ def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -533,6 +533,162 @@ def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
     }
     assert relay.stream_started_count == 1
     assert relay.stream_clean_end_count == 1
+
+
+def test_relay_routes_anthropic_messages_requests_through_session_directory_overlay(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example/",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(config, session_id="session-anthropic", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 7, "output_tokens": 8},
+            },
+        )
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages?beta=1",
+        headers={"authorization": "Bearer guest-key", "x-api-key": "guest-key"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://anthropic.example/v1/messages?beta=1"
+    assert captured["x-api-key"] == "anthropic-key"
+    assert captured["authorization"] == ""
+    assert captured["anthropic-version"] == "2023-06-01"
+    assert captured["accept-encoding"] == "identity"
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 64,
+    }
+
+
+def test_relay_preserves_anthropic_version_header(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        return httpx.Response(200, json={"id": "msg_1", "type": "message"})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.post(
+        "/v1/session/session-anthropic/messages",
+        headers={"Anthropic-Version": "2099-01-01"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["anthropic-version"] == "2099-01-01"
+
+
+def test_relay_rejects_unsupported_anthropic_http_endpoints_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.get("/v1/session/session-anthropic/messages")
+
+    assert response.status_code == 501
+    assert "POST /v1/messages" in response.text
+    assert called is False
+
+
+def test_relay_rejects_anthropic_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    client = TestClient(OpenAIRelay(config).create_app())
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-anthropic/messages"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert "Anthropic relay does not support websocket" in str(exc_info.value.reason)
 
 
 def test_relay_ignores_unknown_allowed_tools_when_resolving_session(tmp_path: Path) -> None:
@@ -876,7 +1032,7 @@ def test_relay_rejects_azure_websocket_requests_without_connecting_upstream(
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -926,7 +1082,7 @@ def test_relay_rejects_unsupported_azure_http_endpoints_without_connecting_upstr
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
