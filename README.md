@@ -128,10 +128,10 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/launch_agent_vm.sh vm-real real-session
    ```
 
-   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, or `LLM_BASE_URL=...` if needed.
+   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes host-side OpenAI-compatible and Anthropic-compatible relay base URLs on `http://192.168.250.1:11434`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, `LLM_BASE_URL=...`, or `ANTHROPIC_BASE_URL=...` if needed.
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
-   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh` or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access.
+   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access.
    Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `agent-sandbox-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
@@ -139,6 +139,7 @@ Directory-scoped config is rooted at `root`:
 
    ```bash
    ./scripts/bootstrap_codex_vm.sh vm-real
+   ./scripts/bootstrap_claude_vm.sh vm-real
    ./scripts/bootstrap_copilot_vm.sh vm-real
    ```
 
@@ -148,6 +149,10 @@ Directory-scoped config is rooted at `root`:
    ### Codex provider bootstrap
 
    This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), registers the host MCP gateway as `agent_sandbox`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+
+   ### Claude Code provider bootstrap
+
+   This copies a host Claude Code CLI command into the guest user's `~/bin`, writes `~/.claude/settings.json` and `~/.claude/mcp-config.json` so Claude can use the host Anthropic relay and MCP gateway, sets `AGENT_PROVIDER=claude`, keeps only placeholder Anthropic auth in the guest, and verifies `claude --version`. Use `openai_provider_mode: "anthropic"` in effective provider config so the host relay injects the real Anthropic API key upstream.
 
    ### GitHub Copilot CLI provider bootstrap
 

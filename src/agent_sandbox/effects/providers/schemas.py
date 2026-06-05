@@ -155,6 +155,7 @@ class VmBootstrapFrontendEffectDefinition(EffectDefinition):
 class AgentCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:create"]
     provider: ConfigValue | None = None
+    agent_provider: ConfigValue | None = None
     execution_backend: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     session_id: ConfigValue | None = None

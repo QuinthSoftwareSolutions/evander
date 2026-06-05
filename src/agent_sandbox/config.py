@@ -135,6 +135,7 @@ class GatewayConfig(BaseModel):
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
     container_worker_guest_openai_base_url: str | None = None
+    container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_http_target_relay_base_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
@@ -212,7 +213,9 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
-    openai_provider_mode: Literal["openai_public", "azure_openai"] = "openai_public"
+    openai_provider_mode: Literal["openai_public", "azure_openai", "anthropic"] = (
+        "openai_public"
+    )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     azure_openai_endpoint: str | None = None
@@ -221,6 +224,10 @@ class GatewayConfig(BaseModel):
     azure_openai_api_version: str = "preview"
     azure_openai_model_deployments: dict[str, str] = Field(default_factory=dict)
     openai_relay_timeout_seconds: float = 300.0
+    anthropic_api_base_url: str = "https://api.anthropic.com"
+    anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
+    anthropic_api_version: str = "2023-06-01"
+    anthropic_relay_timeout_seconds: float = 300.0
     semantic_store_provider: Literal["qdrant"] = "qdrant"
     qdrant_base_url: str = "http://127.0.0.1:6333"
     qdrant_api_key_env: str | None = "QDRANT_API_KEY"
@@ -339,6 +346,7 @@ class GatewayConfig(BaseModel):
         "teams_meeting_media_bridge_url",
         "teams_delegated_authority_base_url",
         "container_worker_guest_openai_base_url",
+        "container_worker_guest_anthropic_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_http_target_relay_base_url",
         "container_worker_guest_nuget_relay_base_url",
@@ -346,6 +354,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -400,6 +409,7 @@ class GatewayConfig(BaseModel):
         "teams_graph_api_base_url",
         "teams_delegated_authority_base_url",
         "container_worker_guest_openai_base_url",
+        "container_worker_guest_anthropic_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_http_target_relay_base_url",
         "container_worker_guest_nuget_relay_base_url",
@@ -407,6 +417,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "anthropic_api_base_url",
         "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -490,6 +501,26 @@ class GatewayConfig(BaseModel):
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("anthropic_api_key_env", mode="before")
+    @classmethod
+    def normalize_anthropic_api_key_env(cls, value: object) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            raise ValueError("anthropic_api_key_env cannot be empty")
+        return text
+
+    @field_validator("anthropic_api_version", mode="before")
+    @classmethod
+    def normalize_anthropic_api_version(cls, value: object) -> object:
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            raise ValueError("anthropic_api_version cannot be empty")
+        return text
 
     @field_validator("azure_openai_api_version", mode="before")
     @classmethod

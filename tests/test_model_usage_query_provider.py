@@ -266,4 +266,4 @@ def test_model_usage_list_query_provider_adds_cost_estimates_and_totals(tmp_path
     assert result["items"][0]["cost_status"] == "estimated"
     assert result["items"][0]["pricing_rule_id"] == "openai:gpt-5.2-codex:text:2025-12-11"
     assert result["items"][0]["pricing_version"] == "openai-2026-06-04"
-    assert result["items"][1]["cost_status"] == "unsupported_provider"
+    assert result["items"][1]["cost_status"] == "pricing_unavailable"

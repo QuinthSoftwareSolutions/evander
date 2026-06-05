@@ -279,6 +279,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "container_worker_request_timeout_seconds"),
                 ("providers", "container_worker_workspace_persistence"),
                 ("providers", "container_worker_guest_openai_base_url"),
+                ("providers", "container_worker_guest_anthropic_base_url"),
                 ("providers", "container_worker_guest_gateway_url"),
                 ("providers", "container_worker_guest_http_target_relay_base_url"),
                 ("providers", "container_worker_guest_nuget_relay_base_url"),
@@ -316,7 +317,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("npm_audit_facade_",),
         ),
         (
-            "OpenAI",
+            "LLM providers",
             (
                 ("providers", "openai_provider_mode"),
                 ("providers", "openai_api_base_url"),
@@ -327,6 +328,10 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "azure_openai_api_key_env"),
                 ("providers", "azure_openai_api_version"),
                 ("providers", "azure_openai_model_deployments"),
+                ("providers", "anthropic_api_base_url"),
+                ("providers", "anthropic_api_key_env"),
+                ("providers", "anthropic_api_version"),
+                ("providers", "anthropic_relay_timeout_seconds"),
                 ("providers", "openai_realtime_model"),
                 ("providers", "openai_realtime_api_key_env"),
                 ("providers", "openai_realtime_api_base_url"),

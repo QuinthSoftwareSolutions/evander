@@ -49,6 +49,7 @@ class EffectProviderConfig(BaseModel):
     container_worker_request_timeout_seconds: float = 30.0
     container_worker_workspace_persistence: str = "session"
     container_worker_guest_openai_base_url: str | None = None
+    container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_http_target_relay_base_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
@@ -64,9 +65,14 @@ class EffectProviderConfig(BaseModel):
     semantic_embedding_model: str = "text-embedding-3-small"
     semantic_embedding_dimensions: int = 1536
     semantic_vector_distance: str = "Cosine"
+    openai_provider_mode: str = "openai_public"
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    anthropic_api_base_url: str = "https://api.anthropic.com"
+    anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
+    anthropic_api_version: str = "2023-06-01"
+    anthropic_relay_timeout_seconds: float = 300.0
 
 
 class QueryProviderConfig(BaseModel):
@@ -78,9 +84,14 @@ class QueryProviderConfig(BaseModel):
     semantic_embedding_model: str = "text-embedding-3-small"
     semantic_embedding_dimensions: int = 1536
     semantic_vector_distance: str = "Cosine"
+    openai_provider_mode: str = "openai_public"
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    anthropic_api_base_url: str = "https://api.anthropic.com"
+    anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
+    anthropic_api_version: str = "2023-06-01"
+    anthropic_relay_timeout_seconds: float = 300.0
 
 
 class GateProviderConfig(BaseModel):

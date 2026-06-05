@@ -956,6 +956,13 @@ def _libvirt_create_vm(
     run_env.update(vm_defaults.guest_environment())
     if manifest.model:
         run_env["AGENT_MODEL"] = manifest.model
+    agent_provider = ""
+    if isinstance(manifest.metadata, Mapping):
+        agent_provider = str(
+            manifest.metadata.get("agent_provider") or manifest.metadata.get("agent_harness") or ""
+        ).strip()
+    if agent_provider:
+        run_env["AGENT_PROVIDER"] = agent_provider
     managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)
     if managed_skills_root is not None:
         run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
@@ -996,6 +1003,7 @@ def _libvirt_create_vm(
                 "GATEWAY_URL",
                 "LLM_BASE_URL",
                 "AGENT_MODEL",
+                "AGENT_PROVIDER",
                 "NUGET_RELAY_BASE_URL",
                 "AGENT_SANDBOX_RUNTIME_DIR",
                 "VM_STORAGE_DIR",

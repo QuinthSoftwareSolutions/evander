@@ -1048,9 +1048,9 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
 | `gateway_url` | legacy gateway YAML | `src/agent_sandbox/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. |
-| `container_worker_guest_openai_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
+| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `openai_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. `azure_openai_auth_mode` currently accepts only `api_key`. |
+| `openai_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. |
 | `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
@@ -1063,6 +1063,10 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
+| `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` Anthropic upstream URL base. |
+| `anthropic_api_key_env` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` env-var name lookup for Anthropic API key. |
+| `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` default `anthropic-version` header. |
+| `anthropic_relay_timeout_seconds` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` upstream Anthropic request timeout. |
 
 ### Semantic store keys
 
@@ -1244,11 +1248,13 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 | `__GATEWAY_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written to guest `/etc/agent-sandbox/session.env` as `AGENT_SANDBOX_GATEWAY_URL`. |
 | `__SESSION_ID__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_SESSION_ID`. |
 | `__LLM_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL`. |
+| `__ANTHROPIC_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_ANTHROPIC_BASE_URL` and `ANTHROPIC_BASE_URL`. |
 | `__NUGET_FALLBACK_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES`. |
 | `__NUGET_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_PACKAGES`. |
 | `__NUGET_HTTP_CACHE_PATH__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_HTTP_CACHE_PATH`. |
 | `__NUGET_CACHE_FS_TYPE__`, `__NUGET_CACHE_MOUNT_OPTIONS__`, `__NUGET_CACHE_TAG__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; mount + `/etc/fstab` entry for shared NuGet cache. |
-| `OPENAI_API_KEY` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for relay-based sessions. |
+| `OPENAI_API_KEY` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for OpenAI-compatible relay sessions. |
+| `ANTHROPIC_AUTH_TOKEN` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for Anthropic-compatible relay sessions. |
 
 ## Directory Config Domains And Storage
 
@@ -1526,6 +1532,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | Script | Environment variables consumed as overrides |
 |---|---|
 | `scripts/apply_firewall.sh` | `ALLOWED_TCP_PORTS` |
+| `scripts/bootstrap_claude_vm.sh` | `HOST_CLAUDE_BIN`, `ANTHROPIC_BASE_URL`, `GATEWAY_URL`, `SSH_PRIVATE_KEY_PATH` |
 | `scripts/bootstrap_codex_vm.sh` | `SSH_KEY_PATH`, `HOST_CODEX_ROOT`, `HOST_CODEX_SKILLS_DIR`, `HOST_REPO_CODEX_SKILLS_DIR`, `HOST_CODEX_MODELS_CACHE_PATH`, `LLM_BASE_URL`, `VM_SSH_USER`, `GUEST_BOOTSTRAP_WAIT_SECONDS`, `AGENT_MODEL`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT`, `OPENAI_API_KEY` |
 | `scripts/bootstrap_copilot_vm.sh` | `SSH_KEY_PATH`, `HOST_COPILOT_BIN`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT` |
 | `scripts/bootstrap_dotnet_vm.sh` | `SSH_KEY_PATH`, `HOST_DOTNET_ROOT`, `HOST_DOTNET_TOOLS_ROOT`, `HOST_NUGET_PACKAGES_ROOT` |
@@ -1543,7 +1550,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/create_base_vm.sh` | `VM_STORAGE_DIR`, `DOWNLOAD_URL` |
 | `scripts/destroy_agent_vm.sh` | `VM_STORAGE_DIR` |
 | `scripts/inspect_nuget_cache.sh` | `SHARED_NUGET_CACHE_DIR` |
-| `scripts/launch_agent_vm.sh` | `VM_STORAGE_DIR`, `GATEWAY_URL`, `SSH_PUBLIC_KEY_FILE`, `SSH_PRIVATE_KEY_PATH`, `LLM_BASE_URL`, `SHARED_NUGET_CACHE_DIR`, `SHARED_NUGET_CACHE_TAG`, `SHARED_NUGET_CACHE_MODE`, `RAM_MB`, `VCPUS`, `DISK_SIZE_GB` |
+| `scripts/launch_agent_vm.sh` | `VM_STORAGE_DIR`, `GATEWAY_URL`, `SSH_PUBLIC_KEY_FILE`, `SSH_PRIVATE_KEY_PATH`, `LLM_BASE_URL`, `ANTHROPIC_BASE_URL`, `SHARED_NUGET_CACHE_DIR`, `SHARED_NUGET_CACHE_TAG`, `SHARED_NUGET_CACHE_MODE`, `RAM_MB`, `VCPUS`, `DISK_SIZE_GB` |
 | `scripts/lib/agent_status.sh` | `VM_AGENT_STATE_MAX_AGE_SECONDS` |
 | `scripts/list_running_vms.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS` |
 | `scripts/prewarm_container_worker_nuget_cache.sh` | `CONTAINER_WORKER_NUGET_CACHE_PATH`, `DOTNET_COMMAND`, `NUGET_RELAY_BASE_URL` |

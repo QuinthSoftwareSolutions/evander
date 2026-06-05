@@ -389,7 +389,7 @@ Storage layout for directory config:
 ## VM Agent Runtime Baseline
 
 - Cloud-init writes provider-neutral baseline config files: `/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`.
-- Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
+- Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports placeholder `OPENAI_API_KEY` and `ANTHROPIC_AUTH_TOKEN` values if none are already set.
 - Cloud-init creates `agent` as the unprivileged runtime user and `agent-admin` as the host-control SSH user with passwordless sudo. Host resume/log tooling uses `agent-admin` to append root-owned logs while running the actual agent process as `agent`.
 - Generic orchestration status is provider-neutral and read from `/home/agent/.agent-sandbox/agent-*.state`, with companion `agent-*.pid` files. Transcript logs are written through the privileged host-control path to root-owned files under `/var/log/agent-sandbox/agent-runs/`.
 - New VMs pick this up automatically; existing VMs need to be recreated or migrated if they predate baseline config changes. For one-off maintenance against an old sudo-enabled runtime user, set `VM_SSH_USER=agent` explicitly.
@@ -400,6 +400,13 @@ Storage layout for directory config:
 - The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
+
+### Claude Code provider bootstrap
+
+- `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user and verifies `claude --version`.
+- The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, and telemetry disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
+- The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
+- Host-side routing is selected with `openai_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
 
 ### GitHub Copilot CLI provider bootstrap
 
@@ -581,9 +588,9 @@ Storage layout for directory config:
   sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
-- The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
-- The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
-- The guest still talks to the relay URL and keeps the placeholder `OPENAI_API_KEY`; only host-side provider settings decide whether the relay forwards to public OpenAI or Azure OpenAI.
+- The guest receives `AGENT_SANDBOX_LLM_BASE_URL`, `OPENAI_BASE_URL`, `AGENT_SANDBOX_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/agent-sandbox/session.env`.
+- The scaffold includes `agent-sandbox-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
+- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, Azure OpenAI, or Anthropic.
 - For Azure OpenAI Codex routing, set `openai_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
@@ -597,13 +604,14 @@ Storage layout for directory config:
       "gpt-5.4": "codex-gpt-5-4"
     }
   }
-  ```
+```
 - Public OpenAI remains the default when `openai_provider_mode` is omitted.
+- For Claude Code routing, set `openai_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
   WebSocket Responses/Completions traffic that exposes a provider `usage`
   payload. It also records `usage_unavailable` when a completed response has no
-  usage block. Azure OpenAI WebSocket/realtime and managed identity are not
-  included.
+  usage block. Azure OpenAI and Anthropic WebSocket/realtime and Azure managed
+  identity are not included.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
   to declare Responses `web_search` tools.

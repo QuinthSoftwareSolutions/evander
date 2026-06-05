@@ -208,6 +208,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_guest_openai_base_url": (
         "Container-visible OpenAI relay base URL used inside runner sessions."
     ),
+    "container_worker_guest_anthropic_base_url": (
+        "Container-visible Anthropic relay base URL used inside Claude runner sessions."
+    ),
     "container_worker_guest_gateway_url": (
         "Container-visible MCP gateway URL used inside runner sessions."
     ),
@@ -251,8 +254,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Upstream request timeout in seconds for the npm audit facade."
     ),
     "openai_provider_mode": (
-        "Provider mode for relay-backed OpenAI requests. Use openai_public for public OpenAI or "
-        "azure_openai for Azure OpenAI; public mode remains the default."
+        "Provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
+        "azure_openai for Azure OpenAI, or anthropic for Claude Messages API routing."
     ),
     "openai_api_base_url": (
         "Upstream OpenAI-compatible API base URL used by the host relay in public mode."
@@ -261,6 +264,18 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key in public mode."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "anthropic_api_base_url": (
+        "Upstream Anthropic-compatible API base URL used by the host relay in anthropic mode."
+    ),
+    "anthropic_api_key_env": (
+        "Name of the host environment variable that holds the Anthropic API key."
+    ),
+    "anthropic_api_version": (
+        "Anthropic-Version header value appended by the host relay when guests omit it."
+    ),
+    "anthropic_relay_timeout_seconds": (
+        "Upstream request timeout in seconds for Anthropic relay requests."
+    ),
     "azure_openai_endpoint": (
         "Azure OpenAI resource endpoint used by the host relay when provider mode is azure_openai."
     ),

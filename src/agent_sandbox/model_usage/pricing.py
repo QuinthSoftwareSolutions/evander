@@ -214,13 +214,6 @@ def estimate_model_usage_cost(
         )
 
     provider = str(event.provider or "").strip().lower()
-    if provider != "openai":
-        return _unavailable_estimate(
-            "unsupported_provider",
-            f"Provider {event.provider!r} is not supported by the OpenAI-first pricing catalog.",
-            requested_currency,
-        )
-
     if catalog is None or not catalog.rules:
         return _unavailable_estimate(
             "pricing_unavailable",
@@ -263,6 +256,13 @@ def estimate_model_usage_cost(
     )
     if rule is None:
         occurred_value = occurred_at.isoformat().replace("+00:00", "Z")
+        catalog_providers = {pricing_rule.provider for pricing_rule in catalog.rules}
+        if provider and provider not in catalog_providers:
+            return _unavailable_estimate(
+                "pricing_unavailable",
+                f"Pricing catalog does not include provider {event.provider!r}.",
+                requested_currency,
+            )
         return _unavailable_estimate(
             "pricing_unavailable",
             f"No pricing rule matched model {model!r} at {occurred_value}.",

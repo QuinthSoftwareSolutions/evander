@@ -1294,6 +1294,88 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert manifest.metadata["worker_url"] == "http://team-worker.test:11888"
 
 
+def test_create_container_agent_preserves_claude_provider_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://worker.test:11888",
+            "openai_provider_mode": "anthropic",
+        },
+    )
+    assert write_result.ok is True
+
+    prepared_metadata: list[dict[str, object]] = []
+    written_files: dict[str, str] = {}
+
+    def prepare_session(
+        self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
+    ) -> WorkerSessionRecord:
+        del self
+        prepared_metadata.append(dict(request.metadata))
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+
+    def write_files(
+        self: ContainerWorkerClient,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        del self
+        assert session_id == "claude-session"
+        for file in request.files:
+            written_files[file.destination_path] = file.content
+        return WorkerFileWriteRecord(
+            session_id=session_id,
+            copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files],
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+
+    result = service.create_admin_agent(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "claude-session",
+            "agent_provider": "claude",
+        }
+    )
+
+    assert result["success"] is True
+    manifest = service.runtime.session_repository.get_session("claude-session")
+    assert manifest is not None
+    assert manifest.metadata["agent_provider"] == "claude"
+    assert prepared_metadata == [
+        {
+            "execution_backend": "container_worker_vm",
+            "directory_path": "root",
+            "target_name": "claude-session",
+            "labels": {},
+            "worker_url": "http://worker.test:11888",
+        }
+    ]
+    assert "AGENT_PROVIDER=claude\n" in written_files["/home/agent/.agent-sandbox/session.env"]
+    assert (
+        "ANTHROPIC_BASE_URL=http://192.168.250.1:11434/session/claude-session\n"
+        in written_files["/home/agent/.agent-sandbox/session.env"]
+    )
+    assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
+    assert "/home/agent/.claude/mcp-config.json" in written_files
+
+
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
