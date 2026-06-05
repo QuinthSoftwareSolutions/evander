@@ -2803,6 +2803,185 @@ def test_agent_create_container_can_override_npm_registry_url(
     assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
 
 
+def test_agent_create_container_can_select_configured_image_alias(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_default_image="runner-base:latest",
+        container_worker_images={
+            "default": "runner-base:latest",
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+        },
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    result = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-alias",
+            container_image="dotnet-playwright",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("session-alias")
+    assert manifest is not None
+    assert manifest.metadata["container_worker"] == {
+        "image": "runner-dotnet-playwright:2026-06-05",
+        "image_alias": "dotnet-playwright",
+    }
+    assert result["container_image"] == "runner-dotnet-playwright:2026-06-05"
+    assert result["container_image_alias"] == "dotnet-playwright"
+    assert backend.prepared_sessions[0]["metadata"]["container_worker"] == {
+        "image": "runner-dotnet-playwright:2026-06-05",
+        "image_alias": "dotnet-playwright",
+    }
+
+
+def test_agent_create_container_accepts_explicit_default_image_reference(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_default_image="runner-base:latest",
+        container_worker_images={"default": "runner-base:latest"},
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    result = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-default",
+            container_image="runner-base:latest",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("session-default")
+    assert manifest is not None
+    assert manifest.metadata["container_worker"] == {
+        "image": "runner-base:latest",
+        "image_alias": None,
+    }
+    assert result["container_image"] == "runner-base:latest"
+    assert result["container_image_alias"] is None
+    assert backend.prepared_sessions[0]["metadata"]["container_worker"] == {
+        "image": "runner-base:latest",
+        "image_alias": None,
+    }
+
+
+def test_agent_create_container_rejects_unknown_container_image_selector_before_bootstrap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_default_image="runner-base:latest",
+        container_worker_images={
+            "default": "runner-base:latest",
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+        },
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+
+    def fail_prepare(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("container session should not be prepared")
+
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(backend, "prepare_session", fail_prepare)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(ValueError, match="unknown container worker image selector"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-missing",
+                container_image="missing-selector",
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
+
+
 @pytest.mark.parametrize(
     "npm_registry_url",
     [

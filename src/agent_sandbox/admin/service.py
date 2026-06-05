@@ -95,6 +95,7 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
 from agent_sandbox.effects.registry import EffectProviderFactory
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.execution.container_worker_client import (
@@ -3106,6 +3107,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Codex skills",
                 "string_list",
                 description="Managed Codex skills to install into the created session.",
+            ),
+            _field(
+                "container_image",
+                "Container image",
+                "string",
+                bindable=True,
+                description="Optional approved container image alias or the configured default image.",
             ),
             _field(
                 "directory_path",
@@ -9907,6 +9915,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
         agent_provider = requested_agent_provider or default_agent_provider_for_config(backend.config)
+        container_image_selection = resolve_container_worker_image_selector(
+            self._agent_optional_string(payload, "container_image"),
+            default_image=backend.config.container_worker_default_image,
+            images=backend.config.container_worker_images,
+        )
         metadata: dict[str, Any] = {
             "execution_backend": "container_worker_vm",
             "target_name": target_name,
@@ -9918,6 +9931,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         worker_url = self._container_worker_backend_url(backend)
         if worker_url:
             metadata["worker_url"] = worker_url
+        metadata["container_worker"] = container_image_selection
         manifest = _build_issue_session_manifest(
             policy=policy,
             session_id=session_id,
@@ -9995,6 +10009,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "directory_path": directory_path,
                 "target_name": target_name,
                 "labels": labels,
+                "container_worker": container_image_selection,
                 **({"worker_url": worker_url} if worker_url else {}),
             },
         )
@@ -10038,6 +10053,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "session_id": session_id,
             "agent_home": session_record.agent_home_container_path,
             "repo_root": session_record.repo_root_container_path,
+            "container_image": container_image_selection["image"],
+            "container_image_alias": container_image_selection["image_alias"],
             "effective_tool_policy": self.effective_tool_policy_payload(session),
         }
 

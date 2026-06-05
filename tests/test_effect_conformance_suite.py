@@ -114,6 +114,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 4096,
             "communication_file_require_approval_for_send": True,
+            "container_image": "runner-base:latest",
             "npm_registry_url": "http://facade.test:11881/",
             "metadata": {"workflow": {"state": "active"}},
         }

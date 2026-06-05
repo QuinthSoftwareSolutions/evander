@@ -4,6 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
 
 from .agent_session import (
@@ -67,6 +68,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "mssql_init_root": effect.mssql_init_root,
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
+            "container_image": effect.container_image,
             "npm_registry_url": effect.npm_registry_url,
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
@@ -224,6 +226,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
         model = normalize_optional_string(payload.get("model"))
         requested_agent_provider = normalize_optional_string(payload.get("agent_provider"))
         agent_provider = requested_agent_provider or default_agent_provider_for_config(config)
+        container_image_selection = resolve_container_worker_image_selector(
+            normalize_optional_string(payload.get("container_image")),
+            default_image=config.container_worker_default_image,
+            images=config.container_worker_images,
+        )
         npm_registry_url = normalize_optional_http_url(
             payload.get("npm_registry_url"), field_name="npm_registry_url"
         )
@@ -252,6 +259,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
+        metadata["container_worker"] = container_image_selection
         requested_web_search_enabled = as_bool_or_none(payload.get("web_search_enabled"))
         effective_web_search_enabled = (
             requested_web_search_enabled
@@ -294,6 +302,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 "execution_backend": "container_worker_vm",
                 "directory_path": directory_path,
                 "labels": labels,
+                "container_worker": container_image_selection,
                 **({"worker_url": worker_url} if worker_url else {}),
             },
         )
@@ -323,6 +332,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "vm_name": None,
             "agent_home": session_record.agent_home_container_path,
             "repo_root": session_record.repo_root_container_path,
+            "container_image": container_image_selection["image"],
+            "container_image_alias": container_image_selection["image_alias"],
             "skipped": False,
         }
 
