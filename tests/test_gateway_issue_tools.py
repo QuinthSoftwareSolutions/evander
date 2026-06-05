@@ -1143,6 +1143,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
     ]
     assert result["template_data"]["items"] == {
         "unassigned": 1,
+        "notStarted": 0,
         "inProgress": 1,
         "withPrs": 1,
         "done": 1,

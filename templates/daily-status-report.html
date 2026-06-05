@@ -353,7 +353,7 @@
       height: 100%;
     }
 
-    .stack-segment.unassigned {
+    .stack-segment.not-started {
       background: var(--red);
     }
 
@@ -392,7 +392,7 @@
       background: var(--gray);
     }
 
-    .legend-swatch.unassigned {
+    .legend-swatch.not-started {
       background: var(--red);
     }
 
@@ -726,6 +726,7 @@
     "sprintLength": "2-week sprint",
     "items": {
       "unassigned": 9,
+      "notStarted": 15,
       "inProgress": 36,
       "withPrs": 18,
       "done": 14,
@@ -831,7 +832,7 @@
             </div>
 
             <div class="metric-card progress">
-              <p class="metric-label">Committed + In Progress</p>
+              <p class="metric-label">In Progress</p>
               <p class="metric-value" id="in-progress-count">36</p>
               <p class="metric-subtext" id="in-progress-share">55.4% of all items</p>
             </div>
@@ -858,32 +859,26 @@
             </div>
 
             <div class="stacked-bar" aria-label="Status distribution">
-              <div class="stack-segment unassigned" id="segment-unassigned" title="Unassigned"></div>
-              <div class="stack-segment progress" id="segment-progress" title="Committed + In Progress"></div>
+              <div class="stack-segment not-started" id="segment-not-started" title="Not started / committed / other"></div>
+              <div class="stack-segment progress" id="segment-progress" title="In Progress"></div>
               <div class="stack-segment done" id="segment-done" title="Done"></div>
-              <div class="stack-segment other" id="segment-other" title="Other"></div>
             </div>
 
             <div class="legend">
               <div class="legend-item">
-                <span class="legend-swatch unassigned"></span>
-                <span>Unassigned</span>
-                <span class="legend-value" id="legend-unassigned">9</span>
+                <span class="legend-swatch not-started"></span>
+                <span>Not started / committed / other</span>
+                <span class="legend-value" id="legend-not-started">15</span>
               </div>
               <div class="legend-item">
                 <span class="legend-swatch progress"></span>
-                <span>Committed + In Progress</span>
+                <span>In Progress</span>
                 <span class="legend-value" id="legend-progress">36</span>
               </div>
               <div class="legend-item">
                 <span class="legend-swatch done"></span>
                 <span>Done</span>
                 <span class="legend-value" id="legend-done">14</span>
-              </div>
-              <div class="legend-item">
-                <span class="legend-swatch"></span>
-                <span>Other or not categorized</span>
-                <span class="legend-value" id="legend-other">6</span>
               </div>
             </div>
           </div>
@@ -962,7 +957,7 @@
     const inProgress = Number(data.items.inProgress || 0);
     const withPrs = Number(data.items.withPrs || 0);
     const done = Number(data.items.done || 0);
-    const other = Math.max(totalItems - unassigned - inProgress - done, 0);
+    const notStarted = Number(data.items.notStarted ?? Math.max(totalItems - inProgress - done, 0));
     const doneEffort = Number(data.effort.done || 0);
     const totalEffort = Number(data.effort.total || 0);
     const completedEffortPercent = pct(doneEffort, totalEffort);
@@ -984,10 +979,9 @@
     setText("in-progress-count", formatNumber(inProgress));
     setText("pr-count", formatNumber(withPrs));
     setText("done-count", formatNumber(done));
-    setText("legend-unassigned", formatNumber(unassigned));
+    setText("legend-not-started", formatNumber(notStarted));
     setText("legend-progress", formatNumber(inProgress));
     setText("legend-done", formatNumber(done));
-    setText("legend-other", formatNumber(other));
 
     setText("unassigned-share", `${formatPercent(pct(unassigned, totalItems))} of all items`);
     setText("in-progress-share", `${formatPercent(pct(inProgress, totalItems))} of all items`);
@@ -1002,10 +996,9 @@
     setProgressValue(".progress-panel.time .progress-track", elapsedPercent);
     setProgressValue(".progress-panel.effort .progress-track", completedEffortPercent);
 
-    setWidth("segment-unassigned", pct(unassigned, totalItems));
+    setWidth("segment-not-started", pct(notStarted, totalItems));
     setWidth("segment-progress", pct(inProgress, totalItems));
     setWidth("segment-done", pct(done, totalItems));
-    setWidth("segment-other", pct(other, totalItems));
 
     const paceTitle = document.getElementById("pace-title");
     const paceCopy = document.getElementById("pace-copy");

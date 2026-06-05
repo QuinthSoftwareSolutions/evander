@@ -20,6 +20,13 @@ material. Newer entries are added incrementally as changes land.
 - Scoped daily status reports to Product Backlog Items and Bugs by default so
   feature work items do not inflate sprint delivery counts.
 
+## 2026-06-05 - ADO Daily Report Status Distribution
+
+- Split daily report ownership and status metrics so unassigned items no longer
+  overlap the status distribution totals.
+- Treated Committed work items as not started/committed instead of active work
+  in the default daily report status buckets.
+
 ## 2026-06-05 - Caller-Friendly Voice Lookup Holds
 
 - Reworded DIDWW voice lookup holds and result prompts to say caller-friendly

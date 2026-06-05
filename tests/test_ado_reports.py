@@ -67,7 +67,8 @@ def test_build_ado_daily_status_report_data_returns_template_block() -> None:
         "sprintLength": "2-week sprint",
         "items": {
             "unassigned": 2,
-            "inProgress": 2,
+            "notStarted": 2,
+            "inProgress": 1,
             "withPrs": 1,
             "done": 1,
             "total": 4,
@@ -76,7 +77,9 @@ def test_build_ado_daily_status_report_data_returns_template_block() -> None:
         "elapsedSprintPercent": 50,
     }
     assert payload["percentages"]["completedEffortPercent"] == 43.6
+    assert payload["percentages"]["notStartedShare"] == 50
     assert payload["percentages"]["prCoverage"] == 25
+    assert payload["source"]["in_progress_states"] == ["In Progress", "Active"]
     assert payload["source"]["items_missing_effort"] == 1
     assert '"withPrs": 1' in payload["template_data_json"]
 
