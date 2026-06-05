@@ -9,6 +9,10 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.container_worker_images import (
+    normalize_container_worker_images,
+    resolve_container_worker_image_selector,
+)
 from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
 from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.models import SessionManifest, ToolName
@@ -84,6 +88,98 @@ def test_approval_notification_target_ids_are_normalized_and_deduplicated() -> N
         "ops-primary",
         "ops-secondary",
     ]
+
+
+def test_container_worker_images_are_normalized_and_round_trip_through_config_model() -> None:
+    payload = {
+        "container_worker_default_image": "runner-base:latest",
+        "container_worker_images": {
+            " default ": " runner-base:latest ",
+            "dotnet-playwright": " runner-dotnet-playwright:2026-06-05 ",
+        },
+    }
+
+    config = GatewayConfig.model_validate(payload)
+
+    assert config.container_worker_images == {
+        "default": "runner-base:latest",
+        "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+    }
+    assert config.model_dump(mode="json")["container_worker_images"] == {
+        "default": "runner-base:latest",
+        "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+    }
+    assert GatewayConfig.model_validate(config.model_dump(mode="json")).container_worker_images == {
+        "default": "runner-base:latest",
+        "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+    }
+
+    assert resolve_container_worker_image_selector(
+        None,
+        default_image=config.container_worker_default_image,
+        images=config.container_worker_images,
+    ) == {"image": "runner-base:latest", "image_alias": None}
+    assert resolve_container_worker_image_selector(
+        "dotnet-playwright",
+        default_image=config.container_worker_default_image,
+        images=config.container_worker_images,
+    ) == {
+        "image": "runner-dotnet-playwright:2026-06-05",
+        "image_alias": "dotnet-playwright",
+    }
+    assert resolve_container_worker_image_selector(
+        "runner-base:latest",
+        default_image=config.container_worker_default_image,
+        images=config.container_worker_images,
+    ) == {"image": "runner-base:latest", "image_alias": None}
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {"container_worker_images": {"": "runner:latest"}},
+            "aliases cannot be empty",
+        ),
+        (
+            {"container_worker_images": {"bad alias": "runner:latest"}},
+            "must match",
+        ),
+        (
+            {"container_worker_images": {"default": ""}},
+            "cannot be empty",
+        ),
+        (
+            {"container_worker_images": {"default": 123}},
+            "must be strings",
+        ),
+        (
+            {
+                "container_worker_images": {
+                    "default": "runner:latest",
+                    " default ": "runner-alt:latest",
+                }
+            },
+            "duplicate container_worker_images alias",
+        ),
+    ],
+)
+def test_container_worker_images_reject_invalid_catalog_entries(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        GatewayConfig.model_validate(payload)
+
+
+def test_container_worker_image_selector_rejects_unknown_selector() -> None:
+    with pytest.raises(ValueError, match="unknown container worker image selector"):
+        resolve_container_worker_image_selector(
+            "unknown",
+            default_image="runner-base:latest",
+            images=normalize_container_worker_images(
+                {"default": "runner-base:latest", "dotnet": "runner-dotnet:latest"}
+            ),
+        )
 
 
 def test_tool_argument_policies_round_trip_through_config_models() -> None:

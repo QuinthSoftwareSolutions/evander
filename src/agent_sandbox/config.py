@@ -30,6 +30,7 @@ from agent_sandbox.models import (
     validate_tool_argument_policy_map,
 )
 from agent_sandbox.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
+from agent_sandbox.container_worker_images import normalize_container_worker_images
 from agent_sandbox.events.scheduled import (
     scheduled_internal_event_store_path as runtime_scheduled_internal_event_store_path,
 )
@@ -131,6 +132,7 @@ class GatewayConfig(BaseModel):
     container_worker_base_url: str | None = None
     container_worker_token_env: str = Field(default="AGENT_SANDBOX_WORKER_TOKEN", min_length=1)
     container_worker_default_image: str = Field(default="agent-sandbox-runner:latest", min_length=1)
+    container_worker_images: dict[str, str] = Field(default_factory=dict)
     container_worker_job_timeout_seconds: float = Field(default=1800.0, gt=0)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
@@ -524,6 +526,11 @@ class GatewayConfig(BaseModel):
                 )
             normalized[model_name] = deployment_name
         return normalized
+
+    @field_validator("container_worker_images", mode="before")
+    @classmethod
+    def normalize_container_worker_images_field(cls, value: object) -> dict[str, str]:
+        return normalize_container_worker_images(value)
 
     @field_validator(
         "retell_from_number",

@@ -311,6 +311,69 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
     assert resolution.validation_errors == []
 
 
+def test_directory_config_store_merges_container_worker_image_catalogs(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    root_written = config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": " runner-base:latest ",
+                "dotnet-playwright": " runner-dotnet-playwright:2026-06-05 ",
+            },
+        },
+    )
+    assert root_written == {
+        "container_worker_default_image": "runner-base:latest",
+        "container_worker_images": {
+            "default": "runner-base:latest",
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+        },
+    }
+
+    team_written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "container_worker_images": {
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+                "python": " runner-python:2026-06-05 ",
+            }
+        },
+    )
+    assert team_written == {
+        "container_worker_images": {
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+            "python": "runner-python:2026-06-05",
+        }
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["container_worker_default_image"] == "runner-base:latest"
+    assert resolution.effective_config["container_worker_images"] == {
+        "default": "runner-base:latest",
+        "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+        "python": "runner-python:2026-06-05",
+    }
+    assert resolution.validation_errors == []
+
+
 def test_directory_config_resolver_reports_incomplete_effective_azure_openai_config(
     tmp_path: Path,
 ) -> None:
