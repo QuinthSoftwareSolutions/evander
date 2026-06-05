@@ -898,9 +898,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   work items and includes only Product Backlog Items and Bugs by default so the report tracks
   sprint delivery items rather than features or implementation subtasks. Daily status reports
   normalize `max_items` below 1000 up to 1000 so an agent-supplied small cap does not truncate
-  sprint totals. By default elapsed sprint time uses Swedish working time (`Europe/Stockholm`,
-  weekdays 08:00-17:00, Swedish public holidays and common non-working eves excluded), with
-  `calendar_time` and manual `elapsed_sprint_percent` available as overrides.
+  sprint totals. By default, only `In Progress` and `Active` count as active work; `Committed`
+  remains in the not-started/committed status bucket. By default elapsed sprint time uses Swedish
+  working time (`Europe/Stockholm`, weekdays 08:00-17:00, Swedish public holidays and common
+  non-working eves excluded), with `calendar_time` and manual `elapsed_sprint_percent` available
+  as overrides.
 - Session allowlisting is required: include `create_ado_backlog_item` in the session manifest
   `allowed_tools`, or the call is denied by policy. The same applies to every ADO backlog tool.
 

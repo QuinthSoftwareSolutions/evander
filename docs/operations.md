@@ -728,6 +728,8 @@ A transport-terminated warning without client-visible failure can be expected fo
   so the report is based on sprint delivery items rather than features or implementation subtasks.
   Pass an explicit non-empty `types` list to override the default, and pass `exclude_types: []` to
   include Tasks.
+- By default, only `In Progress` and `Active` count as active work. `Committed` work items remain
+  in the not-started/committed status bucket unless `in_progress_states` is overridden.
 - Response payload includes:
   - `template_data`: the exact JSON object to paste into the template's `report-data` block
   - `template_data_json`: formatted JSON for agents that are editing the HTML directly

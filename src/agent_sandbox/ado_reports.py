@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 DEFAULT_DONE_STATES = ("Done", "Closed", "Completed")
-DEFAULT_IN_PROGRESS_STATES = ("Committed", "In Progress", "Active")
+DEFAULT_IN_PROGRESS_STATES = ("In Progress", "Active")
 DEFAULT_EFFORT_FIELDS = (
     "Microsoft.VSTS.Scheduling.Effort",
     "Microsoft.VSTS.Scheduling.StoryPoints",
@@ -61,6 +61,7 @@ def build_ado_daily_status_report_data(
     state_counts: Counter[str] = Counter()
     type_counts: Counter[str] = Counter()
     unassigned_count = 0
+    not_started_count = 0
     in_progress_count = 0
     done_count = 0
     with_pr_count = 0
@@ -89,6 +90,8 @@ def build_ado_daily_status_report_data(
             in_progress_count += 1
         if is_done:
             done_count += 1
+        if not is_done and state_key not in progress_state_keys:
+            not_started_count += 1
         if _item_has_pull_request_relation(item):
             with_pr_count += 1
 
@@ -143,6 +146,7 @@ def build_ado_daily_status_report_data(
         "sprintLength": resolved_sprint_length,
         "items": {
             "unassigned": unassigned_count,
+            "notStarted": not_started_count,
             "inProgress": in_progress_count,
             "withPrs": with_pr_count,
             "done": done_count,
@@ -162,6 +166,7 @@ def build_ado_daily_status_report_data(
             completed_effort_percent - resolved_elapsed_percent
         ),
         "unassignedShare": _round_percent(_percent(unassigned_count, total_items)),
+        "notStartedShare": _round_percent(_percent(not_started_count, total_items)),
         "inProgressShare": _round_percent(_percent(in_progress_count, total_items)),
         "prCoverage": _round_percent(_percent(with_pr_count, total_items)),
         "doneItemRatio": _round_percent(_percent(done_count, total_items)),
