@@ -943,6 +943,7 @@ class PrCreateEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
     title: ConfigValue | None = None
+    fallback_title: ConfigValue | None = None
     body: ConfigValue | None = None
     body_file: ConfigValue | None = None
     body_artifact_ids: ConfigValue | None = None

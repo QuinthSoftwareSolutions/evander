@@ -4223,6 +4223,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
             _field("title", "Title", "string", bindable=True),
+            _field("fallback_title", "Fallback title", "string", bindable=True),
             _field("body", "Body", "string", bindable=True, multiline=True),
             _field("body_file", "Body file", "string", bindable=True),
             _field("body_artifact_ids", "Body artifact IDs", "json", bindable=True),

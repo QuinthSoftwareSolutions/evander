@@ -1155,10 +1155,12 @@ def test_pr_create_effect_requires_host_repo_path() -> None:
             "display_name": "Create PR",
             "type": "effect:pr:create",
             "host_repo_path": "/repo",
+            "fallback_title": "Fallback",
         }
     )
 
     assert effect.host_repo_path == "/repo"
+    assert effect.fallback_title == "Fallback"
 
     with pytest.raises(ValueError, match="Field required"):
         PrCreateEffectDefinition.model_validate(

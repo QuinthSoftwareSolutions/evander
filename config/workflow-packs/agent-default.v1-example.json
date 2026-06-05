@@ -1188,7 +1188,8 @@
           "origin_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
           "provider": "azure_devops",
           "session_id": "${{trigger-git-push-1.session_id}}",
-          "title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
+          "title": "${{query-session-context-1.metadata.pr_title ?? null}}",
+          "fallback_title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
         },
         "display_name": "Create standalone PR",
         "id": "effect-pr-create-standalone",
