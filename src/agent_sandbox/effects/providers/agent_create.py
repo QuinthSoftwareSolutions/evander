@@ -15,6 +15,7 @@ from .agent_session import (
     build_container_session_files,
     build_container_session_manifest,
     container_backend,
+    default_agent_provider_for_config,
     effective_config_for_directory,
     normalize_existing_agent_behavior,
     normalize_optional_http_url,
@@ -221,7 +222,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         labels = as_string_mapping(payload.get("labels")) or {}
         model = normalize_optional_string(payload.get("model"))
-        agent_provider = normalize_optional_string(payload.get("agent_provider"))
+        requested_agent_provider = normalize_optional_string(payload.get("agent_provider"))
+        agent_provider = requested_agent_provider or default_agent_provider_for_config(config)
         npm_registry_url = normalize_optional_http_url(
             payload.get("npm_registry_url"), field_name="npm_registry_url"
         )
@@ -234,7 +236,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata["capability_profile"] = capability_profile
         if model:
             metadata["model"] = model
-        if agent_provider:
+        if requested_agent_provider or agent_provider == "claude":
             metadata["agent_provider"] = agent_provider
         requested_tools = as_string_list(payload.get("allowed_tools"))
         if requested_tools:

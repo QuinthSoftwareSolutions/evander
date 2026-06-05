@@ -1424,6 +1424,67 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     assert "agent_sandbox_latest_codex_session_entry" not in command
 
 
+def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        openai_provider_mode="anthropic",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model=None,
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentEnqueuePromptEffectDefinition(
+            id="agent-enqueue",
+            display_name="Enqueue",
+            type="effect:agent:enqueue-prompt",
+            target="session-1",
+            prompt="check teams",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["queued"] is False
+    command = str(backend.started_specs[0].command)
+    assert "claude -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "--model gpt-5.4" not in command
+
+
 def test_agent_enqueue_prompt_provider_rejects_expired_container_session_before_backend_start(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1648,7 +1709,7 @@ def test_container_session_files_include_claude_provider_config() -> None:
         config=config,
         session_id="session-1",
         model=None,
-        agent_provider="claude",
+        agent_provider=None,
         web_search_enabled=False,
         dotnet=False,
         nuget=False,
@@ -1686,6 +1747,7 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        openai_provider_mode="anthropic",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -1700,7 +1762,6 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
-                "agent_provider": "claude",
             },
         )
     )
@@ -1735,6 +1796,56 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
     assert "claude -p" in command
     assert "--model claude-sonnet-4-6" in command
     assert "--model gpt-5.4" not in command
+
+
+def test_agent_create_container_infers_claude_provider_for_anthropic_config(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        openai_provider_mode="anthropic",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="claude-session",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("claude-session")
+    assert manifest is not None
+    assert output["execution_backend"] == "container_worker_vm"
+    assert manifest.metadata["agent_provider"] == "claude"
+    bootstrap_files = backend.written_files[0]["files"]
+    bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
+    assert (
+        "AGENT_PROVIDER=claude\n"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
 
 
 def test_claude_json_log_filter_handles_stream_json_events() -> None:

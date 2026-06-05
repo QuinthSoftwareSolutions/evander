@@ -16,6 +16,9 @@ material. Newer entries are added incrementally as changes land.
 - Fixed Claude VM bootstrap key resolution, libvirt resume provider dispatch,
   provider-neutral resume thread capture, and provider-aware container prompt
   model defaults.
+- Preserved Claude libvirt resume thread IDs and approval-scoped MCP gateway
+  overrides, and made Anthropic container configs infer the Claude harness when
+  no agent provider is explicitly requested.
 
 ## 2026-06-05 - Compact Model Usage Attribution
 

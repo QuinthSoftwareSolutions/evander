@@ -1294,7 +1294,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert manifest.metadata["worker_url"] == "http://team-worker.test:11888"
 
 
-def test_create_container_agent_preserves_claude_provider_metadata(
+def test_create_container_agent_infers_claude_provider_from_anthropic_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -1350,7 +1350,6 @@ def test_create_container_agent_preserves_claude_provider_metadata(
         {
             "backend": "container_worker_vm",
             "session_id": "claude-session",
-            "agent_provider": "claude",
         }
     )
 

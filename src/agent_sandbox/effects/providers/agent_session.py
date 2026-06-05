@@ -64,11 +64,16 @@ def default_agent_model_for_provider(
     agent_provider: str | None = None,
     config: GatewayConfig | None = None,
 ) -> str:
-    if normalize_optional_string(agent_provider) == "claude":
-        return DEFAULT_CLAUDE_AGENT_MODEL
-    if normalize_optional_string(getattr(config, "openai_provider_mode", None)) == "anthropic":
+    provider = normalize_optional_string(agent_provider) or default_agent_provider_for_config(config)
+    if provider == "claude":
         return DEFAULT_CLAUDE_AGENT_MODEL
     return DEFAULT_CODEX_AGENT_MODEL
+
+
+def default_agent_provider_for_config(config: GatewayConfig | None = None) -> str:
+    if normalize_optional_string(getattr(config, "openai_provider_mode", None)) == "anthropic":
+        return "claude"
+    return "codex"
 
 
 def normalize_optional_http_url(value: Any, *, field_name: str) -> str | None:
@@ -633,7 +638,9 @@ def build_container_session_files(
     playwright: bool,
     npm_registry_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    resolved_agent_provider = normalize_optional_string(agent_provider) or "codex"
+    resolved_agent_provider = normalize_optional_string(
+        agent_provider
+    ) or default_agent_provider_for_config(config)
     resolved_model = model or default_agent_model_for_provider(resolved_agent_provider, config)
     openai_base_url = container_worker_guest_openai_base_url(config)
     anthropic_base_url = container_worker_guest_anthropic_base_url(config)

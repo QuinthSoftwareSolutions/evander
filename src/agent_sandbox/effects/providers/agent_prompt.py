@@ -37,6 +37,7 @@ from .agent_session import (
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
     default_agent_model_for_provider,
+    default_agent_provider_for_config,
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
@@ -324,7 +325,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id,
             fallback_directory_path=session.directory_path if session is not None else None,
         )
-        agent_harness = self._agent_harness_from_session(session)
+        agent_harness = self._agent_harness_from_session(session, config=effective_config)
         resolved_model = (
             model
             or getattr(session, "model", None)
@@ -399,7 +400,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 directory_path=str(getattr(session, "directory_path", None) or "root"),
                 model=resolved_model,
                 trace_id=self._trace_id(execution_context),
-                agent_harness=self._agent_harness_from_session(session),
+                agent_harness=agent_harness,
             )
         return {
             "dispatch_id": dispatch_id,
@@ -1390,7 +1391,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
 
     @staticmethod
-    def _agent_harness_from_session(session: Any) -> str:
+    def _agent_harness_from_session(session: Any, *, config: GatewayConfig | None = None) -> str:
         metadata = getattr(session, "metadata", {}) if session is not None else {}
         if isinstance(metadata, Mapping):
             candidate = str(
@@ -1398,7 +1399,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ).strip()
             if candidate:
                 return candidate
-        return "codex"
+        return default_agent_provider_for_config(config)
 
     @classmethod
     def _thread_id_from_logs(cls, logs: str) -> str | None:
