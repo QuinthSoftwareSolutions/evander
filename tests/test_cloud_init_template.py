@@ -12,6 +12,8 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert "AGENT_SANDBOX_PROVIDER_CONFIG_VERSION=1" in template
     assert "HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__" in template
     assert "AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__" in template
+    assert "AGENT_SANDBOX_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__" in template
+    assert "ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__" in template
     assert "AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts" in template
     assert "/home/agent/.codex/config.toml" not in template
     assert "azure_openai_endpoint" not in template
@@ -21,6 +23,7 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert "AZURE_OPENAI_API_KEY" not in template
     assert "deployment-gpt-5-4" not in template
     assert 'OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in template
+    assert 'ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"' in template
     assert "  - git" in template
     assert "  - ripgrep" in template
     assert "  - name: agent-admin" in template

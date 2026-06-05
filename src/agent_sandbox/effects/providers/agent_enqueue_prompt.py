@@ -29,6 +29,7 @@ from .agent_session import (
     container_backend,
     container_prompt_command,
     container_worker_guest_gateway_url,
+    default_agent_model_for_provider,
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
@@ -395,7 +396,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             }
 
         dispatch_id = self._make_dispatch_id(effect_id=effect_id)
-        resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=effective_config,
+        )
+        resolved_model = (
+            model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
         try:
@@ -410,6 +419,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             prompt=prompt,
                             model=resolved_model,
                             resume_thread_id=effective_resume_thread_id,
+                            agent_provider=agent_harness,
                             mcp_gateway_url=self._mcp_gateway_url(
                                 config=effective_config,
                                 target=session_id,
@@ -478,6 +488,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 directory_path=str(getattr(session, "directory_path", None) or "root"),
                 model=resolved_model,
                 trace_id=self._trace_id(execution_context),
+                agent_harness=agent_harness,
             )
         return {
             "dispatch_id": dispatch_id,

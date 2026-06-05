@@ -14,6 +14,7 @@ from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
+    container_worker_guest_anthropic_base_url,
     container_worker_guest_http_target_relay_base_url,
     container_worker_guest_npm_registry_url,
     container_worker_guest_pypi_index_url,
@@ -329,12 +330,26 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
 def test_openai_provider_defaults_remain_public_mode() -> None:
     config = GatewayConfig.model_validate({})
 
+    assert config.model_provider_mode == "openai_public"
     assert config.openai_provider_mode == "openai_public"
     assert config.azure_openai_endpoint is None
     assert config.azure_openai_auth_mode == "api_key"
     assert config.azure_openai_api_key_env is None
     assert config.azure_openai_api_version == "preview"
     assert config.azure_openai_model_deployments == {}
+    assert config.anthropic_api_base_url == "https://api.anthropic.com"
+    assert config.anthropic_api_key_env == "ANTHROPIC_API_KEY"
+    assert config.anthropic_api_version == "2023-06-01"
+
+
+def test_model_provider_mode_accepts_legacy_openai_provider_mode_alias() -> None:
+    config = GatewayConfig.model_validate({"openai_provider_mode": " anthropic "})
+    dumped = config.model_dump(mode="json")
+
+    assert config.model_provider_mode == "anthropic"
+    assert config.openai_provider_mode == "anthropic"
+    assert dumped["model_provider_mode"] == "anthropic"
+    assert "openai_provider_mode" not in dumped
 
 
 @pytest.mark.parametrize(
@@ -344,6 +359,7 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
         ("discord_api_base_url", " https://discord.com/api/v10/ "),
         ("teams_graph_api_base_url", " https://graph.microsoft.com/v1.0/ "),
         ("container_worker_guest_openai_base_url", " http://worker-relay.test:11434/v1/ "),
+        ("container_worker_guest_anthropic_base_url", " http://worker-relay.test:11434/ "),
         ("container_worker_guest_gateway_url", " http://worker-gateway.test:8000/mcp/ "),
         (
             "container_worker_guest_http_target_relay_base_url",
@@ -360,6 +376,7 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
         ),
         ("azure_openai_endpoint", " https://example-resource.openai.azure.com/v1/ "),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
+        ("anthropic_api_base_url", " https://api.anthropic.com/ "),
         ("qdrant_base_url", " http://127.0.0.1:6333/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
         (
@@ -390,6 +407,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("discord_api_base_url", "discord.com/api/v10"),
         ("teams_graph_api_base_url", "graph.microsoft.com/v1.0"),
         ("container_worker_guest_openai_base_url", "worker-relay.test:11434/v1"),
+        ("container_worker_guest_anthropic_base_url", "worker-relay.test:11434"),
         ("container_worker_guest_gateway_url", "ftp://worker-gateway.test/mcp"),
         ("container_worker_guest_http_target_relay_base_url", "worker-http-target.test:11777"),
         ("container_worker_guest_nuget_relay_base_url", ""),
@@ -398,6 +416,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_npm_registry_url", "http://facade.test\nfetch-retries=0"),
         ("azure_openai_endpoint", "not-a-url"),
         ("openai_api_base_url", "not-a-url"),
+        ("anthropic_api_base_url", "not-a-url"),
         ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
         ("nuget_azure_feed_base_url", ""),
@@ -426,7 +445,7 @@ def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None
 def test_azure_openai_provider_config_validates_and_normalizes_full_configuration() -> None:
     config = GatewayConfig.model_validate(
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": " https://example-resource.openai.azure.com/ ",
             "azure_openai_api_key_env": " AZURE_OPENAI_API_KEY ",
             "azure_openai_api_version": " 2024-10-21-preview ",
@@ -437,7 +456,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         }
     )
 
-    assert config.openai_provider_mode == "azure_openai"
+    assert config.model_provider_mode == "azure_openai"
     assert config.azure_openai_endpoint == "https://example-resource.openai.azure.com"
     assert config.azure_openai_api_key_env == "AZURE_OPENAI_API_KEY"
     assert config.azure_openai_api_version == "2024-10-21-preview"
@@ -452,7 +471,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
     [
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
             },
@@ -460,7 +479,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
             },
@@ -468,7 +487,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             },
@@ -476,7 +495,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
@@ -498,9 +517,9 @@ def test_azure_openai_provider_config_rejects_missing_fields_and_unsupported_aut
     [
         {"azure_openai_model_deployments": []},
         {"azure_openai_model_deployments": None},
-        {"openai_provider_mode": "azure_openai", "azure_openai_model_deployments": {"": "x"}},
+        {"model_provider_mode": "azure_openai", "azure_openai_model_deployments": {"": "x"}},
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "   "},
@@ -511,6 +530,38 @@ def test_azure_openai_model_deployments_reject_invalid_payloads(
     payload: dict[str, object]
 ) -> None:
     with pytest.raises(ValueError, match="azure_openai_model_deployments"):
+        GatewayConfig.model_validate(payload)
+
+
+def test_anthropic_provider_config_validates_and_normalizes_full_configuration() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": " https://api.anthropic.example/ ",
+            "anthropic_api_key_env": " ANTHROPIC_TEST_KEY ",
+            "anthropic_api_version": " 2023-06-01 ",
+            "anthropic_relay_timeout_seconds": 120,
+        }
+    )
+
+    assert config.model_provider_mode == "anthropic"
+    assert config.anthropic_api_base_url == "https://api.anthropic.example"
+    assert config.anthropic_api_key_env == "ANTHROPIC_TEST_KEY"
+    assert config.anthropic_api_version == "2023-06-01"
+    assert config.anthropic_relay_timeout_seconds == 120
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"anthropic_api_key_env": "   "}, "anthropic_api_key_env"),
+        ({"anthropic_api_version": "   "}, "anthropic_api_version"),
+    ],
+)
+def test_anthropic_provider_config_rejects_empty_required_fields(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
         GatewayConfig.model_validate(payload)
 
 
@@ -569,6 +620,7 @@ def test_container_worker_package_cache_url_derivation_does_not_change_relays() 
 
     assert container_worker_guest_gateway_url(config) == "http://10.20.30.40:8000/mcp"
     assert container_worker_guest_openai_base_url(config) == "http://10.20.30.40:11434/v1"
+    assert container_worker_guest_anthropic_base_url(config) == "http://10.20.30.40:11434"
     assert container_worker_guest_nuget_relay_base_url(config) == "http://10.20.30.40:11666"
     assert container_worker_guest_http_target_relay_base_url(config) == "http://10.20.30.40:11777"
 

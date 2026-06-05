@@ -19,6 +19,7 @@ from agent_sandbox.effects.providers.agent_clone_repo import (
 )
 from agent_sandbox.effects.providers.agent_session import (
     build_container_session_files,
+    _claude_json_log_filter_script,
     _codex_json_log_filter_script,
     container_prompt_command,
     container_thread_id_from_logs,
@@ -1423,6 +1424,67 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     assert "agent_sandbox_latest_codex_session_entry" not in command
 
 
+def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        model_provider_mode="anthropic",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model=None,
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentEnqueuePromptEffectDefinition(
+            id="agent-enqueue",
+            display_name="Enqueue",
+            type="effect:agent:enqueue-prompt",
+            target="session-1",
+            prompt="check teams",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["queued"] is False
+    command = str(backend.started_specs[0].command)
+    assert "claude -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "--model gpt-5.4" not in command
+
+
 def test_agent_enqueue_prompt_provider_rejects_expired_container_session_before_backend_start(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1538,6 +1600,44 @@ def test_container_prompt_command_uses_fresh_context_for_new_context_without_thr
     assert "-C /home/agent" in command
 
 
+def test_container_prompt_command_supports_claude_provider() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="claude-sonnet-4-6",
+        resume_thread_id=None,
+        agent_provider="claude",
+        mcp_gateway_url="http://gateway.test:8000/mcp?session_id=session-1",
+    )
+
+    assert "claude -p" in command
+    assert "--dangerously-skip-permissions" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "--output-format stream-json" in command
+    assert "--verbose" in command
+    assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
+    assert "agent_sandbox_claude_json_to_log" in command
+    assert "http://gateway.test:8000/mcp?session_id=session-1" in command
+
+
+def test_container_prompt_command_supports_claude_resume_modes() -> None:
+    resume_thread = container_prompt_command(
+        prompt="check teams",
+        model="claude-sonnet-4-6",
+        resume_thread_id="claude-session-1",
+        agent_provider="claude",
+    )
+    resume_last = container_prompt_command(
+        prompt="check teams",
+        model="claude-sonnet-4-6",
+        resume_thread_id=None,
+        resume_mode="same_context",
+        agent_provider="claude",
+    )
+
+    assert "claude --resume claude-session-1 -p" in resume_thread
+    assert "claude --continue -p" in resume_last
+
+
 def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     config = GatewayConfig(
         runtime_dir=Path("/tmp/runtime"),
@@ -1548,7 +1648,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         email_store_path=Path("/tmp/runtime/emails.json"),
         discord_command_store_path=Path("/tmp/runtime/discord.json"),
         gateway_url="http://relay.test:8000/mcp",
-        openai_provider_mode="azure_openai",
+        model_provider_mode="azure_openai",
         azure_openai_endpoint="https://example-resource.openai.azure.com/",
         azure_openai_api_key_env="AZURE_OPENAI_API_KEY",
         azure_openai_model_deployments={"gpt-5.4": "deployment-gpt-5-4"},
@@ -1590,6 +1690,191 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     assert "https://example-resource.openai.azure.com" not in combined_content
     assert "AZURE_OPENAI_API_KEY" not in combined_content
     assert "deployment-gpt-5-4" not in combined_content
+
+
+def test_container_session_files_include_claude_provider_config() -> None:
+    config = GatewayConfig(
+        runtime_dir=Path("/tmp/runtime"),
+        audit_log_path=Path("/tmp/runtime/audit.jsonl"),
+        session_store_path=Path("/tmp/runtime/sessions.json"),
+        approval_store_path=Path("/tmp/runtime/approvals.json"),
+        draft_store_path=Path("/tmp/runtime/drafts.json"),
+        email_store_path=Path("/tmp/runtime/emails.json"),
+        discord_command_store_path=Path("/tmp/runtime/discord.json"),
+        gateway_url="http://relay.test:8000/mcp",
+        model_provider_mode="anthropic",
+    )
+
+    files = build_container_session_files(
+        config=config,
+        session_id="session-1",
+        model=None,
+        agent_provider=None,
+        web_search_enabled=False,
+        dotnet=False,
+        nuget=False,
+        playwright=False,
+    )
+    by_path = {entry["destination_path"]: entry["content"] for entry in files}
+
+    assert "AGENT_PROVIDER=claude\n" in by_path["/home/agent/.agent-sandbox/session.env"]
+    assert (
+        "ANTHROPIC_BASE_URL=http://relay.test:11434/session/session-1\n"
+        in by_path["/home/agent/.agent-sandbox/session.env"]
+    )
+    assert "model = \"claude-sonnet-4-6\"" in by_path["/home/agent/.codex/config.toml"]
+    assert by_path["/home/agent/.claude/mcp-config.json"] == (
+        "{\n"
+        '  "mcpServers": {\n'
+        '    "agent_sandbox": {\n'
+        '      "tools": [\n'
+        '        "*"\n'
+        "      ],\n"
+        '      "type": "http",\n'
+        '      "url": "http://relay.test:8000/mcp?session_id=session-1"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def test_container_prompt_uses_claude_default_model_for_claude_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        model_provider_mode="anthropic",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="claude-session",
+            vm_id=None,
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model=None,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "truman",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentPromptEffectDefinition(
+            id="agent-prompt",
+            display_name="Prompt",
+            type="effect:agent:prompt",
+            session_id="claude-session",
+            prompt="continue",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    command = str(backend.started_specs[0].command)
+    assert "claude -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "--model gpt-5.4" not in command
+
+
+def test_agent_create_container_infers_claude_provider_for_anthropic_config(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        model_provider_mode="anthropic",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="claude-session",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("claude-session")
+    assert manifest is not None
+    assert output["execution_backend"] == "container_worker_vm"
+    assert manifest.metadata["agent_provider"] == "claude"
+    bootstrap_files = backend.written_files[0]["files"]
+    bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
+    assert (
+        "AGENT_PROVIDER=claude\n"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+
+
+def test_claude_json_log_filter_handles_stream_json_events() -> None:
+    events = [
+        {
+            "type": "system",
+            "session_id": "019de31a-8393-71d2-8990-e5f4fb0a4df2",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "I am checking the repo now."}]
+            },
+        },
+        {"type": "result", "result": "Done."},
+    ]
+    completed = subprocess.run(
+        ["python3", "-c", _claude_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "I am checking the repo now.\n"
+        "Done.\n"
+    )
 
 
 def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:

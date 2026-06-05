@@ -229,7 +229,7 @@ def test_openai_pricing_prefers_service_tier_specific_rules() -> None:
 @pytest.mark.parametrize(
     ("event", "expected_status"),
     [
-        (_event(provider="anthropic", model="claude-3-7-sonnet"), "unsupported_provider"),
+        (_event(provider="anthropic", model="claude-3-7-sonnet"), "pricing_unavailable"),
         (_event(model="unknown-model"), "pricing_unavailable"),
         (
             _event(input_tokens=None, output_tokens=10, total_tokens=10),
@@ -246,3 +246,36 @@ def test_openai_pricing_reports_unavailable_statuses(
     assert estimate.status == expected_status
     assert estimate.estimated_total is None
     assert estimate.explanation
+
+
+def test_model_pricing_estimates_anthropic_catalog_rules() -> None:
+    catalog = load_model_pricing_catalog_payload(
+        {
+            "version": "test-anthropic",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "anthropic:claude-sonnet-4-6",
+                    "provider": "anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                    "rates_per_1m_tokens": {
+                        "input": "3.00",
+                        "output": "15.00",
+                    },
+                }
+            ],
+        }
+    )
+    event = _event(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=100,
+        total_tokens=1100,
+    )
+
+    estimate = estimate_model_usage_cost(event, catalog)
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == "anthropic:claude-sonnet-4-6"
+    assert estimate.estimated_total == Decimal("0.0045")

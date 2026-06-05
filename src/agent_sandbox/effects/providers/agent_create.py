@@ -15,6 +15,7 @@ from .agent_session import (
     build_container_session_files,
     build_container_session_manifest,
     container_backend,
+    default_agent_provider_for_config,
     effective_config_for_directory,
     normalize_existing_agent_behavior,
     normalize_optional_http_url,
@@ -34,6 +35,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         context = self._context()
         payload = {
             "provider": effect.provider,
+            "agent_provider": effect.agent_provider,
             "execution_backend": effect.execution_backend,
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
@@ -131,6 +133,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=context.resolved_config,
             skill_names=as_string_list(payload.get("codex_skills")),
         )
+        metadata = _metadata_patch(payload.get("metadata"))
+        agent_provider = normalize_optional_string(payload.get("agent_provider"))
+        if agent_provider:
+            metadata = _deep_merge_metadata(metadata, {"agent_provider": agent_provider})
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -169,7 +175,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             codex_skills=codex_skills,
             directory_path=normalize_optional_string(payload.get("directory_path"))
             or directory_path,
-            metadata=_metadata_patch(payload.get("metadata")),
+            metadata=metadata,
             allow_existing_session=existing_agent_behavior == "upsert",
         )
         return {
@@ -216,6 +222,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         labels = as_string_mapping(payload.get("labels")) or {}
         model = normalize_optional_string(payload.get("model"))
+        requested_agent_provider = normalize_optional_string(payload.get("agent_provider"))
+        agent_provider = requested_agent_provider or default_agent_provider_for_config(config)
         npm_registry_url = normalize_optional_http_url(
             payload.get("npm_registry_url"), field_name="npm_registry_url"
         )
@@ -228,6 +236,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata["capability_profile"] = capability_profile
         if model:
             metadata["model"] = model
+        if requested_agent_provider or agent_provider == "claude":
+            metadata["agent_provider"] = agent_provider
         requested_tools = as_string_list(payload.get("allowed_tools"))
         if requested_tools:
             resolved_allowed_tools = requested_tools
@@ -294,6 +304,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     config=config,
                     session_id=session_id,
                     model=model,
+                    agent_provider=agent_provider,
                     web_search_enabled=effective_web_search_enabled,
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),

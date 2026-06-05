@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from importlib import resources
 import logging
 import os
@@ -49,6 +50,17 @@ def _safe_chat_assistant_identifier(value: str) -> str:
 
 def _is_synthetic_chat_assistant_thread_id(value: str | None) -> bool:
     return str(value or "").strip().startswith("chat-thread-")
+
+
+def _agent_provider_from_session(session: SessionManifest | Any | None) -> str | None:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    if isinstance(metadata, Mapping):
+        candidate = str(
+            metadata.get("agent_provider") or metadata.get("agent_harness") or ""
+        ).strip()
+        if candidate:
+            return candidate
+    return None
 
 
 def _chat_thread_mapping_key(*, agent_thread_id: str | None, thread_id: str | None) -> str:
@@ -1591,6 +1603,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         manifest: Any | None = None
         effective_resume_thread_id: str | None = None
         web_search_mode = "disabled"
+        agent_provider: str | None = None
         try:
             session_id, manifest = self._resolve_session_target(target)
             ensure_session_not_expired(manifest)
@@ -1604,6 +1617,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             effective_resume_thread_id = str(resume_thread_id or "").strip() or None
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
+            agent_provider = _agent_provider_from_session(manifest)
         except ValueError as exc:
             return VmActionResult(
                 success=False,
@@ -1645,13 +1659,18 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             )
         except ValueError:
             resume_timeout_seconds = 120.0
+        resume_env = os.environ | {
+            "AGENT_MODEL": resolved_model,
+            "AGENT_WEB_SEARCH_MODE": web_search_mode,
+        }
+        if agent_provider:
+            resume_env["AGENT_PROVIDER"] = agent_provider
         try:
             completed = _admin_service._run_subprocess(
                 args,
                 capture_output=True,
                 text=True,
-                env=os.environ
-                | {"AGENT_MODEL": resolved_model, "AGENT_WEB_SEARCH_MODE": web_search_mode},
+                env=resume_env,
                 timeout=resume_timeout_seconds,
             )
         except subprocess.TimeoutExpired:
@@ -2037,6 +2056,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     "GATEWAY_URL",
                     "LLM_BASE_URL",
                     "AGENT_MODEL",
+                    "AGENT_PROVIDER",
                     "NUGET_RELAY_BASE_URL",
                     "AGENT_SANDBOX_RUNTIME_DIR",
                     "VM_STORAGE_DIR",

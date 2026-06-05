@@ -36,6 +36,8 @@ from .agent_session import (
     container_prompt_command,
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
+    default_agent_model_for_provider,
+    default_agent_provider_for_config,
     effective_config_for_session,
     gateway_url_with_session_context,
     require_container_session_id,
@@ -281,6 +283,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 directory_path=directory_path,
                 model=model,
                 trace_id=self._trace_id(execution_context),
+                agent_harness=self._agent_harness_from_session(session),
             )
         self._persist_resume_thread_metadata_key(
             target=target,
@@ -322,7 +325,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id,
             fallback_directory_path=session.directory_path if session is not None else None,
         )
-        resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        agent_harness = self._agent_harness_from_session(session, config=effective_config)
+        resolved_model = (
+            model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -337,6 +345,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=effective_resume_thread_id,
+            agent_provider=agent_harness,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=effective_config,
                 target=session_id,
@@ -391,6 +400,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 directory_path=str(getattr(session, "directory_path", None) or "root"),
                 model=resolved_model,
                 trace_id=self._trace_id(execution_context),
+                agent_harness=agent_harness,
             )
         return {
             "dispatch_id": dispatch_id,
@@ -1365,6 +1375,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str,
         resume_thread_id: str | None,
+        agent_provider: str | None = None,
         resume_mode: str | None = None,
         mcp_gateway_url: str | None = None,
         web_search_enabled: bool = False,
@@ -1373,10 +1384,22 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=model,
             resume_thread_id=resume_thread_id,
+            agent_provider=agent_provider,
             resume_mode=resume_mode,
             mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=web_search_enabled,
         )
+
+    @staticmethod
+    def _agent_harness_from_session(session: Any, *, config: GatewayConfig | None = None) -> str:
+        metadata = getattr(session, "metadata", {}) if session is not None else {}
+        if isinstance(metadata, Mapping):
+            candidate = str(
+                metadata.get("agent_provider") or metadata.get("agent_harness") or ""
+            ).strip()
+            if candidate:
+                return candidate
+        return default_agent_provider_for_config(config)
 
     @classmethod
     def _thread_id_from_logs(cls, logs: str) -> str | None:

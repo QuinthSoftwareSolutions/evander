@@ -9782,6 +9782,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             codex_skills = self.validate_managed_codex_skills(
                 self._agent_string_list(payload, "codex_skills")
             )
+            agent_provider = self._agent_optional_string(payload, "agent_provider")
             result = self.create_vm(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -9858,6 +9859,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 playwright=bool(payload.get("playwright", False)),
                 codex_skills=codex_skills,
                 directory_path=self._agent_optional_string(payload, "directory_path") or "root",
+                **({"metadata": {"agent_provider": agent_provider}} if agent_provider else {}),
             )
             session_id = self._agent_optional_string(payload, "session_id")
             session = (
@@ -9899,14 +9901,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         policy = self.runtime.policy_config.resolve_for_directory(directory_path)
         labels = _normalize_session_labels(payload.get("labels"))
+        model = self._agent_optional_string(payload, "model")
+        backend = self._container_worker_backend(directory_path=directory_path)
+        from agent_sandbox.effects.providers.agent_session import default_agent_provider_for_config
+
+        requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
+        agent_provider = requested_agent_provider or default_agent_provider_for_config(backend.config)
         metadata: dict[str, Any] = {
             "execution_backend": "container_worker_vm",
             "target_name": target_name,
         }
+        if requested_agent_provider or agent_provider == "claude":
+            metadata["agent_provider"] = agent_provider
         if labels:
             metadata["labels"] = labels
-        model = self._agent_optional_string(payload, "model")
-        backend = self._container_worker_backend(directory_path=directory_path)
         worker_url = self._container_worker_backend_url(backend)
         if worker_url:
             metadata["worker_url"] = worker_url
@@ -10001,6 +10009,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     config=backend.config,
                     session_id=session_id,
                     model=model,
+                    agent_provider=agent_provider,
                     web_search_enabled=(
                         _normalize_session_policy_bool(
                             payload.get("web_search_enabled"),
