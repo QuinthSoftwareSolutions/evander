@@ -9,6 +9,7 @@ from agent_sandbox.events.provider_models import AgentBootstrapFrontendEffectDef
 from .agent_session import (
     as_string_list,
     container_backend,
+    container_worker_image_for_session,
     effective_config_for_session,
     frontend_bootstrap_command,
     map_install_roots_to_container_repo,
@@ -83,6 +84,7 @@ class AgentBootstrapFrontendEffectProvider(EffectProviderBase):
                     target_name=safe_effect_execution_id("frontend", session_id),
                     session_id=session_id,
                     directory_path=session.directory_path if session is not None else "root",
+                    image=container_worker_image_for_session(session, config),
                     command=command,
                     metadata={
                         "effect_type": "effect:agent:bootstrap-frontend",

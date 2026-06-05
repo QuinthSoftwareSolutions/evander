@@ -21,6 +21,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.agent_session import (
     container_prompt_command,
     container_worker_guest_gateway_url,
+    container_worker_image_for_session,
     gateway_url_with_session_context,
     normalize_optional_string,
     safe_effect_execution_id,
@@ -463,6 +464,7 @@ class HostWakeDispatcher:
                         target_name=execution_id,
                         session_id=session_id,
                         directory_path=directory_path,
+                        image=container_worker_image_for_session(session, base_config),
                         command=command,
                         metadata={
                             "source": dispatch_source,

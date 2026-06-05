@@ -11,6 +11,7 @@ from agent_sandbox.effects.providers.base import EffectLifecycleHookBase
 from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_gateway_url,
     container_prompt_command,
+    container_worker_image_for_session,
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
@@ -292,6 +293,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         target_name=execution_id,
                         session_id=session_id,
                         directory_path=getattr(session, "directory_path", None) or "root",
+                        image=container_worker_image_for_session(session, config),
                         command=container_prompt_command(
                             prompt=record.prompt,
                             model=model,

@@ -211,6 +211,25 @@ def effective_config_for_session(
     return config
 
 
+def container_worker_image_for_session(
+    session: SessionManifest | Any | None,
+    config: GatewayConfig,
+) -> str:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    if isinstance(metadata, Mapping):
+        container_worker = metadata.get("container_worker")
+        if isinstance(container_worker, Mapping):
+            image = normalize_optional_string(container_worker.get("image"))
+            if image:
+                return image
+    default_image = normalize_optional_string(
+        getattr(config, "container_worker_default_image", None)
+    )
+    if default_image is None:
+        raise ValueError("container_worker_default_image cannot be empty")
+    return default_image
+
+
 def execution_backend_for_session(
     session: SessionManifest | Any | None,
     *,

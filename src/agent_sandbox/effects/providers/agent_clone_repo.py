@@ -16,6 +16,7 @@ from agent_sandbox.git_mirror import ContainerGitMirrorResolver
 from .agent_session import (
     container_shell_preamble,
     container_backend,
+    container_worker_image_for_session,
     effective_config_for_session,
     normalize_optional_string,
     require_container_session_id,
@@ -111,7 +112,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         if result.cloned:
             self._configure_container_git(
                 backend=backend,
+                config=config,
                 session_id=session_id,
+                session=session,
                 directory_path=session.directory_path if session is not None else directory_path,
                 target_dir=result.target_dir,
                 repo_source=mirror.canonical_repo_source,
@@ -171,6 +174,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         self,
         *,
         backend: Any,
+        config: Any,
+        session: Any,
         session_id: str,
         directory_path: str,
         target_dir: str,
@@ -196,6 +201,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     target_name=execution_id,
                     session_id=session_id,
                     directory_path=directory_path,
+                    image=container_worker_image_for_session(session, config),
                     command=command,
                     metadata={"effect_type": "effect:agent:clone-repo:git-config"},
                 )

@@ -9,6 +9,7 @@ from agent_sandbox.events.provider_models import AgentExecEffectDefinition
 
 from .agent_session import (
     container_backend,
+    container_worker_image_for_session,
     container_shell_preamble,
     effective_config_for_session,
     normalize_optional_string,
@@ -86,6 +87,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
                     target_name=safe_effect_execution_id("exec", session_id),
                     session_id=session_id,
                     directory_path=getattr(session, "directory_path", directory_path),
+                    image=container_worker_image_for_session(session, config),
                     command=command,
                     metadata={"effect_type": "effect:agent:exec"},
                 )

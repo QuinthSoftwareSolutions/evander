@@ -36,6 +36,7 @@ from .agent_session import (
     container_prompt_command,
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
+    container_worker_image_for_session,
     default_agent_model_for_provider,
     default_agent_provider_for_config,
     effective_config_for_session,
@@ -363,6 +364,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         target_name=execution_id,
                         session_id=session_id,
                         directory_path=session.directory_path if session is not None else "root",
+                        image=container_worker_image_for_session(session, effective_config),
                         command=command,
                         metadata={
                             "effect_type": self.node_type(),
