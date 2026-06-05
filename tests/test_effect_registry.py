@@ -3204,7 +3204,13 @@ def test_agent_create_container_upserts_when_session_exists(
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"existing": "replace"},
+            metadata={
+                "existing": "replace",
+                "container_worker": {
+                    "image": "runner-special:2026-06-05",
+                    "image_alias": "special",
+                },
+            },
         )
     )
     admin_service = SimpleNamespace(
@@ -3238,7 +3244,13 @@ def test_agent_create_container_upserts_when_session_exists(
 
     assert output["success"] is True
     assert output["skipped"] is False
+    assert output["container_image"] == "runner-special:2026-06-05"
+    assert output["container_image_alias"] == "special"
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
+    assert backend.prepared_sessions[0]["metadata"]["container_worker"] == {
+        "image": "runner-special:2026-06-05",
+        "image_alias": "special",
+    }
     assert backend.written_files
     updated = session_repository.get_session("session-1")
     assert updated is not None
@@ -3247,6 +3259,10 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["model"] == "gpt-5.5"
+    assert updated.metadata["container_worker"] == {
+        "image": "runner-special:2026-06-05",
+        "image_alias": "special",
+    }
     bootstrap_by_path = {
         entry["destination_path"]: entry for entry in backend.written_files[0]["files"]
     }

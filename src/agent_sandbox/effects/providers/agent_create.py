@@ -226,10 +226,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
         model = normalize_optional_string(payload.get("model"))
         requested_agent_provider = normalize_optional_string(payload.get("agent_provider"))
         agent_provider = requested_agent_provider or default_agent_provider_for_config(config)
-        container_image_selection = resolve_container_worker_image_selector(
-            normalize_optional_string(payload.get("container_image")),
-            default_image=config.container_worker_default_image,
-            images=config.container_worker_images,
+        container_image_selection = _container_image_selection_for_create(
+            selector=normalize_optional_string(payload.get("container_image")),
+            config=config,
+            existing_session=existing_session,
         )
         npm_registry_url = normalize_optional_http_url(
             payload.get("npm_registry_url"), field_name="npm_registry_url"
@@ -367,6 +367,43 @@ def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> 
             continue
         merged[key] = value
     return merged
+
+
+def _container_image_selection_for_create(
+    *,
+    selector: str | None,
+    config: Any,
+    existing_session: Any | None,
+) -> dict[str, str | None]:
+    if selector is not None:
+        return resolve_container_worker_image_selector(
+            selector,
+            default_image=config.container_worker_default_image,
+            images=config.container_worker_images,
+        )
+
+    existing_metadata = getattr(existing_session, "metadata", {}) if existing_session else {}
+    container_worker = (
+        existing_metadata.get("container_worker")
+        if isinstance(existing_metadata, Mapping)
+        else None
+    )
+    if isinstance(container_worker, Mapping):
+        existing_image = normalize_optional_string(container_worker.get("image"))
+        if existing_image is not None:
+            raw_alias = container_worker.get("image_alias")
+            return {
+                "image": existing_image,
+                "image_alias": normalize_optional_string(raw_alias)
+                if isinstance(raw_alias, str)
+                else None,
+            }
+
+    return resolve_container_worker_image_selector(
+        None,
+        default_image=config.container_worker_default_image,
+        images=config.container_worker_images,
+    )
 
 
 def _existing_session_for_create(
