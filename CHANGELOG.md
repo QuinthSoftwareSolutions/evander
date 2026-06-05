@@ -12,6 +12,13 @@ material. Newer entries are added incrementally as changes land.
 - Scoped daily status reports to Product Backlog Items and Bugs by default so
   feature work items do not inflate sprint delivery counts.
 
+## 2026-06-05 - Caller-Friendly Voice Lookup Holds
+
+- Reworded DIDWW voice lookup holds and result prompts to say caller-friendly
+  phrases such as "look that up" instead of exposing internal agent handoffs.
+- Treated short affirmative replies like `Yes, please.` during a pending lookup
+  hold as acknowledgements instead of new requests, avoiding duplicate lookups.
+
 ## 2026-06-04 - DIDWW Origin Query Hold Policy
 
 - Replaced forced pending-origin-query filler with a short hold offer that lets

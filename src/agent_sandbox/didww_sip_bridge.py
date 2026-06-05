@@ -107,17 +107,18 @@ _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
 _PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
 _PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
     "Answer the caller from the projected calling task now. "
-    "Do not say you are checking with the origin agent."
+    "Do not say you are checking internally."
 )
 _MISSING_TASK_CLARIFICATION_RESPONSE_KEY = "projection:missing_task_clarification"
 _MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
     "Ask exactly one concise caller-facing clarification question about the call objective."
 )
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
-    "Tell the caller in one short sentence that you are checking with the originating agent. "
-    "Then ask, in one short sentence, whether they would prefer to wait or continue with "
-    "something relevant to the current call while you wait. Do not introduce unrelated filler "
-    "or a new topic unless the caller asks for it."
+    "Tell the caller in one short sentence that you will look that up for them. "
+    "Then say, in one short sentence, that you will wait for the answer; if they want "
+    "you to keep discussing something relevant while you wait, they can say so. "
+    "Do not expose internal handoffs, delegated-query details, or technical underpinnings. "
+    "Do not introduce unrelated filler or a new topic unless the caller asks for it."
 )
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
@@ -899,7 +900,7 @@ class OpenAIRealtimeSession:
         answer = str(query.get("answer") or query.get("error") or "").strip()
         citations = query.get("citations") if isinstance(query.get("citations"), list) else []
         text = (
-            f"Origin agent result for delegated voice query {query_id} "
+            f"Lookup result for voice query {query_id} "
             f"with status {status}:\n{answer or '<no answer>'}"
         )
         if citations:
@@ -916,7 +917,8 @@ class OpenAIRealtimeSession:
         )
         if request_response:
             await self.request_response(
-                "If still relevant, briefly tell the caller the origin agent has the answer."
+                "If still relevant, briefly tell the caller the lookup result is ready. "
+                "Do not mention internal agent handoffs."
             )
 
     async def recv_json(self) -> dict[str, Any]:
@@ -2004,13 +2006,13 @@ class DidwwSipBridgeService:
                 phrases=self.config.backchannel_phrases,
                 max_words=self.config.backchannel_max_words,
             )
-            if origin_query_turn_active() and _is_origin_query_wait_ack(transcript_text):
+            if origin_query_turn_active() and _is_origin_query_hold_ack(transcript_text):
                 caller_speech_started_during_assistant = False
                 self._append_debug_event(
                     voice_session_id,
                     "backchannel_ignored",
                     metadata={
-                        "reason": "origin_query_wait_ack",
+                        "reason": "origin_query_hold_ack",
                         "utterance_id": current_caller_utterance_id,
                         "transcript_snippet": _debug_snippet(transcript_text),
                     },
@@ -2479,10 +2481,11 @@ class DidwwSipBridgeService:
         if not media_controller.configured:
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
-                output={"status": "failed", "error": "origin agent delegation is not configured"},
+                output={"status": "failed", "error": "lookup is not configured"},
             )
             await request_response(
-                "Tell the caller you cannot check the origin agent right now."
+                "Tell the caller you cannot look that up right now. "
+                "Do not mention internal agent handoffs."
             )
             return
         if delegated_queries is not None and query_key in delegated_queries:
@@ -2529,7 +2532,8 @@ class DidwwSipBridgeService:
                 output={"status": "failed", "error": str(exc)},
             )
             await request_response(
-                "Tell the caller you cannot check the origin agent right now."
+                "Tell the caller you cannot complete that lookup right now. "
+                "Do not mention internal agent handoffs."
             )
             return
         query_id = str(query.get("query_id") or "").strip()
@@ -2548,7 +2552,7 @@ class DidwwSipBridgeService:
         self.store.append_transcript_event(
             voice_session_id,
             speaker="assistant",
-            text=f"Delegated question to origin agent: {question}",
+            text=f"Lookup requested: {question}",
             metadata={"query_id": query_id, "event_type": "voice_query_created"},
         )
         await realtime.send_tool_output(
@@ -2785,8 +2789,8 @@ class DidwwSipBridgeService:
                 return
             state.timeout_response_queued = True
             response_instructions = (
-                "Tell the caller the origin agent did not answer before the voice query timed out. "
-                "Do not say the query is still pending."
+                "Tell the caller the lookup did not finish in time. "
+                "Do not mention internal agent handoffs or say the query is still pending."
             )
             response_kind = "timeout"
             response_reason = "query_timeout"
@@ -2796,14 +2800,14 @@ class DidwwSipBridgeService:
             state.answer_response_queued = True
             if status == "failed":
                 response_instructions = (
-                    "Tell the caller the origin agent could not answer the delegated query right "
-                    "now. Do not say the query is still pending."
+                    "Tell the caller you could not complete the lookup right now. "
+                    "Do not mention internal agent handoffs or say the query is still pending."
                 )
             else:
                 response_instructions = (
-                    "The origin agent's answer is available now in the conversation. Briefly "
-                    "answer the caller from it. Do not say the query is still pending or that "
-                    "you are still checking."
+                    "The lookup result is available now in the conversation. Briefly answer "
+                    "the caller from it. Do not mention internal agent handoffs, do not say "
+                    "the query is still pending, and do not say that you are still checking."
                 )
             response_kind = "answer"
             response_reason = "query_result"
@@ -3046,7 +3050,7 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
         (
             "Outbound startup contract: treat the supplied Current task as authoritative "
             "first-turn task state. If it includes a complete opening or objective, begin "
-            "with it immediately. Do not ask the origin agent for the same script, "
+            "with it immediately. Do not ask internally for the same script, "
             "instructions, objective, expected behavior, or call context. Do not say you "
             "are doing a context check, narrate task-missing state, or ask open-ended "
             "what-to-do questions when the Current task already provides the task."
@@ -3252,15 +3256,25 @@ def _is_backchannel_transcript(
     return all(word in normalized_phrases for word in normalized.split())
 
 
-def _is_origin_query_wait_ack(transcript_text: object) -> bool:
+def _is_origin_query_hold_ack(transcript_text: object) -> bool:
     normalized = _normalize_backchannel_phrase(transcript_text)
     if not normalized or _word_count(normalized) > 6:
         return False
-    wait_ack_phrases = {
+    hold_ack_phrases = {
         "ill wait",
         "i will wait",
         "ill just wait",
         "i will just wait",
+        "yes",
+        "yes please",
+        "yeah",
+        "yeah please",
+        "yep",
+        "yep please",
+        "sure",
+        "sure please",
+        "ok",
+        "okay",
         "nah ill wait",
         "nah i will wait",
         "nah ill just wait",
@@ -3272,7 +3286,7 @@ def _is_origin_query_wait_ack(transcript_text: object) -> bool:
         "no thanks ill wait",
         "no thanks i will wait",
     }
-    return normalized in wait_ack_phrases
+    return normalized in hold_ack_phrases
 
 
 def _is_origin_query_response_key(key: object) -> bool:
