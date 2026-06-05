@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-05 - ADO Daily Report Not Started Snapshot
+
+- Show the daily report snapshot card as Not started using the status bucket
+  instead of showing the separate unassigned ownership metric.
+
 ## 2026-06-05 - Claude Agent Provider Planning Support
 
 - Added an Anthropic relay mode to the host OpenAI relay so Claude Code can use
