@@ -9517,6 +9517,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "metadata": metadata,
         }
 
+    def _container_worker_image_details(
+        self,
+        metadata: Mapping[str, Any] | None,
+        *,
+        fallback_metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, str | None]:
+        container_worker = metadata.get("container_worker") if isinstance(metadata, Mapping) else None
+        image: str | None = None
+        image_alias: str | None = None
+        if isinstance(container_worker, Mapping):
+            raw_image = container_worker.get("image")
+            if isinstance(raw_image, str):
+                image = raw_image.strip() or None
+            raw_alias = container_worker.get("image_alias")
+            if isinstance(raw_alias, str):
+                image_alias = raw_alias.strip() or None
+        if image is None and isinstance(fallback_metadata, Mapping):
+            raw_fallback_image = fallback_metadata.get("image")
+            if isinstance(raw_fallback_image, str):
+                image = raw_fallback_image.strip() or None
+        return {"image": image, "image_alias": image_alias}
+
     def _agent_record_from_container_execution(
         self,
         record: Any,
@@ -9547,9 +9569,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if message:
             host["reconcile_error"] = message
-        image = record.metadata.get("image") if isinstance(record.metadata, dict) else None
-        if image:
-            host["image"] = image
+        image_details = self._container_worker_image_details(
+            dict(session.metadata) if isinstance(session.metadata, dict) else {},
+            fallback_metadata=record.metadata if isinstance(record.metadata, Mapping) else None,
+        )
+        if image_details["image"] is not None:
+            host["image"] = image_details["image"]
+        if image_details["image_alias"] is not None:
+            host["image_alias"] = image_details["image_alias"]
         return AgentRecord(
             agent_id=record.execution_id,
             backend="container_worker_vm",
@@ -9620,6 +9647,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "execution_count": len(execution_records),
             "active_execution_count": active_count,
         }
+        latest_metadata: dict[str, Any] = {}
         if latest_execution is not None:
             latest_metadata = (
                 dict(latest_execution.metadata)
@@ -9634,9 +9662,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "last_status": latest_execution.last_status,
                 }
             )
-            image = latest_metadata.get("image")
-            if isinstance(image, str) and image.strip():
-                host["image"] = image
+        image_details = self._container_worker_image_details(
+            metadata,
+            fallback_metadata=latest_metadata,
+        )
+        if image_details["image"] is not None:
+            host["image"] = image_details["image"]
+        if image_details["image_alias"] is not None:
+            host["image_alias"] = image_details["image_alias"]
         if labels:
             host["labels"] = labels
         return AgentRecord(

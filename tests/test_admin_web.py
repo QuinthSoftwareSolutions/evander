@@ -8688,6 +8688,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         for field in section["fields"]
     }
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
+    assert "catalog" in provider_fields["container_worker_images"]["tooltip"]
     assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
     for tab in payload["tabs"]:
         for section in tab["sections"]:
@@ -8750,6 +8751,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
     container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
     assert "container_worker_base_url" in container_worker_fields
+    assert "container_worker_images" in container_worker_fields
     assert "container_worker_mssql_enabled" in container_worker_fields
     semantic_store = next(
         section for section in providers["sections"] if section["title"] == "Semantic store"
@@ -10558,6 +10560,8 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
         (item["agent_id"], item["target_name"], item["status"]) for item in payload["items"]
     ] == [("container-session", "container-target", "prepared")]
     assert payload["items"][0]["capabilities"]["logs"] is False
+    assert payload["items"][0]["host"]["image"] == "runner-dotnet-playwright:2026-06-05"
+    assert payload["items"][0]["host"]["image_alias"] == "dotnet-playwright"
 
 
 def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(

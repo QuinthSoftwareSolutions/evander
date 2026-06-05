@@ -1308,6 +1308,16 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         "image": "runner-dotnet-playwright:2026-06-05",
         "image_alias": "dotnet-playwright",
     }
+    agents = service.list_agents(
+        directory_path=team_path,
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-dotnet-playwright:2026-06-05"
+    assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
 def test_create_container_agent_infers_claude_provider_from_anthropic_config(
@@ -1399,6 +1409,106 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
     )
     assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
     assert "/home/agent/.claude/mcp-config.json" in written_files
+
+
+def test_list_container_agent_uses_session_image_before_latest_execution_image(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {
+                    "image": "runner-base:latest",
+                    "image_alias": "default",
+                },
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="container-execution",
+            session_id="container-session",
+            worker_job_id="worker-job",
+            worker_url="http://worker.test:11888",
+            target_name="container-target",
+            started_at=datetime.now(UTC),
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner-execution:latest"},
+        )
+    )
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-base:latest"
+    assert agents[0].host["image_alias"] == "default"
+
+
+def test_list_container_agent_falls_back_to_latest_execution_image_when_session_image_missing(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="container-execution",
+            session_id="container-session",
+            worker_job_id="worker-job",
+            worker_url="http://worker.test:11888",
+            target_name="container-target",
+            started_at=datetime.now(UTC),
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner-execution:latest"},
+        )
+    )
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-execution:latest"
+    assert "image_alias" not in agents[0].host
 
 
 def test_create_container_agent_accepts_explicit_default_image_reference(

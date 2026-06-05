@@ -109,7 +109,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Base HTTP URL for the container worker service used when execution_backend is container_worker_vm."
     ),
     "container_worker_default_image": (
-        "Default runner container image requested for container-backed agent executions."
+        "Default fallback runner container image used when a container session does not select an approved image alias."
+    ),
+    "container_worker_images": (
+        "Approved container image catalog that maps operator-safe aliases to exact runner image references."
     ),
     "container_worker_job_timeout_seconds": (
         "Maximum runtime in seconds allowed for one container worker job before it is treated as timed out."

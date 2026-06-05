@@ -95,6 +95,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "didww_sip_bridge_url"): "DIDWW SIP bridge URL",
     ("providers", "didww_sip_bridge_token_env"): "DIDWW SIP bridge token env",
     ("providers", "didww_from_number"): "DIDWW from number",
+    ("providers", "container_worker_images"): "Container worker image catalog",
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
@@ -275,6 +276,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "container_worker_base_url"),
                 ("providers", "container_worker_token_env"),
                 ("providers", "container_worker_default_image"),
+                ("providers", "container_worker_images"),
                 ("providers", "container_worker_job_timeout_seconds"),
                 ("providers", "container_worker_request_timeout_seconds"),
                 ("providers", "container_worker_workspace_persistence"),
