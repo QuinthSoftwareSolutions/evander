@@ -348,6 +348,70 @@ test("declared outputs fall back to node outputs when no derived schema exists",
   });
 });
 
+test("deserialize outputs override stale empty backend schemas for downstream bindings", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-event-main",
+        display_name: "Incoming event",
+        type: "trigger:manual",
+        outputs: {
+          payload_text: { type: "string" },
+        },
+      },
+    ],
+    gates: [
+      {
+        id: "gate-deserialize-1",
+        display_name: "Deserialize payload",
+        type: "gate:deserialize",
+        content: "${{trigger-event-main.payload_text}}",
+        format: "auto",
+        outputs: {
+          title: { type: "string" },
+          metadata: {
+            type: "object",
+            properties: {
+              source: { type: "string" },
+            },
+          },
+        },
+      },
+    ],
+    effects: [
+      {
+        id: "prompt-agent",
+        display_name: "Prompt agent",
+        type: "effect:agent:prompt",
+        prompt: "Use the deserialized payload title.",
+      },
+    ],
+    queries: [],
+    edges: [
+      { source_id: "trigger-event-main", target_id: "gate-deserialize-1" },
+      { source_id: "gate-deserialize-1", target_id: "prompt-agent" },
+    ],
+  };
+  const baseOutputSchemas = {
+    "gate-deserialize-1": {},
+  };
+
+  const outputSchemas = deriveWorkflowOutputSchemas(config, baseOutputSchemas);
+
+  assert.deepEqual(outputSchemas["gate-deserialize-1"], {
+    title: { type: "string" },
+    metadata: {
+      type: "object",
+      properties: {
+        source: { type: "string" },
+      },
+    },
+  });
+
+  const bindingOptions = upstreamBindingOptions(config, "prompt-agent", outputSchemas);
+  assert.ok(bindingOptions.some((option) => option.value === "${{gate-deserialize-1.title}}"));
+});
+
 test("state node output schemas expose graph-local bindings", () => {
   const config = {
     triggers: [
