@@ -213,8 +213,9 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
-    openai_provider_mode: Literal["openai_public", "azure_openai", "anthropic"] = (
-        "openai_public"
+    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic"] = Field(
+        default="openai_public",
+        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
@@ -474,9 +475,9 @@ class GatewayConfig(BaseModel):
         text = str(value).strip()
         return text or None
 
-    @field_validator("openai_provider_mode", mode="before")
+    @field_validator("model_provider_mode", mode="before")
     @classmethod
-    def normalize_openai_provider_mode(cls, value: object) -> object:
+    def normalize_model_provider_mode(cls, value: object) -> object:
         if value is None:
             return value
         text = str(value).strip()
@@ -708,7 +709,7 @@ class GatewayConfig(BaseModel):
             "validation_scope"
         ) == "overlay":
             return self
-        if self.openai_provider_mode != "azure_openai":
+        if self.model_provider_mode != "azure_openai":
             return self
 
         missing_fields: list[str] = []
@@ -721,11 +722,15 @@ class GatewayConfig(BaseModel):
 
         if missing_fields:
             raise ValueError(
-                "openai_provider_mode='azure_openai' requires "
+                "model_provider_mode='azure_openai' requires "
                 + ", ".join(missing_fields)
                 + " to be configured"
             )
         return self
+
+    @property
+    def openai_provider_mode(self) -> Literal["openai_public", "azure_openai", "anthropic"]:
+        return self.model_provider_mode
 
 
 class AdoWorkerGlobalConfig(BaseModel):

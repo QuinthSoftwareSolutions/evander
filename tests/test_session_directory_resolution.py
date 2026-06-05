@@ -217,7 +217,7 @@ def test_provider_config_resolver_resolves_azure_openai_mode_from_child_session_
     config_store.write(
         team.path,
         domain="providers",
-        payload={"openai_provider_mode": "azure_openai"},
+        payload={"model_provider_mode": "azure_openai"},
     )
 
     resolver = ProviderConfigResolver(
@@ -228,7 +228,7 @@ def test_provider_config_resolver_resolves_azure_openai_mode_from_child_session_
 
     resolved = resolver.resolve_for_session_id("session-azure")
 
-    assert resolved.openai_provider_mode == "azure_openai"
+    assert resolved.model_provider_mode == "azure_openai"
     assert resolved.azure_openai_endpoint == "https://example-resource.openai.azure.com"
     assert resolved.azure_openai_api_key_env == "AZURE_OPENAI_API_KEY"
     assert resolved.azure_openai_model_deployments == {

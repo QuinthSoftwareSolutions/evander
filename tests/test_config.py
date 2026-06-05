@@ -330,6 +330,7 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
 def test_openai_provider_defaults_remain_public_mode() -> None:
     config = GatewayConfig.model_validate({})
 
+    assert config.model_provider_mode == "openai_public"
     assert config.openai_provider_mode == "openai_public"
     assert config.azure_openai_endpoint is None
     assert config.azure_openai_auth_mode == "api_key"
@@ -339,6 +340,16 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
     assert config.anthropic_api_base_url == "https://api.anthropic.com"
     assert config.anthropic_api_key_env == "ANTHROPIC_API_KEY"
     assert config.anthropic_api_version == "2023-06-01"
+
+
+def test_model_provider_mode_accepts_legacy_openai_provider_mode_alias() -> None:
+    config = GatewayConfig.model_validate({"openai_provider_mode": " anthropic "})
+    dumped = config.model_dump(mode="json")
+
+    assert config.model_provider_mode == "anthropic"
+    assert config.openai_provider_mode == "anthropic"
+    assert dumped["model_provider_mode"] == "anthropic"
+    assert "openai_provider_mode" not in dumped
 
 
 @pytest.mark.parametrize(
@@ -434,7 +445,7 @@ def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None
 def test_azure_openai_provider_config_validates_and_normalizes_full_configuration() -> None:
     config = GatewayConfig.model_validate(
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": " https://example-resource.openai.azure.com/ ",
             "azure_openai_api_key_env": " AZURE_OPENAI_API_KEY ",
             "azure_openai_api_version": " 2024-10-21-preview ",
@@ -445,7 +456,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         }
     )
 
-    assert config.openai_provider_mode == "azure_openai"
+    assert config.model_provider_mode == "azure_openai"
     assert config.azure_openai_endpoint == "https://example-resource.openai.azure.com"
     assert config.azure_openai_api_key_env == "AZURE_OPENAI_API_KEY"
     assert config.azure_openai_api_version == "2024-10-21-preview"
@@ -460,7 +471,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
     [
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
             },
@@ -468,7 +479,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
             },
@@ -476,7 +487,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             },
@@ -484,7 +495,7 @@ def test_azure_openai_provider_config_validates_and_normalizes_full_configuratio
         ),
         (
             {
-                "openai_provider_mode": "azure_openai",
+                "model_provider_mode": "azure_openai",
                 "azure_openai_endpoint": "https://example-resource.openai.azure.com",
                 "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
                 "azure_openai_model_deployments": {"gpt-5.4": "deployment-gpt-5-4"},
@@ -506,9 +517,9 @@ def test_azure_openai_provider_config_rejects_missing_fields_and_unsupported_aut
     [
         {"azure_openai_model_deployments": []},
         {"azure_openai_model_deployments": None},
-        {"openai_provider_mode": "azure_openai", "azure_openai_model_deployments": {"": "x"}},
+        {"model_provider_mode": "azure_openai", "azure_openai_model_deployments": {"": "x"}},
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "   "},
@@ -525,7 +536,7 @@ def test_azure_openai_model_deployments_reject_invalid_payloads(
 def test_anthropic_provider_config_validates_and_normalizes_full_configuration() -> None:
     config = GatewayConfig.model_validate(
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": " https://api.anthropic.example/ ",
             "anthropic_api_key_env": " ANTHROPIC_TEST_KEY ",
             "anthropic_api_version": " 2023-06-01 ",
@@ -533,7 +544,7 @@ def test_anthropic_provider_config_validates_and_normalizes_full_configuration()
         }
     )
 
-    assert config.openai_provider_mode == "anthropic"
+    assert config.model_provider_mode == "anthropic"
     assert config.anthropic_api_base_url == "https://api.anthropic.example"
     assert config.anthropic_api_key_env == "ANTHROPIC_TEST_KEY"
     assert config.anthropic_api_version == "2023-06-01"

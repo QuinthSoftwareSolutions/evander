@@ -426,7 +426,7 @@ def test_openai_relay_records_azure_http_usage(tmp_path: Path, monkeypatch) -> N
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -491,7 +491,7 @@ def test_openai_relay_records_anthropic_http_usage(tmp_path: Path, monkeypatch) 
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
         },
@@ -563,7 +563,7 @@ def test_openai_relay_records_anthropic_streaming_usage(tmp_path: Path, monkeypa
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
         },

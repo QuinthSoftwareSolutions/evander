@@ -268,7 +268,7 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
         "root",
         domain="providers",
         payload={
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {
@@ -299,7 +299,7 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
         validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
     )
 
-    assert resolution.effective_config["openai_provider_mode"] == "azure_openai"
+    assert resolution.effective_config["model_provider_mode"] == "azure_openai"
     assert resolution.effective_config["azure_openai_endpoint"] == (
         "https://example-resource.openai.azure.com"
     )
@@ -308,6 +308,34 @@ def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
         "gpt-5.4": "deployment-team",
         "gpt-4.1-mini": "deployment-root-mini",
     }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_provider_mode_legacy_alias_is_canonicalized(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"openai_provider_mode": "anthropic"},
+    )
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert written == {"model_provider_mode": "anthropic"}
+    assert resolution.effective_config["model_provider_mode"] == "anthropic"
+    assert "openai_provider_mode" not in resolution.effective_config
     assert resolution.validation_errors == []
 
 
@@ -324,7 +352,7 @@ def test_directory_config_resolver_reports_incomplete_effective_azure_openai_con
     config_store.write(
         team.path,
         domain="providers",
-        payload={"openai_provider_mode": "azure_openai"},
+        payload={"model_provider_mode": "azure_openai"},
     )
 
     resolution = resolver.resolve_domain(
@@ -334,7 +362,7 @@ def test_directory_config_resolver_reports_incomplete_effective_azure_openai_con
         validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
     )
 
-    assert resolution.effective_config["openai_provider_mode"] == "azure_openai"
+    assert resolution.effective_config["model_provider_mode"] == "azure_openai"
     assert resolution.validation_errors
     message = resolution.validation_errors[0]
     assert "azure_openai_endpoint" in message

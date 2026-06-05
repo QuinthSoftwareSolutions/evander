@@ -119,7 +119,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
-            "openai_provider_mode",
+            "model_provider_mode",
             "azure_openai_endpoint",
             "azure_openai_auth_mode",
             "azure_openai_api_key_env",
@@ -596,6 +596,7 @@ class DirectoryConfigStore:
         original_domain = domain
         domain = self._normalize_domain_name(domain)
         if original_domain == "providers" and isinstance(payload, dict):
+            payload = self._canonicalize_provider_domain_payload(payload)
             provider_payload = {
                 key: value
                 for key, value in payload.items()
@@ -693,6 +694,7 @@ class DirectoryConfigStore:
     def _validate_provider_domain_payload(
         payload: dict[str, Any], *, validation_scope: str
     ) -> dict[str, Any]:
+        payload = DirectoryConfigStore._canonicalize_provider_domain_payload(payload)
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
         compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
         legacy_fields = {"openai_costs_api_key_env"}
@@ -713,6 +715,14 @@ class DirectoryConfigStore:
             },
         )
         return validated.model_dump(mode="json", include=set(provider_payload))
+
+    @staticmethod
+    def _canonicalize_provider_domain_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        if "openai_provider_mode" in normalized:
+            normalized.setdefault("model_provider_mode", normalized["openai_provider_mode"])
+            normalized.pop("openai_provider_mode", None)
+        return normalized
 
     @classmethod
     def _validate_domain_name(cls, domain: str) -> None:
@@ -758,6 +768,8 @@ class DirectoryConfigStore:
             source_domain = "vm-defaults"
         else:
             return None
+        if source_domain == "providers":
+            payload = self._canonicalize_provider_domain_payload(payload)
         allowed_fields = LEGACY_DOMAIN_FIELD_SUBSETS[source_domain][domain]
         extracted = {key: payload[key] for key in sorted(allowed_fields) if key in payload}
         return extracted or None
@@ -917,6 +929,8 @@ class DirectoryConfigResolver:
             overlay = self._overlay_for_directory(directory, domain=domain)
             if overlay is None:
                 continue
+            if domain == "providers":
+                overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
             applied_layers.append(
                 DirectoryConfigLayer(
                     directory_id=directory.id,

@@ -71,7 +71,7 @@ def default_agent_model_for_provider(
 
 
 def default_agent_provider_for_config(config: GatewayConfig | None = None) -> str:
-    if normalize_optional_string(getattr(config, "openai_provider_mode", None)) == "anthropic":
+    if normalize_optional_string(getattr(config, "model_provider_mode", None)) == "anthropic":
         return "claude"
     return "codex"
 

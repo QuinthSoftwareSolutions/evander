@@ -1303,7 +1303,7 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
         "providers",
         {
             "container_worker_base_url": "http://worker.test:11888",
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
         },
     )
     assert write_result.ok is True

@@ -406,7 +406,7 @@ Storage layout for directory config:
 - `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user and verifies `claude --version`.
 - The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, and telemetry disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
 - The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
-- Host-side routing is selected with `openai_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
+- Host-side routing is selected with `model_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
 
 ### GitHub Copilot CLI provider bootstrap
 
@@ -591,12 +591,12 @@ Storage layout for directory config:
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL`, `OPENAI_BASE_URL`, `AGENT_SANDBOX_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
 - The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, Azure OpenAI, or Anthropic.
-- For Azure OpenAI Codex routing, set `openai_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
+- For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
   ```json
   {
-    "openai_provider_mode": "azure_openai",
+    "model_provider_mode": "azure_openai",
     "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
     "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
     "azure_openai_api_version": "2024-10-21-preview",
@@ -605,8 +605,8 @@ Storage layout for directory config:
     }
   }
 ```
-- Public OpenAI remains the default when `openai_provider_mode` is omitted.
-- For Claude Code routing, set `openai_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
+- Public OpenAI remains the default when `model_provider_mode` is omitted.
+- For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
   WebSocket Responses/Completions traffic that exposes a provider `usage`
   payload. It also records `usage_unavailable` when a completed response has no

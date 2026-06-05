@@ -1433,7 +1433,7 @@ def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_ses
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
-        openai_provider_mode="anthropic",
+        model_provider_mode="anthropic",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -1648,7 +1648,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         email_store_path=Path("/tmp/runtime/emails.json"),
         discord_command_store_path=Path("/tmp/runtime/discord.json"),
         gateway_url="http://relay.test:8000/mcp",
-        openai_provider_mode="azure_openai",
+        model_provider_mode="azure_openai",
         azure_openai_endpoint="https://example-resource.openai.azure.com/",
         azure_openai_api_key_env="AZURE_OPENAI_API_KEY",
         azure_openai_model_deployments={"gpt-5.4": "deployment-gpt-5-4"},
@@ -1702,7 +1702,7 @@ def test_container_session_files_include_claude_provider_config() -> None:
         email_store_path=Path("/tmp/runtime/emails.json"),
         discord_command_store_path=Path("/tmp/runtime/discord.json"),
         gateway_url="http://relay.test:8000/mcp",
-        openai_provider_mode="anthropic",
+        model_provider_mode="anthropic",
     )
 
     files = build_container_session_files(
@@ -1747,7 +1747,7 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
-        openai_provider_mode="anthropic",
+        model_provider_mode="anthropic",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -1807,7 +1807,7 @@ def test_agent_create_container_infers_claude_provider_for_anthropic_config(
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
-        openai_provider_mode="anthropic",
+        model_provider_mode="anthropic",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(

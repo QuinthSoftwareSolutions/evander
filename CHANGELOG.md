@@ -19,6 +19,8 @@ material. Newer entries are added incrementally as changes land.
 - Preserved Claude libvirt resume thread IDs and approval-scoped MCP gateway
   overrides, and made Anthropic container configs infer the Claude harness when
   no agent provider is explicitly requested.
+- Renamed relay upstream selection to `model_provider_mode` while preserving
+  `openai_provider_mode` as a backwards-compatible config alias.
 
 ## 2026-06-05 - Compact Model Usage Attribution
 

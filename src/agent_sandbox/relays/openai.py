@@ -92,7 +92,7 @@ class OpenAIRelay:
             return JSONResponse(
                 {
                     "status": "ok",
-                    "provider_mode": relay.config.openai_provider_mode,
+                    "provider_mode": relay.config.model_provider_mode,
                     "upstream": relay.config.openai_api_base_url,
                     "anthropic_upstream": relay.config.anthropic_api_base_url,
                     "api_key_env": api_key_env,
@@ -129,7 +129,7 @@ class OpenAIRelay:
                     status_code=403,
                 )
 
-            if request_context.config.openai_provider_mode == "anthropic":
+            if request_context.config.model_provider_mode == "anthropic":
                 return await relay._proxy_anthropic_http(
                     request=request,
                     request_context=request_context,
@@ -137,7 +137,7 @@ class OpenAIRelay:
                     request_body=request_body,
                 )
 
-            if request_context.config.openai_provider_mode == "azure_openai":
+            if request_context.config.model_provider_mode == "azure_openai":
                 if request.method != "POST" or upstream_path != "responses":
                     return JSONResponse(
                         {
@@ -308,7 +308,7 @@ class OpenAIRelay:
                 await websocket.close(code=1008, reason=str(exc))
                 return
 
-            if request_context.config.openai_provider_mode == "azure_openai":
+            if request_context.config.model_provider_mode == "azure_openai":
                 reason = (
                     "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
                 )
@@ -320,7 +320,7 @@ class OpenAIRelay:
                 )
                 await websocket.close(code=1008, reason=reason)
                 return
-            if request_context.config.openai_provider_mode == "anthropic":
+            if request_context.config.model_provider_mode == "anthropic":
                 reason = "Anthropic relay does not support websocket/realtime requests"
                 logger.warning(
                     "relay_rejected_anthropic_websocket session_id=%s path=%s reason=%s",
@@ -974,9 +974,9 @@ class OpenAIRelay:
 
     @staticmethod
     def _resolved_api_key_env(config: GatewayConfig) -> str:
-        if config.openai_provider_mode == "azure_openai":
+        if config.model_provider_mode == "azure_openai":
             return config.azure_openai_api_key_env or config.openai_api_key_env
-        if config.openai_provider_mode == "anthropic":
+        if config.model_provider_mode == "anthropic":
             return config.anthropic_api_key_env
         return config.openai_api_key_env
 

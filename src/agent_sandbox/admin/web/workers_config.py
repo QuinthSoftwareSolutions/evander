@@ -319,7 +319,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         (
             "LLM providers",
             (
-                ("providers", "openai_provider_mode"),
+                ("providers", "model_provider_mode"),
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),

@@ -253,7 +253,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "npm_audit_facade_timeout_seconds": (
         "Upstream request timeout in seconds for the npm audit facade."
     ),
-    "openai_provider_mode": (
+    "model_provider_mode": (
         "Provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
         "azure_openai for Azure OpenAI, or anthropic for Claude Messages API routing."
     ),

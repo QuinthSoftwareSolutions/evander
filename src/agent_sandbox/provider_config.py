@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from agent_sandbox.config import GatewayConfig, load_config
 from agent_sandbox.directory_config import (
@@ -65,7 +65,10 @@ class EffectProviderConfig(BaseModel):
     semantic_embedding_model: str = "text-embedding-3-small"
     semantic_embedding_dimensions: int = 1536
     semantic_vector_distance: str = "Cosine"
-    openai_provider_mode: str = "openai_public"
+    model_provider_mode: str = Field(
+        default="openai_public",
+        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+    )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
@@ -73,6 +76,10 @@ class EffectProviderConfig(BaseModel):
     anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
     anthropic_api_version: str = "2023-06-01"
     anthropic_relay_timeout_seconds: float = 300.0
+
+    @property
+    def openai_provider_mode(self) -> str:
+        return self.model_provider_mode
 
 
 class QueryProviderConfig(BaseModel):
@@ -84,7 +91,10 @@ class QueryProviderConfig(BaseModel):
     semantic_embedding_model: str = "text-embedding-3-small"
     semantic_embedding_dimensions: int = 1536
     semantic_vector_distance: str = "Cosine"
-    openai_provider_mode: str = "openai_public"
+    model_provider_mode: str = Field(
+        default="openai_public",
+        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
+    )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
@@ -92,6 +102,10 @@ class QueryProviderConfig(BaseModel):
     anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
     anthropic_api_version: str = "2023-06-01"
     anthropic_relay_timeout_seconds: float = 300.0
+
+    @property
+    def openai_provider_mode(self) -> str:
+        return self.model_provider_mode
 
 
 class GateProviderConfig(BaseModel):

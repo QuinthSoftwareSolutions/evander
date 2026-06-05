@@ -331,7 +331,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
         "root/team-a",
         domain="providers",
         payload={
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_model_deployments": {
                 "gpt-5.4": "deployment-team-a",
             },
@@ -385,7 +385,7 @@ def test_relay_returns_503_when_azure_openai_api_key_env_is_missing(tmp_path: Pa
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -419,7 +419,7 @@ def test_relay_returns_400_when_azure_openai_model_mapping_is_missing(tmp_path: 
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -456,7 +456,7 @@ def test_relay_rejects_azure_hosted_web_search_before_forwarding(
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -499,7 +499,7 @@ def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -548,7 +548,7 @@ def test_relay_routes_anthropic_messages_requests_through_session_directory_over
         "root/team-a",
         domain="providers",
         payload={
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example/",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
             "anthropic_api_version": "2023-06-01",
@@ -611,7 +611,7 @@ def test_relay_preserves_anthropic_version_header(tmp_path: Path) -> None:
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
             "anthropic_api_version": "2023-06-01",
@@ -650,7 +650,7 @@ def test_relay_rejects_unsupported_anthropic_http_endpoints_without_connecting_u
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
         },
@@ -674,7 +674,7 @@ def test_relay_rejects_anthropic_websocket_requests_without_connecting_upstream(
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "anthropic",
+            "model_provider_mode": "anthropic",
             "anthropic_api_base_url": "https://anthropic.example",
             "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
         },
@@ -1032,7 +1032,7 @@ def test_relay_rejects_azure_websocket_requests_without_connecting_upstream(
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
@@ -1082,7 +1082,7 @@ def test_relay_rejects_unsupported_azure_http_endpoints_without_connecting_upstr
     write_provider_overlay(
         config,
         {
-            "openai_provider_mode": "azure_openai",
+            "model_provider_mode": "azure_openai",
             "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
             "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
             "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},

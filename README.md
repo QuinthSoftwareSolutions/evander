@@ -152,7 +152,7 @@ Directory-scoped config is rooted at `root`:
 
    ### Claude Code provider bootstrap
 
-   This copies a host Claude Code CLI command into the guest user's `~/bin`, writes `~/.claude/settings.json` and `~/.claude/mcp-config.json` so Claude can use the host Anthropic relay and MCP gateway, sets `AGENT_PROVIDER=claude`, keeps only placeholder Anthropic auth in the guest, and verifies `claude --version`. Use `openai_provider_mode: "anthropic"` in effective provider config so the host relay injects the real Anthropic API key upstream.
+   This copies a host Claude Code CLI command into the guest user's `~/bin`, writes `~/.claude/settings.json` and `~/.claude/mcp-config.json` so Claude can use the host Anthropic relay and MCP gateway, sets `AGENT_PROVIDER=claude`, keeps only placeholder Anthropic auth in the guest, and verifies `claude --version`. Use `model_provider_mode: "anthropic"` in effective provider config so the host relay injects the real Anthropic API key upstream.
 
    ### GitHub Copilot CLI provider bootstrap
 

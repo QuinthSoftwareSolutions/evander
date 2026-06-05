@@ -8642,7 +8642,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
     openai_fields = {field["field_name"]: field for field in openai_section["fields"]}
     assert {
-        "openai_provider_mode",
+        "model_provider_mode",
         "openai_api_base_url",
         "openai_api_key_env",
         "openai_relay_timeout_seconds",
@@ -8656,8 +8656,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "anthropic_api_version",
         "anthropic_relay_timeout_seconds",
     }.issubset(openai_fields)
-    assert "azure_openai" in openai_fields["openai_provider_mode"]["tooltip"]
-    assert "anthropic" in openai_fields["openai_provider_mode"]["tooltip"]
+    assert "azure_openai" in openai_fields["model_provider_mode"]["tooltip"]
+    assert "anthropic" in openai_fields["model_provider_mode"]["tooltip"]
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
     assistant = next(
