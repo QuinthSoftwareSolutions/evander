@@ -22,6 +22,12 @@ material. Newer entries are added incrementally as changes land.
 - Renamed relay upstream selection to `model_provider_mode` while preserving
   `openai_provider_mode` as a backwards-compatible config alias.
 
+## 2026-06-05 - Deserialize Output Persistence
+
+- Kept editable `gate:deserialize` outputs ahead of stale empty backend schema
+  records for bound content while preserving backend-inferred literal-content
+  schemas during frontend output-schema derivation.
+
 ## 2026-06-05 - Compact Model Usage Attribution
 
 - Filled omitted `/responses/compact` model names from the request model or

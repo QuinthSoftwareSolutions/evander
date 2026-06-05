@@ -61,6 +61,36 @@ function nodeCollections(config: WorkflowConfig) {
   };
 }
 
+function hasDeclaredOutputs(node: WorkflowNodeConfig | undefined): node is WorkflowNodeConfig & { outputs: Record<string, unknown> } {
+  return Boolean(node && isRecord(node.outputs) && Object.keys(node.outputs).length > 0);
+}
+
+function hasOutputSchemaEntries(schema: Record<string, unknown> | undefined): boolean {
+  return Boolean(schema && Object.keys(schema).length > 0);
+}
+
+function hasDynamicDeserializeContent(node: WorkflowNodeConfig): boolean {
+  const content = node.content;
+  return typeof content !== "string" || content.trim() === "" || content.includes("${{");
+}
+
+function deserializeOutputSchema(
+  node: WorkflowNodeConfig,
+  backendSchema: Record<string, unknown> | undefined,
+  nodeOutputs: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const backendHasEntries = hasOutputSchemaEntries(backendSchema);
+  const dynamicContent = hasDynamicDeserializeContent(node);
+  const nodeHasDeclaredOutputs = hasDeclaredOutputs(node);
+  if (!dynamicContent && backendHasEntries) {
+    return backendSchema;
+  }
+  if ((dynamicContent || !backendHasEntries) && nodeHasDeclaredOutputs) {
+    return nodeOutputs;
+  }
+  return backendSchema ?? nodeOutputs;
+}
+
 export function workflowNodes(config: WorkflowConfig): WorkflowNodeConfig[] {
   const collections = nodeCollections(config);
   return [
@@ -111,7 +141,12 @@ export function deriveWorkflowOutputSchemas(
       schema = aggregateMetricOutputSchema(node.metrics);
     } else {
       const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
-      schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
+      const nodeOutputs = isRecord(node.outputs) ? node.outputs : undefined;
+      schema = copyOutputSchema(
+        node.type === "gate:deserialize"
+          ? deserializeOutputSchema(node, backendSchema, nodeOutputs)
+          : backendSchema ?? nodeOutputs,
+      );
     }
     visiting.delete(nodeId);
     cache.set(nodeId, schema);

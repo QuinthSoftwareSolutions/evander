@@ -7114,6 +7114,71 @@ def test_workflow_editor_validation_derives_deserialize_outputs_server_side(
     assert result.validation_diagnostics == []
 
 
+def test_workflow_editor_save_and_reload_preserve_deserialize_declared_outputs(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    save_result = service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-event-main",
+                    "display_name": "Trigger event",
+                    "type": "trigger:event",
+                    "event_type": "workflow.payload-ready",
+                    "outputs": {
+                        "payload_text": {"type": "string"},
+                    },
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-deserialize-1",
+                    "display_name": "Deserialize",
+                    "type": "gate:deserialize",
+                    "content": "${{trigger-event-main.payload_text}}",
+                    "format": "auto",
+                    "outputs": {
+                        "title": {"type": "string"},
+                        "metadata": {"type": "object"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Review ${{gate-deserialize-1.title}}",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
+                {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+            ],
+        },
+        layout={},
+    )
+
+    expected_outputs = {
+        "title": {"type": "string"},
+        "metadata": {"type": "object"},
+    }
+
+    gate = next(item for item in save_result.config["gates"] if item["id"] == "gate-deserialize-1")
+    assert gate["outputs"] == expected_outputs
+    assert save_result.output_schemas["gate-deserialize-1"] == expected_outputs
+    assert save_result.validation_diagnostics == []
+
+    reread = service.read_workflow_editor_document()
+    reread_gate = next(item for item in reread.config["gates"] if item["id"] == "gate-deserialize-1")
+    assert reread_gate["outputs"] == expected_outputs
+    assert reread.output_schemas["gate-deserialize-1"] == expected_outputs
+
+
 def test_workflow_editor_validation_derives_serialize_outputs_server_side(
     tmp_path: Path,
 ) -> None:
