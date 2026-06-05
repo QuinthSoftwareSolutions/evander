@@ -1039,9 +1039,9 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
                     "items": [
                         {
                             "id": "101",
-                            "title": "Active task",
+                            "title": "Active backlog item",
                             "state": "Active",
-                            "type": "Task",
+                            "type": "Product Backlog Item",
                             "assigned_to": "Ada",
                             "fields": {"Microsoft.VSTS.Scheduling.Effort": 3},
                             "relations": [
@@ -1104,7 +1104,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "team": "Platform Team",
             "report_date": "2026-05-12",
             "elapsed_sprint_percent": 50,
-            "max_items": 2,
+            "max_items": 20,
         },
     )
 
@@ -1117,11 +1117,11 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "team": "Platform Team",
             "area_path": None,
             "states": [],
-            "types": [],
+            "types": ["Product Backlog Item", "Bug"],
             "exclude_types": ["Task"],
             "tags_any": [],
             "text_search": None,
-            "top": 2,
+            "top": 200,
             "skip": 0,
             "include_relations": True,
         },
@@ -1132,11 +1132,11 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "team": "Platform Team",
             "area_path": None,
             "states": [],
-            "types": [],
+            "types": ["Product Backlog Item", "Bug"],
             "exclude_types": ["Task"],
             "tags_any": [],
             "text_search": None,
-            "top": 1,
+            "top": 200,
             "skip": 1,
             "include_relations": True,
         },
@@ -1151,6 +1151,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
     assert result["template_data"]["effort"] == {"done": 2, "total": 5}
     assert result["template_data"]["elapsedSprintPercent"] == 50
     assert result["source"]["truncated"] is False
+    assert result["source"]["max_items"] == 1000
     assert result["source"]["iteration_path"] == "Project\\Sprint 12"
     assert result["source"]["excluded_types"] == ["Task"]
 

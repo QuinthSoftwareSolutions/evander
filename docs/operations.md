@@ -722,8 +722,12 @@ A transport-terminated warning without client-visible failure can be expected fo
 - By default, elapsed time uses Swedish working time in `Europe/Stockholm`, counts only weekdays
   inside the configured workday window, excludes Swedish public holidays, and also excludes common
   non-working eves such as Midsummer Eve, Christmas Eve, and New Year's Eve.
-- By default, the query excludes `Task` work items so the report is based on backlog-level items
-  rather than implementation subtasks. Pass `exclude_types: []` to include Tasks.
+- The daily status report normalizes `max_items` values below 1000 up to 1000 so small
+  agent-selected caps do not truncate sprint totals.
+- By default, the query includes only Product Backlog Items and Bugs and excludes `Task` work items
+  so the report is based on sprint delivery items rather than features or implementation subtasks.
+  Pass an explicit non-empty `types` list to override the default, and pass `exclude_types: []` to
+  include Tasks.
 - Response payload includes:
   - `template_data`: the exact JSON object to paste into the template's `report-data` block
   - `template_data_json`: formatted JSON for agents that are editing the HTML directly

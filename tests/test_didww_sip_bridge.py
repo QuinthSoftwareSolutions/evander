@@ -134,7 +134,7 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
     assert "one or two short spoken paragraphs" in lowered
     assert "outbound startup contract" in lowered
     assert "authoritative first-turn task state" in lowered
-    assert "do not ask the origin agent for the same script" in lowered
+    assert "do not ask internally for the same script" in lowered
     assert "backchannels" in lowered
     assert "do not repeat the prior answer" in lowered
     assert "pause naturally after a long answer" in lowered
@@ -935,9 +935,9 @@ def test_realtime_tool_response_cancels_pending_idle_prompt(
 
     assert realtime.responses == [
         (
-            "The origin agent's answer is available now in the conversation. Briefly "
-            "answer the caller from it. Do not say the query is still pending or that "
-            "you are still checking."
+            "The lookup result is available now in the conversation. Briefly answer "
+            "the caller from it. Do not mention internal agent handoffs, do not say "
+            "the query is still pending, and do not say that you are still checking."
         )
     ]
     assert didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS not in realtime.responses
@@ -2382,7 +2382,7 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
             return {
                 "query_id": query_id,
                 "status": "answered",
-                "answer": "The origin agent checked the file.",
+                "answer": "The file was checked.",
             }
 
         async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
@@ -2417,9 +2417,10 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
         {"call_id": "tool-call-1", "output": {"status": "pending", "query_id": "voice-query-1"}}
     ]
     assert len(realtime.responses) == 1
-    assert "origin agent's answer is available" in str(realtime.responses[0])
-    assert "checking with the originating agent" not in str(realtime.responses[0])
-    assert realtime.injected[0]["answer"] == "The origin agent checked the file."
+    assert "lookup result is available" in str(realtime.responses[0])
+    assert "origin agent" not in str(realtime.responses[0]).lower()
+    assert "originating agent" not in str(realtime.responses[0]).lower()
+    assert realtime.injected[0]["answer"] == "The file was checked."
     latest = store.get("voice-1")
     assert latest is not None
     assert latest.transcript_events[-1].speaker == "origin_agent"
@@ -2510,7 +2511,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
             return {
                 "query_id": query_id,
                 "status": "answered",
-                "answer": "The origin agent has the deployment summary.",
+                "answer": "The deployment summary is available.",
             }
 
     class FakeRtp:
@@ -2543,10 +2544,11 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
     assert realtime.tool_outputs == [
         {"call_id": "tool-call-1", "output": {"status": "pending", "query_id": "voice-query-1"}}
     ]
-    assert realtime.injected[0]["answer"] == "The origin agent has the deployment summary."
+    assert realtime.injected[0]["answer"] == "The deployment summary is available."
     assert len(realtime.responses) == 1
-    assert "origin agent's answer is available" in str(realtime.responses[0])
-    assert "checking with the originating agent" not in str(realtime.responses[0])
+    assert "lookup result is available" in str(realtime.responses[0])
+    assert "origin agent" not in str(realtime.responses[0]).lower()
+    assert "originating agent" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     requested_reasons = [
@@ -2672,8 +2674,11 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
     assert "projected calling task" not in str(realtime.responses[0]).lower()
     assert "interesting fact" not in str(realtime.responses[0]).lower()
-    assert "current call" in str(realtime.responses[0]).lower()
+    assert "look that up" in str(realtime.responses[0]).lower()
+    assert "something relevant" in str(realtime.responses[0]).lower()
     assert "unrelated filler" in str(realtime.responses[0]).lower()
+    assert "origin agent" not in str(realtime.responses[0]).lower()
+    assert "originating agent" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -2686,7 +2691,7 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
     assert didww_sip_bridge._PROJECTED_TASK_RESPONSE_KEY in discarded.metadata["request_keys"]
 
 
-def test_origin_query_wait_ack_does_not_queue_extra_response(
+def test_origin_query_hold_ack_does_not_queue_extra_response(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2715,7 +2720,7 @@ def test_origin_query_wait_ack_does_not_queue_extra_response(
                 {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 500},
                 {
                     "type": "conversation.item.input_audio_transcription.completed",
-                    "transcript": "Nah, I'll just wait.",
+                    "transcript": "Yes, please.",
                 },
             ]
             self.tool_outputs: list[dict[str, object]] = []
@@ -2777,15 +2782,18 @@ def test_origin_query_wait_ack_does_not_queue_extra_response(
     realtime = asyncio.run(run())
 
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
+    assert didww_sip_bridge._is_origin_query_hold_ack("No, I'll wait.")
+    assert didww_sip_bridge._is_origin_query_hold_ack("Yes, please.")
+    assert not didww_sip_bridge._is_origin_query_hold_ack("Please continue with the topic.")
     latest = store.get("voice-1")
     assert latest is not None
-    wait_ack = [
+    hold_ack = [
         event
         for event in latest.debug_events
         if event.event_type == "backchannel_ignored"
-        and event.metadata.get("reason") == "origin_query_wait_ack"
+        and event.metadata.get("reason") == "origin_query_hold_ack"
     ]
-    assert len(wait_ack) == 1
+    assert len(hold_ack) == 1
 
 
 def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_query(
@@ -2828,7 +2836,7 @@ def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_qu
             return {
                 "query_id": query_id,
                 "status": "answered",
-                "answer": "The origin agent already answered.",
+                "answer": "The answer is already available.",
             }
 
     async def run() -> tuple[FakeRealtime, FakeController]:
@@ -2883,13 +2891,14 @@ def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_qu
             "output": {
                 "status": "answered",
                 "query_id": "voice-query-1",
-                "answer": "The origin agent already answered.",
+                "answer": "The answer is already available.",
                 "deduplicated": True,
             },
         },
     ]
     assert len(realtime.responses) == 1
-    assert "origin agent's answer is available" in str(realtime.responses[0])
+    assert "lookup result is available" in str(realtime.responses[0])
+    assert "origin agent" not in str(realtime.responses[0]).lower()
 
 
 def test_terminal_origin_query_retry_clears_legacy_delegated_query_cache(
@@ -3372,7 +3381,8 @@ def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     realtime = asyncio.run(run())
 
     assert realtime.injected[0]["status"] == "timeout"
-    assert "did not answer" in str(realtime.responses[0])
+    assert "lookup did not finish in time" in str(realtime.responses[0])
+    assert "origin agent" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -3576,7 +3586,7 @@ def test_realtime_active_response_error_requeues_response_request(
             return {
                 "query_id": query_id,
                 "status": "answered",
-                "answer": "The origin agent checked the deployment note.",
+                "answer": "The deployment note was checked.",
             }
 
     class FakeRtp:
@@ -3606,7 +3616,8 @@ def test_realtime_active_response_error_requeues_response_request(
     realtime = asyncio.run(run())
 
     assert len(realtime.responses) == 2
-    assert all("origin agent's answer is available" in str(item) for item in realtime.responses)
+    assert all("lookup result is available" in str(item) for item in realtime.responses)
+    assert all("origin agent" not in str(item).lower() for item in realtime.responses)
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -3619,7 +3630,8 @@ def test_realtime_active_response_error_requeues_response_request(
     )
     assert queued.metadata["request_reason"] == "query_result"
     assert len(queued.metadata["instruction_sha256"]) == 64
-    assert "origin agent's answer is available" in queued.metadata["instruction_snippet"]
+    assert "lookup result is available" in queued.metadata["instruction_snippet"]
+    assert "origin agent" not in queued.metadata["instruction_snippet"].lower()
     requeued = next(event for event in latest.debug_events if event.event_type == "bridge.response.requeued")
     assert requeued.metadata["reason"] == "conversation_already_has_active_response"
     error_event = next(event for event in latest.debug_events if event.event_type == "error")
@@ -3689,7 +3701,8 @@ def test_realtime_function_call_reports_controller_failure_without_raising(
             "output": {"status": "failed", "error": "controller unavailable"},
         }
     ]
-    assert "cannot check the origin agent" in str(realtime.responses[0])
+    assert "cannot complete that lookup" in str(realtime.responses[0])
+    assert "origin agent" not in str(realtime.responses[0]).lower()
 
 
 def test_run_call_registers_ari_app_before_originating_channels(tmp_path: Path) -> None:

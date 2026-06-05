@@ -110,6 +110,32 @@ def test_audit_posts_target_public_npm_and_strip_authorization(
     assert captured["body"] == b'{"name":"example"}'
 
 
+def test_audit_posts_preserve_request_content_encoding(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content_encoding"] = request.headers.get("content-encoding")
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"ok": True},
+        )
+
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config, transport=httpx.MockTransport(handler)))
+
+    response = client.post(
+        "/-/npm/v1/security/advisories/bulk",
+        headers={"content-encoding": "gzip"},
+        content=b"gzipped-audit-payload",
+    )
+
+    assert response.status_code == 200
+    assert captured["content_encoding"] == "gzip"
+    assert captured["body"] == b"gzipped-audit-payload"
+
+
 def test_package_requests_use_default_nexus_url_and_preserve_raw_path_and_query(
     tmp_path: Path,
 ) -> None:
@@ -144,6 +170,33 @@ def test_package_requests_use_default_nexus_url_and_preserve_raw_path_and_query(
     )
     assert captured["authorization"] is None
     assert captured["accept-encoding"] == "identity"
+
+
+def test_package_requests_do_not_double_prefix_rewritten_nexus_tarball_paths(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    upstream_stream = _ChunkStream([b"tgz"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream"},
+            stream=upstream_stream,
+        )
+
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config, transport=httpx.MockTransport(handler)))
+
+    response = client.get("/repository/npm-all/npm/-/npm-10.9.8.tgz")
+
+    assert response.status_code == 200
+    assert response.content == b"tgz"
+    assert (
+        captured["url"]
+        == "http://192.168.250.1:8081/repository/npm-all/npm/-/npm-10.9.8.tgz"
+    )
 
 
 def test_package_requests_use_root_overlay_for_custom_registry(tmp_path: Path) -> None:
