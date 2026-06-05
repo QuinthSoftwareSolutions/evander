@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-05 - Compact Model Usage Attribution
+
+- Filled omitted `/responses/compact` model names from the request model or
+  active model-usage correlation context so compact usage rows can receive
+  query-time cost estimates.
+
+## 2026-06-05 - Standalone PR Title Overrides
+
+- Added `effect:pr:create` fallback title support so standalone workflow PRs can
+  use concise explicit metadata titles without losing the existing session/branch
+  fallback for workflows that do not set one.
+
 ## 2026-06-05 - npm Audit Facade Encoding Fix
 
 - Preserved request `Content-Encoding` when forwarding npm audit payloads so

@@ -125,3 +125,41 @@ def test_mapping_model_usage_extractor_marks_missing_usage_as_unavailable() -> N
         "response_metadata": {},
         "request_metadata": {},
     }
+
+
+def test_mapping_model_usage_extractor_uses_context_model_when_response_omits_model() -> None:
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    context = ModelUsageCorrelationContext(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        workflow_run_id="workflow-1",
+        effect_id="effect-1",
+        node_id="node-1",
+        agent_harness="codex",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="gpt-5.4-mini",
+        trace_id="trace-1",
+        started_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    extractor = MappingModelUsageExtractor(provider_name="openai")
+    request = ModelUsageExtractionRequest(
+        provider="openai",
+        provider_endpoint_identifier="responses/compact",
+        request_status="success",
+        occurred_at=now,
+        response_payload={
+            "id": "resp-compact",
+            "type": "response",
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        },
+        correlation_context=context,
+    )
+
+    result = extractor.extract(request)
+
+    assert result.event.model == "gpt-5.4-mini"
+    assert result.event.provider_endpoint_identifier == "responses/compact"
+    assert result.event.dispatch_id == "dispatch-1"
+    assert result.event.total_tokens == 5

@@ -156,6 +156,27 @@ def test_pr_create_provider_normalizes_body_artifact_ids(tmp_path: Path) -> None
     ]
 
 
+def test_pr_create_provider_uses_fallback_title_when_title_is_blank(tmp_path: Path) -> None:
+    admin_service = _AdminServiceStub(pr_create_result={"success": True})
+    provider = PrCreateEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(
+            id="effect-pr",
+            display_name="Create PR",
+            type="effect:pr:create",
+            host_repo_path="/repo",
+            title="",
+            fallback_title="Fallback title",
+        ),
+        runtime_context=_build_context(tmp_path, admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert admin_service.calls[0]["title"] == "Fallback title"
+
+
 def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> None:
     admin_service = SimpleNamespace()
     provider = PrCreateEffectProvider()

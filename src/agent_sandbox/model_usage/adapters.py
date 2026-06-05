@@ -112,8 +112,12 @@ class MappingModelUsageExtractor:
             occurred_at=request.occurred_at,
             provider=request.provider or self.provider_name,
             provider_endpoint_identifier=request.provider_endpoint_identifier,
-            model=response_payload.get("model") or request.model,
-            deployment=response_payload.get("deployment") or request.deployment,
+            model=_first_text(
+                response_payload.get("model"),
+                request.model,
+                context.model if context is not None else None,
+            ),
+            deployment=_first_text(response_payload.get("deployment"), request.deployment),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
@@ -163,4 +167,12 @@ def _first_int(payload: dict[str, Any], *keys: str) -> int | None:
             continue
         if number >= 0:
             return number
+    return None
+
+
+def _first_text(*values: object) -> str | None:
+    for value in values:
+        text = _normalize_optional_text(value)
+        if text is not None:
+            return text
     return None

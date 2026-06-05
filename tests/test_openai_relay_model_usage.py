@@ -381,7 +381,6 @@ def test_openai_relay_records_responses_compact_usage(tmp_path: Path, monkeypatc
             json={
                 "id": "resp-compact",
                 "type": "response",
-                "model": "gpt-5.2-codex",
                 "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
             },
         )
@@ -400,6 +399,7 @@ def test_openai_relay_records_responses_compact_usage(tmp_path: Path, monkeypatc
     assert event is not None
     event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
     assert event.provider_endpoint_identifier == "responses/compact"
+    assert event.model == "gpt-5.2-codex"
     assert event.total_tokens == 5
     assert event.workflow_run_id == "workflow-compact"
     assert "secret prompt text" not in event_json

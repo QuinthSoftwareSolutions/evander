@@ -604,7 +604,7 @@ class OpenAIRelay:
                 provider="openai",
                 provider_endpoint_identifier=upstream_path,
                 request_status=request_status,
-                model=response_payload.get("model"),
+                model=response_payload.get("model") or self._model_from_request_body(request_body),
                 duration_ms=duration_ms,
                 request_body_bytes=len(request_body) if request_body else None,
                 request_body_sha256=request_hash,
@@ -682,6 +682,19 @@ class OpenAIRelay:
         if isinstance(payload, dict):
             return payload
         return {}
+
+    @staticmethod
+    def _model_from_request_body(request_body: bytes | None) -> str | None:
+        if not request_body:
+            return None
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        text = str(payload.get("model") or "").strip()
+        return text or None
 
     @staticmethod
     def _request_status_for_response(status_code: int) -> str:

@@ -644,12 +644,18 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         )
     for effects in (default_effects, container_effects):
         standalone_pr = effects["effect-pr-create-standalone"]
-        expected_standalone_title = (
+        expected_standalone_fallback_title = (
             "${{query-session-context-1.metadata.pr_title_prefix "
             "?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
         )
         assert standalone_pr["type"] == "effect:pr:create"
-        assert standalone_pr["config"]["title"] == expected_standalone_title
+        assert (
+            standalone_pr["config"]["title"]
+            == "${{query-session-context-1.metadata.pr_title ?? null}}"
+        )
+        assert (
+            standalone_pr["config"]["fallback_title"] == expected_standalone_fallback_title
+        )
         assert (
             standalone_pr["config"]["origin_branch"]
             == "${{query-session-context-1.metadata.pr_origin_branch ?? null}}"

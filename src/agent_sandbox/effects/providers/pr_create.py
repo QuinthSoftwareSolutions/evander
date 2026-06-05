@@ -23,6 +23,10 @@ class PrCreateEffectProvider(EffectProviderBase):
         if not callable(pr_create):
             raise RuntimeError("AdminService.pr_create is not available")
 
+        title = self._normalize_optional_string(payload.get("title"))
+        if title is None:
+            title = self._normalize_optional_string(payload.get("fallback_title"))
+
         result = pr_create(
             host_repo_path=host_repo_path,
             local_branch=self._normalize_optional_string(payload.get("local_branch")),
@@ -35,7 +39,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             base_branch=self._normalize_optional_string(payload.get("base_branch")),
             session_id=self._normalize_optional_string(payload.get("session_id")),
             work_item_id=self._normalize_optional_string(payload.get("work_item_id")),
-            title=self._normalize_optional_string(payload.get("title")),
+            title=title,
             body=self._normalize_optional_string(payload.get("body")),
             body_file=self._normalize_optional_string(payload.get("body_file")),
             body_artifact_ids=self._normalize_string_list(payload.get("body_artifact_ids")),
@@ -62,6 +66,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             "session_id",
             "work_item_id",
             "title",
+            "fallback_title",
             "body",
             "body_file",
             "body_artifact_ids",
