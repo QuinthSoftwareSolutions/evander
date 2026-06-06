@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import GatewayConfig, load_config
@@ -21,6 +21,11 @@ from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
     as_session_manifest_repository,
+)
+from agent_sandbox.vm.templates import (
+    DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
+    DEFAULT_LIBVIRT_VM_TEMPLATES,
+    normalize_libvirt_vm_templates,
 )
 
 
@@ -50,8 +55,25 @@ class EffectiveVmDefaultsConfig(BaseModel):
     nuget_relay_port: int = 11666
     npm_audit_facade_host: str = "0.0.0.0"
     npm_audit_facade_port: int = 11881
+    libvirt_vm_default_template: str = DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE
+    libvirt_vm_templates: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_LIBVIRT_VM_TEMPLATES)
+    )
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
+
+    @field_validator("libvirt_vm_default_template", mode="before")
+    @classmethod
+    def normalize_libvirt_vm_default_template(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("libvirt_vm_default_template cannot be empty")
+        return text
+
+    @field_validator("libvirt_vm_templates", mode="before")
+    @classmethod
+    def normalize_libvirt_vm_templates_field(cls, value: object) -> dict[str, str]:
+        return normalize_libvirt_vm_templates(value)
 
     def guest_openai_base_url(self) -> str:
         return _service_url_from_gateway_url(

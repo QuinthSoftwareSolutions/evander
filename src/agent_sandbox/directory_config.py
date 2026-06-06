@@ -13,6 +13,10 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
 from agent_sandbox.models import DirectoryInfo, DirectoryPath
+from agent_sandbox.vm.templates import (
+    DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
+    DEFAULT_LIBVIRT_VM_TEMPLATES,
+)
 
 DIRECTORY_CONFIG_OVERLAYS_KEY = "config_overlays"
 DIRECTORY_CONFIG_METADATA_KEY = "directory_config"
@@ -197,6 +201,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "provider_defaults",
             "azure",
             "bind_network_cidr",
+            "libvirt_vm_default_template",
+            "libvirt_vm_templates",
             "gateway_url",
             "http_target_relay_host",
             "http_target_relay_port",
@@ -492,6 +498,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
     if domain == "vm":
         return {
             "bind_network_cidr": str(config.bind_network_cidr),
+            "libvirt_vm_default_template": DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
+            "libvirt_vm_templates": dict(DEFAULT_LIBVIRT_VM_TEMPLATES),
             "gateway_url": config.gateway_url,
             "http_target_relay_host": config.http_target_relay_host,
             "http_target_relay_port": config.http_target_relay_port,
