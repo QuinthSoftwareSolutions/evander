@@ -67,6 +67,20 @@ def _managed_codex_skills_root(deps: Any, skill_names: list[str] | None) -> Path
     return None
 
 
+def _libvirt_base_image_from_manifest_metadata(manifest: SessionManifest | Any | None) -> str | None:
+    metadata = getattr(manifest, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    template = metadata.get("libvirt_vm_template")
+    if not isinstance(template, Mapping):
+        return None
+    image_ref = template.get("image_ref")
+    if not isinstance(image_ref, str):
+        return None
+    normalized_image_ref = image_ref.strip()
+    return normalized_image_ref or None
+
+
 class AzureVmControlClientProtocol(Protocol):
     def list_vms(self, *, config: Any, include_inactive: bool = True) -> list[dict[str, Any]]: ...
 
@@ -966,6 +980,9 @@ def _libvirt_create_vm(
     managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)
     if managed_skills_root is not None:
         run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
+    libvirt_base_image = _libvirt_base_image_from_manifest_metadata(manifest)
+    if libvirt_base_image is not None:
+        run_env["LIBVIRT_BASE_IMAGE"] = libvirt_base_image
 
     try:
         helper = deps.get_privileged_helper() if deps.get_use_privileged_helper() else None
@@ -1004,6 +1021,8 @@ def _libvirt_create_vm(
                 "LLM_BASE_URL",
                 "AGENT_MODEL",
                 "AGENT_PROVIDER",
+                "LIBVIRT_BASE_IMAGE",
+                "BASE_IMAGE",
                 "NUGET_RELAY_BASE_URL",
                 "AGENT_SANDBOX_RUNTIME_DIR",
                 "VM_STORAGE_DIR",
