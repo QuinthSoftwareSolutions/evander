@@ -36,6 +36,8 @@ Arguments:
 Environment:
   SSH_PUBLIC_KEY_FILE         Public key injected into the guest.
   SSH_PRIVATE_KEY_PATH        Private key matching the guest authorized key.
+  LIBVIRT_BASE_IMAGE          Selected base image passed through to launch_agent_vm.sh.
+  BASE_IMAGE                  Manual base image override passed through to launch_agent_vm.sh.
   VM_WAIT_IP_TIMEOUT_SECONDS  How long to wait for the guest to receive an IPv4 address.
                               Default: 180
   VM_WAIT_SSH_TIMEOUT_SECONDS How long to wait for guest SSH to accept connections.
@@ -208,6 +210,8 @@ run_launch_vm() {
     "LLM_BASE_URL=${LLM_BASE_URL:-}"
     "AGENT_SANDBOX_RUNTIME_DIR=${AGENT_SANDBOX_RUNTIME_DIR:-}"
     "VM_STORAGE_DIR=${VM_STORAGE_DIR:-}"
+    "LIBVIRT_BASE_IMAGE=${LIBVIRT_BASE_IMAGE:-}"
+    "BASE_IMAGE=${BASE_IMAGE:-}"
     "SHARED_NUGET_CACHE_DIR=${SHARED_NUGET_CACHE_DIR:-}"
     "SHARED_NUGET_CACHE_TAG=${SHARED_NUGET_CACHE_TAG:-}"
     "SHARED_NUGET_CACHE_MODE=${SHARED_NUGET_CACHE_MODE:-}"
