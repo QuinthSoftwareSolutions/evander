@@ -42,6 +42,7 @@ service and configure `config/admin-web.env` before exposing it beyond localhost
 17. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
 18. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
 19. Use [live-smoke-tests.md](live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+20. Use [libvirt-vm-template-operations.md](libvirt-vm-template-operations.md) when you need to prepare or register a non-default libvirt base image.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
