@@ -221,6 +221,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
         session_id = normalize_optional_string(payload.get("session_id"))
         if not session_id:
             raise ValueError("effect:agent:create with container_worker_vm requires session_id")
+        vm_image = normalize_optional_string(payload.get("vm_image"))
+        if vm_image:
+            raise ValueError(
+                "effect:agent:create vm_image is only supported with execution_backend='libvirt_vm'; "
+                "use container_image for container_worker_vm"
+            )
         session_repository = runtime_session_repository(context, config)
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")

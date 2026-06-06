@@ -950,6 +950,72 @@ def test_agent_create_libvirt_resolves_explicit_vm_image_selector(
     }
 
 
+def test_agent_create_libvirt_resolves_bound_vm_image_selector(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            session_repository.upsert_session(
+                SessionManifest(
+                    session_id=str(kwargs["session_id"]),
+                    vm_id=str(kwargs["vm_name"]),
+                    vm_provider="libvirt",
+                    allowed_tools=[ToolName.GET_AGENT_STATUS],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    metadata=dict(kwargs.get("metadata") or {}),
+                )
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            vm_image="${{ steps.pick.outputs.vm_image }}",
+        )
+    ).execute(resolved_config={"vm_image": "dotnet"})
+
+    assert output["vm_image"] == "dotnet-agent.qcow2"
+    assert output["vm_image_alias"] == "dotnet"
+    assert admin_service.create_vm_calls[0]["metadata"]["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
+    assert session_repository.get_session("lab-session").metadata["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
+
+
 def test_agent_create_libvirt_uses_default_vm_image_selector_when_omitted(
     tmp_path,
 ) -> None:
@@ -3208,6 +3274,61 @@ def test_agent_create_container_rejects_unknown_container_image_selector_before_
 
     assert backend.prepared_sessions == []
     assert backend.written_files == []
+
+
+def test_agent_create_container_rejects_vm_image_before_bootstrap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"effect:agent:create vm_image is only supported with execution_backend='libvirt_vm'; "
+            r"use container_image for container_worker_vm"
+        ),
+    ):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-vm-image",
+                vm_image="dotnet",
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
+    assert session_repository.get_session("session-vm-image") is None
 
 
 @pytest.mark.parametrize(
