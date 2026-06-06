@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-06 - Operator VM Template Visibility
+
+- Added a normalized runtime-image payload for admin session and agent records
+  so operators can see the effective libvirt VM template or container-worker
+  image without parsing raw metadata.
+- Exposed explicit legacy-missing labeling for sessions that lack preserved
+  libvirt template metadata, keeping the UI and API distinction visible.
+- Sanitized libvirt display image refs that look like host paths while
+  preserving the original session metadata for compatibility.
+- Kept container-worker image details distinct from libvirt VM template details
+  so the two backends remain clearly separated in operator surfaces.
+
 ## 2026-06-06 - Agent Create VM Image Docs
 
 - Added `vm_image` to the `effect:agent:create` schema reference and clarified
