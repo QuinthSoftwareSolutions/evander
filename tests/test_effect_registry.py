@@ -700,6 +700,10 @@ def test_agent_create_provider_passes_session_metadata() -> None:
     assert admin_service.create_vm_calls[0]["metadata"] == {
         "workflow": {"state": "active"},
         "owns_pr": True,
+        "libvirt_vm_template": {
+            "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "template_alias": "default",
+        },
     }
 
 
