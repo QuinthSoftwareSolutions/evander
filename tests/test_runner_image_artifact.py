@@ -12,6 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = ROOT / "scripts" / "build_agent_sandbox_runner_image.sh"
 RUNNER_DOCKERFILE = ROOT / "docker" / "agent-sandbox-runner" / "Dockerfile"
+CLAUDE_RUNNER_SCRIPT = ROOT / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+CLAUDE_RUNNER_DOCKERFILE = ROOT / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
 HOST_CODEX_PACKAGE = "@openai/codex"
 RUNNER_PLATFORM_PACKAGE = "@openai/codex-linux-x64"
 RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
@@ -20,12 +22,17 @@ RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
 def _copy_runner_repo(tmp_path: Path) -> Path:
     repo_root = tmp_path / "runner-repo"
     script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    claude_script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
     dockerfile_path = repo_root / "docker" / "agent-sandbox-runner" / "Dockerfile"
+    claude_dockerfile_path = repo_root / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(RUNNER_SCRIPT, script_path)
+    shutil.copy2(CLAUDE_RUNNER_SCRIPT, claude_script_path)
     shutil.copy2(RUNNER_DOCKERFILE, dockerfile_path)
+    shutil.copy2(CLAUDE_RUNNER_DOCKERFILE, claude_dockerfile_path)
     return repo_root
 
 
@@ -64,6 +71,18 @@ def _create_codex_fixture(
         platform_root / "package.json", name=RUNNER_PLATFORM_PACKAGE, version=version
     )
     return host_codex_root, binary_path, platform_root
+
+
+def _create_claude_fixture(
+    tmp_path: Path,
+    *,
+    binary_text: str = "#!/usr/bin/env bash\nexit 0\n",
+) -> Path:
+    binary_path = tmp_path / "host-claude" / "bin" / "claude"
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_text(binary_text, encoding="utf-8")
+    binary_path.chmod(0o755)
+    return binary_path
 
 
 def _write_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
@@ -172,6 +191,30 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "/home/agent/.agent-sandbox/session.env" in dockerfile
 
 
+def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
+    dockerfile = CLAUDE_RUNNER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "FROM ubuntu:24.04" in dockerfile
+    assert "COPY claude /usr/local/bin/claude" in dockerfile
+    assert "COPY codex" not in dockerfile
+    assert "ENV HOME=/home/agent" in dockerfile
+    assert "WORKDIR /home/agent" in dockerfile
+    assert "CODEX_HOME" not in dockerfile
+    assert "/home/agent/repos" in dockerfile
+    assert "/home/agent/.claude" in dockerfile
+    assert "/home/agent/.agent-sandbox/session.env" in dockerfile
+    assert "/opt/agent-sandbox/toolchains/node-v24.14.0/bin" in dockerfile
+    assert "ANTHROPIC_AUTH_TOKEN" in dockerfile
+    assert "DISABLE_TELEMETRY" in dockerfile
+    assert "python3-pip" in dockerfile
+    assert "python3-venv" in dockerfile
+    assert "ripgrep" in dockerfile
+    assert "openssh-client" in dockerfile
+    assert "libnss3" in dockerfile
+    assert "libgtk-3-0" in dockerfile
+    assert 'CMD ["bash", "-lc", "claude --version"]' in dockerfile
+
+
 def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     script = RUNNER_SCRIPT.read_text(encoding="utf-8")
 
@@ -188,6 +231,28 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_FORCE_REBUILD" in script
     assert "agent-sandbox-runner:latest" in script
     assert "dist/agent-sandbox-runner.tar" in script
+    assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
+    assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
+    assert 'build_args+=(--pull)' in script
+    assert 'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"' in script
+    assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_IMAGE_NAME}"' in script
+    assert 'mv -f "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_ARCHIVE_PATH}"' in script
+    assert "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}" in script
+
+
+def test_claude_runner_build_script_builds_tag_and_saves_tarball() -> None:
+    script = CLAUDE_RUNNER_SCRIPT.read_text(encoding="utf-8")
+
+    assert "HOST_CLAUDE_BIN" in script
+    assert "command -v claude" in script
+    assert "RUNNER_BUILD_NETWORK" in script
+    assert "RUNNER_MANIFEST_PATH" in script
+    assert "RUNNER_FORCE_REBUILD" in script
+    assert "agent-sandbox-runner-claude:latest" in script
+    assert "dist/agent-sandbox-runner-claude.tar" in script
+    assert "claude_bin_realpath" in script
+    assert "claude_bin_sha256" in script
+    assert 'cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"' in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert 'build_args+=(--pull)' in script
@@ -229,6 +294,44 @@ def test_runner_build_script_writes_manifest_and_reuses_cached_archive(
     second = _run_runner_script(script_path, repo_root, env)
 
     assert second.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
+
+
+def test_claude_runner_build_script_writes_manifest_and_reuses_cached_archive(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    claude_bin = _create_claude_fixture(tmp_path)
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CLAUDE_BIN": str(claude_bin),
+    }
+
+    first = _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.is_file()
+    assert first.stdout.splitlines() == [
+        "Built agent-sandbox-runner-claude:latest",
+        f"Saved {archive_path}",
+    ]
+    assert "claude_bin_sha256=" in first_manifest
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
+
+    second = _run_runner_script(script_path, repo_root, env)
+
+    assert (
+        second.stdout.strip()
+        == f"Reused cached agent-sandbox-runner-claude:latest archive at {archive_path}"
+    )
     assert manifest_path.read_text(encoding="utf-8") == first_manifest
     assert _docker_invocations(docker_log_path) == ["build", "save"]
 
@@ -347,6 +450,45 @@ def test_runner_build_script_rebuilds_when_codex_identity_changes(
             encoding="utf-8",
         )
         binary_path.chmod(0o755)
+
+    _run_runner_script(script_path, repo_root, env)
+
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+    assert manifest_path.read_text(encoding="utf-8") != first_manifest
+
+
+@pytest.mark.parametrize("mutation", ["dockerfile", "binary"])
+def test_claude_runner_build_script_rebuilds_when_identity_changes(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
+    manifest_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar.manifest"
+    claude_bin = _create_claude_fixture(tmp_path)
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CLAUDE_BIN": str(claude_bin),
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    if mutation == "dockerfile":
+        dockerfile_path.write_text(
+            dockerfile_path.read_text(encoding="utf-8") + "\n# cache-bust\n",
+            encoding="utf-8",
+        )
+    else:
+        claude_bin.write_text(
+            "#!/usr/bin/env bash\nprintf 'changed claude\\n'\n",
+            encoding="utf-8",
+        )
+        claude_bin.chmod(0o755)
 
     _run_runner_script(script_path, repo_root, env)
 
@@ -481,6 +623,35 @@ def test_runner_build_script_pulls_base_image_on_forced_rebuild(
     assert " --pull " in f" {build_commands[1]} "
 
 
+def test_claude_runner_build_script_pulls_base_image_on_forced_rebuild(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+    claude_bin = _create_claude_fixture(tmp_path)
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    docker_command_log_path = tmp_path / "docker-command.log"
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "FAKE_DOCKER_COMMAND_LOG": str(docker_command_log_path),
+        "HOST_CLAUDE_BIN": str(claude_bin),
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    _run_runner_script(script_path, repo_root, env, args=["--force"])
+
+    build_commands = [
+        line
+        for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("build ")
+    ]
+    assert len(build_commands) == 2
+    assert " --pull " not in f" {build_commands[0]} "
+    assert " --pull " in f" {build_commands[1]} "
+
+
 def test_runner_build_script_preserves_cache_after_failed_save(
     tmp_path: Path,
 ) -> None:
@@ -517,5 +688,46 @@ def test_runner_build_script_preserves_cache_after_failed_save(
     reused = _run_runner_script(script_path, repo_root, env)
 
     assert reused.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+
+
+def test_claude_runner_build_script_preserves_cache_after_failed_save(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    claude_bin = _create_claude_fixture(tmp_path)
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CLAUDE_BIN": str(claude_bin),
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    failed = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {**env, "FAKE_DOCKER_FAIL_SAVE_AFTER_WRITE": "1"},
+        args=["--force"],
+    )
+
+    assert failed.returncode == 42
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert list(archive_path.parent.glob(".runner-archive.*.tar")) == []
+
+    reused = _run_runner_script(script_path, repo_root, env)
+
+    assert (
+        reused.stdout.strip()
+        == f"Reused cached agent-sandbox-runner-claude:latest archive at {archive_path}"
+    )
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]

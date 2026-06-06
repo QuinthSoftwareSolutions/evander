@@ -230,7 +230,8 @@ playbooks instead of replacing them:
 
 1. `ansible-playbook -i <inventory> ansible/site.yml`
 2. `./scripts/build_agent_sandbox_runner_image.sh`
-3. `ansible-playbook -i <inventory> ansible/worker.yml`
+3. `./scripts/build_agent_sandbox_claude_runner_image.sh`
+4. `ansible-playbook -i <inventory> ansible/worker.yml`
 
 The deployment pipeline should check out this product repo as a repository resource, compute the
 checked-out product commit with `git rev-parse HEAD`, and pass that value as
@@ -264,18 +265,24 @@ in the Azure VNet or on the control-plane host is usually the lowest-friction op
 worker access.
 
 The worker stage installs Node.js 24.14.0 before building `dist/agent-sandbox-runner.tar` from a
-host-seeded Codex binary. On hosted agents the pipeline installs the npm package named by
+host-seeded Codex binary and `dist/agent-sandbox-runner-claude.tar` from a host-resolved Claude Code
+command. On hosted agents the pipeline installs the npm package named by
 `hostCodexNpmPackage`, then explicitly installs `@openai/codex-linux-x64` at the version declared by
 the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports that directory as
 `HOST_CODEX_ROOT`, installs the workflow-editor npm dependencies, and downloads Chromium into
 `$(Pipeline.Workspace)/ms-playwright`. It then runs
-`scripts/build_agent_sandbox_runner_image.sh`.
-That script writes `dist/agent-sandbox-runner.tar.manifest` beside the tarball and reuses the cached archive
-when the manifest still matches. The manifest key covers the Dockerfile text, the build
-script text, `RUNNER_IMAGE_NAME`, the resolved Codex binary path and SHA-256, the relevant Codex
-platform package identity, and the base-image policy from the Dockerfile `FROM` line. Use
+`scripts/build_agent_sandbox_runner_image.sh` and
+`scripts/build_agent_sandbox_claude_runner_image.sh`. Set `HOST_CLAUDE_BIN` when `claude` is not on
+the build host PATH.
+Those scripts write `dist/agent-sandbox-runner.tar.manifest` and
+`dist/agent-sandbox-runner-claude.tar.manifest` beside their tarballs and reuse cached archives when
+the manifests still match. The manifest keys cover the Dockerfile text, the build script text,
+`RUNNER_IMAGE_NAME`, the resolved agent executable path and SHA-256, provider package identity where
+applicable, and the base-image policy from the Dockerfile `FROM` line. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
-`./scripts/build_agent_sandbox_runner_image.sh --force` to force a rebuild; that is the right path
+`./scripts/build_agent_sandbox_runner_image.sh --force` for Codex, and
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_claude_runner_image.sh` or
+`./scripts/build_agent_sandbox_claude_runner_image.sh --force` for Claude, to force a rebuild; that is the right path
 when you want a moving base tag such as `ubuntu:24.04` refreshed, because the tag text can stay the
 same while the remote image changes.
 Before `ansible/worker.yml`, the pipeline resolves `HOST_NODE_ROOT` from the installed Node runtime
@@ -392,6 +399,7 @@ Run the worker deployment with:
 
 ```bash
 ./scripts/build_agent_sandbox_runner_image.sh
+./scripts/build_agent_sandbox_claude_runner_image.sh
 ansible-playbook \
   -i ansible/inventory/prod.yml \
   --ask-vault-pass \
@@ -498,8 +506,10 @@ container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_images:
   default: "agent-sandbox-runner:latest"
+  claude: "agent-sandbox-runner-claude:latest"
   dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
@@ -510,12 +520,15 @@ container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081
 Use `container_worker_images` for the approved alias-to-image catalog. Keep
 `container_worker_default_image` as the fallback image reference for sessions that do not select an
 alias. The worker playbook does not pull or build images during runtime dispatch, so any approved
-image refs that are not already included in the repo runner tarball should be listed in
+image refs that are not already included in the repo runner image archives should be listed in
 `agent_sandbox_worker_preload_images` and pre-pulled during deployment.
 
-The runner image is deployed from `dist/agent-sandbox-runner.tar`; the worker playbook copies it to
-the worker and runs `docker load`. The same playbook creates worker-level read-only cache
-directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback packages under
+The default Codex and Claude runner images are deployed from `dist/agent-sandbox-runner.tar` and
+`dist/agent-sandbox-runner-claude.tar`; the worker playbook copies each configured archive to the
+worker and runs `docker load`. Anthropic-backed Claude sessions should use
+`model_provider_mode: "anthropic"` and select the `claude` image alias. The same playbook creates
+worker-level read-only cache directories for .NET, Node/Playwright, Playwright browsers, and NuGet
+fallback packages under
 `agent_sandbox_worker_toolchain_cache_root`, then wires them into the daemon with repeated
 `--readonly-mount` flags. The .NET cache is seeded from the Ansible control machine
 (`HOST_DOTNET_ROOT`, `/usr/lib/dotnet`, or
@@ -541,11 +554,13 @@ host NuGet relay and additively update worker caches. Docker `host` networking
 remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
-If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
-`RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh`; this does not change the
-worker daemon's runtime networking policy. This first slice keeps Ansible's tar-copy/load deployment model; worker-side remote manifest comparison is deferred because the host-side cache already skips
-the expensive local `docker build`/`docker save` path when inputs are unchanged, while a remote skip
-would need a separate trusted manifest storage/read path on the worker.
+If the host Docker bridge cannot reach apt mirrors while building either tarball, build it with
+`RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh` or
+`RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_claude_runner_image.sh`; this does not
+change the worker daemon's runtime networking policy. This first slice keeps Ansible's
+tar-copy/load deployment model; worker-side remote manifest comparison is deferred because the host-side cache
+already skips the expensive local `docker build`/`docker save` path when inputs are unchanged, while
+a remote skip would need a separate trusted manifest storage/read path on the worker.
 
 After the worker playbook and control-plane config are both deployed, verify the full path from the
 control plane:

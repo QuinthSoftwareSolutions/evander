@@ -44,10 +44,15 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "/healthz" in text
     assert "agent-sandbox-cli status --runtime-dir runtime" in text
     assert "dist/agent-sandbox-runner.tar.manifest" in text
+    assert "dist/agent-sandbox-runner-claude.tar.manifest" in text
+    assert "./scripts/build_agent_sandbox_claude_runner_image.sh" in text
+    assert "HOST_CLAUDE_BIN" in text
     assert "RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh" in text
+    assert "RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_claude_runner_image.sh" in text
     assert "./scripts/build_agent_sandbox_runner_image.sh --force" in text
+    assert "./scripts/build_agent_sandbox_claude_runner_image.sh --force" in text
     assert "ubuntu:24.04" in text
-    assert "reuses the cached archive" in text
+    assert "reuse cached archives" in text
     assert "worker-side remote manifest comparison is deferred" in text
     assert "tar-copy/load deployment model" in text
 

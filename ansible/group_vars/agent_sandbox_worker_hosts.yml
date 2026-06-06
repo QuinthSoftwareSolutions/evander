@@ -151,11 +151,23 @@ agent_sandbox_worker_repo_checkout_url: "ssh://{{ agent_sandbox_git_ssh_alias }}
 agent_sandbox_worker_allowed_git_source_prefixes:
   - "ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/"
 
-# The runner image is deployed as a local Docker archive produced by
-# scripts/build_agent_sandbox_runner_image.sh on the Ansible control machine.
+# Runner images are deployed as local Docker archives produced on the Ansible
+# control machine.
 agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"
 agent_sandbox_runner_image_archive_path: "{{ playbook_dir }}/../dist/agent-sandbox-runner.tar"
 agent_sandbox_runner_image_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/agent-sandbox-runner.tar"
+agent_sandbox_claude_runner_image_name: "agent-sandbox-runner-claude:latest"
+agent_sandbox_claude_runner_image_archive_path: "{{ playbook_dir }}/../dist/agent-sandbox-runner-claude.tar"
+agent_sandbox_claude_runner_image_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/agent-sandbox-runner-claude.tar"
+agent_sandbox_runner_image_archives:
+  - image_name: "{{ agent_sandbox_runner_image_name }}"
+    archive_path: "{{ agent_sandbox_runner_image_archive_path }}"
+    remote_archive_path: "{{ agent_sandbox_runner_image_remote_archive_path }}"
+    build_command: "scripts/build_agent_sandbox_runner_image.sh"
+  - image_name: "{{ agent_sandbox_claude_runner_image_name }}"
+    archive_path: "{{ agent_sandbox_claude_runner_image_archive_path }}"
+    remote_archive_path: "{{ agent_sandbox_claude_runner_image_remote_archive_path }}"
+    build_command: "scripts/build_agent_sandbox_claude_runner_image.sh"
 
 # Worker-level read-only caches mounted into every runner container. The playbook
 # creates these directories and seeds the .NET, Node, and Playwright caches.
