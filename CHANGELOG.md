@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-06 - Libvirt VM Template Operations Runbook
+
+- Added an operator runbook for preparing, registering, and selecting libvirt
+  VM templates, including the qcow2/cloud-init terminology and the distinction
+  from Docker or container images.
+- Documented a non-default-template smoke path that verifies the selected
+  alias through `runtime/sessions.json` and the libvirt disk backing file.
+- Added failure guidance for missing images, unknown aliases, SSH readiness,
+  and bootstrap failures so operators can diagnose template-selection issues
+  without creating unnecessary new images.
+
 ## 2026-06-06 - Agent Create VM Image Docs
 
 - Added `vm_image` to the `effect:agent:create` schema reference and clarified
