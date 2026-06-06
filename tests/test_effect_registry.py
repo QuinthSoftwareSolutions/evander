@@ -804,6 +804,70 @@ def test_agent_create_libvirt_noops_existing_session(tmp_path) -> None:
     ]
 
 
+def test_agent_create_libvirt_noops_existing_session_ignores_vm_image_selector(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+        )
+    )
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+            self.resolve_vm_defaults_calls: list[str] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            self.resolve_vm_defaults_calls.append(directory_path)
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            raise AssertionError("noop should not call create_vm")
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            existing_agent_behavior="noop",
+            vm_image="default",
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["skipped"] is True
+    assert output["vm_image"] == "dotnet-agent.qcow2"
+    assert output["vm_image_alias"] == "dotnet"
+    assert admin_service.resolve_vm_defaults_calls == []
+    assert admin_service.create_vm_calls == []
+
+
 def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
     config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
     session_repository = JsonSessionManifestRepository(config.session_store_path)

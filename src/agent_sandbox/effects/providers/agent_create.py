@@ -128,6 +128,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
 
         vm_image_selector = normalize_optional_string(payload.get("vm_image"))
+        if existing_agent_behavior == "noop" and existing_session is not None:
+            vm_image_selection = _libvirt_vm_template_selection_from_session(existing_session)
+            return _existing_agent_noop_result(
+                session_id=existing_session.session_id,
+                execution_backend=execution_backend,
+                vm_name=existing_session.vm_id or vm_name,
+                vm_image=vm_image_selection["image_ref"] if vm_image_selection else None,
+                vm_image_alias=vm_image_selection["template_alias"]
+                if vm_image_selection
+                else None,
+            )
         vm_image_selection: dict[str, str | None] | None = None
         record_vm_image_selection = False
         if vm_image_selector is not None or existing_session is None:
@@ -140,17 +151,6 @@ class AgentCreateEffectProvider(EffectProviderBase):
             record_vm_image_selection = True
         elif existing_session is not None:
             vm_image_selection = _libvirt_vm_template_selection_from_session(existing_session)
-
-        if existing_agent_behavior == "noop" and existing_session is not None:
-            return _existing_agent_noop_result(
-                session_id=existing_session.session_id,
-                execution_backend=execution_backend,
-                vm_name=existing_session.vm_id or vm_name,
-                vm_image=vm_image_selection["image_ref"] if vm_image_selection else None,
-                vm_image_alias=vm_image_selection["template_alias"]
-                if vm_image_selection
-                else None,
-            )
         codex_skills = managed_codex_skill_names(
             context=context,
             config=context.resolved_config,
