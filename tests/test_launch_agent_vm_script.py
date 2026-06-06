@@ -144,10 +144,6 @@ def test_launch_agent_vm_fails_before_qemu_when_selected_image_is_missing(
     tmp_path: Path,
 ) -> None:
     vm_storage_dir = tmp_path / "storage"
-    images_dir = vm_storage_dir / "images"
-    images_dir.mkdir(parents=True)
-    (images_dir / "ubuntu-24.04-server-cloudimg-amd64.img").write_text("default", encoding="utf-8")
-    (images_dir / "dotnet-agent.qcow2").write_text("dotnet", encoding="utf-8")
 
     result, qemu_log = _run_launch(
         tmp_path,
