@@ -21,6 +21,9 @@ class AdminServiceProviderAdapter:
     def create_vm(self, **kwargs: Any) -> Any:
         return self._admin_service.create_vm(**kwargs)
 
+    def resolve_vm_defaults(self, directory_path: str) -> Any:
+        return self._admin_service.resolve_vm_defaults(directory_path)
+
     def clone_repo_into_vm(self, **kwargs: Any) -> Any:
         return self._admin_service.clone_repo_into_vm(**kwargs)
 

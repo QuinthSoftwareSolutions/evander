@@ -96,6 +96,16 @@ class _ContainerResolverStub:
         return EffectProviderConfig.model_validate(self.config.model_dump(mode="json"))
 
 
+def _libvirt_vm_defaults_stub() -> SimpleNamespace:
+    return SimpleNamespace(
+        libvirt_vm_default_template="default",
+        libvirt_vm_templates={
+            "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "dotnet": "dotnet-agent.qcow2",
+        },
+    )
+
+
 class _FakeContainerBackend:
     def __init__(self) -> None:
         self.prepared_sessions: list[dict[str, object]] = []
@@ -217,6 +227,10 @@ class _AdminServiceStub:
         return VmActionResult(
             success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok"
         )
+
+    def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+        del directory_path
+        return _libvirt_vm_defaults_stub()
 
     def clone_repo_into_vm(self, **kwargs):
         self.clone_repo_into_vm_calls.append(kwargs)
@@ -737,8 +751,22 @@ def test_agent_create_libvirt_noops_existing_session(tmp_path) -> None:
             )
             self.create_vm_calls: list[dict[str, object]] = []
 
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
         def create_vm(self, **kwargs):
             self.create_vm_calls.append(kwargs)
+            session_repository.upsert_session(
+                SessionManifest(
+                    session_id=str(kwargs["session_id"]),
+                    vm_id=str(kwargs["vm_name"]),
+                    vm_provider="libvirt",
+                    allowed_tools=[ToolName.GET_AGENT_STATUS],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    metadata=dict(kwargs.get("metadata") or {}),
+                )
+            )
             return VmActionResult(
                 success=True,
                 vm_name=str(kwargs["vm_name"]),
@@ -793,8 +821,22 @@ def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
             )
             self.create_vm_calls: list[dict[str, object]] = []
 
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
         def create_vm(self, **kwargs):
             self.create_vm_calls.append(kwargs)
+            session_repository.upsert_session(
+                SessionManifest(
+                    session_id=str(kwargs["session_id"]),
+                    vm_id=str(kwargs["vm_name"]),
+                    vm_provider="libvirt",
+                    allowed_tools=[ToolName.GET_AGENT_STATUS],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    metadata=dict(kwargs.get("metadata") or {}),
+                )
+            )
             return VmActionResult(
                 success=True,
                 vm_name=str(kwargs["vm_name"]),
@@ -840,6 +882,192 @@ def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
 
     assert admin_service.create_vm_calls[1]["allow_existing_session"] is True
     assert admin_service.create_vm_calls[1]["web_search_enabled"] is False
+
+
+def test_agent_create_libvirt_resolves_explicit_vm_image_selector(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            session_repository.upsert_session(
+                SessionManifest(
+                    session_id=str(kwargs["session_id"]),
+                    vm_id=str(kwargs["vm_name"]),
+                    vm_provider="libvirt",
+                    allowed_tools=[ToolName.GET_AGENT_STATUS],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    metadata=dict(kwargs.get("metadata") or {}),
+                )
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            vm_image="dotnet",
+        )
+    ).execute()
+
+    assert output["vm_image"] == "dotnet-agent.qcow2"
+    assert output["vm_image_alias"] == "dotnet"
+    assert admin_service.create_vm_calls[0]["metadata"]["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
+    assert session_repository.get_session("lab-session").metadata["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
+
+
+def test_agent_create_libvirt_uses_default_vm_image_selector_when_omitted(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            session_repository.upsert_session(
+                SessionManifest(
+                    session_id=str(kwargs["session_id"]),
+                    vm_id=str(kwargs["vm_name"]),
+                    vm_provider="libvirt",
+                    allowed_tools=[ToolName.GET_AGENT_STATUS],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    metadata=dict(kwargs.get("metadata") or {}),
+                )
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+        )
+    ).execute()
+
+    assert output["vm_image"] == "ubuntu-24.04-server-cloudimg-amd64.img"
+    assert output["vm_image_alias"] == "default"
+    assert admin_service.create_vm_calls[0]["metadata"]["libvirt_vm_template"] == {
+        "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "template_alias": "default",
+    }
+    assert session_repository.get_session("lab-session").metadata["libvirt_vm_template"] == {
+        "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "template_alias": "default",
+    }
+
+
+def test_agent_create_libvirt_rejects_unknown_vm_image_selector_before_create(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"unknown libvirt VM template selector 'missing'; configured aliases: default, dotnet; "
+            r"default template: 'default'"
+        ),
+    ):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="effect-agent",
+                display_name="Create agent",
+                type="effect:agent:create",
+                execution_backend="libvirt_vm",
+                vm_name="lab-vm",
+                session_id="lab-session",
+                vm_image="missing",
+            )
+        ).execute()
+
+    assert admin_service.create_vm_calls == []
+    assert session_repository.get_session("lab-session") is None
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:

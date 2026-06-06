@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
+from agent_sandbox.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
     allowed_tools_for_profile,
@@ -44,6 +45,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "labels": effect.labels,
             "model": effect.model,
             "vm_user": effect.vm_user,
+            "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
             "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
@@ -118,6 +120,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")
         )
+        vm_defaults = _resolve_vm_defaults_for_create(context, directory_path=directory_path)
+        vm_image_selection = resolve_libvirt_vm_template_selector(
+            normalize_optional_string(payload.get("vm_image")),
+            default_template=vm_defaults.libvirt_vm_default_template,
+            templates=vm_defaults.libvirt_vm_templates,
+        )
         if existing_agent_behavior == "noop":
             existing_session = _existing_session_for_create(
                 runtime_session_repository(context, config),
@@ -129,6 +137,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     session_id=existing_session.session_id,
                     execution_backend=execution_backend,
                     vm_name=existing_session.vm_id or vm_name,
+                    vm_image=vm_image_selection["image_ref"],
+                    vm_image_alias=vm_image_selection["template_alias"],
                 )
         codex_skills = managed_codex_skill_names(
             context=context,
@@ -139,6 +149,15 @@ class AgentCreateEffectProvider(EffectProviderBase):
         agent_provider = normalize_optional_string(payload.get("agent_provider"))
         if agent_provider:
             metadata = _deep_merge_metadata(metadata, {"agent_provider": agent_provider})
+        metadata = _deep_merge_metadata(
+            metadata,
+            {
+                "libvirt_vm_template": {
+                    "image_ref": vm_image_selection["image_ref"],
+                    "template_alias": vm_image_selection["template_alias"],
+                }
+            },
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -187,6 +206,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
             "skipped": False,
+            "vm_image": vm_image_selection["image_ref"],
+            "vm_image_alias": vm_image_selection["template_alias"],
         }
 
     def _execute_container(
@@ -428,6 +449,8 @@ def _existing_agent_noop_result(
     session_id: str,
     execution_backend: str,
     vm_name: str | None,
+    vm_image: str | None = None,
+    vm_image_alias: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "success": True,
@@ -437,7 +460,18 @@ def _existing_agent_noop_result(
         "vm_name": vm_name,
         "skipped": True,
     }
+    if vm_image is not None or vm_image_alias is not None:
+        result["vm_image"] = vm_image
+        result["vm_image_alias"] = vm_image_alias
     if execution_backend == "container_worker_vm":
         result["agent_home"] = "/home/agent"
         result["repo_root"] = "/home/agent/repos"
     return result
+
+
+def _resolve_vm_defaults_for_create(context: Any, *, directory_path: str) -> Any:
+    admin_service = getattr(context, "admin_service", None)
+    resolve_vm_defaults = getattr(admin_service, "resolve_vm_defaults", None)
+    if callable(resolve_vm_defaults):
+        return resolve_vm_defaults(directory_path)
+    raise RuntimeError("effect:agent:create requires admin_service.resolve_vm_defaults")

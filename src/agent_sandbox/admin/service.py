@@ -18828,6 +18828,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             **payload,
         )
 
+    def resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
+        return self._resolve_vm_defaults(directory_path)
+
     def clone_repo_into_vm(
         self,
         *,
