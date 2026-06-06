@@ -9396,10 +9396,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
         session_policy = None
         effective_tool_policy = None
+        runtime_image: dict[str, Any] | None = None
         if len(summary.session_ids) == 1:
             session = self.runtime.session_repository.get_session(summary.session_ids[0])
-            session_policy = self._agent_session_policy_payload(session)
-            effective_tool_policy = self.effective_tool_policy_payload(session)
+            if session is not None:
+                session_policy = self._agent_session_policy_payload(session)
+                effective_tool_policy = self.effective_tool_policy_payload(session)
+                runtime_image = self.session_runtime_image_payload(session)
+        host: dict[str, Any] = {
+            "kind": "vm",
+            "vm_name": summary.vm_name,
+            "provider": summary.provider,
+            "issue_number": summary.issue_number,
+            "session_ids": list(summary.session_ids),
+            "labels": dict(summary.labels),
+            "directory_paths": list(summary.directory_paths),
+            "power_state": summary.power_state,
+            "libvirt_state": summary.libvirt_state,
+            "provider_state": summary.provider_state,
+            "provider_details": dict(summary.provider_details),
+            "ip_address": summary.ip_address,
+            "agent": {
+                "state": summary.agent_state,
+                "pid": summary.agent_pid,
+                "dispatch_id": summary.dispatch_id,
+                "repo_names": list(summary.agent_repo_names),
+                "preferred_repo_name": summary.agent_repo_names[0]
+                if len(summary.agent_repo_names) == 1
+                else None,
+            },
+            "session_policy": session_policy,
+        }
+        if runtime_image is not None:
+            host["runtime_image"] = runtime_image
         return AgentRecord(
             agent_id=summary.vm_name,
             backend="libvirt_vm",
@@ -9409,30 +9438,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status=status,
             updated_at=summary.last_state_update_at,
             effective_tool_policy=effective_tool_policy,
-            host={
-                "kind": "vm",
-                "vm_name": summary.vm_name,
-                "provider": summary.provider,
-                "issue_number": summary.issue_number,
-                "session_ids": list(summary.session_ids),
-                "labels": dict(summary.labels),
-                "directory_paths": list(summary.directory_paths),
-                "power_state": summary.power_state,
-                "libvirt_state": summary.libvirt_state,
-                "provider_state": summary.provider_state,
-                "provider_details": dict(summary.provider_details),
-                "ip_address": summary.ip_address,
-                "agent": {
-                    "state": summary.agent_state,
-                    "pid": summary.agent_pid,
-                    "dispatch_id": summary.dispatch_id,
-                    "repo_names": list(summary.agent_repo_names),
-                    "preferred_repo_name": summary.agent_repo_names[0]
-                    if len(summary.agent_repo_names) == 1
-                    else None,
-                },
-                "session_policy": session_policy,
-            },
+            host=host,
             capabilities={
                 "start": True,
                 "shutdown": True,
@@ -9467,6 +9473,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if inventory_error:
             host["inventory_error"] = inventory_error
+        host["runtime_image"] = self.session_runtime_image_payload(session)
         return AgentRecord(
             agent_id=vm_name,
             backend="libvirt_vm",
