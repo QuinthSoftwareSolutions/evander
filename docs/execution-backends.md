@@ -94,6 +94,8 @@ catalog map deep-merges across directory overlays. Use `container_image` for `co
 The selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE`,
 which uses it as the base overlay image while still falling back to the default Ubuntu image when
 no selection is present.
+For the operator prep and verification flow, see
+[libvirt-vm-template-operations.md](libvirt-vm-template-operations.md).
 
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before

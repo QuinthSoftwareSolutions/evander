@@ -1311,6 +1311,8 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 
 The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path, and the selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE` with `BASE_IMAGE` as a manual override fallback.
 
+For operator prep, smoke validation, and failure diagnosis, see [libvirt-vm-template-operations.md](libvirt-vm-template-operations.md).
+
 Inheritance path:
 
 - effective config is resolved in ancestor order: `root -> ... -> selected`

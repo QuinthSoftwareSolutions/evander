@@ -162,6 +162,10 @@ Expected audit behavior:
 
 Launch a fresh VM for the same session:
 
+If you are validating a non-default libvirt base image, use
+[libvirt-vm-template-operations.md](libvirt-vm-template-operations.md) for the alias registration,
+overlay verification, and host-side proof checks that go with this launch.
+
 ```bash
 cd /path/to/agent-sandbox
 sudo ./scripts/destroy_agent_vm.sh vm-smoke-live
