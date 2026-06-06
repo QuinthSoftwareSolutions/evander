@@ -246,6 +246,7 @@ def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str
         tool.value if isinstance(tool, ToolName) else str(tool) for tool in summary.allowed_tools
     ]
     payload["effective_tool_policy"] = service.effective_tool_policy_payload(summary)
+    payload["runtime_image"] = service.session_runtime_image_payload(summary)
     return payload
 
 
