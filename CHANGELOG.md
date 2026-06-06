@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-06 - Agent Create VM Image Docs
+
+- Added `vm_image` to the `effect:agent:create` schema reference and clarified
+  that it is a libvirt-only VM template selector resolved against the approved
+  `vm.json` catalog.
+- Documented the libvirt template catalog and execution-backend guidance so
+  operators do not confuse `vm_image` with container-worker `container_image`.
+- Extended the operator field-help inventory with the new `effect:agent:create`
+  VM template selector wording.
+
 ## 2026-06-06 - Libvirt VM Template Catalog
 
 - Added `libvirt_vm_default_template` and `libvirt_vm_templates` to the VM
