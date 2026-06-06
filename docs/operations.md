@@ -374,7 +374,7 @@ Storage layout for directory config:
   - `wake.json`
   - `ado-worker.json`
   - `issue-setup.json`
-  - `vm.json`
+  - `vm.json` for guest-facing relay/network defaults plus libvirt VM template selection data
 - `root` is the live top-level layer; there is no hidden YAML base beneath it.
 
 ## SSH Access

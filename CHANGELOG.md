@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-06 - Libvirt VM Template Catalog
+
+- Added `libvirt_vm_default_template` and `libvirt_vm_templates` to the VM
+  defaults config path and directory-config domain allowlist.
+- Documented the libvirt VM template catalog as cloud-init-compatible qcow2
+  image refs that deep-merge across directory overlays.
+- Clarified that the new template selection metadata is validated before VM
+  launch but is not yet consumed by `scripts/launch_agent_vm.sh`.
+
 ## 2026-06-06 - Claude Container Runner Image
 
 - Added a separate Claude container runner Docker image and build script that
