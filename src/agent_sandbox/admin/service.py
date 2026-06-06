@@ -2972,8 +2972,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description=(
                     "Optional approved libvirt VM template alias from the directory vm.json "
-                    "approved VM template/base-image catalog. Applies only to "
-                    "execution_backend=libvirt_vm; use container_image for container-worker agents."
+                    "approved VM template/base-image catalog. This is the libvirt-only "
+                    "selector and applies only to execution_backend=libvirt_vm; use "
+                    "container_image for container-worker agents."
                 ),
             ),
             _field(
