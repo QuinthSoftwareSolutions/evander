@@ -86,6 +86,23 @@ def test_libvirt_vm_template_selector_rejects_unknown_alias() -> None:
         )
 
 
+def test_libvirt_vm_template_selector_rejects_raw_image_ref_selector() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"unknown libvirt VM template selector 'dotnet.img'; configured aliases: default, dotnet; "
+            r"default template: 'default'"
+        ),
+    ):
+        resolve_libvirt_vm_template_selector(
+            "dotnet.img",
+            default_template="default",
+            templates=normalize_libvirt_vm_templates(
+                {"default": "ubuntu-24.04-server-cloudimg-amd64.img", "dotnet": "dotnet.img"}
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
