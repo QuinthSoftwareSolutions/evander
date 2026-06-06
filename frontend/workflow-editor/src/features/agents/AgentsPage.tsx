@@ -412,6 +412,22 @@ function hostRuntimeImage(host: Record<string, unknown> | null | undefined): Run
   };
 }
 
+function agentRuntimeImage(agent: AgentRecord | null | undefined): RuntimeImageInfo | null {
+  const runtimeImage = hostRuntimeImage(agent?.host);
+  if (runtimeImage) return runtimeImage;
+  if (agent?.backend !== "container_worker_vm") return null;
+  const imageRef = hostString(agent.host, "image");
+  const imageAlias = hostString(agent.host, "image_alias");
+  return {
+    backend: "container_worker_vm",
+    kind: "container_worker_image",
+    label: "Container worker image",
+    image_alias: imageAlias,
+    image_ref: imageRef,
+    missing_reason: imageRef ? null : "container_worker_image_missing",
+  };
+}
+
 function runtimeImagePrimaryText(runtimeImage: RuntimeImageInfo | null): string {
   if (!runtimeImage) return "Unavailable";
   if (runtimeImage.backend === "container_worker_vm") {
@@ -1383,7 +1399,7 @@ export function AgentsPage() {
   const agentState = hostString(guestAgent, "state") ?? "unknown";
   const agentPid = hostNumber(guestAgent, "pid");
   const powerState = hostString(selectedAgent?.host, "power_state") ?? selectedAgent?.status ?? "unknown";
-  const selectedRuntimeImage = hostRuntimeImage(selectedAgent?.host);
+  const selectedRuntimeImage = agentRuntimeImage(selectedAgent);
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
   const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
@@ -1467,7 +1483,7 @@ export function AgentsPage() {
               <div className="agent-list-section" key={backend}>
                 <div className="section-label agent-list-heading">{backendLabel(backend)}</div>
                 {group.map((item) => {
-                  const runtimeImageSummary = runtimeImageListSummary(hostRuntimeImage(item.host));
+                  const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
                   return (
                     <button
                       key={agentKey(item)}

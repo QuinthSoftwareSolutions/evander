@@ -51,14 +51,8 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         finished_at: null,
         updated_at: "2026-05-18T10:00:00Z",
         host: {
-          runtime_image: {
-            backend: "container_worker_vm",
-            kind: "container_worker_image",
-            label: "Container worker image",
-            image_alias: "default",
-            image_ref: "runner:latest",
-            missing_reason: null,
-          },
+          image: "runner:latest",
+          image_alias: "default",
         },
         capabilities: {
           start: false,
@@ -291,6 +285,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
 
+  await assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
+    /Container image runner:latest \(default\)/,
+  );
   await page.getByRole("button", { name: /Container worker/ }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Container image/i);
   await assert.match(await page.locator(".feature-content").innerText(), /runner:latest/);
