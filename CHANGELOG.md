@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-06 - Claude Container Runner Image
+
+- Added a separate Claude container runner Docker image and build script that
+  packages a host-resolved Claude Code command without adding Claude to the
+  default Codex runner image.
+- Extended the worker Ansible deployment to copy, load, and verify multiple
+  local runner image archives by default so Codex and Claude images can be
+  preloaded together.
+- Documented the `claude` container-worker image alias and Anthropic-backed
+  Claude session configuration.
+
 ## 2026-06-05 - Container Worker Image Catalog Docs
 
 - Documented operator-managed container image catalogs and fallback defaults

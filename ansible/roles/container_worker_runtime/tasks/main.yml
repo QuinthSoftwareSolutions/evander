@@ -69,50 +69,67 @@
         )
       }}
 
-- name: Check local runner image archive
+- name: Check local runner image archives
   ansible.builtin.stat:
-    path: "{{ agent_sandbox_runner_image_archive_path }}"
+    path: "{{ item.archive_path }}"
   delegate_to: localhost
   become: false
-  register: agent_sandbox_runner_image_archive_stat
+  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
+  register: agent_sandbox_runner_image_archive_stats
 
-- name: Assert local runner image archive exists
+- name: Assert local runner image archives exist
   ansible.builtin.assert:
     that:
-      - agent_sandbox_runner_image_archive_stat.stat.exists
-      - agent_sandbox_runner_image_archive_stat.stat.isreg
+      - item.stat.exists
+      - item.stat.isreg | default(false)
     fail_msg: >-
       Build the runner image archive first with
-      scripts/build_agent_sandbox_runner_image.sh. Expected archive:
-      {{ agent_sandbox_runner_image_archive_path }}
-    success_msg: Runner image archive is present on the Ansible control machine.
+      {{ item.item.build_command | default('scripts/build_agent_sandbox_runner_image.sh') }}. Expected archive:
+      {{ item.item.archive_path }}
+    success_msg: >-
+      Runner image archive for {{ item.item.image_name }} is present on the
+      Ansible control machine.
+  loop: "{{ agent_sandbox_runner_image_archive_stats.results }}"
+  loop_control:
+    label: "{{ item.item.image_name }}"
 
-- name: Copy runner image archive to worker
+- name: Copy runner image archives to worker
   ansible.builtin.copy:
-    src: "{{ agent_sandbox_runner_image_archive_path }}"
-    dest: "{{ agent_sandbox_runner_image_remote_archive_path }}"
+    src: "{{ item.archive_path }}"
+    dest: "{{ item.remote_archive_path }}"
     owner: "{{ agent_sandbox_run_user }}"
     group: "{{ agent_sandbox_run_user }}"
     mode: "0640"
-  register: agent_sandbox_runner_image_archive_copy
+  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
+  register: agent_sandbox_runner_image_archive_copies
 
-- name: Load runner image archive into Docker
+- name: Load runner image archives into Docker
   ansible.builtin.command:
     argv:
       - docker
       - load
       - --input
-      - "{{ agent_sandbox_runner_image_remote_archive_path }}"
+      - "{{ item.item.remote_archive_path }}"
+  loop: "{{ agent_sandbox_runner_image_archive_copies.results }}"
+  loop_control:
+    label: "{{ item.item.image_name }}"
   register: agent_sandbox_runner_image_load
-  changed_when: agent_sandbox_runner_image_archive_copy.changed
+  changed_when: item.changed
 
-- name: Verify runner image exists locally
+- name: Verify runner images exist locally
   ansible.builtin.command:
     argv:
       - docker
       - image
       - inspect
-      - "{{ agent_sandbox_runner_image_name }}"
+      - "{{ item.image_name }}"
+  loop: "{{ agent_sandbox_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
   changed_when: false
 
 - name: Preload configured worker images

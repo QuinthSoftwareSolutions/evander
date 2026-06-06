@@ -139,7 +139,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_repo_mirror_name" in text
     assert "agent_sandbox_worker_repo_checkout_url" in text
     assert 'agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"' in text
+    assert 'agent_sandbox_claude_runner_image_name: "agent-sandbox-runner-claude:latest"' in text
     assert "agent_sandbox_runner_image_archive_path" in text
+    assert "agent_sandbox_claude_runner_image_archive_path" in text
+    assert "agent_sandbox_runner_image_archives" in text
+    assert "scripts/build_agent_sandbox_claude_runner_image.sh" in text
     assert "agent_sandbox_worker_toolchain_cache_root" in text
     assert "agent_sandbox_worker_dotnet_toolchain_enabled: true" in text
     assert "agent_sandbox_worker_dotnet_toolchain_local_path" in text
@@ -408,7 +412,8 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "agent_sandbox_worker_runtime_dir" in runtime
     assert "Resolve worker service user uid" in runtime
     assert "agent_sandbox_effective_worker_container_user" in runtime
-    assert "Check local runner image archive" in runtime
+    assert "Check local runner image archives" in runtime
+    assert "agent_sandbox_runner_image_archives" in runtime
     assert "scripts/build_agent_sandbox_runner_image.sh" in runtime
     assert "docker\n      - load" in runtime
     assert "docker\n      - image\n      - inspect" in runtime

@@ -15,9 +15,11 @@ container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_images:
   default: "agent-sandbox-runner:latest"
+  claude: "agent-sandbox-runner-claude:latest"
   dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
@@ -31,8 +33,10 @@ container_worker_mssql_port: 1433
 `container_worker_default_image` is the fallback when a session does not select an approved
 alias. `container_worker_images` maps operator-safe aliases to exact runner image references. The
 selector `default` in the catalog above resolves to the default image reference with no alias
-recorded, while `dotnet-playwright` resolves to the additional approved image. Runtime dispatch
-does not pull or build images, so approved refs must already be present on the worker VM.
+recorded, while `claude` and `dotnet-playwright` resolve to additional approved images. Runtime
+dispatch does not pull or build images, so approved refs must already be present on the worker VM.
+For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
+provider config and select the `claude` image alias when creating the container-backed session.
 
 Directory-scoped `providers.json` overlays can inherit the root catalog and override just the
 fallback, or replace both together when a subtree needs a different default:
@@ -43,12 +47,14 @@ execution_backend: container_worker_vm
 container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_images:
   default: "agent-sandbox-runner:latest"
+  claude: "agent-sandbox-runner-claude:latest"
   dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 
 # runtime/directory-config/root/design/docs/providers.json
 container_worker_default_image: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_images:
   default: "agent-sandbox-runner:latest"
+  claude: "agent-sandbox-runner-claude:latest"
   dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 ```
 
@@ -68,28 +74,34 @@ For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 
 ```bash
 ./scripts/build_agent_sandbox_runner_image.sh
+./scripts/build_agent_sandbox_claude_runner_image.sh
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
-The build script writes a sidecar manifest at `dist/agent-sandbox-runner.tar.manifest` next to
-`dist/agent-sandbox-runner.tar`. If that manifest still matches the tarball inputs, rerunning the
-script reuses the cached archive, prints that the cached archive was reused, and skips Docker
-build/save entirely. The cache key includes the Dockerfile text, the build script text,
-`RUNNER_IMAGE_NAME`, the resolved Codex binary path and SHA-256, the relevant Codex platform
-package identity, and the Dockerfile base-image policy from the `FROM` line. Use
+The Codex build script writes a sidecar manifest at `dist/agent-sandbox-runner.tar.manifest` next to
+`dist/agent-sandbox-runner.tar`. The Claude build script writes
+`dist/agent-sandbox-runner-claude.tar.manifest` next to
+`dist/agent-sandbox-runner-claude.tar`. If those manifests still match the tarball inputs, rerunning
+the scripts reuse the cached archives, print that the cached archive was reused, and skip Docker
+build/save entirely. The cache keys include the Dockerfile text, the build script text,
+`RUNNER_IMAGE_NAME`, the resolved agent executable path and SHA-256, provider package identity where
+applicable, and the Dockerfile base-image policy from the `FROM` line. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
-`./scripts/build_agent_sandbox_runner_image.sh --force` to force a rebuild. Moving tags such as
+`./scripts/build_agent_sandbox_runner_image.sh --force` for Codex, and
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_claude_runner_image.sh` or
+`./scripts/build_agent_sandbox_claude_runner_image.sh --force` for Claude, to force a rebuild.
+Moving tags such as
 `ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
 text can stay the same while the upstream image changes.
 
-The worker playbook copies that archive to the worker VM, runs `docker load`, verifies the image
-tag exists, installs Docker, deploys the repo package, renders `config/worker-daemon.env`,
-installs `agent-sandbox-worker-daemon.service`, creates `/var/lib/agent-worker`, and verifies the
-local `/healthz` endpoint. This slice keeps the existing tar-copy/load deployment model and does
-not do worker-side remote manifest comparison yet. That remote skip path is deferred because it
-needs a separate trusted manifest storage/read path on the worker, while the host-side cache
-already avoids the expensive local `docker build`/`docker save` path when inputs are unchanged. It
-intentionally does not install the control-plane services.
+The worker playbook copies each configured local runner image archive to the worker VM, runs
+`docker load`, verifies every configured image tag exists, installs Docker, deploys the repo
+package, renders `config/worker-daemon.env`, installs `agent-sandbox-worker-daemon.service`,
+creates `/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. This slice keeps the
+existing tar-copy/load deployment model and does not do worker-side remote manifest comparison yet.
+That remote skip path is deferred because it needs a separate trusted manifest storage/read path on
+the worker, while the host-side cache already avoids the expensive local `docker build`/`docker
+save` path when inputs are unchanged. It intentionally does not install the control-plane services.
 
 ## Cleanup Visibility
 
