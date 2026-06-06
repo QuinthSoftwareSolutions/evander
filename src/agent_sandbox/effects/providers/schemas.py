@@ -185,6 +185,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     mssql_init_root: ConfigValue | None = None
     playwright: ConfigValue | None = None
     codex_skills: ConfigValue | None = None
+    container_image: ConfigValue | None = None
     npm_registry_url: ConfigValue | None = None
     directory_path: ConfigValue | None = None
     metadata: ConfigValue | None = None

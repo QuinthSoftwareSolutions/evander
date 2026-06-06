@@ -1209,6 +1209,11 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         "providers",
         {
             "container_worker_base_url": "http://team-worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": "runner-base:latest",
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
             "container_worker_token_env": "TEAM_WORKER_TOKEN",
         },
     )
@@ -1262,6 +1267,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
             "session_id": "container-session",
             "target_name": "container-target",
             "directory_path": team_path,
+            "container_image": "dotnet-playwright",
             "dotnet": True,
             "nuget": True,
             "playwright": True,
@@ -1280,10 +1286,16 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
                 "directory_path": team_path,
                 "target_name": "container-target",
                 "labels": {},
+                "container_worker": {
+                    "image": "runner-dotnet-playwright:2026-06-05",
+                    "image_alias": "dotnet-playwright",
+                },
                 "worker_url": "http://team-worker.test:11888",
             },
         )
     ]
+    assert result["container_image"] == "runner-dotnet-playwright:2026-06-05"
+    assert result["container_image_alias"] == "dotnet-playwright"
     assert "/home/agent/.agent-sandbox/session.env" in written_paths
     assert "/home/agent/.profile" in written_paths
     assert "/home/agent/.codex/config.toml" in written_paths
@@ -1292,6 +1304,20 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     manifest = service.runtime.session_repository.get_session("container-session")
     assert manifest is not None
     assert manifest.metadata["worker_url"] == "http://team-worker.test:11888"
+    assert manifest.metadata["container_worker"] == {
+        "image": "runner-dotnet-playwright:2026-06-05",
+        "image_alias": "dotnet-playwright",
+    }
+    agents = service.list_agents(
+        directory_path=team_path,
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-dotnet-playwright:2026-06-05"
+    assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
 def test_create_container_agent_infers_claude_provider_from_anthropic_config(
@@ -1357,15 +1383,25 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
     manifest = service.runtime.session_repository.get_session("claude-session")
     assert manifest is not None
     assert manifest.metadata["agent_provider"] == "claude"
+    assert result["container_image"] == "agent-sandbox-runner:latest"
+    assert result["container_image_alias"] is None
     assert prepared_metadata == [
         {
             "execution_backend": "container_worker_vm",
             "directory_path": "root",
             "target_name": "claude-session",
             "labels": {},
+            "container_worker": {
+                "image": "agent-sandbox-runner:latest",
+                "image_alias": None,
+            },
             "worker_url": "http://worker.test:11888",
         }
     ]
+    assert manifest.metadata["container_worker"] == {
+        "image": "agent-sandbox-runner:latest",
+        "image_alias": None,
+    }
     assert "AGENT_PROVIDER=claude\n" in written_files["/home/agent/.agent-sandbox/session.env"]
     assert (
         "ANTHROPIC_BASE_URL=http://192.168.250.1:11434/session/claude-session\n"
@@ -1373,6 +1409,218 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
     )
     assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
     assert "/home/agent/.claude/mcp-config.json" in written_files
+
+
+def test_list_container_agent_uses_session_image_before_latest_execution_image(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {
+                    "image": "runner-base:latest",
+                    "image_alias": "default",
+                },
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="container-execution",
+            session_id="container-session",
+            worker_job_id="worker-job",
+            worker_url="http://worker.test:11888",
+            target_name="container-target",
+            started_at=datetime.now(UTC),
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner-execution:latest"},
+        )
+    )
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-base:latest"
+    assert agents[0].host["image_alias"] == "default"
+
+
+def test_list_container_agent_falls_back_to_latest_execution_image_when_session_image_missing(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="container-execution",
+            session_id="container-session",
+            worker_job_id="worker-job",
+            worker_url="http://worker.test:11888",
+            target_name="container-target",
+            started_at=datetime.now(UTC),
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner-execution:latest"},
+        )
+    )
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        backend="container_worker_vm",
+        reconcile_containers=False,
+    )
+
+    assert len(agents) == 1
+    assert agents[0].host["image"] == "runner-execution:latest"
+    assert "image_alias" not in agents[0].host
+
+
+def test_create_container_agent_accepts_explicit_default_image_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+        },
+    )
+    assert write_result.ok is True
+
+    prepared_metadata: list[dict[str, object]] = []
+
+    def prepare_session(
+        self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
+    ) -> WorkerSessionRecord:
+        del self
+        prepared_metadata.append(dict(request.metadata))
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+
+    def write_files(
+        self: ContainerWorkerClient,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        del self, session_id, request
+        return WorkerFileWriteRecord(
+            session_id="default-image-session",
+            copied_count=0,
+            copied_paths=[],
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+
+    result = service.create_admin_agent(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "default-image-session",
+            "container_image": "runner-base:latest",
+        }
+    )
+
+    assert result["container_image"] == "runner-base:latest"
+    assert result["container_image_alias"] is None
+    assert prepared_metadata == [
+        {
+            "execution_backend": "container_worker_vm",
+            "directory_path": "root",
+            "target_name": "default-image-session",
+            "labels": {},
+            "container_worker": {
+                "image": "runner-base:latest",
+                "image_alias": None,
+            },
+            "worker_url": "http://worker.test:11888",
+        }
+    ]
+    manifest = service.runtime.session_repository.get_session("default-image-session")
+    assert manifest is not None
+    assert manifest.metadata["container_worker"] == {
+        "image": "runner-base:latest",
+        "image_alias": None,
+    }
+
+
+def test_create_container_agent_rejects_unknown_container_image_selector_before_prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": "runner-base:latest",
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    def fail_prepare(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("container session should not be prepared")
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", fail_prepare)
+
+    with pytest.raises(ValueError, match="unknown container worker image selector"):
+        service.create_admin_agent(
+            {
+                "backend": "container_worker_vm",
+                "session_id": "missing-image-session",
+                "container_image": "missing-selector",
+            }
+        )
 
 
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
@@ -1474,6 +1722,10 @@ def test_create_container_agent_does_not_persist_session_when_write_files_fails(
                 "directory_path": team_path,
                 "target_name": "container-target",
                 "labels": {},
+                "container_worker": {
+                    "image": "agent-sandbox-runner:latest",
+                    "image_alias": None,
+                },
                 "worker_url": "http://team-worker.test:11888",
             },
         )
@@ -1894,6 +2146,7 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",
+                "container_worker": {"image": "runner:admin-image"},
             },
         )
     )
@@ -1934,6 +2187,7 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert result["queued"] is False
     assert result["status"] == "dispatched"
     assert result["execution_id"] == backend.started_specs[0].target_name
+    assert backend.started_specs[0].image == "runner:admin-image"
     assert len(records) == 1
     assert records[0].status == "waiting"
     assert records[0].effect_type == "effect:agent:enqueue-prompt"

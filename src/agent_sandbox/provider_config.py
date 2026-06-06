@@ -45,6 +45,7 @@ class EffectProviderConfig(BaseModel):
     container_worker_base_url: str | None = None
     container_worker_token_env: str = "AGENT_SANDBOX_WORKER_TOKEN"
     container_worker_default_image: str = "agent-sandbox-runner:latest"
+    container_worker_images: dict[str, str] = Field(default_factory=dict)
     container_worker_job_timeout_seconds: float = 1800.0
     container_worker_request_timeout_seconds: float = 30.0
     container_worker_workspace_persistence: str = "session"

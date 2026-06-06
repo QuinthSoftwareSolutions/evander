@@ -46,6 +46,7 @@ type AgentCreateFormState = {
   emailFolders: string;
   provider: string;
   vmUser: string;
+  containerImage: string;
   dotnet: boolean;
   nuget: boolean;
   mssql: boolean;
@@ -128,6 +129,7 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     emailFolders: "",
     provider: "",
     vmUser: "agent",
+    containerImage: "",
     dotnet: false,
     nuget: false,
     mssql: false,
@@ -499,6 +501,7 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     payload.codex_skills = form.codexSkills;
   } else {
     payload.target_name = optionalText(form.targetName);
+    payload.container_image = optionalText(form.containerImage);
   }
   if (form.backend === "container_worker_vm") {
     payload.codex_skills = form.codexSkills;
@@ -1403,6 +1406,12 @@ export function AgentsPage() {
                     <div className="feature-list-meta agent-list-item-meta">
                       {item.session_id ?? "No session"} / {item.directory_path}
                     </div>
+                    {item.backend === "container_worker_vm" ? (
+                      <div className="feature-list-meta agent-list-item-meta">
+                        {hostString(item.host, "image") ?? "Image unknown"}
+                        {hostString(item.host, "image_alias") ? ` (${hostString(item.host, "image_alias")})` : ""}
+                      </div>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -1659,14 +1668,28 @@ export function AgentsPage() {
                       </label>
                     </>
                   ) : (
-                    <label className="field-stack">
-                      <span>Target name</span>
-                      <input
-                        value={createForm.targetName}
-                        onChange={(event) => setCreateForm((current) => ({ ...current, targetName: event.target.value }))}
-                        placeholder="Optional"
-                      />
-                    </label>
+                    <>
+                      <label className="field-stack">
+                        <span>Target name</span>
+                        <input
+                          value={createForm.targetName}
+                          onChange={(event) =>
+                            setCreateForm((current) => ({ ...current, targetName: event.target.value }))
+                          }
+                          placeholder="Optional"
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Container image selector</span>
+                        <input
+                          value={createForm.containerImage}
+                          onChange={(event) =>
+                            setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
+                          }
+                          placeholder="Alias or default image"
+                        />
+                      </label>
+                    </>
                   )}
                   <label className="field-stack">
                     <span>Labels</span>
@@ -2059,6 +2082,12 @@ export function AgentsPage() {
                         <dt>Image</dt>
                         <dd>{hostString(selectedAgent.host, "image") ?? "Unknown"}</dd>
                       </div>
+                      {hostString(selectedAgent.host, "image_alias") ? (
+                        <div>
+                          <dt>Image alias</dt>
+                          <dd>{hostString(selectedAgent.host, "image_alias")}</dd>
+                        </div>
+                      ) : null}
                       <div>
                         <dt>Latest status</dt>
                         <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>

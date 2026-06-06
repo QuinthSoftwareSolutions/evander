@@ -227,6 +227,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         session_id="session-1",
         vm_provider_id="provider-target",
         web_search_enabled=True,
+        metadata={"container_worker": {"image": "runner:wake-image"}},
     )
     backend = _ContainerBackendStub(active=False)
     captured: dict[str, object] = {}
@@ -258,6 +259,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
     assert spec.session_id == "session-1"
     assert spec.directory_path == "root/team-a"
+    assert spec.image == "runner:wake-image"
     assert spec.target_name.startswith("agent-session-1-")
     assert "codex exec resume --last" in str(spec.command)
     assert "--model gpt-5.4-mini" in str(spec.command)

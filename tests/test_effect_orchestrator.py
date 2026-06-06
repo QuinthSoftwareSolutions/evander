@@ -5350,6 +5350,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
+                "container_worker": {"image": "runner:queue-image"},
                 "agent_thread_ids": {
                     "teams:chat-1:agent_thread_id": "thread-existing"
                 },
@@ -5405,6 +5406,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert dispatched == 1
     assert queue_store.read_all() == {}
     assert backend.started_specs[0].session_id == "session-1"
+    assert backend.started_specs[0].image == "runner:queue-image"
     assert "check teams" in str(backend.started_specs[0].command)
     assert "thread-existing" in str(backend.started_specs[0].command)
     waiting_records = list(execution_store.read_all().values())

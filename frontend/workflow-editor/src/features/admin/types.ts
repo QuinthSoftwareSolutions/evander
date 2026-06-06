@@ -144,6 +144,7 @@ export type AgentCreateRequest = {
   playwright?: boolean;
   codex_skills?: string[];
   target_name?: string | null;
+  container_image?: string | null;
 };
 
 export type AgentPolicyUpdateRequest = {

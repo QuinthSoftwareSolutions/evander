@@ -13,6 +13,9 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_images:
+  default: "agent-sandbox-runner:latest"
+  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
@@ -23,6 +26,30 @@ container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081
 container_worker_mssql_enabled: true
 container_worker_mssql_host: "172.17.0.1"
 container_worker_mssql_port: 1433
+```
+
+`container_worker_default_image` is the fallback when a session does not select an approved
+alias. `container_worker_images` maps operator-safe aliases to exact runner image references. The
+selector `default` in the catalog above resolves to the default image reference with no alias
+recorded, while `dotnet-playwright` resolves to the additional approved image. Runtime dispatch
+does not pull or build images, so approved refs must already be present on the worker VM.
+
+Directory-scoped `providers.json` overlays can inherit the root catalog and override just the
+fallback, or replace both together when a subtree needs a different default:
+
+```yaml
+# runtime/directory-config/root/providers.json
+execution_backend: container_worker_vm
+container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_images:
+  default: "agent-sandbox-runner:latest"
+  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+
+# runtime/directory-config/root/design/docs/providers.json
+container_worker_default_image: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+container_worker_images:
+  default: "agent-sandbox-runner:latest"
+  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 ```
 
 This is the Phase 5 first slice: one configured worker VM. The worker daemon still treats `none`

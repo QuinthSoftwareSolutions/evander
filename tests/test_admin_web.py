@@ -1431,6 +1431,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "mssql_init_root",
         "playwright",
         "codex_skills",
+        "container_image",
         "npm_registry_url",
         "directory_path",
         "metadata",
@@ -1442,6 +1443,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["metadata"]["json_value_type"] == "object"
     assert agent_create_fields["metadata"]["description"]
     assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["container_image"]["bindable"]
+    assert "approved container image" in agent_create_fields["container_image"]["description"]
     assert agent_create_fields["npm_registry_url"]["bindable"]
     assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
     assert agent_create_fields["web_search_enabled"]["bindable"] is True
@@ -8685,6 +8688,13 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         for field in section["fields"]
     }
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
+    assert "Fallback runner container image" in provider_fields["container_worker_default_image"][
+        "tooltip"
+    ]
+    assert "catalog" in provider_fields["container_worker_images"]["tooltip"]
+    assert "runtime dispatch never pulls or builds images" in provider_fields[
+        "container_worker_images"
+    ]["tooltip"]
     assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
     for tab in payload["tabs"]:
         for section in tab["sections"]:
@@ -8747,6 +8757,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
     container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
     assert "container_worker_base_url" in container_worker_fields
+    assert "container_worker_images" in container_worker_fields
     assert "container_worker_mssql_enabled" in container_worker_fields
     semantic_store = next(
         section for section in providers["sections"] if section["title"] == "Semantic store"
@@ -10440,6 +10451,19 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     created = service.create_directory_child("root", "team-a")
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "providers",
+        {
+            "container_worker_base_url": "http://team-worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": "runner-base:latest",
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        },
+    )
+    assert write_result.ok is True
 
     class FakeContainerBackend:
         def __init__(self) -> None:
@@ -10487,6 +10511,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
             "session_id": "container-session",
             "target_name": "container-target",
             "directory_path": team_path,
+            "container_image": "dotnet-playwright",
             "model": "gpt-5.2-codex",
             "labels": {"role": "demo"},
             "allowed_script_names": ["seed-demo"],
@@ -10510,9 +10535,16 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
                 "directory_path": team_path,
                 "target_name": "container-target",
                 "labels": {"role": "demo"},
+                "container_worker": {
+                    "image": "runner-dotnet-playwright:2026-06-05",
+                    "image_alias": "dotnet-playwright",
+                },
+                "worker_url": "http://team-worker.test:11888",
             },
         )
     ]
+    assert create_response.json()["container_image"] == "runner-dotnet-playwright:2026-06-05"
+    assert create_response.json()["container_image_alias"] == "dotnet-playwright"
     assert fake_backend.written
     assert "/home/agent/.agent-sandbox/session.env" in fake_backend.written[0][1]
     assert "/home/agent/.codex/config.toml" in fake_backend.written[0][1]
@@ -10534,6 +10566,8 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
         (item["agent_id"], item["target_name"], item["status"]) for item in payload["items"]
     ] == [("container-session", "container-target", "prepared")]
     assert payload["items"][0]["capabilities"]["logs"] is False
+    assert payload["items"][0]["host"]["image"] == "runner-dotnet-playwright:2026-06-05"
+    assert payload["items"][0]["host"]["image_alias"] == "dotnet-playwright"
 
 
 def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(

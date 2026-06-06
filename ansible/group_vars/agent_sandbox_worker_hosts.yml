@@ -235,6 +235,7 @@ agent_sandbox_worker_readonly_mounts:
   - "{{ agent_sandbox_worker_playwright_browsers_cache_path }}:/opt/agent-sandbox/ms-playwright"
   - "{{ agent_sandbox_worker_nuget_fallback_cache_path }}:/opt/agent-sandbox/nuget-cache-ro"
 
-# Optional images to pre-pull during deployment. The repo-local runner tarball
-# above remains the documented deployment path for agent-sandbox-runner:latest.
+# Optional images to pre-pull during deployment. Add approved image refs here when
+# they are not already included in the repo-local runner tarball above; runtime
+# dispatch does not pull or build images.
 agent_sandbox_worker_preload_images: []

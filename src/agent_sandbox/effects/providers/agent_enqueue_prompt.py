@@ -29,6 +29,7 @@ from .agent_session import (
     container_backend,
     container_prompt_command,
     container_worker_guest_gateway_url,
+    container_worker_image_for_session,
     default_agent_model_for_provider,
     effective_config_for_session,
     gateway_url_with_session_context,
@@ -415,6 +416,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                         target_name=execution_id,
                         session_id=session_id,
                         directory_path=getattr(session, "directory_path", None) or "root",
+                        image=container_worker_image_for_session(
+                            session,
+                            effective_config,
+                        ),
                         command=container_prompt_command(
                             prompt=prompt,
                             model=resolved_model,

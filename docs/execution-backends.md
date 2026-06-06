@@ -59,6 +59,9 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_images:
+  default: "agent-sandbox-runner:latest"
+  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
@@ -70,6 +73,13 @@ container_worker_mssql_enabled: true
 container_worker_mssql_host: "172.17.0.1"
 container_worker_mssql_port: 1433
 ```
+
+`container_worker_default_image` is the fallback image for legacy sessions or for sessions that do
+not select an approved alias. `container_worker_images` maps operator-safe aliases to exact image
+refs and can be set at the root or directory `providers.json` layer. When `effect:agent:create`
+selects one of those aliases, the resolved image is stored with the session and later
+container-worker jobs for that session reuse the stored image instead of re-resolving a free-form
+reference.
 
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
