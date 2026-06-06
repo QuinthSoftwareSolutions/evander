@@ -16,6 +16,18 @@ material. Newer entries are added incrementally as changes land.
   and bootstrap failures so operators can diagnose template-selection issues
   without creating unnecessary new images.
 
+## 2026-06-06 - Operator VM Template Visibility
+
+- Added a normalized runtime-image payload for admin session and agent records
+  so operators can see the effective libvirt VM template or container-worker
+  image without parsing raw metadata.
+- Exposed explicit legacy-missing labeling for sessions that lack preserved
+  libvirt template metadata, keeping the UI and API distinction visible.
+- Sanitized libvirt display image refs that look like host paths while
+  preserving the original session metadata for compatibility.
+- Kept container-worker image details distinct from libvirt VM template details
+  so the two backends remain clearly separated in operator surfaces.
+
 ## 2026-06-06 - Agent Create VM Image Docs
 
 - Added `vm_image` to the `effect:agent:create` schema reference and clarified

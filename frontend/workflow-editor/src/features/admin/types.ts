@@ -78,6 +78,17 @@ export type AdminGroupMutationResponse = {
 
 export type AgentBackend = "libvirt_vm" | "container_worker_vm";
 
+export type RuntimeImageInfo = {
+  backend: AgentBackend;
+  kind: "libvirt_vm_template" | "container_worker_image";
+  label: string;
+  template_alias?: string | null;
+  image_alias?: string | null;
+  image_ref: string | null;
+  image_ref_sanitized?: boolean;
+  missing_reason: string | null;
+};
+
 export type AgentLogView = "executions" | "threads";
 
 export type AgentCapabilities = {
