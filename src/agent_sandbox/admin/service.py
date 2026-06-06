@@ -9396,10 +9396,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
         session_policy = None
         effective_tool_policy = None
+        runtime_image: dict[str, Any] | None = None
         if len(summary.session_ids) == 1:
             session = self.runtime.session_repository.get_session(summary.session_ids[0])
-            session_policy = self._agent_session_policy_payload(session)
-            effective_tool_policy = self.effective_tool_policy_payload(session)
+            if session is not None:
+                session_policy = self._agent_session_policy_payload(session)
+                effective_tool_policy = self.effective_tool_policy_payload(session)
+                runtime_image = self.session_runtime_image_payload(session)
+        host: dict[str, Any] = {
+            "kind": "vm",
+            "vm_name": summary.vm_name,
+            "provider": summary.provider,
+            "issue_number": summary.issue_number,
+            "session_ids": list(summary.session_ids),
+            "labels": dict(summary.labels),
+            "directory_paths": list(summary.directory_paths),
+            "power_state": summary.power_state,
+            "libvirt_state": summary.libvirt_state,
+            "provider_state": summary.provider_state,
+            "provider_details": dict(summary.provider_details),
+            "ip_address": summary.ip_address,
+            "agent": {
+                "state": summary.agent_state,
+                "pid": summary.agent_pid,
+                "dispatch_id": summary.dispatch_id,
+                "repo_names": list(summary.agent_repo_names),
+                "preferred_repo_name": summary.agent_repo_names[0]
+                if len(summary.agent_repo_names) == 1
+                else None,
+            },
+            "session_policy": session_policy,
+        }
+        if runtime_image is not None:
+            host["runtime_image"] = runtime_image
         return AgentRecord(
             agent_id=summary.vm_name,
             backend="libvirt_vm",
@@ -9409,30 +9438,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status=status,
             updated_at=summary.last_state_update_at,
             effective_tool_policy=effective_tool_policy,
-            host={
-                "kind": "vm",
-                "vm_name": summary.vm_name,
-                "provider": summary.provider,
-                "issue_number": summary.issue_number,
-                "session_ids": list(summary.session_ids),
-                "labels": dict(summary.labels),
-                "directory_paths": list(summary.directory_paths),
-                "power_state": summary.power_state,
-                "libvirt_state": summary.libvirt_state,
-                "provider_state": summary.provider_state,
-                "provider_details": dict(summary.provider_details),
-                "ip_address": summary.ip_address,
-                "agent": {
-                    "state": summary.agent_state,
-                    "pid": summary.agent_pid,
-                    "dispatch_id": summary.dispatch_id,
-                    "repo_names": list(summary.agent_repo_names),
-                    "preferred_repo_name": summary.agent_repo_names[0]
-                    if len(summary.agent_repo_names) == 1
-                    else None,
-                },
-                "session_policy": session_policy,
-            },
+            host=host,
             capabilities={
                 "start": True,
                 "shutdown": True,
@@ -9467,6 +9473,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if inventory_error:
             host["inventory_error"] = inventory_error
+        host["runtime_image"] = self.session_runtime_image_payload(session)
         return AgentRecord(
             agent_id=vm_name,
             backend="libvirt_vm",
@@ -9550,6 +9557,102 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if isinstance(raw_fallback_image, str):
                 image = raw_fallback_image.strip() or None
         return {"image": image, "image_alias": image_alias}
+
+    @staticmethod
+    def _runtime_image_ref_display_details(image_ref: str) -> tuple[str, bool]:
+        display_ref = image_ref.strip()
+        if not display_ref:
+            return "", False
+
+        sanitized = False
+        candidate = display_ref
+
+        if candidate.startswith("file://"):
+            candidate = candidate.removeprefix("file://")
+            sanitized = True
+        if candidate.startswith("~/"):
+            candidate = candidate[2:]
+            sanitized = True
+        elif candidate.startswith("~\\"):
+            candidate = candidate[2:]
+            sanitized = True
+        if re.match(r"^[A-Za-z]:[\\/]", candidate):
+            candidate = candidate[2:]
+            sanitized = True
+        if "/" in candidate or "\\" in candidate:
+            candidate = candidate.replace("\\", "/").rstrip("/")
+            candidate = candidate.split("/")[-1]
+            sanitized = True
+        return candidate or display_ref, sanitized
+
+    def session_runtime_image_payload(
+        self, session: SessionManifest | SessionSummary
+    ) -> dict[str, Any]:
+        if self._is_container_session(session):
+            image_details = self._container_worker_image_details(
+                dict(session.metadata) if isinstance(session.metadata, dict) else {}
+            )
+            payload: dict[str, Any] = {
+                "backend": "container_worker_vm",
+                "kind": "container_worker_image",
+                "label": "Container worker image",
+                "image_alias": image_details["image_alias"],
+                "image_ref": image_details["image"],
+                "missing_reason": None,
+            }
+            if image_details["image"] is None:
+                payload["missing_reason"] = "container_worker_image_missing"
+            return payload
+
+        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
+        template = metadata.get("libvirt_vm_template")
+        if not isinstance(template, Mapping):
+            return {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Legacy session: VM template metadata unavailable",
+                "template_alias": None,
+                "image_ref": None,
+                "image_ref_sanitized": False,
+                "missing_reason": "legacy_missing_libvirt_vm_template",
+            }
+
+        raw_image_ref = template.get("image_ref")
+        if not isinstance(raw_image_ref, str):
+            return {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Legacy session: VM template metadata unavailable",
+                "template_alias": None,
+                "image_ref": None,
+                "image_ref_sanitized": False,
+                "missing_reason": "legacy_missing_libvirt_vm_template",
+            }
+
+        image_ref = raw_image_ref.strip()
+        if not image_ref:
+            return {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Legacy session: VM template metadata unavailable",
+                "template_alias": None,
+                "image_ref": None,
+                "image_ref_sanitized": False,
+                "missing_reason": "legacy_missing_libvirt_vm_template",
+            }
+
+        display_image_ref, image_ref_sanitized = self._runtime_image_ref_display_details(image_ref)
+        raw_template_alias = template.get("template_alias")
+        template_alias = _coerce_optional_string(raw_template_alias) if isinstance(raw_template_alias, str) else None
+        return {
+            "backend": "libvirt_vm",
+            "kind": "libvirt_vm_template",
+            "label": "Libvirt VM template",
+            "template_alias": template_alias,
+            "image_ref": display_image_ref,
+            "image_ref_sanitized": image_ref_sanitized,
+            "missing_reason": None,
+        }
 
     def _agent_record_from_container_execution(
         self,

@@ -9745,6 +9745,35 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     service.create_directory_child("root", "team-a")
     service.create_directory_child("root", "team-b")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-session-a",
+            vm_id="vm-a",
+            vm_provider="libvirt",
+            vm_provider_id="vm-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-stale",
+            vm_id="vm-stale",
+            vm_provider="libvirt",
+            vm_provider_id="vm-stale",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={},
+        )
+    )
     for session_id, target_name, directory_path in (
         ("container-session-a", "target-a", "root/team-a"),
         ("container-session-b", "target-b", "root/team-b"),
@@ -9831,13 +9860,47 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
         "libvirt_vm",
         "container_worker_vm",
     }
-    assert {item["agent_id"] for item in payload["items"]} == {"vm-a", "container-session-a"}
+    assert {item["agent_id"] for item in payload["items"]} == {
+        "vm-a",
+        "vm-stale",
+        "container-session-a",
+    }
+    vm_item = next(
+        item
+        for item in payload["items"]
+        if item["backend"] == "libvirt_vm" and item["agent_id"] == "vm-a"
+    )
+    assert vm_item["host"]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Libvirt VM template",
+        "template_alias": "dotnet",
+        "image_ref": "dotnet-agent.qcow2",
+        "image_ref_sanitized": True,
+        "missing_reason": None,
+    }
+    stale_item = next(
+        item
+        for item in payload["items"]
+        if item["backend"] == "libvirt_vm" and item["agent_id"] == "vm-stale"
+    )
+    assert stale_item["host"]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
     container_item = next(
         item for item in payload["items"] if item["backend"] == "container_worker_vm"
     )
     assert container_item["status"] == "running"
     assert container_item["capabilities"]["logs"] is True
     assert container_item["host"]["execution_count"] == 2
+    assert container_item["host"]["image"] == "runner:latest"
+    assert "runtime_image" not in container_item["host"]
     assert [item["execution_id"] for item in container_item["host"]["executions"]] == [
         "exec-a-2",
         "exec-a-1",

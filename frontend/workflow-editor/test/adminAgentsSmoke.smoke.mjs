@@ -42,8 +42,8 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     items: [
       {
         agent_id: "agent-2",
-        backend: "libvirt_vm",
-        target_name: "Unrelated VM",
+        backend: "container_worker_vm",
+        target_name: "Container worker",
         session_id: "session-2",
         directory_path: "root/team",
         status: "running",
@@ -51,7 +51,8 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         finished_at: null,
         updated_at: "2026-05-18T10:00:00Z",
         host: {
-          state: "running",
+          image: "runner:latest",
+          image_alias: "default",
         },
         capabilities: {
           start: false,
@@ -76,6 +77,15 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         updated_at: "2026-05-18T10:01:00Z",
         host: {
           state: "running",
+          runtime_image: {
+            backend: "libvirt_vm",
+            kind: "libvirt_vm_template",
+            label: "Libvirt VM template",
+            template_alias: "dotnet",
+            image_ref: "dotnet-agent.qcow2",
+            image_ref_sanitized: true,
+            missing_reason: null,
+          },
         },
         capabilities: {
           start: false,
@@ -270,6 +280,22 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM template dotnet \/ dotnet-agent\.qcow2/);
+  await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
+
+  await assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
+    /Container image runner:latest \(default\)/,
+  );
+  await page.getByRole("button", { name: /Container worker/ }).click();
+  await assert.match(await page.locator(".feature-content").innerText(), /Container image/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /runner:latest/);
+
+  await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).click();
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+
   manualRefreshRequested = true;
   const liveRefreshRequest = page.waitForRequest((request) => {
     if (!request.url().includes("/api/admin/agents?")) return false;

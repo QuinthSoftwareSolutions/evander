@@ -5,6 +5,7 @@ import { useAdminUi } from "../admin/AdminContext";
 import { DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import type { RuntimeImageInfo } from "../admin/types";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 
 type ApprovalPayloadMode = "exact" | "any";
@@ -54,6 +55,7 @@ type SessionRecord = {
   expires_at: string;
   created_at: string;
   metadata: Record<string, unknown>;
+  runtime_image?: RuntimeImageInfo | null;
   issue_number?: string | null;
   is_expired: boolean;
   container_lifecycle?: ContainerSessionLifecycle | null;
@@ -476,10 +478,65 @@ function groupTools(toolOptions: ToolOption[]) {
 function matchesFilter(item: SessionRecord, query: string): boolean {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return true;
-  return [item.session_id, item.vm_id ?? "", item.issue_number ?? "", item.directory_path, item.model ?? "", item.container_lifecycle?.state ?? ""]
+  return [
+    item.session_id,
+    item.vm_id ?? "",
+    item.issue_number ?? "",
+    item.directory_path,
+    item.model ?? "",
+    item.container_lifecycle?.state ?? "",
+    runtimeImageSearchText(item),
+  ]
     .join(" ")
     .toLowerCase()
     .includes(normalized);
+}
+
+function runtimeImageSearchText(item: SessionRecord): string {
+  const runtimeImage = item.runtime_image;
+  if (!runtimeImage) return "";
+  return [
+    runtimeImage.backend,
+    runtimeImage.kind,
+    runtimeImage.label,
+    runtimeImage.template_alias ?? "",
+    runtimeImage.image_alias ?? "",
+    runtimeImage.image_ref ?? "",
+    runtimeImage.missing_reason ?? "",
+  ].join(" ");
+}
+
+function runtimeImagePrimaryText(session: SessionRecord): string {
+  const runtimeImage = session.runtime_image;
+  if (!runtimeImage) return "Unavailable";
+  if (runtimeImage.backend === "container_worker_vm") {
+    return runtimeImage.image_ref ?? "Unavailable";
+  }
+  if (runtimeImage.missing_reason) {
+    return runtimeImage.label;
+  }
+  return runtimeImage.template_alias ?? runtimeImage.label;
+}
+
+function runtimeImageTooltip(session: SessionRecord): string {
+  const runtimeImage = session.runtime_image;
+  if (!runtimeImage) return "Runtime image metadata unavailable.";
+  if (runtimeImage.backend === "container_worker_vm") {
+    const imageRef = runtimeImage.image_ref ?? "Unavailable";
+    return runtimeImage.image_alias
+      ? `${runtimeImage.label}: ${imageRef} (alias: ${runtimeImage.image_alias})`
+      : `${runtimeImage.label}: ${imageRef}`;
+  }
+  if (runtimeImage.missing_reason) {
+    return runtimeImage.label;
+  }
+  const imageRef = runtimeImage.image_ref ?? "Unavailable";
+  if (runtimeImage.image_ref_sanitized) {
+    return `${runtimeImage.label}: ${imageRef} (sanitized display from host-path metadata)`;
+  }
+  return runtimeImage.template_alias
+    ? `${runtimeImage.label}: ${runtimeImage.template_alias} uses ${imageRef}`
+    : `${runtimeImage.label}: ${imageRef}`;
 }
 
 function lifecycleLabel(session: SessionRecord): string {
@@ -1567,6 +1624,45 @@ export function SessionsScreen() {
                   <div><dt>Issue</dt><dd>{selectedSession.issue_number ?? "None"}</dd></div>
                   <div><dt>Directory</dt><dd>{selectedSession.directory_path}</dd></div>
                   <div><dt>Model</dt><dd>{selectedSession.model ?? "Unset"}</dd></div>
+                  {selectedSession.runtime_image ? (
+                    selectedSession.runtime_image.backend === "container_worker_vm" ? (
+                      <>
+                        <div>
+                          <dt>Container image</dt>
+                          <dd>
+                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                              <span>{runtimeImagePrimaryText(selectedSession)}</span>
+                            </Tooltip>
+                          </dd>
+                        </div>
+                        {selectedSession.runtime_image.image_alias ? (
+                          <div>
+                            <dt>Container image alias</dt>
+                            <dd>{selectedSession.runtime_image.image_alias}</dd>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <dt>VM template</dt>
+                          <dd>
+                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                              <span>{runtimeImagePrimaryText(selectedSession)}</span>
+                            </Tooltip>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>VM image ref</dt>
+                          <dd>
+                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                              <span>{selectedSession.runtime_image.image_ref ?? "Unavailable"}</span>
+                            </Tooltip>
+                          </dd>
+                        </div>
+                      </>
+                    )
+                  ) : null}
                   <div><dt>Created</dt><dd>{formatTimestamp(selectedSession.created_at)}</dd></div>
                   <div><dt>Expires</dt><dd>{formatTimestamp(selectedSession.expires_at)}</dd></div>
                 </dl>
