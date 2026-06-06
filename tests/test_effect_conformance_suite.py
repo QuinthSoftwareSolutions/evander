@@ -114,9 +114,19 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 4096,
             "communication_file_require_approval_for_send": True,
+            "vm_image": "dotnet",
             "container_image": "runner-base:latest",
             "npm_registry_url": "http://facade.test:11881/",
             "metadata": {"workflow": {"state": "active"}},
+        }
+    )
+    agent_create_vm_image_binding = adapter.validate_python(
+        {
+            "id": "effect-agent-create-bound-vm-image",
+            "display_name": "Create agent with bound VM image",
+            "type": "effect:agent:create",
+            "session_id": "session-1",
+            "vm_image": "${{steps.pick.outputs.vm_image}}",
         }
     )
     agent_create_chat_only = adapter.validate_python(
@@ -368,7 +378,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_create.communication_file_send_enabled is True
     assert agent_create.communication_file_max_bytes == 4096
     assert agent_create.communication_file_require_approval_for_send is True
+    assert agent_create.vm_image == "dotnet"
     assert agent_create.metadata == {"workflow": {"state": "active"}}
+    assert agent_create_vm_image_binding.type == "effect:agent:create"
+    assert agent_create_vm_image_binding.vm_image == "${{steps.pick.outputs.vm_image}}"
     assert agent_destroy.type == "effect:agent:destroy"
     assert agent_clone.type == "effect:agent:clone-repo"
     assert agent_frontend.type == "effect:agent:bootstrap-frontend"

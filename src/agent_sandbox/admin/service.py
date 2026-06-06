@@ -2966,6 +2966,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Guest user for libvirt-backed sessions. Defaults to agent.",
             ),
             _field(
+                "vm_image",
+                "VM image",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional approved libvirt VM template alias from the directory vm.json "
+                    "approved VM template/base-image catalog. Applies only to "
+                    "execution_backend=libvirt_vm; use container_image for container-worker agents."
+                ),
+            ),
+            _field(
                 "ttl_hours",
                 "TTL hours",
                 "number",
