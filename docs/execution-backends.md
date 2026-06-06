@@ -85,10 +85,13 @@ reference. Anthropic-backed Claude sessions should use `model_provider_mode: "an
 with the `claude` image alias.
 
 Libvirt VM defaults also carry a directory-scoped `vm.json` template catalog with
-`libvirt_vm_default_template` and `libvirt_vm_templates`. Those entries are validated as approved
+`libvirt_vm_default_template` and `libvirt_vm_templates`. `effect:agent:create.vm_image` can select
+an approved alias from that catalog, and the resolved image/template selection is stored with the
+session. Existing-session upserts preserve that recorded selection when `vm_image` is omitted and
+replace it only when `vm_image` is supplied explicitly. Those entries are validated as approved
 libvirt template image refs for cloud-init-compatible qcow2 images, not Docker images, and the
-catalog map deep-merges across directory overlays. This slice does not yet pass a selected
-template into `scripts/launch_agent_vm.sh`.
+catalog map deep-merges across directory overlays. Use `container_image` for `container_worker_vm`.
+This slice does not yet pass a selected template into `scripts/launch_agent_vm.sh`.
 
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before

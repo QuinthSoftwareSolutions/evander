@@ -1410,6 +1410,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "labels",
         "model",
         "vm_user",
+        "vm_image",
         "ttl_hours",
         "allowed_tools",
         "tool_argument_policies",
@@ -1445,6 +1446,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["directory_path"]["description"]
     assert agent_create_fields["container_image"]["bindable"]
     assert "approved container image" in agent_create_fields["container_image"]["description"]
+    assert agent_create_fields["vm_image"]["bindable"]
+    assert "approved libvirt VM template" in agent_create_fields["vm_image"]["description"]
+    assert "base-image" in agent_create_fields["vm_image"]["description"]
     assert agent_create_fields["npm_registry_url"]["bindable"]
     assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
     assert agent_create_fields["web_search_enabled"]["bindable"] is True

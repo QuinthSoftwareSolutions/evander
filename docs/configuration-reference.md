@@ -449,7 +449,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `clone_branch`, `vm_user`, `directory_path`, `git_author_name`, `git_author_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
@@ -487,6 +487,14 @@ person. Leave both unset to use the default agent Git identity.
 runtime deep-merges that patch into the created session manifest after built-in
 create metadata such as labels, model, execution backend, and worker URL are
 assembled.
+
+`effect:agent:create` also accepts `vm_image` as a libvirt-only VM template
+selector. The selector resolves against the directory-scoped `vm.json`
+`libvirt_vm_templates` catalog, falls back to `libvirt_vm_default_template`
+when omitted on a new session, and requires an approved template alias when set
+explicitly. On an existing-session upsert, omitting `vm_image` preserves the
+session's recorded `metadata.libvirt_vm_template`; provide `vm_image` explicitly
+to replace that record. Use `container_image` instead for `container_worker_vm`.
 
 `web_search_enabled` defaults to `false`. When it is false, the OpenAI relay
 rejects Responses requests that declare hosted web search tools. Set it to
@@ -1301,7 +1309,7 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 - lists: replace
 - nullable fields: explicit `null` clears inherited value when validation permits it
 
-The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref, while explicit selectors resolve only approved aliases. This configuration is validated and resolved before any VM launch path; `scripts/launch_agent_vm.sh` does not consume template selections yet.
+The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path; `scripts/launch_agent_vm.sh` does not consume template selections yet.
 
 Inheritance path:
 
