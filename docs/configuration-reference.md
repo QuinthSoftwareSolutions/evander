@@ -491,8 +491,10 @@ assembled.
 `effect:agent:create` also accepts `vm_image` as a libvirt-only VM template
 selector. The selector resolves against the directory-scoped `vm.json`
 `libvirt_vm_templates` catalog, falls back to `libvirt_vm_default_template`
-when omitted, and requires an approved template alias when set explicitly. Use
-`container_image` instead for `container_worker_vm`.
+when omitted on a new session, and requires an approved template alias when set
+explicitly. On an existing-session upsert, omitting `vm_image` preserves the
+session's recorded `metadata.libvirt_vm_template`; provide `vm_image` explicitly
+to replace that record. Use `container_image` instead for `container_worker_vm`.
 
 `web_search_enabled` defaults to `false`. When it is false, the OpenAI relay
 rejects Responses requests that declare hosted web search tools. Set it to
@@ -1307,7 +1309,7 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 - lists: replace
 - nullable fields: explicit `null` clears inherited value when validation permits it
 
-The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref, while explicit selectors resolve only approved aliases. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path; `scripts/launch_agent_vm.sh` does not consume template selections yet.
+The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path; `scripts/launch_agent_vm.sh` does not consume template selections yet.
 
 Inheritance path:
 

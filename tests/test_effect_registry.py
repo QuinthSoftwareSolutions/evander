@@ -1085,6 +1085,172 @@ def test_agent_create_libvirt_uses_default_vm_image_selector_when_omitted(
     }
 
 
+def test_agent_create_libvirt_upsert_preserves_existing_vm_image_when_selector_omitted(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+        )
+    )
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            existing = session_repository.get_session(str(kwargs["session_id"]))
+            assert existing is not None
+            merged_metadata = dict(existing.metadata)
+            merged_metadata.update(dict(kwargs.get("metadata") or {}))
+            session_repository.upsert_session(
+                existing.model_copy(update={"metadata": merged_metadata})
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            web_search_enabled=False,
+            metadata={
+                "workflow": {"state": "active"},
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                    "template_alias": "default",
+                },
+            },
+        )
+    ).execute()
+
+    assert output["vm_image"] == "dotnet-agent.qcow2"
+    assert output["vm_image_alias"] == "dotnet"
+    assert "libvirt_vm_template" not in admin_service.create_vm_calls[0]["metadata"]
+    assert admin_service.create_vm_calls[0]["metadata"] == {"workflow": {"state": "active"}}
+    assert session_repository.get_session("lab-session").metadata["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
+    assert session_repository.get_session("lab-session").metadata["workflow"] == {
+        "state": "active"
+    }
+
+
+def test_agent_create_libvirt_upsert_replaces_existing_vm_image_when_selector_provided(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+        )
+    )
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def resolve_vm_defaults(self, directory_path: str) -> SimpleNamespace:
+            del directory_path
+            return _libvirt_vm_defaults_stub()
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            existing = session_repository.get_session(str(kwargs["session_id"]))
+            assert existing is not None
+            merged_metadata = dict(existing.metadata)
+            merged_metadata.update(dict(kwargs.get("metadata") or {}))
+            session_repository.upsert_session(
+                existing.model_copy(update={"metadata": merged_metadata})
+            )
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            vm_image="default",
+        )
+    ).execute()
+
+    expected_template = {
+        "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "template_alias": "default",
+    }
+    assert output["vm_image"] == expected_template["image_ref"]
+    assert output["vm_image_alias"] == expected_template["template_alias"]
+    assert admin_service.create_vm_calls[0]["metadata"]["libvirt_vm_template"] == expected_template
+    assert session_repository.get_session("lab-session").metadata["libvirt_vm_template"] == (
+        expected_template
+    )
+
+
 def test_agent_create_libvirt_rejects_unknown_vm_image_selector_before_create(
     tmp_path,
 ) -> None:

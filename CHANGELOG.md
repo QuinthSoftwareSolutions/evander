@@ -14,6 +14,9 @@ material. Newer entries are added incrementally as changes land.
   operators do not confuse `vm_image` with container-worker `container_image`.
 - Extended the operator field-help inventory with the new `effect:agent:create`
   VM template selector wording.
+- Preserved existing `metadata.libvirt_vm_template` values on libvirt
+  existing-session upserts when `vm_image` is omitted, replacing them only for
+  explicit `vm_image` selections.
 
 ## 2026-06-06 - Libvirt VM Template Catalog
 
