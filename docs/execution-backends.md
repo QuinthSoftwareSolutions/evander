@@ -91,7 +91,8 @@ session. Existing-session upserts preserve that recorded selection when `vm_imag
 replace it only when `vm_image` is supplied explicitly. Those entries are validated as approved
 libvirt template image refs for cloud-init-compatible qcow2 images, not Docker images, and the
 catalog map deep-merges across directory overlays. Use `container_image` for `container_worker_vm`.
-This slice does not yet pass a selected template into `scripts/launch_agent_vm.sh`.
+The selected image is passed through to `scripts/launch_agent_vm.sh`, which uses it as the base
+overlay image while still falling back to the default Ubuntu image when no selection is present.
 
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before

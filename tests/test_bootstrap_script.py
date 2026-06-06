@@ -223,6 +223,28 @@ def test_setup_vm_supports_codex_skills() -> None:
     assert "--codex-skill requires AGENT_PROVIDER=codex." in script
     assert 'BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")' in script
     assert "HTTP_TARGET_RELAY_BASE_URL=${HTTP_TARGET_RELAY_BASE_URL:-}" in script
+    assert "LIBVIRT_BASE_IMAGE=${LIBVIRT_BASE_IMAGE:-}" in script
+    assert "BASE_IMAGE=${BASE_IMAGE:-}" in script
+
+    env_args_block = script.split("local -a env_args=(")[1].split("  )", 1)[0]
+    expected_order = [
+        "SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE}",
+        "GATEWAY_URL=${GATEWAY_URL:-}",
+        "HTTP_TARGET_RELAY_BASE_URL=${HTTP_TARGET_RELAY_BASE_URL:-}",
+        "LLM_BASE_URL=${LLM_BASE_URL:-}",
+        "AGENT_SANDBOX_RUNTIME_DIR=${AGENT_SANDBOX_RUNTIME_DIR:-}",
+        "VM_STORAGE_DIR=${VM_STORAGE_DIR:-}",
+        "LIBVIRT_BASE_IMAGE=${LIBVIRT_BASE_IMAGE:-}",
+        "BASE_IMAGE=${BASE_IMAGE:-}",
+        "SHARED_NUGET_CACHE_DIR=${SHARED_NUGET_CACHE_DIR:-}",
+        "SHARED_NUGET_CACHE_TAG=${SHARED_NUGET_CACHE_TAG:-}",
+        "SHARED_NUGET_CACHE_MODE=${SHARED_NUGET_CACHE_MODE:-}",
+        "RAM_MB=${RAM_MB:-}",
+        "VCPUS=${VCPUS:-}",
+        "DISK_SIZE_GB=${DISK_SIZE_GB:-}",
+    ]
+    positions = [env_args_block.index(item) for item in expected_order]
+    assert positions == sorted(positions)
 
 
 def test_repo_local_app_multi_env_skill_exists() -> None:

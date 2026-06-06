@@ -1309,7 +1309,7 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 - lists: replace
 - nullable fields: explicit `null` clears inherited value when validation permits it
 
-The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path; `scripts/launch_agent_vm.sh` does not consume template selections yet.
+The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path, and the selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE` with `BASE_IMAGE` as a manual override fallback.
 
 Inheritance path:
 
@@ -1560,7 +1560,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/create_base_vm.sh` | `VM_STORAGE_DIR`, `DOWNLOAD_URL` |
 | `scripts/destroy_agent_vm.sh` | `VM_STORAGE_DIR` |
 | `scripts/inspect_nuget_cache.sh` | `SHARED_NUGET_CACHE_DIR` |
-| `scripts/launch_agent_vm.sh` | `VM_STORAGE_DIR`, `GATEWAY_URL`, `SSH_PUBLIC_KEY_FILE`, `SSH_PRIVATE_KEY_PATH`, `LLM_BASE_URL`, `ANTHROPIC_BASE_URL`, `SHARED_NUGET_CACHE_DIR`, `SHARED_NUGET_CACHE_TAG`, `SHARED_NUGET_CACHE_MODE`, `RAM_MB`, `VCPUS`, `DISK_SIZE_GB` |
+| `scripts/launch_agent_vm.sh` | `VM_STORAGE_DIR`, `GATEWAY_URL`, `SSH_PUBLIC_KEY_FILE`, `SSH_PRIVATE_KEY_PATH`, `LLM_BASE_URL`, `ANTHROPIC_BASE_URL`, `LIBVIRT_BASE_IMAGE`, `BASE_IMAGE`, `SHARED_NUGET_CACHE_DIR`, `SHARED_NUGET_CACHE_TAG`, `SHARED_NUGET_CACHE_MODE`, `RAM_MB`, `VCPUS`, `DISK_SIZE_GB` |
 | `scripts/lib/agent_status.sh` | `VM_AGENT_STATE_MAX_AGE_SECONDS` |
 | `scripts/list_running_vms.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS` |
 | `scripts/prewarm_container_worker_nuget_cache.sh` | `CONTAINER_WORKER_NUGET_CACHE_PATH`, `DOTNET_COMMAND`, `NUGET_RELAY_BASE_URL` |
