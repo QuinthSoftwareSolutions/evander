@@ -90,6 +90,88 @@ as the qcow2 backing file.
 That means the operator prepares one approved read-only image, registers it once in `vm.json`, and
 lets every VM get its own writable overlay.
 
+## Smoke A Non-Default Alias
+
+Use this path to prove that a non-default template alias actually launches a libvirt-backed agent
+session. It requires a libvirt-capable host.
+
+1. Destroy any stale VM from an earlier attempt:
+
+   ```bash
+   sudo ./scripts/destroy_agent_vm.sh vm-template-smoke || true
+   ```
+
+2. Confirm the alias catalog still resolves to the approved qcow2 image:
+
+   ```bash
+   agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime
+   ```
+
+   The expected effective mapping includes:
+
+   - `libvirt_vm_default_template: default`
+   - `libvirt_vm_templates.default: ubuntu-24.04-server-cloudimg-amd64.img`
+   - `libvirt_vm_templates.dotnet-lab: dotnet-agent.qcow2`
+
+3. Run a temporary workflow that contains a single `effect:agent:create` node and set these
+   fields on that node:
+
+   ```json
+   {
+     "execution_backend": "libvirt_vm",
+     "vm_name": "vm-template-smoke",
+     "session_id": "template-smoke",
+     "directory_path": "root",
+     "vm_image": "dotnet-lab"
+   }
+   ```
+
+   Run the workflow once from Admin Web or your local workflow editor. The node output should show
+   `vm_image` and `vm_image_alias` when those fields are visible in the UI.
+
+4. Verify the host-side session metadata shows the resolved image selection:
+
+   ```bash
+   jq '."template-smoke".metadata.libvirt_vm_template' runtime/sessions.json
+   ```
+
+   Expected result:
+
+   ```json
+   {"image_ref":"dotnet-agent.qcow2","template_alias":"dotnet-lab"}
+   ```
+
+5. Verify the overlay disk uses that base image as its backing file:
+
+   ```bash
+   sudo qemu-img info /var/lib/libvirt/images/agent-sandbox/vms/vm-template-smoke/disk.qcow2
+   ```
+
+   The output should report a backing file under
+   `/var/lib/libvirt/images/agent-sandbox/images/dotnet-agent.qcow2`.
+
+6. Check guest readiness once the VM is up:
+
+   ```bash
+   virsh domifaddr vm-template-smoke
+   ssh agent@<vm-ip> 'whoami'
+   ```
+
+   If the smoke includes provider bootstrap, finish with:
+
+   ```bash
+   ./scripts/bootstrap_codex_vm.sh vm-template-smoke
+   ```
+
+7. Clean up the temporary VM after the smoke:
+
+   ```bash
+   sudo ./scripts/destroy_agent_vm.sh vm-template-smoke
+   ```
+
+   If you saved a temporary workflow draft just for this smoke, remove or revert it after the
+   checks complete.
+
 ## When To Use A VM Template
 
 Use a VM template when the guest needs OS-level or image-level changes such as:
