@@ -172,7 +172,92 @@ session. It requires a libvirt-capable host.
    If you saved a temporary workflow draft just for this smoke, remove or revert it after the
    checks complete.
 
-## When To Use A VM Template
+## Troubleshooting
+
+Start with the effective alias catalog and the recorded session metadata before changing anything:
+
+```bash
+agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime
+jq '."template-smoke".metadata.libvirt_vm_template' runtime/sessions.json
+```
+
+If the VM is already running, `virsh domifaddr <vm-name>` tells you whether the guest got an IP,
+and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failures directly.
+
+### Missing Base Image
+
+- Symptom: `scripts/launch_agent_vm.sh` prints `Selected libvirt base image: ...` and then
+  fails with `Missing base image: ...`.
+- Where to look: `agent-sandbox-cli directories config-show ... --domain vm --runtime-dir runtime`,
+  `sudo qemu-img info <image-ref>`, and `runtime/sessions.json` if the selection came from a
+  workflow run.
+- Likely cause: the alias or selector points at a file that does not exist, or the image was
+  copied somewhere outside `/var/lib/libvirt/images/agent-sandbox/images/`.
+- Remediation: place the approved `qcow2` under the shared libvirt image tree with `sudo install
+  -d -m 0755 /var/lib/libvirt/images/agent-sandbox/images` and `sudo cp <source> ...`, then update
+  the alias catalog or selection to point at the copied file. Re-run `sudo qemu-img info` and
+  confirm it reports `file format: qcow2`.
+
+### Unknown Alias
+
+- Symptom: the effect runtime rejects the selector with `unknown libvirt VM template selector ...;
+  configured aliases: ...`.
+- Where to look: `agent-sandbox-cli directories config-show root --domain vm --runtime-dir runtime`,
+  the workflow run output, and `journalctl -u agent-sandbox-effect-orchestrator.service` when the
+  failure surfaced through `effect:agent:create`.
+- Likely cause: `vm_image` names an alias that is not present in the effective `vm.json`
+  catalog, or a parent directory override removed the alias you expected.
+- Remediation: register the alias with `agent-sandbox-cli directories config-set ... --domain vm
+  --runtime-dir runtime`, or choose an existing alias. If you want the default image, omit
+  `vm_image` and let `libvirt_vm_default_template` resolve it.
+
+### Image Not Cloud-Init-Compatible
+
+- Symptom: the VM appears in libvirt, but the guest never reaches a usable SSH state or the boot
+  log shows cloud-init failures.
+- Where to look: `virsh domifaddr <vm-name>`, `sudo virsh console <vm-name>`, and the guest log
+  `/var/log/cloud-init-output.log`.
+- Likely cause: the image is not actually cloud-init-compatible, does not contain `openssh-server`,
+  or does not accept the injected authorized key.
+- Remediation: start from a supported Ubuntu or otherwise cloud-init-compatible `qcow2`, verify it
+  boots cleanly under libvirt, and only then register it as an alias.
+
+### SSH Readiness Timeout
+
+- Symptom: `scripts/lib/vm_network.sh` reports `Timed out waiting for SSH on 'agent@<ip>' ...`.
+- Where to look: `virsh domifaddr <vm-name>`, `sudo virsh console <vm-name>`, and the guest
+  `/var/log/cloud-init-output.log`.
+- Likely cause: the guest never started `sshd`, cloud-init never finished applying the key, or the
+  VM is still stuck in early boot.
+- Remediation: fix the base image or cloud-init data first. Do not treat the timeout as a reason to
+  add a new template or raise the timeout defaults until the image has proved it can boot and
+  accept the injected SSH key.
+
+### Bootstrap Failure
+
+- Symptom: `scripts/setup_vm.sh` reaches `bootstrap_<provider>` and exits non-zero, or the provider
+  bootstrap script emits an error after SSH is already ready.
+- Where to look: `journalctl -u agent-sandbox-effect-orchestrator.service` if the VM was launched
+  from a workflow, `runtime/sessions.json`, the root-owned logs under
+  `/var/log/agent-sandbox/agent-runs`, and the guest `/var/log/cloud-init-output.log`.
+- Likely cause: the optional provider bootstrap is missing a prerequisite, or the image needs a
+  heavy OS-level dependency that should have been present before first boot.
+- Remediation: fix the bootstrap script or the optional capability flags first. Only move a change
+  into a template when it is genuinely OS-level, offline, or too expensive to bootstrap on every
+  session.
+
+## Template vs Bootstrap
+
+Keep light capabilities as bootstrap or profile flags on `effect:agent:create`:
+
+- `dotnet`
+- `nuget`
+- `mssql`
+- `playwright`
+- `codex_skills`
+
+Those switches are for optional toolchains and guest profile tweaks that can be installed after the
+guest is reachable. They should not force a new VM template by default.
 
 Use a VM template when the guest needs OS-level or image-level changes such as:
 
@@ -180,8 +265,10 @@ Use a VM template when the guest needs OS-level or image-level changes such as:
 - drivers or low-level packages that are expensive to bootstrap repeatedly
 - offline OS customization that should exist before the first boot
 
-Use bootstrap flags on `effect:agent:create` for lighter, post-launch capabilities such as
-`dotnet`, `nuget`, `mssql`, `playwright`, and `codex_skills`.
+Do not create a new template just to avoid a normal bootstrap or to bake in a small dependency that
+already fits one of the existing flags. Each new template increases maintenance, increases the
+chance of alias drift, and makes the selector catalog harder to reason about.
 
-If the change is only an optional toolchain or guest profile tweak, prefer bootstrap over creating
-another VM template.
+If the requested change can be expressed as a bootstrap/profile flag, keep it there. If it requires
+an OS baseline that must be present before the first boot, move it into a VM template and keep the
+approved alias catalog small.
