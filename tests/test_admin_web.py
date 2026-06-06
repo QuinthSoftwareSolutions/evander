@@ -1447,6 +1447,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["container_image"]["bindable"]
     assert "approved container image" in agent_create_fields["container_image"]["description"]
     assert agent_create_fields["vm_image"]["bindable"]
+    assert "libvirt-only selector" in agent_create_fields["vm_image"]["description"]
     assert "approved libvirt VM template" in agent_create_fields["vm_image"]["description"]
     assert "base-image" in agent_create_fields["vm_image"]["description"]
     assert agent_create_fields["npm_registry_url"]["bindable"]

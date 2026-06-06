@@ -16,7 +16,9 @@ material. Newer entries are added incrementally as changes land.
   VM template selector wording.
 - Preserved existing `metadata.libvirt_vm_template` values on libvirt
   existing-session upserts when `vm_image` is omitted, replacing them only for
-  explicit `vm_image` selections.
+  explicit `vm_image` selections, and documented that the resolved libvirt
+  image ref is forwarded to `scripts/launch_agent_vm.sh` via
+  `LIBVIRT_BASE_IMAGE`.
 
 ## 2026-06-06 - Libvirt VM Template Catalog
 
@@ -25,7 +27,8 @@ material. Newer entries are added incrementally as changes land.
 - Documented the libvirt VM template catalog as cloud-init-compatible qcow2
   image refs that deep-merge across directory overlays.
 - Clarified that the new template selection metadata is validated before VM
-  launch but is not yet consumed by `scripts/launch_agent_vm.sh`.
+  launch and consumed by `scripts/launch_agent_vm.sh` through
+  `LIBVIRT_BASE_IMAGE`.
 
 ## 2026-06-06 - Claude Container Runner Image
 
