@@ -242,6 +242,161 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].host["labels"] == {"role": "demo"}
 
 
+@pytest.mark.parametrize(
+    "metadata, expected",
+    [
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": "dotnet",
+                "image_ref": "dotnet-agent.qcow2",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                    "template_alias": "default",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": "default",
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "template_alias": None,
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": None,
+                "image_ref": "dotnet-agent.qcow2",
+                "image_ref_sanitized": True,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": None,
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+    ],
+)
+def test_session_runtime_image_payload_normalizes_libvirt_vm_templates(
+    tmp_path: Path, metadata: dict[str, object], expected: dict[str, object]
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-1",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == expected
+    assert session.metadata == metadata
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"legacy": True},
+        {"libvirt_vm_template": "legacy"},
+    ],
+)
+def test_session_runtime_image_payload_marks_missing_legacy_libvirt_vm_template_metadata(
+    tmp_path: Path, metadata: dict[str, object]
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-legacy",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
+    assert session.metadata == metadata
+
+
+def test_session_runtime_image_payload_returns_container_worker_image_details(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    metadata = {
+        "execution_backend": "container_worker_vm",
+        "container_worker": {
+            "image": "runner:latest",
+            "image_alias": "default",
+        },
+    }
+    session = SessionManifest(
+        session_id="container-session",
+        vm_provider="container_worker_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == {
+        "backend": "container_worker_vm",
+        "kind": "container_worker_image",
+        "label": "Container worker image",
+        "image_alias": "default",
+        "image_ref": "runner:latest",
+        "missing_reason": None,
+    }
+    assert session.metadata == metadata
+
+
 def test_list_agents_descendant_scope_includes_child_directory_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
