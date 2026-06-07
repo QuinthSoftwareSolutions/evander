@@ -5,6 +5,28 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-07 - Agent Create Workflow Editor UX
+
+- Split the workflow editor Agent create form by execution backend, exposed the
+  agent provider field, and flagged missing execution backend selections as
+  validation errors.
+
+## 2026-06-07 - Claude MCP Prompt Dispatch
+
+- Sent Claude runner prompts through stdin so the variadic `--mcp-config`
+  option cannot consume the prompt as another MCP config path.
+
+## 2026-06-07 - Local Assistant VM Responsiveness
+
+- Moved Admin Web chat assistant session setup and issue VM creation requests
+  off the async request loop so slow libvirt/SSH work does not block unrelated
+  Admin Web requests.
+- Ensured libvirt-backed chat assistant VMs bootstrap Codex when the VM exists
+  but the Codex executable is missing, and made Codex VM runner logs emit
+  session IDs from JSON output.
+- Reported early guest agent process exits as resume failures with recent guest
+  log output instead of leaving enqueue effects with a missing thread ID.
+
 ## 2026-06-06 - Libvirt VM Template Operations Runbook
 
 - Added an operator runbook for preparing, registering, and selecting libvirt

@@ -932,11 +932,11 @@ def _container_claude_prompt_command(
         "/home/agent/.claude/mcp-config.json",
     ]
     if effective_resume_thread_id:
-        args = ["claude", "--resume", effective_resume_thread_id, "-p", *common_args, prompt]
+        args = ["claude", "--resume", effective_resume_thread_id, "-p", *common_args]
     elif effective_resume_mode == "same_context":
-        args = ["claude", "--continue", "-p", *common_args, prompt]
+        args = ["claude", "--continue", "-p", *common_args]
     else:
-        args = ["claude", "-p", *common_args, prompt]
+        args = ["claude", "-p", *common_args]
     preamble = container_shell_preamble()
     if mcp_gateway_url:
         preamble += _write_claude_mcp_config_shell(mcp_gateway_url)
@@ -944,6 +944,9 @@ def _container_claude_prompt_command(
         preamble
         + "cd /home/agent\n"
         + _claude_json_log_filter_shell()
+        + "printf '%s' "
+        + shlex.quote(prompt)
+        + " | "
         + shlex.join(args)
         + " | agent_sandbox_claude_json_to_log\n"
     )

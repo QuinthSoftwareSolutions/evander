@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.web.vms_issues as vms_issues_module
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
@@ -1402,8 +1403,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
     assert {field["key"] for field in agent_create["fields"]} == {
-        "provider",
         "execution_backend",
+        "agent_provider",
+        "provider",
         "vm_name",
         "session_id",
         "existing_agent_behavior",
@@ -1437,7 +1439,45 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "metadata",
     }
+    assert [field["key"] for field in agent_create["fields"][:3]] == [
+        "execution_backend",
+        "agent_provider",
+        "provider",
+    ]
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
+    assert agent_create_fields["execution_backend"]["required"] is True
+    assert agent_create_fields["agent_provider"]["kind"] == "enum"
+    assert agent_create_fields["agent_provider"]["options"] == [
+        {"value": "codex", "label": "Codex"},
+        {"value": "claude", "label": "Claude"},
+        {
+            "value": "copilot",
+            "label": "Copilot",
+            "metadata": {"execution_backends": ["libvirt_vm"]},
+        },
+    ]
+    assert agent_create_fields["provider"]["label"] == "VM provider"
+    assert agent_create_fields["provider"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["vm_name"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["vm_user"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["mssql"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["mssql_init_root"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["container_image"]["metadata"] == {
+        "execution_backends": ["container_worker_vm"]
+    }
+    assert agent_create_fields["npm_registry_url"]["metadata"] == {
+        "execution_backends": ["container_worker_vm"]
+    }
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
     assert agent_create_fields["metadata"]["kind"] == "json"
@@ -3865,6 +3905,41 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
         "field_path": "prompt",
         "reference": "trigger-ticket-created-main.missing_output",
         "message": "prompt references missing output trigger-ticket-created-main.missing_output",
+    } in response.json()["validation_diagnostics"]
+
+
+def test_admin_web_validate_reports_agent_create_missing_execution_backend(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [],
+            "gates": [],
+            "effects": [
+                {
+                    "id": "agent-create",
+                    "display_name": "Create agent",
+                    "type": "effect:agent:create",
+                }
+            ],
+            "queries": [],
+            "edges": [],
+        },
+        "layout": {"nodes": {"agent-create": {"x": 100, "y": 50}}},
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "agent_create_missing_execution_backend",
+        "severity": "error",
+        "node_id": "agent-create",
+        "node_type": "effect:agent:create",
+        "field_path": "execution_backend",
+        "message": "effect:agent:create requires an execution backend.",
     } in response.json()["validation_diagnostics"]
 
 
@@ -11329,6 +11404,13 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
     )
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
 
     client = TestClient(create_app(service))
 
@@ -11350,3 +11432,57 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
     payload = response.json()
     assert payload["issue"]["issue_id"] == created_issue.issue_id
     assert payload["vm_action"]["vm_name"] == "issue-vm-1"
+    assert threadpool_calls == ["_create_issue"]
+
+
+def test_admin_web_create_vm_from_issue_runs_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    created_issue = service.create_local_issue(
+        title="Draft fix",
+        body="body",
+        directory_path="root/team-a",
+    )
+
+    def create_issue_vm(self, issue_identifier: str, **payload):
+        assert issue_identifier == created_issue.issue_id
+        assert payload["model"] == "gpt-5.2-codex"
+        assert payload["dotnet"] is True
+        assert payload["nuget"] == "/tmp/project.slnx"
+        assert payload["playwright"] is True
+        return VmActionResult(
+            success=True,
+            vm_name="issue-vm-1",
+            action="create-issue-vm",
+            message="vm created",
+        )
+
+    monkeypatch.setattr(
+        service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
+    )
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
+
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/issues/{created_issue.issue_id}/create-vm",
+        json={
+            "model": "gpt-5.2-codex",
+            "dotnet": True,
+            "nuget": "/tmp/project.slnx",
+            "playwright": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["vm_name"] == "issue-vm-1"
+    assert threadpool_calls == ["create_issue_vm"]

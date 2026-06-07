@@ -1256,6 +1256,7 @@ class WorkflowEditorFieldDefinition(BaseModel):
     default_value: Any = None
     options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
     item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class WorkflowEditorNodePortDefinition(BaseModel):
@@ -1386,6 +1387,33 @@ def _workflow_binding_diagnostics_for_graphs(
                 continue
             seen.add(key)
             diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def _workflow_agent_create_diagnostics(
+    config: dict[str, object],
+) -> list[WorkflowValidationDiagnostic]:
+    effects = config.get("effects")
+    if not isinstance(effects, list):
+        return []
+
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    for effect in effects:
+        if not isinstance(effect, dict) or effect.get("type") != "effect:agent:create":
+            continue
+        execution_backend = str(effect.get("execution_backend") or "").strip()
+        if execution_backend:
+            continue
+        diagnostics.append(
+            WorkflowValidationDiagnostic(
+                code="agent_create_missing_execution_backend",
+                severity="error",
+                node_id=str(effect.get("id") or "") or None,
+                node_type="effect:agent:create",
+                field_path="execution_backend",
+                message="effect:agent:create requires an execution backend.",
+            )
+        )
     return diagnostics
 
 
@@ -1611,6 +1639,7 @@ def _field(
     default_value: Any = None,
     options: list[WorkflowEditorFieldOption] | None = None,
     item_fields: list[WorkflowEditorFieldDefinition] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> WorkflowEditorFieldDefinition:
     return WorkflowEditorFieldDefinition(
         key=key,
@@ -1626,6 +1655,7 @@ def _field(
         default_value=default_value,
         options=options or [],
         item_fields=item_fields or [],
+        metadata=metadata or {},
     )
 
 
@@ -2897,16 +2927,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Agent create",
         fields=[
             _field(
-                "provider",
-                "Provider",
-                "string",
-                bindable=True,
-                description="Optional agent provider override. Leave blank to use the directory default.",
-            ),
-            _field(
                 "execution_backend",
                 "Execution backend",
                 "enum",
+                required=True,
                 description="Runtime backend that will host the created agent session.",
                 options=[
                     _field_option("libvirt_vm", "Libvirt VM"),
@@ -2914,11 +2938,41 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field(
+                "agent_provider",
+                "Agent provider",
+                "enum",
+                bindable=True,
+                description=(
+                    "Optional agent harness override. Leave blank to use the directory default."
+                ),
+                options=[
+                    _field_option("codex", "Codex"),
+                    _field_option("claude", "Claude"),
+                    _field_option(
+                        "copilot",
+                        "Copilot",
+                        metadata={"execution_backends": ["libvirt_vm"]},
+                    ),
+                ],
+            ),
+            _field(
+                "provider",
+                "VM provider",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional libvirt VM infrastructure provider override. "
+                    "Leave blank to use the directory VM default."
+                ),
+                metadata={"execution_backends": ["libvirt_vm"]},
+            ),
+            _field(
                 "vm_name",
                 "VM name",
                 "string",
                 bindable=True,
                 description="Optional VM name for libvirt-backed agents. Container-backed agents usually leave this blank.",
+                metadata={"execution_backends": ["libvirt_vm"]},
             ),
             _field(
                 "session_id",
@@ -2957,6 +3011,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Optional npm registry override for container-backed agent sessions.",
+                metadata={"execution_backends": ["container_worker_vm"]},
             ),
             _field(
                 "vm_user",
@@ -2964,6 +3019,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Guest user for libvirt-backed sessions. Defaults to agent.",
+                metadata={"execution_backends": ["libvirt_vm"]},
             ),
             _field(
                 "vm_image",
@@ -3084,14 +3140,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Dotnet",
                 "boolean",
                 bindable=True,
-                description="Bootstrap the .NET toolchain for libvirt-backed agents.",
+                description="Enable .NET toolchain setup for the created agent when supported by the selected backend.",
             ),
             _field(
                 "nuget",
                 "NuGet",
                 "boolean",
                 bindable=True,
-                description="Bootstrap NuGet relay support for libvirt-backed agents.",
+                description="Enable NuGet relay and package-cache setup for the created agent.",
             ),
             _field(
                 "mssql",
@@ -3099,6 +3155,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "boolean",
                 bindable=True,
                 description="Bootstrap SQL Server tooling for libvirt-backed agents.",
+                metadata={"execution_backends": ["libvirt_vm"]},
             ),
             _field(
                 "mssql_init_root",
@@ -3106,13 +3163,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Optional host init-script root for MSSQL provisioning.",
+                metadata={"execution_backends": ["libvirt_vm"]},
             ),
             _field(
                 "playwright",
                 "Playwright",
                 "boolean",
                 bindable=True,
-                description="Bootstrap Playwright for browser automation in libvirt-backed agents.",
+                description="Enable Playwright browser automation setup for the created agent.",
             ),
             _field(
                 "codex_skills",
@@ -3126,6 +3184,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description="Optional approved container image alias or the configured default image.",
+                metadata={"execution_backends": ["container_worker_vm"]},
             ),
             _field(
                 "directory_path",
@@ -14274,6 +14333,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             editable_normalized_config,
             normalized_graphs,
         )
+        agent_create_diagnostics = _workflow_agent_create_diagnostics(
+            editable_normalized_config,
+        )
         return WorkflowEditorValidationPayload(
             config=editable_normalized_config,
             layout=normalized_layout,
@@ -14285,6 +14347,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             + [
                 diagnostic.model_dump(mode="json", exclude_none=True)
                 for diagnostic in binding_diagnostics
+            ]
+            + [
+                diagnostic.model_dump(mode="json", exclude_none=True)
+                for diagnostic in agent_create_diagnostics
             ],
         )
 

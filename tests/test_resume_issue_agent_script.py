@@ -523,6 +523,7 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d ' in script_text
     assert 'tail -c "+$((RUN_LOG_START_SIZE + 1))" "${RUN_LOG_FILE}" 2>/dev/null' in script_text
     assert """awk -F': ' '/^session id: / {thread_id=$2} END {print thread_id}'""" in script_text
+    assert "Agent process exited before emitting a thread id" in script_text
 
 
 def test_resume_issue_agent_worker_mode_starts_vm_and_skips_tty(tmp_path: Path) -> None:

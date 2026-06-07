@@ -227,9 +227,15 @@ _agent_runner_claude_common_args() {
   if [[ "${mode}" == "resume-last" ]]; then
     dest_ref+=(--continue)
   fi
-  dest_ref+=("${prompt}")
 
   AGENT_RUNNER_CLAUDE_CWD="${cwd}"
+  AGENT_RUNNER_CLAUDE_PROMPT="${prompt}"
+}
+
+_agent_runner_claude_invoke() {
+  local prompt="$1"
+  shift
+  printf '%s' "${prompt}" | claude "$@" | _agent_runner_claude_json_to_log
 }
 
 _agent_runner_claude_run() {
@@ -245,12 +251,12 @@ _agent_runner_claude_run() {
   if [[ -n "${cwd}" ]]; then
     (
       cd "${cwd}" &&
-      claude "${claude_args[@]}" | _agent_runner_claude_json_to_log
+      _agent_runner_claude_invoke "${AGENT_RUNNER_CLAUDE_PROMPT:-}" "${claude_args[@]}"
     )
     return
   fi
 
-  claude "${claude_args[@]}" | _agent_runner_claude_json_to_log
+  _agent_runner_claude_invoke "${AGENT_RUNNER_CLAUDE_PROMPT:-}" "${claude_args[@]}"
 }
 
 agent_runner_claude_exec() {
@@ -278,12 +284,12 @@ agent_runner_claude_resume_thread() {
   if [[ -n "${cwd}" ]]; then
     (
       cd "${cwd}" &&
-      claude "${claude_args[@]}" | _agent_runner_claude_json_to_log
+      _agent_runner_claude_invoke "${AGENT_RUNNER_CLAUDE_PROMPT:-}" "${claude_args[@]}"
     )
     return
   fi
 
-  claude "${claude_args[@]}" | _agent_runner_claude_json_to_log
+  _agent_runner_claude_invoke "${AGENT_RUNNER_CLAUDE_PROMPT:-}" "${claude_args[@]}"
 }
 
 agent_runner_claude_binary_name() {

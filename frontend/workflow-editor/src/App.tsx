@@ -3613,8 +3613,63 @@ const TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES = new Set([
   "effect:vm:create",
 ]);
 
+const AGENT_CREATE_NODE_TYPE = "effect:agent:create";
+
 function supportsStructuredToolArgumentPolicies(nodeType: string | undefined): boolean {
   return Boolean(nodeType && TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES.has(nodeType));
+}
+
+function normalizedAgentCreateExecutionBackend(values: Record<string, unknown>): string {
+  const rawValue = values.execution_backend;
+  return typeof rawValue === "string" ? rawValue.trim() : "";
+}
+
+function metadataExecutionBackends(metadata: Record<string, unknown> | undefined): string[] | null {
+  const rawValue = metadata?.execution_backends;
+  if (!Array.isArray(rawValue)) return null;
+  const values = rawValue
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+  return values.length > 0 ? values : null;
+}
+
+function fieldExecutionBackends(field: WorkflowEditorFieldDefinition): string[] | null {
+  return metadataExecutionBackends(field.metadata);
+}
+
+function agentCreateFieldVisibleForBackend(
+  field: WorkflowEditorFieldDefinition,
+  executionBackend: string,
+): boolean {
+  if (field.key === "execution_backend") return true;
+  if (!executionBackend) return false;
+  const visibleBackends = fieldExecutionBackends(field);
+  return !visibleBackends || visibleBackends.includes(executionBackend);
+}
+
+function pruneAgentCreateBackendFieldValues(
+  values: Record<string, unknown>,
+  fields: WorkflowEditorFieldDefinition[],
+): Record<string, unknown> {
+  const executionBackend = normalizedAgentCreateExecutionBackend(values);
+  if (!executionBackend) return values;
+  const nextValues = { ...values };
+  for (const field of fields) {
+    if (agentCreateFieldVisibleForBackend(field, executionBackend)) continue;
+    delete nextValues[field.key];
+  }
+  return nextValues;
+}
+
+function agentCreateFieldOptionsForBackend(
+  field: WorkflowEditorFieldDefinition,
+  executionBackend: string,
+) {
+  if (field.key !== "agent_provider") return field.options;
+  return field.options.filter((option) => {
+    const visibleBackends = metadataExecutionBackends(option.metadata);
+    return !visibleBackends || visibleBackends.includes(executionBackend);
+  });
 }
 
 function toolArgumentPolicyRowPath(toolName: string, toolIndex: number): string {
@@ -4060,8 +4115,13 @@ export default function App() {
   const effectTargetKey = hasCollapsedTargetUi ? inspectorEffectTargetKey : activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];
-    if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
-    return selectedCatalogEntry.fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
+    let fields = selectedCatalogEntry.fields;
+    if (selectedNode?.type === AGENT_CREATE_NODE_TYPE) {
+      const executionBackend = normalizedAgentCreateExecutionBackend(inspectorKnownValues);
+      fields = fields.filter((field) => agentCreateFieldVisibleForBackend(field, executionBackend));
+    }
+    if (!hasCollapsedTargetUi) return fields;
+    return fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
@@ -6359,7 +6419,7 @@ export default function App() {
       throw new Error(`Node ${rawId} already exists.`);
     }
 
-    const nextKnownValues = { ...draft.knownValues };
+    let nextKnownValues = { ...draft.knownValues };
     if (selectedNode.type.startsWith("trigger:") && nextKnownValues.enabled !== false) {
       delete nextKnownValues.enabled;
     }
@@ -6449,6 +6509,9 @@ export default function App() {
       if (communicationState?.validation?.blocked) {
         throw new Error(communicationState.validation.message);
       }
+    }
+    if (selectedNode.type === AGENT_CREATE_NODE_TYPE && selectedCatalogEntry) {
+      nextKnownValues = pruneAgentCreateBackendFieldValues(nextKnownValues, selectedCatalogEntry.fields);
     }
 
     return removeUndefinedValues({
@@ -8365,6 +8428,12 @@ export default function App() {
           </label>
         );
       }
+      const enumOptions = selectedNodeType === AGENT_CREATE_NODE_TYPE
+        ? agentCreateFieldOptionsForBackend(
+          field,
+          normalizedAgentCreateExecutionBackend(inspectorKnownValues),
+        )
+        : field.options;
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -8385,7 +8454,7 @@ export default function App() {
                 disabled={isDisabled}
               >
                 <option value="">Select</option>
-                {field.options.map((option) => (
+                {enumOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

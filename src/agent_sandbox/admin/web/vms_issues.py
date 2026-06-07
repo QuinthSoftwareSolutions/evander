@@ -455,15 +455,17 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
     async def create_issue(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
-            issue = service.create_local_issue(
-                title=str(payload.get("title") or ""),
-                body=str(payload.get("body") or ""),
-                repo_source=str(payload.get("repo_source") or "").strip() or None,
-                yaml_path=str(payload.get("yaml_path") or "").strip() or None,
-                directory_path=str(payload.get("directory_path") or "root").strip() or "root",
-            )
-            response_payload: dict[str, Any] = {"issue": _issue_record_payload(issue)}
-            if bool(payload.get("start_vm")):
+
+            def _create_issue() -> tuple[LocalIssueRecord, VmActionResult | None]:
+                issue = service.create_local_issue(
+                    title=str(payload.get("title") or ""),
+                    body=str(payload.get("body") or ""),
+                    repo_source=str(payload.get("repo_source") or "").strip() or None,
+                    yaml_path=str(payload.get("yaml_path") or "").strip() or None,
+                    directory_path=str(payload.get("directory_path") or "root").strip() or "root",
+                )
+                if not bool(payload.get("start_vm")):
+                    return issue, None
                 vm_result = service.create_issue_vm_from_local_issue(
                     issue.issue_id,
                     model=str(payload.get("model") or "").strip() or None,
@@ -473,6 +475,11 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
                     mssql_init_root=str(payload.get("mssql_init_root") or "").strip() or None,
                     playwright=bool(payload.get("playwright")),
                 )
+                return issue, vm_result
+
+            issue, vm_result = await run_in_threadpool(_create_issue)
+            response_payload: dict[str, Any] = {"issue": _issue_record_payload(issue)}
+            if vm_result is not None:
                 response_payload["vm_action"] = _action_payload(vm_result)
             return JSONResponse(response_payload, status_code=201)
         except ValueError as exc:
@@ -528,7 +535,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         issue_id = request.path_params["issue_id"]
         try:
             payload = await _json_body(request)
-            result = service.create_issue_vm_from_local_issue(
+            result = await run_in_threadpool(
+                service.create_issue_vm_from_local_issue,
                 issue_id,
                 model=str(payload.get("model") or "").strip() or None,
                 dotnet=bool(payload.get("dotnet")),
