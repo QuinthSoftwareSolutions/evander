@@ -11,6 +11,11 @@ material. Newer entries are added incrementally as changes land.
   agent provider field, and flagged missing execution backend selections as
   validation errors.
 
+## 2026-06-07 - Claude MCP Prompt Dispatch
+
+- Sent Claude runner prompts through stdin so the variadic `--mcp-config`
+  option cannot consume the prompt as another MCP config path.
+
 ## 2026-06-06 - Claude Container Runner Image
 
 - Added a separate Claude container runner Docker image and build script that

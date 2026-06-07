@@ -1615,6 +1615,8 @@ def test_container_prompt_command_supports_claude_provider() -> None:
     assert "--output-format stream-json" in command
     assert "--verbose" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
+    assert "printf '%s' 'check teams' | claude -p" in command
+    assert "--mcp-config /home/agent/.claude/mcp-config.json 'check teams'" not in command
     assert "agent_sandbox_claude_json_to_log" in command
     assert "http://gateway.test:8000/mcp?session_id=session-1" in command
 
@@ -1634,8 +1636,8 @@ def test_container_prompt_command_supports_claude_resume_modes() -> None:
         agent_provider="claude",
     )
 
-    assert "claude --resume claude-session-1 -p" in resume_thread
-    assert "claude --continue -p" in resume_last
+    assert "printf '%s' 'check teams' | claude --resume claude-session-1 -p" in resume_thread
+    assert "printf '%s' 'check teams' | claude --continue -p" in resume_last
 
 
 def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
