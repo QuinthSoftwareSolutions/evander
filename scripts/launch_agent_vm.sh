@@ -14,6 +14,10 @@ Arguments:
 
 Environment:
   VM_STORAGE_DIR       Root directory for libvirt-accessible VM storage.
+  LIBVIRT_BASE_IMAGE   Selected base image ref or absolute path. Relative refs are
+                       resolved under ${VM_STORAGE_DIR}/images. Default: ${VM_STORAGE_DIR}/images/ubuntu-24.04-server-cloudimg-amd64.img
+  BASE_IMAGE           Fallback base image ref or absolute path. Relative refs are
+                       resolved under ${VM_STORAGE_DIR}/images.
   GATEWAY_URL          Host MCP gateway URL exposed to the guest.
   HTTP_TARGET_RELAY_BASE_URL Host HTTP target relay URL exposed to the guest.
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
@@ -50,14 +54,21 @@ VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
 IMAGES_DIR="${VM_STORAGE_DIR}/images"
 VM_DIR="${VM_STORAGE_DIR}/vms/${VM_NAME}"
 STATE_DIR="${RUNTIME_DIR}/vms/${VM_NAME}"
-BASE_IMAGE="${IMAGES_DIR}/ubuntu-24.04-server-cloudimg-amd64.img"
+DEFAULT_BASE_IMAGE="${IMAGES_DIR}/ubuntu-24.04-server-cloudimg-amd64.img"
+SELECTED_BASE_IMAGE="${LIBVIRT_BASE_IMAGE:-${BASE_IMAGE:-${DEFAULT_BASE_IMAGE}}}"
+if [[ "${SELECTED_BASE_IMAGE}" = /* ]]; then
+  BASE_IMAGE="${SELECTED_BASE_IMAGE}"
+else
+  BASE_IMAGE="${IMAGES_DIR}/${SELECTED_BASE_IMAGE}"
+fi
 OVERLAY_IMAGE="${VM_DIR}/disk.qcow2"
 SEED_IMAGE="${VM_DIR}/seed.iso"
 USER_DATA_TEMPLATE="${ROOT_DIR}/config/cloud-init-user-data.yaml"
 USER_DATA_RENDERED="${STATE_DIR}/user-data"
 META_DATA="${STATE_DIR}/meta-data"
 CALLER_USER="${SUDO_USER:-$USER}"
-CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6 || true)"
+CALLER_HOME="${CALLER_HOME:-${HOME:-}}"
 DEFAULT_SSH_KEY_FILE="${CALLER_HOME}/.ssh/id_ed25519.pub"
 if [[ ! -f "${DEFAULT_SSH_KEY_FILE}" ]]; then
   DEFAULT_SSH_KEY_FILE="${CALLER_HOME}/.ssh/id_rsa.pub"
@@ -96,6 +107,7 @@ if ! command -v virt-install >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "Selected libvirt base image: ${BASE_IMAGE}"
 if [[ ! -f "${BASE_IMAGE}" ]]; then
   echo "Missing base image: ${BASE_IMAGE}" >&2
   exit 1

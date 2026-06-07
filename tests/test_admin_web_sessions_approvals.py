@@ -400,6 +400,15 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert list_response.json()["counts"]["active"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["model"] == "gpt-5.3-codex"
+    assert detail_response.json()["session"]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
     assert detail_response.json()["session"]["effective_tool_policy"]["allowed_tools"] == [
         "approval_check"
     ]
@@ -410,9 +419,27 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         == "issue-policy"
     )
     assert detail_response.json()["summary_json"]["session_id"] == "issue-14085-session"
+    assert list_response.json()["items"][0]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
     assert model_response.status_code == 200
     assert model_response.json()["action"] == "set_session_model"
     assert model_response.json()["session"]["model"] == "gpt-5.5"
+    assert model_response.json()["session"]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
     assert tools_response.status_code == 200
     assert tools_response.json()["action"] == "set_session_allowed_tools"
     assert tools_response.json()["session"]["allowed_tools"] == [
@@ -423,6 +450,140 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert renew_response.json()["action"] == "renew_session"
     assert revoke_response.status_code == 200
     assert revoke_response.json()["action"] == "revoke_session"
+
+
+def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    explicit_session_id = "libvirt-explicit"
+    default_session_id = "libvirt-default"
+    legacy_session_id = "libvirt-legacy"
+    container_session_id = "container-session"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=explicit_session_id,
+            vm_id="vm-explicit",
+            vm_provider="libvirt_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+        ),
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=default_session_id,
+            vm_id="vm-default",
+            vm_provider="libvirt_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                    "template_alias": "default",
+                }
+            },
+        ),
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=legacy_session_id,
+            vm_id="vm-legacy",
+            vm_provider="libvirt_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"legacy": True},
+        ),
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=container_session_id,
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "container_worker": {
+                    "image": "runner:latest",
+                    "image_alias": "default",
+                },
+            },
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    list_response = client.get("/api/admin/sessions")
+    detail_response = client.get(f"/api/admin/sessions/{explicit_session_id}")
+    container_detail_response = client.get(f"/api/admin/sessions/{container_session_id}")
+
+    assert list_response.status_code == 200
+    items_by_session_id = {
+        item["session_id"]: item for item in list_response.json()["items"]
+    }
+    assert items_by_session_id[explicit_session_id]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Libvirt VM template",
+        "template_alias": "dotnet",
+        "image_ref": "dotnet-agent.qcow2",
+        "image_ref_sanitized": True,
+        "missing_reason": None,
+    }
+    assert items_by_session_id[default_session_id]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Libvirt VM template",
+        "template_alias": "default",
+        "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "image_ref_sanitized": False,
+        "missing_reason": None,
+    }
+    assert items_by_session_id[legacy_session_id]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
+    assert items_by_session_id[container_session_id]["runtime_image"] == {
+        "backend": "container_worker_vm",
+        "kind": "container_worker_image",
+        "label": "Container worker image",
+        "image_alias": "default",
+        "image_ref": "runner:latest",
+        "missing_reason": None,
+    }
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["runtime_image"] == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Libvirt VM template",
+        "template_alias": "dotnet",
+        "image_ref": "dotnet-agent.qcow2",
+        "image_ref_sanitized": True,
+        "missing_reason": None,
+    }
+    assert (
+        detail_response.json()["summary_json"]["metadata"]["libvirt_vm_template"]["image_ref"]
+        == "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2"
+    )
+    assert container_detail_response.status_code == 200
+    assert container_detail_response.json()["session"]["runtime_image"] == {
+        "backend": "container_worker_vm",
+        "kind": "container_worker_image",
+        "label": "Container worker image",
+        "image_alias": "default",
+        "image_ref": "runner:latest",
+        "missing_reason": None,
+    }
 
 
 def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> None:

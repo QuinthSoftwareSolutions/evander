@@ -84,6 +84,19 @@ container-worker jobs for that session reuse the stored image instead of re-reso
 reference. Anthropic-backed Claude sessions should use `model_provider_mode: "anthropic"` together
 with the `claude` image alias.
 
+Libvirt VM defaults also carry a directory-scoped `vm.json` template catalog with
+`libvirt_vm_default_template` and `libvirt_vm_templates`. `effect:agent:create.vm_image` can select
+an approved alias from that catalog, and the resolved image/template selection is stored with the
+session. Existing-session upserts preserve that recorded selection when `vm_image` is omitted and
+replace it only when `vm_image` is supplied explicitly. Those entries are validated as approved
+libvirt template image refs for cloud-init-compatible qcow2 images, not Docker images, and the
+catalog map deep-merges across directory overlays. Use `container_image` for `container_worker_vm`.
+The selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE`,
+which uses it as the base overlay image while still falling back to the default Ubuntu image when
+no selection is present.
+For the operator prep and verification flow, see
+[libvirt-vm-template-operations.md](libvirt-vm-template-operations.md).
+
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
 Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
 `host_prereqs` runs; Nexus remains only the PyPI/npm path.

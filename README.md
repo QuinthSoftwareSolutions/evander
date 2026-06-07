@@ -128,6 +128,9 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/launch_agent_vm.sh vm-real real-session
    ```
 
+   For libvirt VM template selection, alias registration, and backing-image prep, see
+   [docs/libvirt-vm-template-operations.md](docs/libvirt-vm-template-operations.md).
+
    By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes host-side OpenAI-compatible and Anthropic-compatible relay base URLs on `http://192.168.250.1:11434`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, `LLM_BASE_URL=...`, or `ANTHROPIC_BASE_URL=...` if needed.
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.

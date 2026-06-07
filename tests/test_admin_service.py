@@ -24,6 +24,8 @@ from agent_sandbox.config import (
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
 )
+from agent_sandbox.effects.registry import EffectProviderFactory
+from agent_sandbox.effects.providers.schemas import AgentCreateEffectDefinition
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -47,6 +49,7 @@ from agent_sandbox.models import (
     VmActionResult,
     VmSummary,
 )
+from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
@@ -237,6 +240,161 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].backend == "container_worker_vm"
     assert agents[0].status == "prepared"
     assert agents[0].host["labels"] == {"role": "demo"}
+
+
+@pytest.mark.parametrize(
+    "metadata, expected",
+    [
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "dotnet-agent.qcow2",
+                    "template_alias": "dotnet",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": "dotnet",
+                "image_ref": "dotnet-agent.qcow2",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                    "template_alias": "default",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": "default",
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "template_alias": None,
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": None,
+                "image_ref": "dotnet-agent.qcow2",
+                "image_ref_sanitized": True,
+                "missing_reason": None,
+            },
+        ),
+        (
+            {
+                "libvirt_vm_template": {
+                    "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                }
+            },
+            {
+                "backend": "libvirt_vm",
+                "kind": "libvirt_vm_template",
+                "label": "Libvirt VM template",
+                "template_alias": None,
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "image_ref_sanitized": False,
+                "missing_reason": None,
+            },
+        ),
+    ],
+)
+def test_session_runtime_image_payload_normalizes_libvirt_vm_templates(
+    tmp_path: Path, metadata: dict[str, object], expected: dict[str, object]
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-1",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == expected
+    assert session.metadata == metadata
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"legacy": True},
+        {"libvirt_vm_template": "legacy"},
+    ],
+)
+def test_session_runtime_image_payload_marks_missing_legacy_libvirt_vm_template_metadata(
+    tmp_path: Path, metadata: dict[str, object]
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-legacy",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == {
+        "backend": "libvirt_vm",
+        "kind": "libvirt_vm_template",
+        "label": "Legacy session: VM template metadata unavailable",
+        "template_alias": None,
+        "image_ref": None,
+        "image_ref_sanitized": False,
+        "missing_reason": "legacy_missing_libvirt_vm_template",
+    }
+    assert session.metadata == metadata
+
+
+def test_session_runtime_image_payload_returns_container_worker_image_details(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    metadata = {
+        "execution_backend": "container_worker_vm",
+        "container_worker": {
+            "image": "runner:latest",
+            "image_alias": "default",
+        },
+    }
+    session = SessionManifest(
+        session_id="container-session",
+        vm_provider="container_worker_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=metadata,
+    )
+
+    payload = service.session_runtime_image_payload(session)
+
+    assert payload == {
+        "backend": "container_worker_vm",
+        "kind": "container_worker_image",
+        "label": "Container worker image",
+        "image_alias": "default",
+        "image_ref": "runner:latest",
+        "missing_reason": None,
+    }
+    assert session.metadata == metadata
 
 
 def test_list_agents_descendant_scope_includes_child_directory_sessions(
@@ -9821,6 +9979,83 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         },
     }
     assert result.message == "ok:setup_vm.sh"
+
+
+def test_effect_agent_create_passes_selected_libvirt_base_image_into_setup_env(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "dotnet": "dotnet-agent.qcow2",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/gh_id_ed25519.pub")
+    monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        script_name = next(
+            (Path(part).name for part in cmd if part.endswith(".sh")), Path(cmd[0]).name
+        )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=f"ok:{script_name}", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    factory = EffectProviderFactory(
+        provider_config_resolver=ProviderConfigResolver(service.config), admin_service=service
+    )
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        vm_image="dotnet",
+        directory_path=team_path,
+    )
+
+    result = factory.build(effect).execute()
+
+    assert result["vm_image"] == "dotnet-agent.qcow2"
+    assert result["vm_image_alias"] == "dotnet"
+    assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
+    assert captured["cmd"][:2] == ["sudo", "-n"]
+    assert any(
+        part.startswith("--preserve-env=") and "LIBVIRT_BASE_IMAGE" in part
+        for part in captured["cmd"]
+    )
+    setup_env = captured["env"]
+    assert setup_env is not None
+    assert setup_env["LIBVIRT_BASE_IMAGE"] == "dotnet-agent.qcow2"
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.metadata["libvirt_vm_template"] == {
+        "image_ref": "dotnet-agent.qcow2",
+        "template_alias": "dotnet",
+    }
 
 
 def test_create_vm_falls_back_to_pkexec_when_sudo_requires_prompt(

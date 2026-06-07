@@ -383,3 +383,332 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });
+
+test("admin shell sessions page shows runtime image details for libvirt, legacy, and container sessions", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  const explicitSession = {
+    session_id: "libvirt-explicit",
+    vm_id: "vm-explicit",
+    model: "gpt-5.4",
+    directory_path: "root/team",
+    allowed_tools: [],
+    approval_required_tools: [],
+    allowed_script_names: [],
+    discord_channel_allowlist: [],
+    teams_channel_allowlist: [],
+    communication_file_receive_enabled: false,
+    communication_file_send_enabled: false,
+    communication_file_max_bytes: null,
+    communication_file_allowed_mime_types: [],
+    communication_file_allowed_extensions: [],
+    communication_file_blocked_extensions: [],
+    communication_file_require_approval_for_send: false,
+    web_search_enabled: false,
+    expires_at: "2026-05-18T12:00:00Z",
+    created_at: "2026-05-17T12:00:00Z",
+    metadata: {
+      libvirt_vm_template: {
+        image_ref: "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+        template_alias: "dotnet",
+      },
+    },
+    runtime_image: {
+      backend: "libvirt_vm",
+      kind: "libvirt_vm_template",
+      label: "Libvirt VM template",
+      template_alias: "dotnet",
+      image_ref: "dotnet-agent.qcow2",
+      image_ref_sanitized: true,
+      missing_reason: null,
+    },
+    issue_number: null,
+    is_expired: false,
+  };
+  const legacySession = {
+    session_id: "libvirt-legacy",
+    vm_id: "vm-legacy",
+    model: "gpt-5.4",
+    directory_path: "root/team",
+    allowed_tools: [],
+    approval_required_tools: [],
+    allowed_script_names: [],
+    discord_channel_allowlist: [],
+    teams_channel_allowlist: [],
+    communication_file_receive_enabled: false,
+    communication_file_send_enabled: false,
+    communication_file_max_bytes: null,
+    communication_file_allowed_mime_types: [],
+    communication_file_allowed_extensions: [],
+    communication_file_blocked_extensions: [],
+    communication_file_require_approval_for_send: false,
+    web_search_enabled: false,
+    expires_at: "2026-05-18T12:00:00Z",
+    created_at: "2026-05-17T12:00:00Z",
+    metadata: { legacy: true },
+    runtime_image: {
+      backend: "libvirt_vm",
+      kind: "libvirt_vm_template",
+      label: "Legacy session: VM template metadata unavailable",
+      template_alias: null,
+      image_ref: null,
+      image_ref_sanitized: false,
+      missing_reason: "legacy_missing_libvirt_vm_template",
+    },
+    issue_number: null,
+    is_expired: false,
+  };
+  const containerSession = {
+    session_id: "container-session",
+    vm_id: null,
+    model: "gpt-5.4",
+    directory_path: "root/team",
+    allowed_tools: [],
+    approval_required_tools: [],
+    allowed_script_names: [],
+    discord_channel_allowlist: [],
+    teams_channel_allowlist: [],
+    communication_file_receive_enabled: false,
+    communication_file_send_enabled: false,
+    communication_file_max_bytes: null,
+    communication_file_allowed_mime_types: [],
+    communication_file_allowed_extensions: [],
+    communication_file_blocked_extensions: [],
+    communication_file_require_approval_for_send: false,
+    web_search_enabled: false,
+    expires_at: "2026-05-18T12:00:00Z",
+    created_at: "2026-05-17T12:00:00Z",
+    metadata: {
+      execution_backend: "container_worker_vm",
+      container_worker: {
+        image: "runner:latest",
+        image_alias: "default",
+      },
+    },
+    runtime_image: {
+      backend: "container_worker_vm",
+      kind: "container_worker_image",
+      label: "Container worker image",
+      image_alias: "default",
+      image_ref: "runner:latest",
+      missing_reason: null,
+    },
+    issue_number: null,
+    is_expired: false,
+  };
+  const sessionListResponse = {
+    items: [explicitSession, legacySession, containerSession],
+    active_items: [explicitSession, legacySession, containerSession],
+    expired_items: [],
+    counts: {
+      total: 3,
+      active: 3,
+      expired: 0,
+    },
+  };
+  const sessionDetailResponse = {
+    session: explicitSession,
+    wake_schedules: [],
+    summary_json: {},
+  };
+  const sessionCatalogResponse = {
+    tool_options: [],
+    resume_mode_options: [],
+    renew_extension_presets: ["1d"],
+  };
+  const sessionResponse = {
+    auth_mode: "none",
+    auth_required: false,
+    authenticated: true,
+    username: "admin",
+    display_name: "Admin Operator",
+    role: "admin",
+    can_manage_users: true,
+    session_id: "session-123",
+    available_login_methods: [],
+    azure_sso_login_url: null,
+    privileged_operations: {
+      unlocked: true,
+    },
+  };
+  const adminStateResponse = {
+    selected_directory_path: "root",
+    directory_scoped_config_enabled: false,
+    execution_backend: "libvirt_vm",
+    role: "admin",
+    can_manage_users: true,
+    privileged_operations: {
+      unlocked: true,
+    },
+    assistant: {
+      enabled: false,
+      show_launcher_when_disabled: false,
+    },
+  };
+  const rootDirectoryNode = {
+    directory: {
+      id: "root",
+      name: "root",
+      parent_id: null,
+      created_at: "2026-05-16T00:00:00Z",
+      metadata: {},
+      path: "root",
+    },
+    config_domains: [],
+    children: [],
+  };
+  const configurationStateResponse = {
+    directory_scoped_config_enabled: false,
+    selected_directory_path: "root",
+    execution_backend: "libvirt_vm",
+    selected_directory: {
+      path: "root",
+      parent_path: null,
+      can_create: false,
+      can_delete: false,
+    },
+    tree: {
+      ok: true,
+      data: rootDirectoryNode,
+      errors: [],
+      validation_diagnostics: [],
+    },
+  };
+
+  await t.after(async () => {
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(jsonResponse(sessionResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/state") {
+      await route.fulfill(jsonResponse(adminStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/configuration/state") {
+      await route.fulfill(jsonResponse(configurationStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/catalog") {
+      await route.fulfill(jsonResponse(sessionCatalogResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions") {
+      await route.fulfill(jsonResponse(sessionListResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/libvirt-explicit") {
+      await route.fulfill(jsonResponse(sessionDetailResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/libvirt-legacy") {
+      await route.fulfill(
+        jsonResponse({
+          session: legacySession,
+          wake_schedules: [],
+          summary_json: {},
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/container-session") {
+      await route.fulfill(
+        jsonResponse({
+          session: containerSession,
+          wake_schedules: [],
+          summary_json: {},
+        }),
+      );
+      return;
+    }
+
+    await route.continue();
+  });
+
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=libvirt-explicit`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "libvirt-explicit" }).waitFor({ state: "visible" }));
+  await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /dotnet/);
+  await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
+
+  await page.getByLabel("Find session").fill("");
+  await page.locator(".session-list-item").filter({ hasText: "libvirt-legacy" }).click();
+  await assert.match(await page.locator(".feature-content").innerText(), /Legacy session: VM template metadata unavailable/);
+
+  await page.locator(".session-list-item").filter({ hasText: "container-session" }).click();
+  await assert.match(await page.locator(".feature-content").innerText(), /Container image/i);
+  await assert.match(await page.locator(".feature-content").innerText(), /runner:latest/);
+
+  await page.getByPlaceholder("session, VM, issue, model").fill("runner:latest");
+  await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);
+  await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 0);
+  await page.getByPlaceholder("session, VM, issue, model").fill("dotnet");
+  await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 1);
+  await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 0);
+
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});

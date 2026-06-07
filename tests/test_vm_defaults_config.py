@@ -27,12 +27,23 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
         payload={
             "gateway_url": "http://10.0.0.1:9000/mcp",
             "openai_relay_port": 12000,
+            "libvirt_vm_default_template": " default ",
+            "libvirt_vm_templates": {
+                " default ": " ubuntu-24.04-server-cloudimg-amd64.img ",
+                "ubuntu-noble": " noble-root.qcow2 ",
+            },
         },
     )
     config_store.write(
         team.path,
         domain="vm-defaults",
-        payload={"nuget_relay_port": 13000},
+        payload={
+            "nuget_relay_port": 13000,
+            "libvirt_vm_templates": {
+                "ubuntu-jammy": " jammy-team.qcow2 ",
+                "ubuntu-noble": " noble-team.qcow2 ",
+            },
+        },
     )
 
     effective = resolver.resolve_for_directory(team.path)
@@ -41,6 +52,12 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
     assert effective.openai_relay_port == 12000
     assert effective.http_target_relay_port == 14000
     assert effective.nuget_relay_port == 13000
+    assert effective.libvirt_vm_default_template == "default"
+    assert effective.libvirt_vm_templates == {
+        "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "ubuntu-jammy": "jammy-team.qcow2",
+        "ubuntu-noble": "noble-team.qcow2",
+    }
     assert effective.guest_http_target_relay_base_url() == "http://10.0.0.1:14000"
     assert effective.guest_openai_base_url() == "http://10.0.0.1:12000/v1"
     assert effective.guest_nuget_relay_base_url() == "http://10.0.0.1:13000"

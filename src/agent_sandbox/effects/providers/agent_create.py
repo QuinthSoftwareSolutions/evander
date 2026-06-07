@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
+from agent_sandbox.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
     allowed_tools_for_profile,
@@ -44,6 +45,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "labels": effect.labels,
             "model": effect.model,
             "vm_user": effect.vm_user,
+            "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
             "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
@@ -118,27 +120,58 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")
         )
-        if existing_agent_behavior == "noop":
-            existing_session = _existing_session_for_create(
-                runtime_session_repository(context, config),
-                session_id=session_id,
-                vm_name=vm_name,
+        session_repository = runtime_session_repository(context, config)
+        existing_session = _existing_session_for_create(
+            session_repository,
+            session_id=session_id,
+            vm_name=vm_name,
+        )
+
+        vm_image_selector = normalize_optional_string(payload.get("vm_image"))
+        if existing_agent_behavior == "noop" and existing_session is not None:
+            vm_image_selection = _libvirt_vm_template_selection_from_session(existing_session)
+            return _existing_agent_noop_result(
+                session_id=existing_session.session_id,
+                execution_backend=execution_backend,
+                vm_name=existing_session.vm_id or vm_name,
+                vm_image=vm_image_selection["image_ref"] if vm_image_selection else None,
+                vm_image_alias=vm_image_selection["template_alias"]
+                if vm_image_selection
+                else None,
             )
-            if existing_session is not None:
-                return _existing_agent_noop_result(
-                    session_id=existing_session.session_id,
-                    execution_backend=execution_backend,
-                    vm_name=existing_session.vm_id or vm_name,
-                )
+        vm_image_selection: dict[str, str | None] | None = None
+        record_vm_image_selection = False
+        if vm_image_selector is not None or existing_session is None:
+            vm_defaults = _resolve_vm_defaults_for_create(context, directory_path=directory_path)
+            vm_image_selection = resolve_libvirt_vm_template_selector(
+                vm_image_selector,
+                default_template=vm_defaults.libvirt_vm_default_template,
+                templates=vm_defaults.libvirt_vm_templates,
+            )
+            record_vm_image_selection = True
+        elif existing_session is not None:
+            vm_image_selection = _libvirt_vm_template_selection_from_session(existing_session)
         codex_skills = managed_codex_skill_names(
             context=context,
             config=context.resolved_config,
             skill_names=as_string_list(payload.get("codex_skills")),
         )
         metadata = _metadata_patch(payload.get("metadata"))
+        if existing_session is not None and vm_image_selector is None:
+            metadata.pop("libvirt_vm_template", None)
         agent_provider = normalize_optional_string(payload.get("agent_provider"))
         if agent_provider:
             metadata = _deep_merge_metadata(metadata, {"agent_provider": agent_provider})
+        if record_vm_image_selection and vm_image_selection is not None:
+            metadata = _deep_merge_metadata(
+                metadata,
+                {
+                    "libvirt_vm_template": {
+                        "image_ref": vm_image_selection["image_ref"],
+                        "template_alias": vm_image_selection["template_alias"],
+                    }
+                },
+            )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -180,7 +213,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata=metadata,
             allow_existing_session=existing_agent_behavior == "upsert",
         )
-        return {
+        output = {
             "success": bool(result.success),
             "message": normalize_optional_string(getattr(result, "message", None)) or "",
             "session_id": session_id or f"session-{vm_name}",
@@ -188,6 +221,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "vm_name": result.vm_name or vm_name,
             "skipped": False,
         }
+        if vm_image_selection is not None:
+            output["vm_image"] = vm_image_selection["image_ref"]
+            output["vm_image_alias"] = vm_image_selection["template_alias"]
+        return output
 
     def _execute_container(
         self,
@@ -200,6 +237,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
         session_id = normalize_optional_string(payload.get("session_id"))
         if not session_id:
             raise ValueError("effect:agent:create with container_worker_vm requires session_id")
+        vm_image = normalize_optional_string(payload.get("vm_image"))
+        if vm_image:
+            raise ValueError(
+                "effect:agent:create vm_image is only supported with execution_backend='libvirt_vm'; "
+                "use container_image for container_worker_vm"
+            )
         session_repository = runtime_session_repository(context, config)
         existing_agent_behavior = normalize_existing_agent_behavior(
             payload.get("existing_agent_behavior")
@@ -417,10 +460,38 @@ def _existing_session_for_create(
         if existing is not None:
             return existing
     if vm_name:
-        matches = repository.list_sessions_for_vm(vm_name)
+        list_sessions_for_vm = getattr(repository, "list_sessions_for_vm", None)
+        if callable(list_sessions_for_vm):
+            matches = list_sessions_for_vm(vm_name)
+        else:
+            list_sessions = getattr(repository, "list_sessions", None)
+            matches = [
+                session
+                for session in (list_sessions() if callable(list_sessions) else [])
+                if getattr(session, "vm_id", None) == vm_name
+            ]
         if matches:
             return matches[-1]
     return None
+
+
+def _libvirt_vm_template_selection_from_session(session: Any) -> dict[str, str | None] | None:
+    metadata = getattr(session, "metadata", {})
+    if not isinstance(metadata, Mapping):
+        return None
+    template = metadata.get("libvirt_vm_template")
+    if not isinstance(template, Mapping):
+        return None
+    image_ref = normalize_optional_string(template.get("image_ref"))
+    if image_ref is None:
+        return None
+    raw_alias = template.get("template_alias")
+    return {
+        "image_ref": image_ref,
+        "template_alias": normalize_optional_string(raw_alias)
+        if isinstance(raw_alias, str)
+        else None,
+    }
 
 
 def _existing_agent_noop_result(
@@ -428,6 +499,8 @@ def _existing_agent_noop_result(
     session_id: str,
     execution_backend: str,
     vm_name: str | None,
+    vm_image: str | None = None,
+    vm_image_alias: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "success": True,
@@ -437,7 +510,18 @@ def _existing_agent_noop_result(
         "vm_name": vm_name,
         "skipped": True,
     }
+    if vm_image is not None or vm_image_alias is not None:
+        result["vm_image"] = vm_image
+        result["vm_image_alias"] = vm_image_alias
     if execution_backend == "container_worker_vm":
         result["agent_home"] = "/home/agent"
         result["repo_root"] = "/home/agent/repos"
     return result
+
+
+def _resolve_vm_defaults_for_create(context: Any, *, directory_path: str) -> Any:
+    admin_service = getattr(context, "admin_service", None)
+    resolve_vm_defaults = getattr(admin_service, "resolve_vm_defaults", None)
+    if callable(resolve_vm_defaults):
+        return resolve_vm_defaults(directory_path)
+    raise RuntimeError("effect:agent:create requires admin_service.resolve_vm_defaults")

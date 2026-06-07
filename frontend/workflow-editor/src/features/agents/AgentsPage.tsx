@@ -18,6 +18,7 @@ import type {
   AgentSessionPolicy,
   SkillLibraryItem,
   SkillListResponse,
+  RuntimeImageInfo,
 } from "../admin/types";
 
 type ActionLogEntry = {
@@ -376,6 +377,101 @@ function hostRecord(
     return value as Record<string, unknown>;
   }
   return null;
+}
+
+function hostRuntimeImage(host: Record<string, unknown> | null | undefined): RuntimeImageInfo | null {
+  const value = host?.runtime_image;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.backend !== "libvirt_vm" &&
+    candidate.backend !== "container_worker_vm"
+  ) {
+    return null;
+  }
+  if (
+    candidate.kind !== "libvirt_vm_template" &&
+    candidate.kind !== "container_worker_image"
+  ) {
+    return null;
+  }
+  if (typeof candidate.label !== "string" || !candidate.label.trim()) {
+    return null;
+  }
+  return {
+    backend: candidate.backend as RuntimeImageInfo["backend"],
+    kind: candidate.kind as RuntimeImageInfo["kind"],
+    label: candidate.label,
+    template_alias: typeof candidate.template_alias === "string" && candidate.template_alias.trim() ? candidate.template_alias : null,
+    image_alias: typeof candidate.image_alias === "string" && candidate.image_alias.trim() ? candidate.image_alias : null,
+    image_ref: typeof candidate.image_ref === "string" && candidate.image_ref.trim() ? candidate.image_ref : null,
+    image_ref_sanitized: typeof candidate.image_ref_sanitized === "boolean" ? candidate.image_ref_sanitized : false,
+    missing_reason: typeof candidate.missing_reason === "string" && candidate.missing_reason.trim() ? candidate.missing_reason : null,
+  };
+}
+
+function agentRuntimeImage(agent: AgentRecord | null | undefined): RuntimeImageInfo | null {
+  const runtimeImage = hostRuntimeImage(agent?.host);
+  if (runtimeImage) return runtimeImage;
+  if (agent?.backend !== "container_worker_vm") return null;
+  const imageRef = hostString(agent.host, "image");
+  const imageAlias = hostString(agent.host, "image_alias");
+  return {
+    backend: "container_worker_vm",
+    kind: "container_worker_image",
+    label: "Container worker image",
+    image_alias: imageAlias,
+    image_ref: imageRef,
+    missing_reason: imageRef ? null : "container_worker_image_missing",
+  };
+}
+
+function runtimeImagePrimaryText(runtimeImage: RuntimeImageInfo | null): string {
+  if (!runtimeImage) return "Unavailable";
+  if (runtimeImage.backend === "container_worker_vm") {
+    return runtimeImage.image_ref ?? "Unavailable";
+  }
+  if (runtimeImage.missing_reason) {
+    return runtimeImage.label;
+  }
+  return runtimeImage.template_alias ?? runtimeImage.label;
+}
+
+function runtimeImageTooltip(runtimeImage: RuntimeImageInfo | null): string {
+  if (!runtimeImage) return "Runtime image metadata unavailable.";
+  if (runtimeImage.backend === "container_worker_vm") {
+    const imageRef = runtimeImage.image_ref ?? "Unavailable";
+    return runtimeImage.image_alias
+      ? `${runtimeImage.label}: ${imageRef} (alias: ${runtimeImage.image_alias})`
+      : `${runtimeImage.label}: ${imageRef}`;
+  }
+  if (runtimeImage.missing_reason) {
+    return runtimeImage.label;
+  }
+  const imageRef = runtimeImage.image_ref ?? "Unavailable";
+  if (runtimeImage.image_ref_sanitized) {
+    return `${runtimeImage.label}: ${imageRef} (sanitized display from host-path metadata)`;
+  }
+  return runtimeImage.template_alias
+    ? `${runtimeImage.label}: ${runtimeImage.template_alias} uses ${imageRef}`
+    : `${runtimeImage.label}: ${imageRef}`;
+}
+
+function runtimeImageListSummary(runtimeImage: RuntimeImageInfo | null): string | null {
+  if (!runtimeImage) return null;
+  if (runtimeImage.backend === "container_worker_vm") {
+    const imageRef = runtimeImage.image_ref ?? "unavailable";
+    return runtimeImage.image_alias ? `Container image ${imageRef} (${runtimeImage.image_alias})` : `Container image ${imageRef}`;
+  }
+  if (runtimeImage.missing_reason) {
+    return runtimeImage.label;
+  }
+  const imageRef = runtimeImage.image_ref ?? "Unavailable";
+  return runtimeImage.template_alias
+    ? `VM template ${runtimeImage.template_alias} / ${imageRef}`
+    : `VM image ref ${imageRef}`;
 }
 
 function recordEntries(value: Record<string, unknown> | null | undefined): Array<[string, string]> {
@@ -1303,6 +1399,7 @@ export function AgentsPage() {
   const agentState = hostString(guestAgent, "state") ?? "unknown";
   const agentPid = hostNumber(guestAgent, "pid");
   const powerState = hostString(selectedAgent?.host, "power_state") ?? selectedAgent?.status ?? "unknown";
+  const selectedRuntimeImage = agentRuntimeImage(selectedAgent);
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
   const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
@@ -1385,35 +1482,35 @@ export function AgentsPage() {
             return (
               <div className="agent-list-section" key={backend}>
                 <div className="section-label agent-list-heading">{backendLabel(backend)}</div>
-                {group.map((item) => (
-                  <button
-                    key={agentKey(item)}
-                    type="button"
-                    className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
-                    onClick={() => {
-                      setSelectedKey(agentKey(item));
-                      setShowPromptForm(false);
-                      setShowEditForm(false);
-                      setShowSkillInstallForm(false);
-                    }}
-                  >
-                    <div className="feature-list-title-row vm-list-item-row">
-                      <strong>{item.target_name || item.agent_id}</strong>
-                      <span className={`status-pill vm-status-pill state-${statusClass(item.status)}`}>
-                        {item.status}
-                      </span>
-                    </div>
-                    <div className="feature-list-meta agent-list-item-meta">
-                      {item.session_id ?? "No session"} / {item.directory_path}
-                    </div>
-                    {item.backend === "container_worker_vm" ? (
-                      <div className="feature-list-meta agent-list-item-meta">
-                        {hostString(item.host, "image") ?? "Image unknown"}
-                        {hostString(item.host, "image_alias") ? ` (${hostString(item.host, "image_alias")})` : ""}
+                {group.map((item) => {
+                  const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
+                  return (
+                    <button
+                      key={agentKey(item)}
+                      type="button"
+                      className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
+                      onClick={() => {
+                        setSelectedKey(agentKey(item));
+                        setShowPromptForm(false);
+                        setShowEditForm(false);
+                        setShowSkillInstallForm(false);
+                      }}
+                    >
+                      <div className="feature-list-title-row vm-list-item-row">
+                        <strong>{item.target_name || item.agent_id}</strong>
+                        <span className={`status-pill vm-status-pill state-${statusClass(item.status)}`}>
+                          {item.status}
+                        </span>
                       </div>
-                    ) : null}
-                  </button>
-                ))}
+                      <div className="feature-list-meta agent-list-item-meta">
+                        {item.session_id ?? "No session"} / {item.directory_path}
+                      </div>
+                      {runtimeImageSummary ? (
+                        <div className="feature-list-meta agent-list-item-meta">{runtimeImageSummary}</div>
+                      ) : null}
+                    </button>
+                  );
+                })}
               </div>
             );
           })}
@@ -2079,13 +2176,17 @@ export function AgentsPage() {
                         <dd>{hostString(selectedAgent.host, "worker_url") ?? "Unknown"}</dd>
                       </div>
                       <div>
-                        <dt>Image</dt>
-                        <dd>{hostString(selectedAgent.host, "image") ?? "Unknown"}</dd>
+                        <dt>Container image</dt>
+                        <dd>
+                          <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
+                            <span>{runtimeImagePrimaryText(selectedRuntimeImage)}</span>
+                          </Tooltip>
+                        </dd>
                       </div>
-                      {hostString(selectedAgent.host, "image_alias") ? (
+                      {selectedRuntimeImage?.image_alias ? (
                         <div>
-                          <dt>Image alias</dt>
-                          <dd>{hostString(selectedAgent.host, "image_alias")}</dd>
+                          <dt>Container image alias</dt>
+                          <dd>{selectedRuntimeImage.image_alias}</dd>
                         </div>
                       ) : null}
                       <div>
@@ -2119,6 +2220,26 @@ export function AgentsPage() {
                         <dt>Issue</dt>
                         <dd>{hostString(selectedAgent.host, "issue_number") ?? "None"}</dd>
                       </div>
+                      {selectedRuntimeImage ? (
+                        <>
+                          <div>
+                            <dt>VM template</dt>
+                            <dd>
+                              <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
+                                <span>{runtimeImagePrimaryText(selectedRuntimeImage)}</span>
+                              </Tooltip>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>VM image ref</dt>
+                            <dd>
+                              <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
+                                <span>{selectedRuntimeImage.image_ref ?? "Unavailable"}</span>
+                              </Tooltip>
+                            </dd>
+                          </div>
+                        </>
+                      ) : null}
                     </>
                   )}
                 </dl>

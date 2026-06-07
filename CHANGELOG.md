@@ -27,6 +27,54 @@ material. Newer entries are added incrementally as changes land.
 - Reported early guest agent process exits as resume failures with recent guest
   log output instead of leaving enqueue effects with a missing thread ID.
 
+## 2026-06-06 - Libvirt VM Template Operations Runbook
+
+- Added an operator runbook for preparing, registering, and selecting libvirt
+  VM templates, including the qcow2/cloud-init terminology and the distinction
+  from Docker or container images.
+- Documented a non-default-template smoke path that verifies the selected
+  alias through `runtime/sessions.json` and the libvirt disk backing file.
+- Added failure guidance for missing images, unknown aliases, SSH readiness,
+  and bootstrap failures so operators can diagnose template-selection issues
+  without creating unnecessary new images.
+
+## 2026-06-06 - Operator VM Template Visibility
+
+- Added a normalized runtime-image payload for admin session and agent records
+  so operators can see the effective libvirt VM template or container-worker
+  image without parsing raw metadata.
+- Exposed explicit legacy-missing labeling for sessions that lack preserved
+  libvirt template metadata, keeping the UI and API distinction visible.
+- Sanitized libvirt display image refs that look like host paths while
+  preserving the original session metadata for compatibility.
+- Kept container-worker image details distinct from libvirt VM template details
+  so the two backends remain clearly separated in operator surfaces.
+
+## 2026-06-06 - Agent Create VM Image Docs
+
+- Added `vm_image` to the `effect:agent:create` schema reference and clarified
+  that it is a libvirt-only VM template selector resolved against the approved
+  `vm.json` catalog.
+- Documented the libvirt template catalog and execution-backend guidance so
+  operators do not confuse `vm_image` with container-worker `container_image`.
+- Extended the operator field-help inventory with the new `effect:agent:create`
+  VM template selector wording.
+- Preserved existing `metadata.libvirt_vm_template` values on libvirt
+  existing-session upserts when `vm_image` is omitted, replacing them only for
+  explicit `vm_image` selections, and documented that the resolved libvirt
+  image ref is forwarded to `scripts/launch_agent_vm.sh` via
+  `LIBVIRT_BASE_IMAGE`.
+
+## 2026-06-06 - Libvirt VM Template Catalog
+
+- Added `libvirt_vm_default_template` and `libvirt_vm_templates` to the VM
+  defaults config path and directory-config domain allowlist.
+- Documented the libvirt VM template catalog as cloud-init-compatible qcow2
+  image refs that deep-merge across directory overlays.
+- Clarified that the new template selection metadata is validated before VM
+  launch and consumed by `scripts/launch_agent_vm.sh` through
+  `LIBVIRT_BASE_IMAGE`.
+
 ## 2026-06-06 - Claude Container Runner Image
 
 - Added a separate Claude container runner Docker image and build script that

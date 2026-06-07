@@ -11,6 +11,10 @@ from agent_sandbox.directory_config import (
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.policy_config import PolicyConfigResolver
+from agent_sandbox.vm.templates import (
+    DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
+    DEFAULT_LIBVIRT_VM_TEMPLATES,
+)
 
 
 def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
@@ -166,6 +170,110 @@ def test_directory_config_resolver_reports_validation_errors_for_invalid_gateway
 
     assert resolution.effective_config["discord_poll_limit"] == 999
     assert resolution.validation_errors
+
+
+def test_get_domain_base_config_includes_libvirt_vm_template_defaults() -> None:
+    base_config = get_domain_base_config(GatewayConfig(), "vm")
+
+    assert base_config["libvirt_vm_default_template"] == DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE
+    assert base_config["libvirt_vm_templates"] == DEFAULT_LIBVIRT_VM_TEMPLATES
+
+
+def test_directory_config_store_merges_libvirt_vm_template_catalogs_and_accepts_legacy_domain_alias(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    root_written = config_store.write(
+        "root",
+        domain="vm",
+        payload={
+            "libvirt_vm_default_template": " default ",
+            "libvirt_vm_templates": {
+                " default ": " ubuntu-24.04-server-cloudimg-amd64.img ",
+                "ubuntu-noble": " noble-root.qcow2 ",
+            },
+        },
+    )
+    team_written = config_store.write(
+        team.path,
+        domain="vm-defaults",
+        payload={
+            "libvirt_vm_templates": {
+                "ubuntu-jammy": " jammy-team.qcow2 ",
+                "ubuntu-noble": " noble-team.qcow2 ",
+            }
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert root_written == {
+        "libvirt_vm_default_template": "default",
+        "libvirt_vm_templates": {
+            "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "ubuntu-noble": "noble-root.qcow2",
+        },
+    }
+    assert team_written == {
+        "libvirt_vm_templates": {
+            "ubuntu-jammy": "jammy-team.qcow2",
+            "ubuntu-noble": "noble-team.qcow2",
+        }
+    }
+    assert resolution.effective_config["libvirt_vm_default_template"] == "default"
+    assert resolution.effective_config["libvirt_vm_templates"] == {
+        "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "ubuntu-jammy": "jammy-team.qcow2",
+        "ubuntu-noble": "noble-team.qcow2",
+    }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_resolver_reports_validation_errors_for_invalid_libvirt_vm_template_override(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(service)
+
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "vm": {
+                            "libvirt_vm_templates": {"default": 123},
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert any("must be strings" in message for message in resolution.validation_errors)
 
 
 def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_path: Path) -> None:

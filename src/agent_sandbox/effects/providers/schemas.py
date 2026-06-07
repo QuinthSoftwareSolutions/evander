@@ -163,6 +163,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    vm_image: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
     capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
