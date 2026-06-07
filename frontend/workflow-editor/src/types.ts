@@ -122,6 +122,7 @@ export type WorkflowEditorFieldDefinition = {
   default_value?: unknown | null;
   options: WorkflowEditorFieldOption[];
   item_fields: WorkflowEditorFieldDefinition[];
+  metadata?: Record<string, unknown>;
 };
 
 export type WorkflowEditorNodePortDefinition = {

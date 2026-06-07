@@ -1402,8 +1402,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
     assert {field["key"] for field in agent_create["fields"]} == {
-        "provider",
         "execution_backend",
+        "agent_provider",
+        "provider",
         "vm_name",
         "session_id",
         "existing_agent_behavior",
@@ -1436,7 +1437,45 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "metadata",
     }
+    assert [field["key"] for field in agent_create["fields"][:3]] == [
+        "execution_backend",
+        "agent_provider",
+        "provider",
+    ]
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
+    assert agent_create_fields["execution_backend"]["required"] is True
+    assert agent_create_fields["agent_provider"]["kind"] == "enum"
+    assert agent_create_fields["agent_provider"]["options"] == [
+        {"value": "codex", "label": "Codex"},
+        {"value": "claude", "label": "Claude"},
+        {
+            "value": "copilot",
+            "label": "Copilot",
+            "metadata": {"execution_backends": ["libvirt_vm"]},
+        },
+    ]
+    assert agent_create_fields["provider"]["label"] == "VM provider"
+    assert agent_create_fields["provider"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["vm_name"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["vm_user"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["mssql"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["mssql_init_root"]["metadata"] == {
+        "execution_backends": ["libvirt_vm"]
+    }
+    assert agent_create_fields["container_image"]["metadata"] == {
+        "execution_backends": ["container_worker_vm"]
+    }
+    assert agent_create_fields["npm_registry_url"]["metadata"] == {
+        "execution_backends": ["container_worker_vm"]
+    }
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
     assert agent_create_fields["metadata"]["kind"] == "json"
@@ -3860,6 +3899,41 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
         "field_path": "prompt",
         "reference": "trigger-ticket-created-main.missing_output",
         "message": "prompt references missing output trigger-ticket-created-main.missing_output",
+    } in response.json()["validation_diagnostics"]
+
+
+def test_admin_web_validate_reports_agent_create_missing_execution_backend(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [],
+            "gates": [],
+            "effects": [
+                {
+                    "id": "agent-create",
+                    "display_name": "Create agent",
+                    "type": "effect:agent:create",
+                }
+            ],
+            "queries": [],
+            "edges": [],
+        },
+        "layout": {"nodes": {"agent-create": {"x": 100, "y": 50}}},
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "agent_create_missing_execution_backend",
+        "severity": "error",
+        "node_id": "agent-create",
+        "node_type": "effect:agent:create",
+        "field_path": "execution_backend",
+        "message": "effect:agent:create requires an execution backend.",
     } in response.json()["validation_diagnostics"]
 
 

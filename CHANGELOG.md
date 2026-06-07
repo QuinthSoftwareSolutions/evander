@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-07 - Agent Create Workflow Editor UX
+
+- Split the workflow editor Agent create form by execution backend, exposed the
+  agent provider field, and flagged missing execution backend selections as
+  validation errors.
+
 ## 2026-06-06 - Claude Container Runner Image
 
 - Added a separate Claude container runner Docker image and build script that
