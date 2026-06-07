@@ -818,6 +818,7 @@ REMOTE
   exit "${EXIT_RESUME_FAILED}"
 fi
 
+set +e
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${SSH_USER}@${VM_IP}" \
@@ -1028,10 +1029,28 @@ if [[ -z "${THREAD_ID_RESULT}" && "${RESUME_MODE}" == "new_context" ]]; then
 fi
 if [[ -n "${THREAD_ID_RESULT}" ]]; then
   printf 'thread_id=%s\n' "${THREAD_ID_RESULT}"
+elif ! kill -0 "${AGENT_PID}" >/dev/null 2>&1; then
+  AGENT_EXIT_CODE=0
+  wait "${AGENT_PID}" || AGENT_EXIT_CODE="$?"
+  if (( AGENT_EXIT_CODE == 0 )); then
+    AGENT_EXIT_CODE=1
+  fi
+  echo "Agent process exited before emitting a thread id (exit code ${AGENT_EXIT_CODE})." >&2
+  if [[ -f "${RUN_LOG_FILE}" ]]; then
+    tail -n 40 "${RUN_LOG_FILE}" >&2 || true
+  fi
+  exit "${AGENT_EXIT_CODE}"
 fi
 printf 'resumed pid=%s log=%s\n' "${AGENT_PID}" "${RUN_LOG_FILE}"
 REMOTE
 )"
+resume_exit_code="$?"
+set -e
+if [[ "${resume_exit_code}" -ne 0 ]]; then
+  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-exit-${resume_exit_code}"
+  echo "Resume command failed for ${VM_NAME} with exit code ${resume_exit_code}." >&2
+  exit "${EXIT_RESUME_FAILED}"
+fi
 
 THREAD_ID_OUTPUT=""
 RESUME_SUMMARY=""

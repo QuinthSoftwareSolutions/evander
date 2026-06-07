@@ -9,6 +9,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
+import agent_sandbox.admin.web.chat as chat_module
 from agent_sandbox.admin.web.chat import ChatStore, chat_routes
 
 
@@ -175,6 +176,26 @@ def test_chat_session_start_prewarms_assistant_session_with_effective_settings(
     ]
 
 
+def test_chat_session_start_resolves_assistant_session_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = FakeAdminService(tmp_path)
+    alice = _client_for_user(service, {"username": "alice"})
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(chat_module, "run_in_threadpool", fake_run_in_threadpool)
+
+    response = alice.post("/api/chat/session")
+
+    assert response.status_code == 200
+    assert threadpool_calls == ["resolve_chat_assistant_session"]
+
+
 def test_chat_session_start_preserves_full_access_settings_for_privileged_request(
     tmp_path: Path,
 ) -> None:
@@ -206,9 +227,17 @@ def test_chat_session_start_preserves_full_access_settings_for_privileged_reques
 
 def test_chat_new_session_clears_widget_thread_and_resets_assistant_context(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     service = FakeAdminService(tmp_path)
     alice = _client_for_user(service, {"username": "alice"})
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(chat_module, "run_in_threadpool", fake_run_in_threadpool)
 
     first_session = alice.post("/api/chat/session").json()
     first_post = alice.post(
@@ -239,6 +268,10 @@ def test_chat_new_session_clears_widget_thread_and_resets_assistant_context(
             user_id="alice",
             thread_id=new_session["thread_id"],
         ),
+    ]
+    assert threadpool_calls == [
+        "resolve_chat_assistant_session",
+        "resolve_chat_assistant_session",
     ]
 
     old_transcript = alice.get(f"/api/chat/transcript/{first_session['thread_id']}").json()

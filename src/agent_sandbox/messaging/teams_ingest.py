@@ -19,7 +19,11 @@ from agent_sandbox.config import (
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from agent_sandbox.events.models import materialize_node_definition
-from agent_sandbox.events.provider_models import TeamsDirectMessageTriggerDefinition
+from agent_sandbox.events.provider_models import (
+    CommunicationNewMessageTriggerDefinition,
+    TeamsDirectMessageTriggerDefinition,
+)
+from agent_sandbox.messaging.targets import load_communication_targets_config
 from agent_sandbox.repositories.cursors import (
     JsonTeamsInboxCursorRepository,
     TeamsInboxCursorRepository,
@@ -136,14 +140,17 @@ class TeamsIngestWorker:
         direct_chats_polled = 0
         new_messages_discovered = 0
         direct_sender_refs = self._direct_message_sender_refs()
+        communication_trigger_targets = self._communication_trigger_teams_targets_by_directory()
         directories = self._directories_to_scan(
             active_sessions,
             include_default_directory=bool(direct_sender_refs),
+            include_directories=set(communication_trigger_targets),
         )
         for directory_path in directories:
             channel_targets = self._channel_targets_for_directory(
                 directory_path,
                 active_sessions=active_sessions,
+                communication_trigger_targets=communication_trigger_targets,
             )
             if not channel_targets and not direct_sender_refs:
                 continue
@@ -223,12 +230,14 @@ class TeamsIngestWorker:
         active_sessions: list[SessionManifest],
         *,
         include_default_directory: bool = False,
+        include_directories: set[str] | None = None,
     ) -> list[str]:
         if self.worker_config.directories:
             return list(self.worker_config.directories)
         directories = {
             DirectoryPath(segments=session.directory_path).as_posix() for session in active_sessions
         }
+        directories.update(include_directories or set())
         if include_default_directory and not directories:
             directories.add("root")
         return sorted(directories)
@@ -238,6 +247,7 @@ class TeamsIngestWorker:
         directory_path: str,
         *,
         active_sessions: list[SessionManifest],
+        communication_trigger_targets: dict[str, set[str]] | None = None,
     ) -> list[str]:
         targets = {
             normalized
@@ -249,7 +259,84 @@ class TeamsIngestWorker:
                 capability="read",
             )
         }
+        for trigger_directory, trigger_targets in (communication_trigger_targets or {}).items():
+            if _directory_is_within_scope(trigger_directory, directory_path):
+                targets.update(trigger_targets)
         return sorted(targets)
+
+    def _communication_trigger_teams_targets_by_directory(self) -> dict[str, set[str]]:
+        try:
+            trigger_config = load_trigger_orchestrator_worker_global_config(
+                self.project_dir,
+                base_config=self.config,
+            )
+        except Exception:
+            logger.exception("Failed to load trigger orchestrator config for Teams communication ingest")
+            return {}
+
+        targets_by_directory: dict[str, set[str]] = {}
+        communication_targets_by_directory: dict[str, dict[str, Any]] = {}
+        for trigger in trigger_config.triggers:
+            if not workflow_node_is_enabled(trigger):
+                continue
+            if trigger.type != "trigger:communication:new-message":
+                continue
+            materialized = materialize_node_definition(trigger)
+            if not isinstance(materialized, CommunicationNewMessageTriggerDefinition):
+                continue
+            directory_path = DirectoryPath(
+                segments=materialized.directory_path or "root"
+            ).as_posix()
+            targets_by_id = communication_targets_by_directory.get(directory_path)
+            if targets_by_id is None:
+                try:
+                    targets_by_id = load_communication_targets_config(
+                        runtime_dir=self.config.runtime_dir,
+                        directory_store=self.runtime.directories,
+                        directory_path=directory_path,
+                    ).by_id()
+                except Exception:
+                    logger.warning(
+                        "Failed to load communication targets for Teams ingest directory=%s",
+                        directory_path,
+                        exc_info=True,
+                    )
+                    targets_by_id = {}
+                communication_targets_by_directory[directory_path] = targets_by_id
+            for target_id in materialized.communication_target_ids:
+                target = targets_by_id.get(target_id)
+                if target is None:
+                    logger.warning(
+                        "Skipping Teams ingest communication target %r for trigger %s "
+                        "because it is not defined for directory=%s",
+                        target_id,
+                        materialized.id,
+                        directory_path,
+                    )
+                    continue
+                if target.provider != "teams":
+                    continue
+                if "read" not in set(target.policy.capabilities):
+                    logger.warning(
+                        "Skipping Teams ingest communication target %r for trigger %s "
+                        "because it does not allow read capability",
+                        target_id,
+                        materialized.id,
+                    )
+                    continue
+                parsed_target = parse_teams_target(target.address)
+                if parsed_target.kind == "user":
+                    logger.warning(
+                        "Skipping Teams ingest communication target %r for trigger %s "
+                        "because Teams user targets are not pollable",
+                        target_id,
+                        materialized.id,
+                    )
+                    continue
+                targets_by_directory.setdefault(directory_path, set()).add(
+                    normalize_teams_target(target.address)
+                )
+        return targets_by_directory
 
     def _direct_message_sender_refs(self) -> set[str]:
         try:

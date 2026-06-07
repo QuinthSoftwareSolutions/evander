@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
+import agent_sandbox.admin.web.vms_issues as vms_issues_module
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
@@ -11335,6 +11336,13 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
     )
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
 
     client = TestClient(create_app(service))
 
@@ -11356,3 +11364,57 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
     payload = response.json()
     assert payload["issue"]["issue_id"] == created_issue.issue_id
     assert payload["vm_action"]["vm_name"] == "issue-vm-1"
+    assert threadpool_calls == ["_create_issue"]
+
+
+def test_admin_web_create_vm_from_issue_runs_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    created_issue = service.create_local_issue(
+        title="Draft fix",
+        body="body",
+        directory_path="root/team-a",
+    )
+
+    def create_issue_vm(self, issue_identifier: str, **payload):
+        assert issue_identifier == created_issue.issue_id
+        assert payload["model"] == "gpt-5.2-codex"
+        assert payload["dotnet"] is True
+        assert payload["nuget"] == "/tmp/project.slnx"
+        assert payload["playwright"] is True
+        return VmActionResult(
+            success=True,
+            vm_name="issue-vm-1",
+            action="create-issue-vm",
+            message="vm created",
+        )
+
+    monkeypatch.setattr(
+        service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
+    )
+    threadpool_calls: list[str] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
+
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/issues/{created_issue.issue_id}/create-vm",
+        json={
+            "model": "gpt-5.2-codex",
+            "dotnet": True,
+            "nuget": "/tmp/project.slnx",
+            "playwright": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["vm_name"] == "issue-vm-1"
+    assert threadpool_calls == ["create_issue_vm"]

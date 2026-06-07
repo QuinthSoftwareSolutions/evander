@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -321,7 +322,8 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         user_id = user_id_for_request(request)
         thread_id = store.get_or_create_thread(user_id)
         backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
-        service.vm_agent_admin.resolve_chat_assistant_session(
+        await run_in_threadpool(
+            service.vm_agent_admin.resolve_chat_assistant_session,
             user_id=user_id,
             backend=backend,
             assistant_scope="admin_chat",
@@ -355,7 +357,8 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
                 assistant_scope="admin_chat",
                 thread_id=thread_id,
             )
-        service.vm_agent_admin.resolve_chat_assistant_session(
+        await run_in_threadpool(
+            service.vm_agent_admin.resolve_chat_assistant_session,
             user_id=user_id,
             backend=backend,
             assistant_scope="admin_chat",

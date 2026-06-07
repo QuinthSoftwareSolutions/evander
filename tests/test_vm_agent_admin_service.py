@@ -315,6 +315,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     created_vm_names: set[str] = set()
     create_vm_calls: list[dict[str, Any]] = []
     vm_copy_calls: list[tuple[str, str, list[dict[str, Any]]]] = []
+    runtime_checks: list[tuple[str, str]] = []
 
     def fake_dominfo_field(vm_name: str, field_name: str) -> str | None:
         if field_name == "State" and vm_name in created_vm_names:
@@ -366,6 +367,13 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     monkeypatch.setattr(VmAgentAdminService, "vm_copy_files", fake_vm_copy_files)
     monkeypatch.setattr(
         VmAgentAdminService,
+        "_ensure_libvirt_chat_assistant_runtime",
+        lambda self, *, session_id, vm_name, settings: runtime_checks.append(
+            (session_id, vm_name)
+        ),
+    )
+    monkeypatch.setattr(
+        VmAgentAdminService,
         "_container_worker_backend",
         lambda self, *, directory_path=None: fake_container_backend,
     )
@@ -395,6 +403,10 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert create_vm_calls[0]["provider"] == "libvirt"
     assert create_vm_calls[0]["allow_existing_session"] is True
     assert [call[0] for call in vm_copy_calls] == ["assistant-shared", "assistant-shared"]
+    assert runtime_checks == [
+        ("assistant-shared", "assistant-shared"),
+        ("assistant-shared", "assistant-shared"),
+    ]
     assert all(call[1] == "agent" for call in vm_copy_calls)
     assert all(
         call[2][0]["destination_path"] == "/home/agent/AGENTS.md"
@@ -446,6 +458,11 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         "assistant-shared",
         "assistant-shared",
         "assistant-shared",
+    ]
+    assert runtime_checks == [
+        ("assistant-shared", "assistant-shared"),
+        ("assistant-shared", "assistant-shared"),
+        ("assistant-shared", "assistant-shared"),
     ]
 
     reset_libvirt = service.reset_chat_assistant_thread_context(
@@ -616,6 +633,59 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         )
         for _session_id, files in fake_container_backend.written
     )
+
+
+def test_chat_assistant_libvirt_bootstraps_codex_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin = FakeAdmin()
+    admin.config.runtime_dir = tmp_path
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    copied: list[tuple[str, str, list[dict[str, Any]]]] = []
+    exec_calls: list[dict[str, Any]] = []
+    runs: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_vm_copy_files(
+        self: VmAgentAdminService,
+        target: str,
+        *,
+        files: list[dict[str, Any]],
+        vm_user: str = "agent",
+    ) -> dict[str, Any]:
+        copied.append((target, vm_user, list(files)))
+        return {"success": True, "copied_paths": []}
+
+    def fake_vm_exec(self: VmAgentAdminService, target: str, **kwargs: Any) -> dict[str, Any]:
+        exec_calls.append({"target": target, **kwargs})
+        return {"success": False, "exit_code": 127, "stdout": "", "stderr": "missing"}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        runs.append((cmd, kwargs.get("env")))  # type: ignore[arg-type]
+        return type("Completed", (), {"returncode": 0, "stdout": "bootstrapped", "stderr": ""})()
+
+    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr(VmAgentAdminService, "vm_copy_files", fake_vm_copy_files)
+    monkeypatch.setattr(VmAgentAdminService, "vm_exec", fake_vm_exec)
+    monkeypatch.setattr(admin_service_module, "_run_subprocess", fake_run_subprocess)
+
+    result = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings={"default_model": "gpt-test"},
+        thread_id="thread-a",
+        user_message_id="msg-a",
+    )
+
+    assert result["session_id"] == "assistant-shared"
+    assert copied[0][0] == "assistant-shared"
+    assert exec_calls[0]["target"] == "assistant-shared"
+    assert runs
+    bootstrap_cmd, bootstrap_env = runs[0]
+    assert bootstrap_cmd[0].endswith("scripts/bootstrap_codex_vm.sh")
+    assert bootstrap_cmd[1:] == ["assistant-shared", "agent"]
+    assert bootstrap_env is not None
+    assert bootstrap_env["AGENT_MODEL"] == "gpt-test"
 
 
 def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_session(

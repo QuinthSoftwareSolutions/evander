@@ -261,7 +261,14 @@ scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
   "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
 set -euo pipefail
-cp ~/codex-vendor/codex/codex ~/bin/codex
+if [[ -x ~/codex-vendor/codex/codex ]]; then
+  cp ~/codex-vendor/codex/codex ~/bin/codex
+elif [[ -x ~/codex-vendor/bin/codex ]]; then
+  cp ~/codex-vendor/bin/codex ~/bin/codex
+else
+  echo "Missing Codex binary under ~/codex-vendor/codex/codex or ~/codex-vendor/bin/codex" >&2
+  exit 1
+fi
 chmod +x ~/bin/codex
 export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
 mkdir -p ~/.codex "${CODEX_HOME}"
@@ -340,7 +347,7 @@ append_shell_setup ~/.profile
 append_shell_setup ~/.bashrc
 
 mkdir -p "${CODEX_HOME}/skills"
-export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
+export PATH="$HOME/bin:$HOME/codex-vendor/path:$HOME/codex-vendor/codex-path:$PATH"
 export CODEX_HOME
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version

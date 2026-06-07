@@ -458,6 +458,85 @@ def test_teams_ingest_worker_resolves_communication_target_allowlists(
     assert wake_calls == []
 
 
+def test_teams_ingest_worker_polls_communication_trigger_targets_without_active_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "communication-message-trigger",
+                "display_name": "Communication message",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["teams-inbox"],
+                "directory_path": "root",
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "trigger target", "contentType": "text"},
+                            "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "teams-inbox",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages"
+    ]
+    stored = worker.store.list_all_messages(channel_targets=["team-a/channel-1"])
+    assert [message.cursor for message in stored] == ["team-a/channel-1/msg-1"]
+    assert result.directories_polled == 1
+    assert result.sessions_seen == 0
+    assert result.channel_targets_polled == 1
+    assert result.new_messages_discovered == 1
+    assert result.trigger_wake_notified is True
+    assert wake_calls == ["wake"]
+
+
 def test_teams_ingest_worker_polls_allowlisted_direct_messages_from_configured_trigger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

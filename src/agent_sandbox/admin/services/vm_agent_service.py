@@ -1016,6 +1016,49 @@ class VmAgentAdminService:
             files=_assistant_home_file_specs(self._deps.project_dir),
             vm_user="agent",
         )
+        self._ensure_libvirt_chat_assistant_runtime(
+            session_id=session_id,
+            vm_name=vm_name,
+            settings=settings,
+        )
+
+    def _ensure_libvirt_chat_assistant_runtime(
+        self,
+        *,
+        session_id: str,
+        vm_name: str,
+        settings: dict[str, Any] | None,
+    ) -> None:
+        try:
+            check = self.vm_exec(
+                session_id,
+                command=["bash", "-lc", 'test -x "$HOME/bin/codex" || command -v codex >/dev/null 2>&1'],
+                vm_user="agent",
+                timeout_seconds=20.0,
+                check=False,
+            )
+            if int(check.get("exit_code", 1)) == 0:
+                return
+        except Exception:
+            pass
+
+        root_dir = Path(__file__).resolve().parents[4]
+        bootstrap_script = root_dir / "scripts" / "bootstrap_codex_vm.sh"
+        run_env = os.environ.copy()
+        default_model = str((settings or {}).get("default_model") or "").strip()
+        if default_model:
+            run_env["AGENT_MODEL"] = default_model
+        completed = _admin_service._run_subprocess(
+            [str(bootstrap_script), vm_name, "agent"],
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
+        if completed.returncode != 0:
+            message = _admin_service._combined_process_message(completed.stdout, completed.stderr)
+            raise RuntimeError(
+                message or f"{bootstrap_script.name} exited with code {completed.returncode}"
+            )
 
     def _ensure_container_chat_assistant_target(
         self,
