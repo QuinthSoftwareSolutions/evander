@@ -274,10 +274,24 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             skill_names=as_string_list(payload.get("codex_skills")),
         )
-        labels = as_string_mapping(payload.get("labels")) or {}
-        model = normalize_optional_string(payload.get("model"))
+        existing_metadata = _existing_session_metadata(existing_session)
+        metadata = dict(existing_metadata) if existing_session is not None else {}
+        labels = (
+            as_string_mapping(payload.get("labels"))
+            if payload.get("labels") is not None
+            else as_string_mapping(metadata.get("labels"))
+        ) or {}
+        requested_model = normalize_optional_string(payload.get("model"))
+        model = requested_model or normalize_optional_string(
+            getattr(existing_session, "model", None)
+        )
         requested_agent_provider = normalize_optional_string(payload.get("agent_provider"))
-        agent_provider = requested_agent_provider or default_agent_provider_for_config(config)
+        existing_agent_provider = normalize_optional_string(metadata.get("agent_provider"))
+        agent_provider = (
+            requested_agent_provider
+            or existing_agent_provider
+            or default_agent_provider_for_config(config)
+        )
         container_image_selection = _container_image_selection_for_create(
             selector=normalize_optional_string(payload.get("container_image")),
             config=config,
@@ -286,16 +300,16 @@ class AgentCreateEffectProvider(EffectProviderBase):
         npm_registry_url = normalize_optional_http_url(
             payload.get("npm_registry_url"), field_name="npm_registry_url"
         )
-        metadata = {
-            "execution_backend": "container_worker_vm",
-            "labels": labels,
-        }
+        metadata["execution_backend"] = "container_worker_vm"
+        metadata["labels"] = labels
         capability_profile = normalize_optional_string(payload.get("capability_profile"))
         if capability_profile:
             metadata["capability_profile"] = capability_profile
-        if model:
+        if requested_model:
             metadata["model"] = model
-        if requested_agent_provider or agent_provider == "claude":
+        if requested_agent_provider or (
+            existing_agent_provider is None and agent_provider == "claude"
+        ):
             metadata["agent_provider"] = agent_provider
         requested_tools = as_string_list(payload.get("allowed_tools"))
         if requested_tools:
@@ -413,6 +427,13 @@ def _metadata_patch(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("effect:agent:create metadata must resolve to a JSON object")
     return dict(value)
+
+
+def _existing_session_metadata(existing_session: Any | None) -> dict[str, Any]:
+    metadata = getattr(existing_session, "metadata", {}) if existing_session is not None else {}
+    if not isinstance(metadata, Mapping):
+        return {}
+    return dict(metadata)
 
 
 def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:

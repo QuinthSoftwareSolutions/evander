@@ -3929,7 +3929,13 @@ def test_agent_create_container_upserts_when_session_exists(
             web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
+                "agent_provider": "claude",
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing",
+                },
                 "existing": "replace",
+                "nested": {"keep": "value", "replace": "old"},
+                "labels": {"old": "label"},
                 "container_worker": {
                     "image": "runner-special:2026-06-05",
                     "image_alias": "special",
@@ -3961,8 +3967,14 @@ def test_agent_create_container_upserts_when_session_exists(
             execution_backend="container_worker_vm",
             session_id="session-1",
             existing_agent_behavior="upsert",
+            labels={"new": "label"},
             model="gpt-5.5",
             allowed_tools=["set_issue_plan"],
+            metadata={
+                "explicit": "set",
+                "existing": "updated",
+                "nested": {"replace": "new"},
+            },
         )
     ).execute()
 
@@ -3975,6 +3987,7 @@ def test_agent_create_container_upserts_when_session_exists(
         "image": "runner-special:2026-06-05",
         "image_alias": "special",
     }
+    assert backend.prepared_sessions[0]["metadata"]["labels"] == {"new": "label"}
     assert backend.written_files
     updated = session_repository.get_session("session-1")
     assert updated is not None
@@ -3982,6 +3995,14 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
+    assert updated.metadata["agent_provider"] == "claude"
+    assert updated.metadata["agent_thread_ids"] == {
+        "teams:chat-1:agent_thread_id": "thread-existing",
+    }
+    assert updated.metadata["existing"] == "updated"
+    assert updated.metadata["explicit"] == "set"
+    assert updated.metadata["nested"] == {"keep": "value", "replace": "new"}
+    assert updated.metadata["labels"] == {"new": "label"}
     assert updated.metadata["model"] == "gpt-5.5"
     assert updated.metadata["container_worker"] == {
         "image": "runner-special:2026-06-05",
@@ -3990,6 +4011,10 @@ def test_agent_create_container_upserts_when_session_exists(
     bootstrap_by_path = {
         entry["destination_path"]: entry for entry in backend.written_files[0]["files"]
     }
+    assert (
+        "AGENT_PROVIDER=claude\n"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
         "content"
     ]

@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Agent Create Backend Diagnostics
+
+- Recomputed the workflow editor `effect:agent:create` missing execution
+  backend diagnostic on the client so the Problems panel tracks the current
+  inspector value instead of a cached server validation result.
+
+## 2026-06-08 - Agent Create Metadata Upserts
+
+- Preserved existing container-worker session metadata during
+  `effect:agent:create` upserts, while still honoring labels, explicit metadata
+  patches, selected container images, and requested model/provider fields.
+
 ## 2026-06-08 - Agent Create Communication Target Picker
 
 - Added `effect:agent:create.communication_target_ids` as a catalogue-backed

@@ -3137,13 +3137,45 @@ function validateWorkflowBindingDiagnostics(
   return diagnostics;
 }
 
+function validateWorkflowAgentCreateDiagnostics(
+  config: WorkflowConfig,
+): WorkflowValidationDiagnostic[] {
+  const diagnostics: WorkflowValidationDiagnostic[] = [];
+  for (const effect of config.effects ?? []) {
+    if (effect.type !== AGENT_CREATE_NODE_TYPE) continue;
+    const executionBackend = typeof effect.execution_backend === "string"
+      ? effect.execution_backend.trim()
+      : "";
+    if (executionBackend) continue;
+    diagnostics.push({
+      code: "agent_create_missing_execution_backend",
+      severity: "error",
+      node_id: effect.id,
+      node_type: AGENT_CREATE_NODE_TYPE,
+      field_path: "execution_backend",
+      message: "effect:agent:create requires an execution backend.",
+    });
+  }
+  return diagnostics;
+}
+
+function validateWorkflowClientDiagnostics(
+  config: WorkflowConfig,
+  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
+): WorkflowValidationDiagnostic[] {
+  return mergeWorkflowDiagnostics(
+    validateWorkflowAgentCreateDiagnostics(config),
+    validateWorkflowBindingDiagnostics(config, outputSchemas),
+  );
+}
+
 function validateWorkflowGraphBindingDiagnostics(
   config: WorkflowConfig,
   graph: WorkflowGraphMetadata,
   outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
 ): WorkflowValidationDiagnostic[] {
   const graphConfig = workflowGraphScopedConfig(config, graph);
-  return validateWorkflowBindingDiagnostics(
+  return validateWorkflowClientDiagnostics(
     graphConfig,
     deriveWorkflowOutputSchemas(graphConfig, outputSchemas),
   );
@@ -3224,6 +3256,12 @@ function workflowDiagnosticsForGraphs(
   return diagnostics.filter((diagnostic) =>
     diagnostic.node_id ? graphNodeIds.has(diagnostic.node_id) : true,
   );
+}
+
+function remoteOnlyWorkflowDiagnostics(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  return diagnostics.filter((diagnostic) => !CLIENT_RECOMPUTED_DIAGNOSTIC_CODES.has(diagnostic.code));
 }
 
 function mergeWorkflowDiagnostics(
@@ -3614,6 +3652,9 @@ const TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES = new Set([
 ]);
 
 const AGENT_CREATE_NODE_TYPE = "effect:agent:create";
+const CLIENT_RECOMPUTED_DIAGNOSTIC_CODES = new Set([
+  "agent_create_missing_execution_backend",
+]);
 
 function supportsStructuredToolArgumentPolicies(nodeType: string | undefined): boolean {
   return Boolean(nodeType && TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES.has(nodeType));
@@ -4476,7 +4517,7 @@ export default function App() {
     const cache = validationCacheRef.current;
     const pendingGraphs: Array<{ graph: WorkflowGraphMetadata; signature: string }> = [];
     const visibleBackendDiagnostics = workflowDiagnosticsForGraphs(
-      backendValidationDiagnostics,
+      remoteOnlyWorkflowDiagnostics(backendValidationDiagnostics),
       visibleGraphsForValidation,
     );
     for (const graph of visibleGraphsForValidation) {
@@ -5571,7 +5612,7 @@ export default function App() {
         },
         selectedDirectoryPath,
       );
-      const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+      const nextDiagnostics = diagnosticsOverride ?? validateWorkflowClientDiagnostics(
         nextDocument.config,
         nextDocument.output_schemas,
       );
