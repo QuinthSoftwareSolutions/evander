@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Claude Session Provider Routing
+
+- Honored one-off Claude session metadata when resolving relay provider mode
+  while preserving directory-scoped Anthropic endpoint and API key settings.
+- Clarified Admin Web directory-configuration labels for default model provider
+  mode and OpenAI-specific provider fields.
+
 ## 2026-06-07 - Agent Create Workflow Editor UX
 
 - Split the workflow editor Agent create form by execution backend, exposed the

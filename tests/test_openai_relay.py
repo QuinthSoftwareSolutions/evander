@@ -51,6 +51,7 @@ def write_session(
     directory_path: str = "root",
     web_search_enabled: bool = False,
     expires_at: datetime | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> None:
     store = JsonSessionManifestRepository(config.session_store_path)
     store.upsert_session(
@@ -60,6 +61,7 @@ def write_session(
             allowed_tools=[],
             web_search_enabled=web_search_enabled,
             expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
+            metadata=metadata or {},
         ),
     )
 
@@ -593,6 +595,68 @@ def test_relay_routes_anthropic_messages_requests_through_session_directory_over
     assert captured["authorization"] == ""
     assert captured["anthropic-version"] == "2023-06-01"
     assert captured["accept-encoding"] == "identity"
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 64,
+    }
+
+
+def test_relay_routes_claude_agent_session_through_anthropic_provider_override(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openai_public",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_DIRECTORY_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(
+        config,
+        session_id="session-claude-agent",
+        metadata={"agent_provider": "claude"},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_DIRECTORY_KEY"] = "directory-anthropic-key"
+
+    response = client.post(
+        "/session/session-claude-agent/v1/messages",
+        headers={"authorization": "Bearer guest-key", "x-api-key": "guest-key"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://anthropic.example/v1/messages"
+    assert captured["x-api-key"] == "directory-anthropic-key"
+    assert captured["authorization"] == ""
+    assert captured["anthropic-version"] == "2023-06-01"
     assert captured["payload"] == {
         "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "hello"}],

@@ -257,14 +257,15 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Upstream request timeout in seconds for the npm audit facade."
     ),
     "model_provider_mode": (
-        "Provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
-        "azure_openai for Azure OpenAI, or anthropic for Claude Messages API routing."
+        "Default provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
+        "azure_openai for Azure OpenAI, or anthropic for Claude Messages API routing. "
+        "Individual sessions can override this default through their agent provider."
     ),
     "openai_api_base_url": (
-        "Upstream OpenAI-compatible API base URL used by the host relay in public mode."
+        "Upstream OpenAI API base URL used by the host relay in public OpenAI mode."
     ),
     "openai_api_key_env": (
-        "Name of the host environment variable that holds the upstream OpenAI API key in public mode."
+        "Name of the host environment variable that holds the upstream OpenAI API key in public OpenAI mode."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
     "anthropic_api_base_url": (

@@ -8741,6 +8741,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     }.issubset(openai_fields)
     assert "azure_openai" in openai_fields["model_provider_mode"]["tooltip"]
     assert "anthropic" in openai_fields["model_provider_mode"]["tooltip"]
+    assert openai_fields["model_provider_mode"]["label"] == "Default model provider mode"
+    assert "sessions can override" in openai_fields["model_provider_mode"]["tooltip"]
+    assert openai_fields["openai_api_base_url"]["label"] == "OpenAI API base URL"
+    assert openai_fields["openai_api_key_env"]["label"] == "OpenAI API key env"
+    assert openai_fields["openai_relay_timeout_seconds"]["label"] == (
+        "OpenAI relay timeout seconds"
+    )
+    assert "OpenAI API base URL" in openai_fields["openai_api_base_url"]["tooltip"]
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
     assistant = next(

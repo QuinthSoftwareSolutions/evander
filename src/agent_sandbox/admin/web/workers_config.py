@@ -95,7 +95,17 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "didww_sip_bridge_url"): "DIDWW SIP bridge URL",
     ("providers", "didww_sip_bridge_token_env"): "DIDWW SIP bridge token env",
     ("providers", "didww_from_number"): "DIDWW from number",
+    ("providers", "model_provider_mode"): "Default model provider mode",
+    ("providers", "openai_api_base_url"): "OpenAI API base URL",
+    ("providers", "openai_api_key_env"): "OpenAI API key env",
+    ("providers", "openai_relay_timeout_seconds"): "OpenAI relay timeout seconds",
+    ("providers", "openai_realtime_model"): "OpenAI Realtime model",
+    ("providers", "openai_realtime_api_key_env"): "OpenAI Realtime API key env",
+    ("providers", "openai_realtime_api_base_url"): "OpenAI Realtime API base URL",
     ("providers", "container_worker_images"): "Approved container image catalog",
+    ("providers", "container_worker_guest_openai_base_url"): (
+        "Container-visible OpenAI base URL"
+    ),
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
