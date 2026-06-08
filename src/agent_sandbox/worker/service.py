@@ -229,14 +229,41 @@ class WorkerDaemon:
         text = self._raw_logs(record, tail_lines=tail_lines)
         if selected_mode == "raw":
             return text
+        use_claude_first = _worker_job_uses_claude(record)
         if selected_mode == "execution":
-            execution_log = self._codex_execution_log(record, text, skip_existing=True)
+            if use_claude_first:
+                execution_log = self._claude_execution_log(record, text, skip_existing=True)
+                if not execution_log:
+                    execution_log = self._codex_execution_log(record, text, skip_existing=True)
+            else:
+                execution_log = self._codex_execution_log(record, text, skip_existing=True)
+                if not execution_log:
+                    execution_log = self._claude_execution_log(record, text, skip_existing=True)
             return self._append_codex_session_log(text, execution_log)
-        session_log = self._codex_session_log(
-            record,
-            text,
-            skip_existing=selected_mode == "augmented",
-        )
+        if use_claude_first:
+            session_log = self._claude_session_log(
+                record,
+                text,
+                skip_existing=selected_mode == "augmented",
+            )
+            if not session_log:
+                session_log = self._codex_session_log(
+                    record,
+                    text,
+                    skip_existing=selected_mode == "augmented",
+                )
+        else:
+            session_log = self._codex_session_log(
+                record,
+                text,
+                skip_existing=selected_mode == "augmented",
+            )
+            if not session_log:
+                session_log = self._claude_session_log(
+                    record,
+                    text,
+                    skip_existing=selected_mode == "augmented",
+                )
         if selected_mode == "session":
             return session_log
         return self._append_codex_session_log(text, session_log)
@@ -352,6 +379,63 @@ class WorkerDaemon:
             return ""
         return "\n".join(messages) + "\n"
 
+    def _claude_session_log(
+        self,
+        record: WorkerJobRecord,
+        text: str,
+        *,
+        skip_existing: bool,
+    ) -> str:
+        agent_home = Path(record.agent_home_path)
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_claude_session_ids(agent_home)
+        if not thread_ids:
+            return ""
+        messages: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            for message in self._claude_session_messages(agent_home, thread_id):
+                if message in seen or (skip_existing and message in text):
+                    continue
+                seen.add(message)
+                messages.append(message)
+        if not messages:
+            return ""
+        return "\n".join(messages) + "\n"
+
+    def _claude_execution_log(
+        self,
+        record: WorkerJobRecord,
+        text: str,
+        *,
+        skip_existing: bool,
+    ) -> str:
+        if record.started_at is None and record.finished_at is None:
+            return ""
+        agent_home = Path(record.agent_home_path)
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_claude_session_ids(agent_home)
+        if not thread_ids:
+            return ""
+        messages: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            for message in self._claude_session_messages(
+                agent_home,
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
+            ):
+                if message in seen or (skip_existing and message in text):
+                    continue
+                seen.add(message)
+                messages.append(message)
+        if not messages:
+            return ""
+        return "\n".join(messages) + "\n"
+
     @staticmethod
     def _append_codex_session_log(text: str, session_log: str) -> str:
         if not session_log:
@@ -430,6 +514,37 @@ class WorkerDaemon:
                     continue
                 seen.add(message)
                 messages.append(message)
+        return messages
+
+    @staticmethod
+    def _claude_session_messages(
+        agent_home: Path,
+        thread_id: str,
+        *,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+    ) -> list[str]:
+        messages: list[str] = []
+        seen: set[str] = set()
+        for path in _claude_session_jsonl_paths(agent_home, thread_id):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for raw_line in lines:
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if not _codex_event_is_in_window(
+                    event, started_at=started_at, finished_at=finished_at
+                ):
+                    continue
+                for message in _claude_messages_from_session_event(event):
+                    if not message or message in seen:
+                        continue
+                    seen.add(message)
+                    messages.append(message)
         return messages
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
@@ -1075,6 +1190,27 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
     )
 
 
+def _worker_job_uses_claude(record: WorkerJobRecord) -> bool:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    for key in ("agent_provider", "provider", "model_provider"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip().casefold() in {"claude", "anthropic"}:
+            return True
+    image = str(getattr(record, "image", "") or "").casefold()
+    if "claude" in image or "anthropic" in image:
+        return True
+    command = getattr(record, "command", None)
+    command_text = (
+        " ".join(command)
+        if isinstance(command, list) and all(isinstance(item, str) for item in command)
+        else str(command or "")
+    ).casefold()
+    return "agent_sandbox_claude_json_to_log" in command_text or re.search(
+        r"(^|\s)claude(\s|$)",
+        command_text,
+    ) is not None
+
+
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
     roots = [
         agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
@@ -1118,6 +1254,80 @@ def _recent_codex_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
         if len(session_ids) >= limit:
             break
     return session_ids
+
+
+def _claude_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
+    roots = [
+        agent_home / ".claude" / "projects",
+        agent_home / ".claude" / "sessions",
+    ]
+    paths: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for pattern in (f"{thread_id}.jsonl", f"*{thread_id}*.jsonl"):
+                for path in root.rglob(pattern):
+                    if path.is_file():
+                        paths[path] = None
+        except OSError:
+            continue
+    return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def _recent_claude_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
+    roots = [
+        agent_home / ".claude" / "projects",
+        agent_home / ".claude" / "sessions",
+    ]
+    paths: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.jsonl"):
+                if path.is_file():
+                    paths[path] = None
+        except OSError:
+            continue
+    session_ids: list[str] = []
+    for path in sorted(paths, key=lambda item: (item.stat().st_mtime, str(item)), reverse=True):
+        session_id = _session_id_from_claude_jsonl(path)
+        if not session_id or session_id in session_ids:
+            continue
+        session_ids.append(session_id)
+        if len(session_ids) >= limit:
+            break
+    return session_ids
+
+
+def _session_id_from_claude_jsonl(path: Path) -> str | None:
+    match = re.search(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        path.name,
+    )
+    if match is not None:
+        return match.group(0)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for _index, raw_line in zip(range(20), handle):
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                session_id = _codex_first_text(
+                    event.get("sessionId"),
+                    event.get("session_id"),
+                    event.get("conversation_id"),
+                    event.get("conversationId"),
+                )
+                if session_id:
+                    return session_id.strip()
+    except OSError:
+        return None
+    return None
 
 
 def _session_id_from_codex_jsonl(path: Path) -> str | None:
@@ -1285,6 +1495,22 @@ def _codex_messages_from_session_event(event: object) -> list[str]:
     return []
 
 
+def _claude_messages_from_session_event(event: object) -> list[str]:
+    if not isinstance(event, dict):
+        return []
+    event_type = str(event.get("type") or "")
+    if event_type not in {"assistant", "assistant_message", "message"}:
+        return []
+    message = event.get("message")
+    if isinstance(message, dict):
+        if str(message.get("role") or "assistant") != "assistant":
+            return []
+        text = _claude_content_text(message.get("content"))
+    else:
+        text = _claude_content_text(event.get("content"))
+    return [text] if text else []
+
+
 def _update_codex_active_tool_calls(event: object, active_tool_calls: dict[str, str]) -> None:
     if not isinstance(event, dict):
         return
@@ -1374,6 +1600,30 @@ def _truncate_log_fragment(value: str, *, limit: int) -> str:
 
 
 def _codex_content_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for part in value:
+            if isinstance(part, str):
+                if part:
+                    parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type and part_type not in {"text", "output_text", "assistant_message"}:
+                continue
+            text = _codex_first_text(part.get("text"), part.get("content"), part.get("message"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return _codex_first_text(value.get("text"), value.get("content"), value.get("message"))
+    return ""
+
+
+def _claude_content_text(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):

@@ -3928,6 +3928,107 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
     ]
 
 
+def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execution_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-claude-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-claude-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-claude-threads",
+                "agent_provider": "claude",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-claude-1",
+            session_id="session-claude-threads",
+            worker_job_id="job-claude-1",
+            worker_url="http://worker.test",
+            target_name="target-claude-threads",
+            started_at=datetime(2026, 6, 8, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-claude-2",
+            session_id="session-claude-threads",
+            worker_job_id="job-claude-2",
+            worker_url="http://worker.test",
+            target_name="target-claude-threads",
+            started_at=datetime(2026, 6, 8, 8, 30, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                return "session id: claude-thread\nraw metadata only\n"
+            if mode == "session":
+                return ""
+            if mode == "execution":
+                if target == "exec-claude-1":
+                    return "session id: claude-thread\nClaude response from first execution.\n"
+                if target == "exec-claude-2":
+                    return "session id: claude-thread\nClaude response from second execution.\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-claude-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"].count("thread=claude-thread") == 1
+    assert "first_execution=exec-claude-1" in page["text"]
+    assert "executions=2" in page["text"]
+    assert "Claude response from first execution." in page["text"]
+    assert "Claude response from second execution." in page["text"]
+    assert "\nsession id: claude-thread\n" not in page["text"]
+    assert fake_backend.calls == [
+        ("exec-claude-1", 0, "raw"),
+        ("exec-claude-2", 0, "raw"),
+        ("exec-claude-1", 0, "session"),
+        ("exec-claude-1", 0, "execution"),
+        ("exec-claude-2", 0, "execution"),
+    ]
+
+
 def test_get_admin_agent_log_page_container_session_threads_fetches_offset_window(
     tmp_path: Path,
     monkeypatch,
