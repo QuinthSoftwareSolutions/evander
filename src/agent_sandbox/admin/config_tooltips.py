@@ -115,7 +115,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Approved container image catalog that maps operator-safe aliases to exact runner image references. Session creation resolves selectors against this catalog, and runtime dispatch never pulls or builds images."
     ),
     "container_worker_job_timeout_seconds": (
-        "Maximum runtime in seconds allowed for one container worker job before it is treated as timed out."
+        "Maximum runtime in seconds allowed for one container worker job before it is treated as "
+        "timed out. If unset in directory config, the built-in default is 1800 seconds "
+        "(30 minutes); set a positive override to extend it."
     ),
     "container_worker_request_timeout_seconds": (
         "HTTP timeout in seconds for host requests sent to the container worker service."

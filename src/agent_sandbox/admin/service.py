@@ -84,6 +84,10 @@ from agent_sandbox.model_usage.pricing import (
     normalize_model_pricing_catalog_payload,
 )
 from agent_sandbox.model_usage.runtime import model_usage_store
+from agent_sandbox.operator_steering import (
+    OperatorSteeringNote,
+    operator_steering_note_store,
+)
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
@@ -8466,6 +8470,90 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             occurred_before=occurred_before,
             limit=limit,
         )
+
+    def operator_steering_directory_path(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str | None = None,
+    ) -> str:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        normalized_dispatch_id = str(dispatch_id or "").strip() or None
+        context = model_usage_store(self.config.runtime_dir).get_active_correlation_context(
+            session_id=normalized_session_id,
+            dispatch_id=normalized_dispatch_id,
+        )
+        if context is not None and context.directory_path:
+            return self._agent_record_directory_path(context.directory_path)
+        session = self.runtime.session_repository.get_session(normalized_session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {normalized_session_id}")
+        return self._agent_record_directory_path(session.directory_path)
+
+    def create_operator_steering_note(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        message: str,
+        worker_execution_id: str | None = None,
+        created_by: str | None = None,
+    ) -> OperatorSteeringNote:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_dispatch_id = str(dispatch_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        if not normalized_dispatch_id:
+            raise ValueError("dispatch_id is required")
+        context = model_usage_store(self.config.runtime_dir).get_active_correlation_context(
+            session_id=normalized_session_id,
+            dispatch_id=normalized_dispatch_id,
+        )
+        if context is None:
+            raise ValueError(
+                "No active model-correlation context found for this session and dispatch."
+            )
+        return operator_steering_note_store(self.config.runtime_dir).create_note(
+            session_id=normalized_session_id,
+            dispatch_id=normalized_dispatch_id,
+            worker_execution_id=worker_execution_id,
+            message=message,
+            created_by=created_by,
+        )
+
+    def list_operator_steering_notes(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str | None = None,
+        limit: int = 50,
+    ) -> list[OperatorSteeringNote]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        return operator_steering_note_store(self.config.runtime_dir).list_notes(
+            session_id=normalized_session_id,
+            dispatch_id=str(dispatch_id or "").strip() or None,
+            limit=limit,
+        )
+
+    def get_operator_steering_note(self, note_id: str) -> OperatorSteeringNote:
+        note = operator_steering_note_store(self.config.runtime_dir).get_note(note_id)
+        if note is None:
+            raise ValueError(f"Operator steering note not found: {note_id}")
+        return note
+
+    def cancel_operator_steering_note(self, note_id: str) -> OperatorSteeringNote:
+        note = operator_steering_note_store(self.config.runtime_dir).cancel_note(note_id)
+        if note is None:
+            raise ValueError(f"Operator steering note not found: {note_id}")
+        if note.status != "cancelled":
+            raise ValueError(
+                f"Operator steering note cannot be cancelled from status: {note.status}"
+            )
+        return note
 
     def read_model_pricing_catalog_status(self) -> dict[str, Any]:
         return self._read_model_pricing_catalog_status_unlocked()

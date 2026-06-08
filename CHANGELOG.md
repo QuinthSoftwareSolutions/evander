@@ -5,6 +5,20 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Operator Steering Notes
+
+- Added Admin Web operator steering notes for inspected prompt dispatches, with
+  create/list/cancel APIs guarded by workflow-run permissions and privileged
+  unlock.
+- Delivered one pending note through the OpenAI/Azure OpenAI or Anthropic relay
+  on the next eligible model-generation request while leaving compact,
+  token-count, and websocket traffic untouched.
+
+## 2026-06-08 - Container Worker Timeout Help
+
+- Clarified the Admin Web tooltip for `container_worker_job_timeout_seconds`
+  so operators see the built-in 1800-second default when the field is unset.
+
 ## 2026-06-08 - Agent Create Backend Diagnostics
 
 - Recomputed the workflow editor `effect:agent:create` missing execution
