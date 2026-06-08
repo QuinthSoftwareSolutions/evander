@@ -8,6 +8,7 @@ test("agent create inspector fields are gated by execution backend", () => {
   assert.match(app, /const AGENT_CREATE_NODE_TYPE = "effect:agent:create";/);
   assert.match(app, /function agentCreateFieldVisibleForBackend\(/);
   assert.match(app, /function agentCreateFieldOptionsForBackend\(/);
+  assert.match(app, /function fieldSelectionOnly\(/);
   assert.match(app, /if \(field\.key === "execution_backend"\) return true;/);
   assert.match(app, /if \(!executionBackend\) return false;/);
   assert.match(
@@ -22,4 +23,5 @@ test("agent create inspector fields are gated by execution backend", () => {
     app,
     /selectedNodeType === AGENT_CREATE_NODE_TYPE[\s\S]*agentCreateFieldOptionsForBackend\(/,
   );
+  assert.match(app, /field\.options\.length > 0 \|\| fieldSelectionOnly\(field\)/);
 });

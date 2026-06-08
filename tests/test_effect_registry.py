@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.execution import ExecutionStatusKind
 from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from agent_sandbox.effects.providers.agent_clone_repo import (
@@ -62,6 +63,10 @@ from agent_sandbox.events.provider_models import (
     VmCreateEffectDefinition,
 )
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import (
     SessionManifest,
     ToolName,
@@ -104,6 +109,17 @@ def _libvirt_vm_defaults_stub() -> SimpleNamespace:
             "dotnet": "dotnet-agent.qcow2",
         },
     )
+
+
+def _write_root_communication_targets(
+    config: GatewayConfig,
+    targets: list[dict[str, object]],
+) -> None:
+    DirectoryStore(config.directories_store_path).ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 class _FakeContainerBackend:
@@ -671,6 +687,84 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+
+
+def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_path: Path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    _write_root_communication_targets(
+        config,
+        [
+            {
+                "id": "teams-channel",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+            {
+                "id": "teams-chat",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "chat:chat-1",
+                "policy": {"capabilities": ["read"]},
+            },
+            {
+                "id": "teams-user",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["write"]},
+            },
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+        ],
+    )
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        communication_target_ids=[
+            "teams-channel",
+            "teams-chat",
+            "teams-user",
+            "discord-ops",
+        ],
+        teams_channel_allowlist=["team-a/existing"],
+        discord_channels=["111111111111111111"],
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service.runtime.provider_config = _ContainerResolverStub(config)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(effect).execute()
+
+    assert admin_service.create_vm_calls[0]["discord_channels"] == [
+        "111111111111111111",
+        "discord-ops",
+    ]
+    assert admin_service.create_vm_calls[0]["teams_channel_allowlist"] == [
+        "team-a/existing",
+        "teams-channel",
+    ]
+    assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
+    assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
 
 
 def test_agent_create_provider_passes_session_metadata() -> None:
@@ -2984,6 +3078,39 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
         container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
     )
+    _write_root_communication_targets(
+        config,
+        [
+            {
+                "id": "teams-channel",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-9",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+            {
+                "id": "teams-chat",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "chat:chat-9",
+                "policy": {"capabilities": ["read"]},
+            },
+            {
+                "id": "teams-user",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["write"]},
+            },
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+        ],
+    )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(
         runtime=SimpleNamespace(
@@ -3027,6 +3154,12 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             session_id="session-1",
             model="gpt-5.4",
             allowed_tools=["set_issue_plan"],
+            communication_target_ids=[
+                "teams-channel",
+                "teams-chat",
+                "teams-user",
+                "discord-ops",
+            ],
             teams_channel_allowlist=["team-a/channel-1", " chat:chat-1 "],
             teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
             communication_file_receive_enabled=True,
@@ -3078,8 +3211,14 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.vm_id is None
     assert manifest.vm_provider == "container_worker_vm"
     assert ToolName.SET_ISSUE_PLAN in manifest.allowed_tools
-    assert manifest.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
-    assert manifest.teams_chat_allowlist == ["chat:chat-2"]
+    assert manifest.discord_channel_allowlist == ["discord-ops"]
+    assert manifest.teams_channel_allowlist == [
+        "team-a/channel-1",
+        "chat:chat-1",
+        "teams-channel",
+    ]
+    assert manifest.teams_chat_allowlist == ["chat:chat-2", "teams-chat"]
+    assert manifest.teams_user_allowlist == ["teams-user"]
     assert manifest.communication_file_receive_enabled is True
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048

@@ -1288,6 +1288,135 @@ def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> No
     )
 
 
+def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None:
+    thread_id = "9c50cf46-1c43-4119-befd-23582d367152"
+    started_at = datetime(2026, 6, 8, 4, 26, 3, tzinfo=UTC)
+    finished_at = started_at + timedelta(seconds=6)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-claude"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "claude-test-agent")
+    record = WorkerJobRecord(
+        job_id="job-claude",
+        session_id="claude-test-agent",
+        image="agent-sandbox-runner-claude:latest",
+        command=["true"],
+        container_name="agent-worker-job-claude",
+        status="removed",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = paths.agent_home / ".claude" / "projects" / "-home-agent"
+    session_dir.mkdir(parents=True)
+    (session_dir / f"{thread_id}.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at - timedelta(seconds=1)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "old Claude message"}],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at + timedelta(seconds=2)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "private chain of thought"},
+                            {"type": "text", "text": "Claude response during this job."},
+                        ],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at + timedelta(seconds=3)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "mcp__agent_sandbox__teams_get_messages",
+                                "input": {"limit": 5},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "user",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at + timedelta(seconds=4)).isoformat(),
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "content": "tool output"}],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (finished_at + timedelta(seconds=1)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "later Claude message"}],
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    codex_session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "06"
+        / "08"
+    )
+    codex_session_dir.mkdir(parents=True)
+    (codex_session_dir / f"rollout-2026-06-08T04-26-03-{thread_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "timestamp": (started_at + timedelta(seconds=2)).isoformat(),
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Codex transcript should not be used first.",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert daemon.get_logs(record, mode="session") == (
+        "old Claude message\n"
+        "Claude response during this job.\n"
+        "later Claude message\n"
+    )
+    assert daemon.get_logs(record, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "Claude response during this job.\n"
+    )
+
+
 def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
     tmp_path: Path,
 ) -> None:

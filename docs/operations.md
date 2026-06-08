@@ -1448,20 +1448,24 @@ without exposing provider credentials in the VM.
 ### Required MCP call sequence
 
 1. Lightweight pending check:
-   - `has_pending_feedback(session_id)`
+   - `has_pending_feedback()`
 2. Unread fetch when pending is true:
-   - `list_unread_feedback(session_id, last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
-   - `list_all_feedback(session_id, limit)` when you need full PR comment history, including already-read items
-   - `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
+   - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
+   - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
+   - `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
      to enumerate PRs directly from the provider; `status` is forwarded to provider status criteria
      (Azure DevOps uses `searchCriteria.status`), and pagination resumes with `next_cursor`.
-   - `get_pull_request(session_id, provider, repo, pr_id, include_reviewers?, include_commits?)`
+   - `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
 3. Post threaded replies (when needed):
-   - `post_pr_feedback_reply(session_id, provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
+   - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:
    - advance `last_read_cursor` only after local handling and any provider reply posting have completed durably.
+
+For session-scoped MCP connections, agents should omit `session_id` on these self-scoped tools. The
+gateway binds the caller session from the MCP connection and rejects conflicting legacy
+`session_id` arguments.
 
 ### Guest state model
 

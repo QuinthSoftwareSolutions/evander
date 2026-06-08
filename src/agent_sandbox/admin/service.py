@@ -1551,6 +1551,8 @@ def _communication_target_option_metadata(
         metadata["teams_target_normalized"] = parsed_target.normalized
     if purpose == "read-message":
         metadata["required_capability"] = "read"
+    elif purpose == "agent-session":
+        metadata["supported_capabilities"] = ["read", "write", "reply"]
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
@@ -3061,6 +3063,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Allowed script names",
                 "string_list",
                 description="Additional script names the created session may invoke with run_script.",
+            ),
+            _field(
+                "communication_target_ids",
+                "Communication targets",
+                "string_list",
+                description=(
+                    "Known Teams or Discord communication targets to allowlist for the "
+                    "created session. Select from the directory communication target catalogue."
+                ),
+                metadata={"selection_only": True},
             ),
             _field(
                 "discord_channels",
@@ -8996,6 +9008,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         thread_id = str(match.group("thread_id") or "").strip()
         return thread_id or None
 
+    @staticmethod
+    def _container_log_without_session_id_lines(text: str) -> str:
+        lines = [
+            line
+            for line in str(text or "").splitlines()
+            if _CONTAINER_SESSION_ID_LOG_PATTERN.match(line) is None
+        ]
+        if not lines:
+            return ""
+        return "\n".join(lines) + "\n"
+
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
         selected_backend = str(backend or "all").strip()
@@ -10888,6 +10911,63 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _join_container_log_chunks(chunks: list[str]) -> str:
         return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
 
+    def _container_thread_execution_fallback_log(
+        self,
+        worker_backend: Any,
+        records: list[Any],
+        *,
+        lines: int,
+    ) -> str:
+        ordered_records = sorted(records, key=self._container_execution_sort_key)
+        per_execution_lines = lines
+        if lines > 0 and len(ordered_records) > 1:
+            per_execution_lines = max(1, lines // len(ordered_records))
+        chunks: list[str] = []
+        for execution in ordered_records:
+            try:
+                text = worker_backend.get_log_snapshot(
+                    execution.execution_id,
+                    lines=per_execution_lines,
+                    mode="execution",
+                )
+            except Exception as exc:
+                text = f"[log unavailable: {exc}]"
+            body = self._container_log_without_session_id_lines(text).rstrip()
+            if body:
+                chunks.append(body)
+        return self._join_container_log_chunks(chunks).rstrip()
+
+    def _container_thread_transcript(
+        self,
+        worker_backend: Any,
+        records: list[Any],
+        *,
+        lines: int,
+    ) -> str:
+        first_execution = records[0]
+        session_error: Exception | None = None
+        try:
+            transcript = worker_backend.get_log_snapshot(
+                first_execution.execution_id,
+                lines=lines,
+                mode="session",
+            ).rstrip()
+        except Exception as exc:
+            session_error = exc
+            transcript = ""
+        if transcript:
+            return transcript
+        fallback = self._container_thread_execution_fallback_log(
+            worker_backend,
+            records,
+            lines=lines,
+        ).rstrip()
+        if fallback:
+            return fallback
+        if session_error is not None:
+            return f"[log unavailable: {session_error}]"
+        return ""
+
     def _container_execution_thread_probe_text(self, worker_backend: Any, execution: Any) -> str:
         page_reader = getattr(worker_backend, "get_log_page", None)
         if callable(page_reader):
@@ -10962,14 +11042,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if first_execution.started_at is not None:
                 header_parts.append(f"started={first_execution.started_at.isoformat()}")
             header = "=== " + " ".join(header_parts) + " ==="
-            try:
-                transcript = worker_backend.get_log_snapshot(
-                    first_execution.execution_id,
-                    lines=lines,
-                    mode="session",
-                ).rstrip()
-            except Exception as exc:
-                transcript = f"[log unavailable: {exc}]"
+            transcript = self._container_thread_transcript(
+                worker_backend,
+                ordered_records,
+                lines=lines,
+            )
             threaded_chunks.append(
                 (
                     self._container_execution_sort_key(first_execution),
@@ -11041,14 +11118,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if thread_id is None:
             body = str(raw_text or "").rstrip()
             return header if not body else header + "\n" + body
-        try:
-            transcript = worker_backend.get_log_snapshot(
-                first_execution.execution_id,
-                lines=0,
-                mode="session",
-            ).rstrip()
-        except Exception as exc:
-            transcript = f"[log unavailable: {exc}]"
+        transcript = self._container_thread_transcript(
+            worker_backend,
+            records,
+            lines=0,
+        )
         return header if not transcript else header + "\n" + transcript
 
     def _container_thread_log_page(
@@ -14207,6 +14281,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 if _communication_target_shape(target) == "teams_user":
                     continue
+            elif purpose == "agent-session":
+                if provider not in {"teams", "discord"}:
+                    continue
+                if not capabilities.intersection({"read", "write", "reply"}):
+                    continue
+                if (
+                    _communication_target_shape(target) == "teams_user"
+                    and "write" not in capabilities
+                ):
+                    continue
             else:
                 continue
             option = _communication_target_option(target, purpose=purpose)
@@ -14229,6 +14313,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="read-message")
 
+    def _agent_communication_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="agent-session")
+
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
@@ -14239,6 +14328,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path
         )
         communication_read_target_options = self._communication_read_target_options(directory_path)
+        agent_communication_target_options = self._agent_communication_target_options(
+            directory_path
+        )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -14255,6 +14347,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if field.key == "codex_skills"
                     else field.model_copy(update={"options": tool_options})
                     if field.key == "allowed_tools"
+                    else field.model_copy(update={"options": agent_communication_target_options})
+                    if node.type == "effect:agent:create"
+                    and field.key == "communication_target_ids"
                     else field
                     for field in node.fields
                 ]

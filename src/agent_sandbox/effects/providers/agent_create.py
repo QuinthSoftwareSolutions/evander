@@ -5,7 +5,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
+from agent_sandbox.messaging.targets import load_communication_targets_config
+from agent_sandbox.services import parse_teams_target
 from agent_sandbox.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -51,6 +54,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "allowed_tools": effect.allowed_tools,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
+            "communication_target_ids": effect.communication_target_ids,
             "discord_channels": effect.discord_channels,
             "teams_channel_allowlist": effect.teams_channel_allowlist,
             "teams_chat_allowlist": effect.teams_chat_allowlist,
@@ -172,6 +176,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     }
                 },
             )
+        communication_allowlists = _agent_communication_allowlists(
+            payload,
+            config=config,
+            directory_path=directory_path,
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -183,10 +192,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=as_string_list(payload.get("allowed_tools")),
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
-            discord_channels=as_string_list(payload.get("discord_channels")),
-            teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
-            teams_chat_allowlist=as_string_list(payload.get("teams_chat_allowlist")),
-            teams_user_allowlist=as_string_list(payload.get("teams_user_allowlist")),
+            discord_channels=communication_allowlists["discord_channels"],
+            teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
+            teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
+            teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
             communication_file_receive_enabled=as_bool_or_none(
@@ -309,6 +318,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             if requested_web_search_enabled is not None
             else bool(getattr(existing_session, "web_search_enabled", False))
         )
+        communication_allowlists = _agent_communication_allowlists(
+            payload,
+            config=config,
+            directory_path=directory_path,
+        )
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -318,10 +332,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=resolved_allowed_tools,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
-            discord_channels=as_string_list(payload.get("discord_channels")),
-            teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
-            teams_chat_allowlist=as_string_list(payload.get("teams_chat_allowlist")),
-            teams_user_allowlist=as_string_list(payload.get("teams_user_allowlist")),
+            discord_channels=communication_allowlists["discord_channels"],
+            teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
+            teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
+            teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
             communication_file_receive_enabled=as_bool_or_none(
@@ -410,6 +424,93 @@ def _deep_merge_metadata(base: Mapping[str, Any], update: Mapping[str, Any]) -> 
             continue
         merged[key] = value
     return merged
+
+
+def _append_unique(base: list[str], values: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*base, *values]:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+    return merged
+
+
+def _agent_communication_allowlists(
+    payload: Mapping[str, Any],
+    *,
+    config: Any,
+    directory_path: str,
+) -> dict[str, list[str] | None]:
+    discord_channels = as_string_list(payload.get("discord_channels")) or []
+    teams_channel_allowlist = as_string_list(payload.get("teams_channel_allowlist")) or []
+    teams_chat_allowlist = as_string_list(payload.get("teams_chat_allowlist")) or []
+    teams_user_allowlist = as_string_list(payload.get("teams_user_allowlist")) or []
+    communication_target_ids = [
+        target_id.lower()
+        for target_id in (as_string_list(payload.get("communication_target_ids")) or [])
+    ]
+    if not communication_target_ids:
+        return {
+            "discord_channels": discord_channels or None,
+            "teams_channel_allowlist": teams_channel_allowlist or None,
+            "teams_chat_allowlist": teams_chat_allowlist or None,
+            "teams_user_allowlist": teams_user_allowlist or None,
+        }
+
+    targets_by_id = load_communication_targets_config(
+        runtime_dir=config.runtime_dir,
+        directory_store=DirectoryStore(config.directories_store_path),
+        directory_path=directory_path,
+    ).by_id()
+    selected_discord_channels: list[str] = []
+    selected_teams_channels: list[str] = []
+    selected_teams_chats: list[str] = []
+    selected_teams_users: list[str] = []
+    for target_id in communication_target_ids:
+        target = targets_by_id.get(target_id)
+        if target is None:
+            raise ValueError(
+                "effect:agent:create communication_target_ids contains unknown target "
+                f"{target_id!r} for directory {directory_path!r}"
+            )
+        if target.provider == "discord":
+            selected_discord_channels.append(target.id)
+            continue
+        if target.provider == "teams":
+            teams_kind = parse_teams_target(target.address).kind
+            if teams_kind == "chat":
+                selected_teams_chats.append(target.id)
+            elif teams_kind == "user":
+                selected_teams_users.append(target.id)
+            else:
+                selected_teams_channels.append(target.id)
+            continue
+        raise ValueError(
+            "effect:agent:create communication_target_ids only supports Teams and Discord "
+            f"targets for now; target {target.id!r} uses provider {target.provider!r}"
+        )
+
+    return {
+        "discord_channels": _append_unique(discord_channels, selected_discord_channels) or None,
+        "teams_channel_allowlist": _append_unique(
+            teams_channel_allowlist,
+            selected_teams_channels,
+        )
+        or None,
+        "teams_chat_allowlist": _append_unique(
+            teams_chat_allowlist,
+            selected_teams_chats,
+        )
+        or None,
+        "teams_user_allowlist": _append_unique(
+            teams_user_allowlist,
+            selected_teams_users,
+        )
+        or None,
+    }
 
 
 def _container_image_selection_for_create(

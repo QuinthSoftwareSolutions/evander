@@ -5,6 +5,28 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Agent Create Communication Target Picker
+
+- Added `effect:agent:create.communication_target_ids` as a catalogue-backed
+  multi-select for known Teams and Discord communication targets, mapping
+  selected IDs into the existing session communication allowlists.
+
+## 2026-06-08 - Ambient MCP Session IDs
+
+- Bound self-scoped MCP tool calls to the session id carried by the MCP
+  connection, made exposed `session_id` parameters optional legacy fields, and
+  rejected conflicting caller-supplied session ids before provider dispatch.
+
+## 2026-06-08 - Claude Container Thread Logs
+
+- Rendered Claude project JSONL transcripts in container worker log modes so
+  Admin Web thread logs show Claude harness output instead of only metadata.
+
+## 2026-06-08 - Dashboard Missing Details Dark Mode
+
+- Fixed the Dashboard release-metadata missing-details card so missing
+  `NEWS.md` warnings use a dark warning surface with readable text in dark mode.
+
 ## 2026-06-08 - Claude Session Provider Routing
 
 - Honored one-off Claude session metadata when resolving relay provider mode

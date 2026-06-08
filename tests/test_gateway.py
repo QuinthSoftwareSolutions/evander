@@ -258,17 +258,15 @@ def test_filter_discord_commands_returns_raw_stream_cursor_with_denials() -> Non
     assert denied_audits[0]["command_id"] == "cmd_denied"
 
 
-def test_resolve_session_id_from_context_prefers_explicit_value() -> None:
+def test_resolve_session_id_from_context_accepts_explicit_value_without_ambient() -> None:
     ctx = SimpleNamespace(
-        request_context=SimpleNamespace(
-            request=SimpleNamespace(query_params={"session_id": "query-session"}, headers={})
-        )
+        request_context=SimpleNamespace(request=SimpleNamespace(query_params={}, headers={}))
     )
 
     assert _resolve_session_id_from_context("explicit-session", ctx) == "explicit-session"
 
 
-def test_resolve_session_id_from_context_reads_query_param_then_header() -> None:
+def test_resolve_session_id_from_context_reads_ambient_query_param_then_header() -> None:
     transport_map: dict[str, str] = {}
     query_ctx = SimpleNamespace(
         request_context=SimpleNamespace(
@@ -295,12 +293,29 @@ def test_resolve_session_id_from_context_reads_query_param_then_header() -> None
         _resolve_session_id_from_context(None, query_ctx, transport_session_map=transport_map)
         == "query-session"
     )
+    assert (
+        _resolve_session_id_from_context(
+            "query-session", query_ctx, transport_session_map=transport_map
+        )
+        == "query-session"
+    )
     assert transport_map == {"transport-1": "query-session"}
     assert _resolve_session_id_from_context(None, header_ctx) == "header-session"
     assert (
         _resolve_session_id_from_context(None, mapped_ctx, transport_session_map=transport_map)
         == "query-session"
     )
+
+
+def test_resolve_session_id_from_context_rejects_conflicting_explicit_value() -> None:
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params={"session_id": "query-session"}, headers={})
+        )
+    )
+
+    with pytest.raises(ToolError, match="session_id is bound by the MCP connection"):
+        _resolve_session_id_from_context("explicit-session", ctx)
 
 
 def test_resolve_session_id_from_context_requires_value() -> None:
