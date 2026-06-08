@@ -22,6 +22,11 @@ material. Newer entries are added incrementally as changes land.
 - Rendered Claude project JSONL transcripts in container worker log modes so
   Admin Web thread logs show Claude harness output instead of only metadata.
 
+## 2026-06-08 - Dashboard Missing Details Dark Mode
+
+- Fixed the Dashboard release-metadata missing-details card so missing
+  `NEWS.md` warnings use a dark warning surface with readable text in dark mode.
+
 ## 2026-06-08 - Claude Session Provider Routing
 
 - Honored one-off Claude session metadata when resolving relay provider mode
