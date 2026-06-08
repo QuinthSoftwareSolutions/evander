@@ -218,7 +218,16 @@ class ProviderConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
-        return self.resolve_for_directory(normalized_path)
+        resolved = self.resolve_for_directory(normalized_path)
+        if isinstance(session, SessionManifest):
+            agent_provider = (
+                str(session.metadata.get("agent_provider") or "").strip().lower()
+            )
+            if agent_provider == "claude":
+                payload = resolved.model_dump(mode="json")
+                payload["model_provider_mode"] = "anthropic"
+                return GatewayConfig.model_validate(payload)
+        return resolved
 
     def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:
         resolved = self.resolve_for_directory(directory_path)

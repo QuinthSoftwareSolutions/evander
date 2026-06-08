@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,9 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.models import SessionManifest
 from agent_sandbox.policy_config import PolicyConfigResolver
+from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.vm.templates import (
     DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
     DEFAULT_LIBVIRT_VM_TEMPLATES,
@@ -446,6 +449,65 @@ def test_directory_config_provider_mode_legacy_alias_is_canonicalized(
     assert resolution.effective_config["model_provider_mode"] == "anthropic"
     assert "openai_provider_mode" not in resolution.effective_config
     assert resolution.validation_errors == []
+
+
+def test_provider_config_resolver_uses_claude_agent_provider_as_session_override(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "openai_public",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_DIRECTORY_KEY",
+            "anthropic_api_version": "2023-06-01",
+            "anthropic_relay_timeout_seconds": 123,
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="claude-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "claude"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "anthropic"
+    assert resolved.anthropic_api_base_url == "https://anthropic.example"
+    assert resolved.anthropic_api_key_env == "ANTHROPIC_DIRECTORY_KEY"
+    assert resolved.anthropic_api_version == "2023-06-01"
+    assert resolved.anthropic_relay_timeout_seconds == 123
+
+
+@pytest.mark.parametrize("agent_provider", [None, "codex"])
+def test_provider_config_resolver_keeps_directory_mode_for_non_claude_sessions(
+    tmp_path: Path, agent_provider: str | None
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={"model_provider_mode": "openai_public"},
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=({} if agent_provider is None else {"agent_provider": agent_provider}),
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "openai_public"
 
 
 def test_directory_config_store_merges_container_worker_image_catalogs(
