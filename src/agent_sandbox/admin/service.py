@@ -1551,6 +1551,8 @@ def _communication_target_option_metadata(
         metadata["teams_target_normalized"] = parsed_target.normalized
     if purpose == "read-message":
         metadata["required_capability"] = "read"
+    elif purpose == "agent-session":
+        metadata["supported_capabilities"] = ["read", "write", "reply"]
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
@@ -3061,6 +3063,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Allowed script names",
                 "string_list",
                 description="Additional script names the created session may invoke with run_script.",
+            ),
+            _field(
+                "communication_target_ids",
+                "Communication targets",
+                "string_list",
+                description=(
+                    "Known Teams or Discord communication targets to allowlist for the "
+                    "created session. Select from the directory communication target catalogue."
+                ),
+                metadata={"selection_only": True},
             ),
             _field(
                 "discord_channels",
@@ -14269,6 +14281,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 if _communication_target_shape(target) == "teams_user":
                     continue
+            elif purpose == "agent-session":
+                if provider not in {"teams", "discord"}:
+                    continue
+                if not capabilities.intersection({"read", "write", "reply"}):
+                    continue
+                if (
+                    _communication_target_shape(target) == "teams_user"
+                    and "write" not in capabilities
+                ):
+                    continue
             else:
                 continue
             option = _communication_target_option(target, purpose=purpose)
@@ -14291,6 +14313,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="read-message")
 
+    def _agent_communication_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="agent-session")
+
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
@@ -14301,6 +14328,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path
         )
         communication_read_target_options = self._communication_read_target_options(directory_path)
+        agent_communication_target_options = self._agent_communication_target_options(
+            directory_path
+        )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -14317,6 +14347,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if field.key == "codex_skills"
                     else field.model_copy(update={"options": tool_options})
                     if field.key == "allowed_tools"
+                    else field.model_copy(update={"options": agent_communication_target_options})
+                    if node.type == "effect:agent:create"
+                    and field.key == "communication_target_ids"
                     else field
                     for field in node.fields
                 ]

@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Agent Create Communication Target Picker
+
+- Added `effect:agent:create.communication_target_ids` as a catalogue-backed
+  multi-select for known Teams and Discord communication targets, mapping
+  selected IDs into the existing session communication allowlists.
+
 ## 2026-06-08 - Ambient MCP Session IDs
 
 - Bound self-scoped MCP tool calls to the session id carried by the MCP

@@ -449,7 +449,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `clone_branch`, `vm_user`, `directory_path`, `git_author_name`, `git_author_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
@@ -1472,6 +1472,10 @@ resolved at use time from the session directory, take precedence over raw IDs wh
 and must expose the capability required by the operation: `read` for message reads, inbound
 trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
 replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
+`effect:agent:create.communication_target_ids` is an additive shorthand for known Teams and Discord
+targets in the session directory. The workflow editor presents it as a catalogue-backed multi-select,
+and execution maps the selected target IDs into the existing Discord, Teams channel/chat, or Teams
+user allowlist fields. Email mailbox access still uses `email_mailboxes` and `email_folders`.
 
 Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
 targets with `teams_chat_allowlist`, and one-on-one user send targets with

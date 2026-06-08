@@ -3637,6 +3637,10 @@ function fieldExecutionBackends(field: WorkflowEditorFieldDefinition): string[] 
   return metadataExecutionBackends(field.metadata);
 }
 
+function fieldSelectionOnly(field: WorkflowEditorFieldDefinition): boolean {
+  return field.metadata?.selection_only === true;
+}
+
 function agentCreateFieldVisibleForBackend(
   field: WorkflowEditorFieldDefinition,
   executionBackend: string,
@@ -8474,7 +8478,7 @@ export default function App() {
           .map((item) => item.trim())
           .filter(Boolean),
       );
-      if (field.options.length > 0) {
+      if (field.options.length > 0 || fieldSelectionOnly(field)) {
         if (field.key === "allowed_tools") {
           return (
             <div key={field.key} className="inspector-field">
@@ -8507,6 +8511,9 @@ export default function App() {
             </div>
             <div className="option-checkbox-list">
               {renderOptionCheckboxRows(field, field.options, selectedValues, isDisabled)}
+              {field.options.length === 0 ? (
+                <p className="field-description">No targets configured for this directory.</p>
+              ) : null}
             </div>
           </div>
         );

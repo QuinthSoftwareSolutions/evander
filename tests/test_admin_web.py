@@ -1417,6 +1417,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "allowed_tools",
         "tool_argument_policies",
         "allowed_script_names",
+        "communication_target_ids",
         "discord_channels",
         "teams_channel_allowlist",
         "teams_chat_allowlist",
@@ -1480,6 +1481,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     }
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["communication_target_ids"]["kind"] == "string_list"
+    assert "communication target" in agent_create_fields["communication_target_ids"]["description"]
+    assert agent_create_fields["communication_target_ids"]["metadata"] == {
+        "selection_only": True
+    }
     assert agent_create_fields["metadata"]["kind"] == "json"
     assert agent_create_fields["metadata"]["json_value_type"] == "object"
     assert agent_create_fields["metadata"]["description"]
@@ -1876,6 +1882,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         "trigger:communication:new-message",
         "communication_target_ids",
     )
+    agent_create_root = get_options(
+        root_payload,
+        "effect:agent:create",
+        "communication_target_ids",
+    )
+    agent_create_ops = get_options(
+        ops_payload,
+        "effect:agent:create",
+        "communication_target_ids",
+    )
 
     send_target_description = get_field(
         root_payload, "effect:communication:send-message", "communication_target_id"
@@ -1916,6 +1932,32 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     }
     assert set(trigger_read_root) == set(message_read_root)
     assert set(trigger_read_ops) == set(message_read_ops)
+    assert set(agent_create_root) == {
+        "root-chat",
+        "root-discord-reply-only",
+        "root-read-chat",
+        "root-read-discord",
+    }
+    assert set(agent_create_ops) == {
+        "root-discord-reply-only",
+        "root-read-chat",
+        "root-read-discord",
+        "ops-chat",
+        "ops-discord",
+        "ops-read-chat",
+        "ops-read-discord",
+        "discord-reply-only",
+    }
+    agent_create_targets_field = get_field(
+        root_payload,
+        "effect:agent:create",
+        "communication_target_ids",
+    )
+    assert agent_create_targets_field["kind"] == "string_list"
+    assert (
+        "directory communication target catalogue"
+        in agent_create_targets_field["description"]
+    )
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
