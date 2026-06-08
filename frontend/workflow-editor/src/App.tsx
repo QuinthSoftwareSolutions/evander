@@ -194,6 +194,38 @@ type BindingOption = {
 
 type WorkflowFieldOption = WorkflowEditorFieldDefinition["options"][number];
 
+type OperatorSteeringNoteStatus = "pending" | "injecting" | "delivered" | "cancelled" | "failed";
+
+type OperatorSteeringNote = {
+  note_id: string;
+  session_id: string;
+  dispatch_id: string;
+  message: string;
+  status: OperatorSteeringNoteStatus | string;
+  worker_execution_id?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+  delivered_at?: string | null;
+  cancelled_at?: string | null;
+  provider?: string | null;
+  provider_endpoint?: string | null;
+  error?: string | null;
+  delivery_attempts: number;
+};
+
+type OperatorSteeringNoteListResponse = {
+  session_id: string;
+  dispatch_id?: string | null;
+  directory_path: string;
+  notes: OperatorSteeringNote[];
+};
+
+type OperatorSteeringNoteMutationResponse = {
+  directory_path: string;
+  note: OperatorSteeringNote;
+};
+
 type StringMapDraftRow = {
   id: string;
   key: string;
@@ -2911,6 +2943,20 @@ function firstNonEmptyString(...values: Array<string | null | undefined>): strin
   return null;
 }
 
+function operatorSteeringKey(sessionId: string | null | undefined, dispatchId: string | null | undefined): string | null {
+  const normalizedSessionId = sessionId?.trim();
+  const normalizedDispatchId = dispatchId?.trim();
+  if (!normalizedSessionId || !normalizedDispatchId) return null;
+  return `${normalizedSessionId}::${normalizedDispatchId}`;
+}
+
+function operatorSteeringQuery(sessionId: string, dispatchId: string): string {
+  const params = new URLSearchParams();
+  params.set("session_id", sessionId);
+  params.set("dispatch_id", dispatchId);
+  return params.toString();
+}
+
 function normalizeAvailabilityState(value: string | null | undefined): string {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) {
@@ -3819,6 +3865,12 @@ export default function App() {
   );
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
+  const [operatorSteeringNotesByKey, setOperatorSteeringNotesByKey] = useState<Record<string, OperatorSteeringNote[]>>({});
+  const [operatorSteeringDraftsByKey, setOperatorSteeringDraftsByKey] = useState<Record<string, string>>({});
+  const [operatorSteeringLoadingByKey, setOperatorSteeringLoadingByKey] = useState<Record<string, boolean>>({});
+  const [operatorSteeringSubmittingByKey, setOperatorSteeringSubmittingByKey] = useState<Record<string, boolean>>({});
+  const [operatorSteeringCancellingById, setOperatorSteeringCancellingById] = useState<Record<string, boolean>>({});
+  const [operatorSteeringErrorsByKey, setOperatorSteeringErrorsByKey] = useState<Record<string, string>>({});
   const [runSearchScope, setRunSearchScope] = useState("");
   const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(false);
   const [runSearchIncludeCompleted, setRunSearchIncludeCompleted] = useState(true);
@@ -4692,6 +4744,7 @@ export default function App() {
       const detail = await fetchJson<WorkflowRunDetail>(`/api/workflow-editor/run-detail?${queryText}`);
       const preferredNodeId = preferredWorkflowRunDetailNodeId(detail);
       setRunDetail(detail);
+      void loadOperatorSteeringNotesForDetail(detail);
       setRunDetailLookup(lookupText ?? detail.event_id);
       setSelectedNodeIds(preferredNodeId ? [preferredNodeId] : []);
       setSelectedNodeId(preferredNodeId);
@@ -4704,6 +4757,133 @@ export default function App() {
       setRunDetailError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRunDetailLoading(false);
+    }
+  }
+
+  function setOperatorSteeringError(key: string, message: string | null) {
+    setOperatorSteeringErrorsByKey((current) => {
+      const next = { ...current };
+      if (message) {
+        next[key] = message;
+      } else {
+        delete next[key];
+      }
+      return next;
+    });
+  }
+
+  async function loadOperatorSteeringNotes(sessionId: string, dispatchId: string) {
+    const key = operatorSteeringKey(sessionId, dispatchId);
+    if (!key || workflowRunReadLocked) return;
+    setOperatorSteeringLoadingByKey((current) => ({ ...current, [key]: true }));
+    try {
+      const payload = await fetchJson<OperatorSteeringNoteListResponse>(
+        `/api/operator-steering/notes?${operatorSteeringQuery(sessionId, dispatchId)}`,
+      );
+      setOperatorSteeringNotesByKey((current) => ({ ...current, [key]: payload.notes }));
+      setOperatorSteeringError(key, null);
+    } catch (reason: unknown) {
+      setOperatorSteeringError(key, reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOperatorSteeringLoadingByKey((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  async function loadOperatorSteeringNotesForDetail(detail: WorkflowRunDetail) {
+    const seen = new Set<string>();
+    const pairs = detail.nodes.flatMap((node) =>
+      node.agent_links
+        .map((agent) => ({
+          sessionId: agent.session_id?.trim() ?? "",
+          dispatchId: agent.dispatch_id?.trim() ?? "",
+        }))
+        .filter((pair) => pair.sessionId && pair.dispatchId),
+    );
+    for (const pair of pairs) {
+      const key = operatorSteeringKey(pair.sessionId, pair.dispatchId);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      void loadOperatorSteeringNotes(pair.sessionId, pair.dispatchId);
+    }
+  }
+
+  async function submitOperatorSteeringNote(agent: WorkflowRunAgentLink) {
+    const sessionId = agent.session_id?.trim() ?? "";
+    const dispatchId = agent.dispatch_id?.trim() ?? "";
+    const key = operatorSteeringKey(sessionId, dispatchId);
+    if (!key) return;
+    const message = (operatorSteeringDraftsByKey[key] ?? "").trim();
+    if (!message) {
+      setOperatorSteeringError(key, "Steering note is required.");
+      return;
+    }
+    if (!canControlWorkflowRuns) {
+      setOperatorSteeringError(key, "Permission required: workflow_runs.control");
+      return;
+    }
+    if (!privilegedUnlocked) {
+      setOperatorSteeringError(key, "Privileged operations are locked.");
+      return;
+    }
+    setOperatorSteeringSubmittingByKey((current) => ({ ...current, [key]: true }));
+    try {
+      const payload = await fetchJson<OperatorSteeringNoteMutationResponse>(
+        "/api/operator-steering/notes",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: sessionId,
+            dispatch_id: dispatchId,
+            worker_execution_id: agent.execution_id ?? null,
+            message,
+          }),
+        },
+      );
+      setOperatorSteeringNotesByKey((current) => ({
+        ...current,
+        [key]: [payload.note, ...(current[key] ?? []).filter((note) => note.note_id !== payload.note.note_id)],
+      }));
+      setOperatorSteeringDraftsByKey((current) => ({ ...current, [key]: "" }));
+      setOperatorSteeringError(key, null);
+    } catch (reason: unknown) {
+      setOperatorSteeringError(key, reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOperatorSteeringSubmittingByKey((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  async function cancelOperatorSteeringNote(note: OperatorSteeringNote) {
+    const key = operatorSteeringKey(note.session_id, note.dispatch_id);
+    if (!key || !canControlWorkflowRuns || !privilegedUnlocked || note.status !== "pending") return;
+    setOperatorSteeringCancellingById((current) => ({ ...current, [note.note_id]: true }));
+    try {
+      const payload = await fetchJson<OperatorSteeringNoteMutationResponse>(
+        `/api/operator-steering/notes/${encodeURIComponent(note.note_id)}/cancel`,
+        { method: "POST" },
+      );
+      setOperatorSteeringNotesByKey((current) => ({
+        ...current,
+        [key]: (current[key] ?? []).map((entry) =>
+          entry.note_id === payload.note.note_id ? payload.note : entry,
+        ),
+      }));
+      setOperatorSteeringError(key, null);
+    } catch (reason: unknown) {
+      setOperatorSteeringError(key, reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOperatorSteeringCancellingById((current) => {
+        const next = { ...current };
+        delete next[note.note_id];
+        return next;
+      });
     }
   }
 
@@ -5040,6 +5220,9 @@ export default function App() {
 
   function exitInspectMode() {
     setRunDetail(null);
+    setOperatorSteeringNotesByKey({});
+    setOperatorSteeringDraftsByKey({});
+    setOperatorSteeringErrorsByKey({});
     setSelectedNodeIds([]);
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
@@ -5288,6 +5471,11 @@ export default function App() {
   useEffect(() => {
     hasAutoFitRef.current = false;
   }, [selectedDirectoryPath, runDetail?.event_id]);
+
+  useEffect(() => {
+    if (!runDetail || workflowRunReadLocked) return;
+    void loadOperatorSteeringNotesForDetail(runDetail);
+  }, [runDetail?.event_id, workflowRunReadLocked]);
 
   useEffect(() => {
     if (!flowInstance || displayedFlowNodes.length === 0 || hasAutoFitRef.current) return;
@@ -8793,6 +8981,107 @@ export default function App() {
     );
   }
 
+  function operatorSteeringNoteSummary(note: OperatorSteeringNote): string {
+    if (note.status === "pending") return `Pending since ${formatRuntimeTimestamp(note.created_at)}`;
+    if (note.status === "injecting") return `Injecting since ${formatRuntimeTimestamp(note.updated_at)}`;
+    if (note.status === "delivered") return `Delivered ${formatRuntimeTimestamp(note.delivered_at ?? note.updated_at)}`;
+    if (note.status === "cancelled") return `Cancelled ${formatRuntimeTimestamp(note.cancelled_at ?? note.updated_at)}`;
+    return `${note.status} ${formatRuntimeTimestamp(note.updated_at)}`;
+  }
+
+  function renderOperatorSteeringPanel(agent: WorkflowRunAgentLink) {
+    const sessionId = agent.session_id?.trim() ?? "";
+    const dispatchId = agent.dispatch_id?.trim() ?? "";
+    const key = operatorSteeringKey(sessionId, dispatchId);
+    if (!key) return null;
+    const notes = operatorSteeringNotesByKey[key] ?? [];
+    const draft = operatorSteeringDraftsByKey[key] ?? "";
+    const loading = Boolean(operatorSteeringLoadingByKey[key]);
+    const submitting = Boolean(operatorSteeringSubmittingByKey[key]);
+    const error = operatorSteeringErrorsByKey[key] ?? null;
+    const latestNote = notes[0] ?? null;
+    const canSubmitSteering =
+      canControlWorkflowRuns &&
+      privilegedUnlocked &&
+      !submitting &&
+      draft.trim().length > 0;
+
+    return (
+      <div className="operator-steering-panel" title="Delivered on the next model call for this session and dispatch.">
+        <div className="operator-steering-header">
+          <strong>Operator steering</strong>
+          <span>{loading ? "Loading" : latestNote ? operatorSteeringNoteSummary(latestNote) : "No notes"}</span>
+        </div>
+        {canControlWorkflowRuns ? (
+          <form
+            className="operator-steering-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitOperatorSteeringNote(agent);
+            }}
+          >
+            <textarea
+              value={draft}
+              rows={3}
+              maxLength={2000}
+              placeholder="Move from exploration to implementation."
+              disabled={!privilegedUnlocked || submitting}
+              onChange={(event) => {
+                setOperatorSteeringDraftsByKey((current) => ({ ...current, [key]: event.target.value }));
+                if (operatorSteeringErrorsByKey[key]) setOperatorSteeringError(key, null);
+              }}
+            />
+            <div className="operator-steering-actions">
+              <button type="submit" className="primary" disabled={!canSubmitSteering}>
+                {submitting ? "Queuing..." : "Queue note"}
+              </button>
+              <button
+                type="button"
+                className="subtle-button"
+                disabled={loading}
+                onClick={() => {
+                  void loadOperatorSteeringNotes(sessionId, dispatchId);
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          </form>
+        ) : null}
+        {canControlWorkflowRuns && !privilegedUnlocked ? (
+          <span className="operator-steering-lock">Privileged operations locked</span>
+        ) : null}
+        {error ? <div className="runtime-run-error">{error}</div> : null}
+        {notes.length > 0 ? (
+          <div className="operator-steering-notes">
+            {notes.slice(0, 4).map((note) => {
+              const cancelling = Boolean(operatorSteeringCancellingById[note.note_id]);
+              return (
+                <div className={`operator-steering-note status-${note.status}`} key={note.note_id}>
+                  <span>{operatorSteeringNoteSummary(note)}</span>
+                  {note.provider ? <span>{note.provider}{note.provider_endpoint ? ` / ${note.provider_endpoint}` : ""}</span> : null}
+                  {note.error ? <span className="missing">{note.error}</span> : null}
+                  {note.status === "pending" && canControlWorkflowRuns ? (
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      disabled={!privilegedUnlocked || cancelling}
+                      onClick={() => {
+                        void cancelOperatorSteeringNote(note);
+                      }}
+                    >
+                      {cancelling ? "Cancelling..." : "Cancel"}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderRunDetailAgentLink(agent: WorkflowRunAgentLink, index: number) {
     const sessionAvailable = availabilityFlag(agent.session_available ?? agent.session_status, Boolean(agent.session_id));
     const agentAvailable = availabilityFlag(
@@ -8873,6 +9162,7 @@ export default function App() {
             </button>
           ) : null}
         </div>
+        {renderOperatorSteeringPanel(agent)}
       </div>
     );
   }

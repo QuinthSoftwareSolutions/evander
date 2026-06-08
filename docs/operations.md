@@ -74,6 +74,10 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `model-usage.db`: durable provider-neutral model usage store queried by
   `query:model-usage:list`; it records only usage/provider/correlation metadata
   and does not persist prompt or completion text.
+- `operator-steering-notes.db`: host-side operator steering notes keyed by
+  session and prompt dispatch. Admin Web creates, lists, and cancels pending
+  notes; the model relay marks notes delivered when an eligible upstream
+  generation request is accepted.
 - `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
   used by `query:model-usage:list` for query-time cost estimates. Override with
   `AGENT_SANDBOX_MODEL_PRICING_PATH` when operating from a different rate card.
@@ -168,7 +172,26 @@ catalog before writing and writes atomically to either
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
-### Workflow pack operations
+## Operator Steering Notes
+
+When inspecting a workflow run in Admin Web, agent links that include both a
+`session_id` and `dispatch_id` can accept an operator steering note after
+workflow-run control permission and privileged operations unlock. The note is
+stored on the host and is delivered once, on the next eligible model-generation
+HTTP request for the same active session and dispatch.
+
+Delivery is intentionally best-effort and non-interrupting:
+
+- A note cannot alter a model call that is already in progress.
+- The relay does not poll the agent or add background context checks.
+- Only OpenAI/Azure OpenAI `responses` and `chat/completions`, plus Anthropic
+  `messages`, consume notes.
+- `/responses/compact`, Anthropic `/messages/count_tokens`, and websocket
+  traffic do not consume notes.
+- If the upstream request fails before the relay receives response headers, the
+  note returns to pending so a later eligible call can deliver it.
+
+## Workflow pack operations
 
 - The trigger/effect workers compose workflow definitions from `workflow_packs` in
   `config/trigger-orchestrator/config.json`.

@@ -28,10 +28,12 @@ from agent_sandbox.model_usage.adapters import (
     MappingModelUsageExtractor,
     ModelUsageExtractionRequest,
 )
+from agent_sandbox.model_usage.models import ModelUsageCorrelationContext
 from agent_sandbox.model_usage.runtime import (
     MODEL_USAGE_AGENT_HARNESS,
     model_usage_store,
 )
+from agent_sandbox.operator_steering import OperatorSteeringNote, operator_steering_note_store
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.session_expiry import SessionExpiredError, ensure_session_not_expired
 
@@ -67,6 +69,12 @@ class RelayRequestContext:
     web_search_enabled: bool
 
 
+@dataclass(frozen=True)
+class OperatorSteeringInjection:
+    request_body: bytes
+    note: OperatorSteeringNote | None = None
+
+
 class OpenAIRelay:
     def __init__(
         self,
@@ -79,6 +87,7 @@ class OpenAIRelay:
         self.transport = transport
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
         self.model_usage_store = model_usage_store(config.runtime_dir)
+        self.operator_steering_store = operator_steering_note_store(config.runtime_dir)
         self.stream_started_count = 0
         self.stream_clean_end_count = 0
         self.stream_transport_terminated_count = 0
@@ -167,6 +176,14 @@ class OpenAIRelay:
                     )
                 except ValueError as exc:
                     return JSONResponse({"error": str(exc)}, status_code=400)
+                steering_injection = relay._operator_steering_injection(
+                    session_id=request_context.session_id,
+                    method=request.method,
+                    provider_name="openai",
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                )
+                request_body = steering_injection.request_body
 
                 upstream_url = relay._azure_upstream_http_url(
                     endpoint=request_context.config.azure_openai_endpoint or "",
@@ -192,6 +209,7 @@ class OpenAIRelay:
                         request_body=request_body,
                         timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                         provider_name="openai",
+                        operator_steering_note=steering_injection.note,
                     )
 
                 async with httpx.AsyncClient(
@@ -199,11 +217,23 @@ class OpenAIRelay:
                     transport=relay.transport,
                 ) as client:
                     started_at = time.perf_counter()
-                    upstream_response = await client.request(
-                        method=request.method,
-                        url=upstream_url,
-                        headers=headers,
-                        content=request_body,
+                    try:
+                        upstream_response = await client.request(
+                            method=request.method,
+                            url=upstream_url,
+                            headers=headers,
+                            content=request_body,
+                        )
+                    except Exception as exc:
+                        relay._release_operator_steering_note(
+                            steering_injection.note,
+                            error=f"upstream request failed before delivery: {exc}",
+                        )
+                        raise
+                    relay._mark_operator_steering_delivered(
+                        steering_injection.note,
+                        provider_name="openai",
+                        provider_endpoint=upstream_path,
                     )
                     try:
                         relay._record_model_usage_event(
@@ -250,6 +280,14 @@ class OpenAIRelay:
             }
             headers["accept-encoding"] = "identity"
             headers["authorization"] = f"Bearer {api_key}"
+            steering_injection = relay._operator_steering_injection(
+                session_id=request_context.session_id,
+                method=request.method,
+                provider_name="openai",
+                upstream_path=upstream_path,
+                request_body=request_body,
+            )
+            request_body = steering_injection.request_body
 
             if "text/event-stream" in request.headers.get("accept", ""):
                 return await relay._stream_response(
@@ -261,6 +299,7 @@ class OpenAIRelay:
                     request_body=request_body,
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                     provider_name="openai",
+                    operator_steering_note=steering_injection.note,
                 )
 
             async with httpx.AsyncClient(
@@ -268,11 +307,23 @@ class OpenAIRelay:
                 transport=relay.transport,
             ) as client:
                 started_at = time.perf_counter()
-                upstream_response = await client.request(
-                    method=request.method,
-                    url=upstream_url,
-                    headers=headers,
-                    content=request_body,
+                try:
+                    upstream_response = await client.request(
+                        method=request.method,
+                        url=upstream_url,
+                        headers=headers,
+                        content=request_body,
+                    )
+                except Exception as exc:
+                    relay._release_operator_steering_note(
+                        steering_injection.note,
+                        error=f"upstream request failed before delivery: {exc}",
+                    )
+                    raise
+                relay._mark_operator_steering_delivered(
+                    steering_injection.note,
+                    provider_name="openai",
+                    provider_endpoint=upstream_path,
                 )
                 try:
                     relay._record_model_usage_event(
@@ -434,6 +485,14 @@ class OpenAIRelay:
         headers["x-api-key"] = api_key
         if not any(key.lower() == "anthropic-version" for key in headers):
             headers["anthropic-version"] = request_context.config.anthropic_api_version
+        steering_injection = self._operator_steering_injection(
+            session_id=request_context.session_id,
+            method=request.method,
+            provider_name="anthropic",
+            upstream_path=normalized_path,
+            request_body=request_body,
+        )
+        request_body = steering_injection.request_body
 
         if self._should_stream_http_response(request=request, request_body=request_body):
             return await self._stream_response(
@@ -445,6 +504,7 @@ class OpenAIRelay:
                 request_body=request_body,
                 timeout_seconds=request_context.config.anthropic_relay_timeout_seconds,
                 provider_name="anthropic",
+                operator_steering_note=steering_injection.note,
             )
 
         async with httpx.AsyncClient(
@@ -452,11 +512,23 @@ class OpenAIRelay:
             transport=self.transport,
         ) as client:
             started_at = time.perf_counter()
-            upstream_response = await client.request(
-                method=request.method,
-                url=upstream_url,
-                headers=headers,
-                content=request_body,
+            try:
+                upstream_response = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=request_body,
+                )
+            except Exception as exc:
+                self._release_operator_steering_note(
+                    steering_injection.note,
+                    error=f"upstream request failed before delivery: {exc}",
+                )
+                raise
+            self._mark_operator_steering_delivered(
+                steering_injection.note,
+                provider_name="anthropic",
+                provider_endpoint=normalized_path,
             )
             try:
                 self._record_model_usage_event(
@@ -492,6 +564,7 @@ class OpenAIRelay:
         request_body: bytes,
         timeout_seconds: float,
         provider_name: str = "openai",
+        operator_steering_note: OperatorSteeringNote | None = None,
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -517,7 +590,20 @@ class OpenAIRelay:
             content=request_body,
         )
         started_at = time.perf_counter()
-        upstream_response = await upstream_stream.__aenter__()
+        try:
+            upstream_response = await upstream_stream.__aenter__()
+        except Exception as exc:
+            self._release_operator_steering_note(
+                operator_steering_note,
+                error=f"upstream stream failed before delivery: {exc}",
+            )
+            await client.aclose()
+            raise
+        self._mark_operator_steering_delivered(
+            operator_steering_note,
+            provider_name=provider_name,
+            provider_endpoint=upstream_path,
+        )
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
             stream_id,
@@ -599,6 +685,219 @@ class OpenAIRelay:
             for key, value in response.headers.items()
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
+
+    def _operator_steering_injection(
+        self,
+        *,
+        session_id: str,
+        method: str,
+        provider_name: str,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> OperatorSteeringInjection:
+        if not self._is_operator_steering_delivery_endpoint(
+            method=method,
+            provider_name=provider_name,
+            upstream_path=upstream_path,
+        ):
+            return OperatorSteeringInjection(request_body=request_body)
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return OperatorSteeringInjection(request_body=request_body)
+        if not isinstance(payload, dict):
+            return OperatorSteeringInjection(request_body=request_body)
+
+        correlation_context = self._active_model_usage_correlation_context(
+            session_id=session_id
+        )
+        if correlation_context is None:
+            return OperatorSteeringInjection(request_body=request_body)
+
+        try:
+            note = self.operator_steering_store.claim_next_pending(
+                session_id=session_id,
+                dispatch_id=correlation_context.dispatch_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "operator_steering_claim_failed session_id=%s dispatch_id=%s path=%s exception_class=%s exception_message=%s",
+                session_id,
+                correlation_context.dispatch_id,
+                upstream_path,
+                exc.__class__.__name__,
+                str(exc),
+            )
+            return OperatorSteeringInjection(request_body=request_body)
+        if note is None:
+            return OperatorSteeringInjection(request_body=request_body)
+
+        try:
+            injected_payload = self._payload_with_operator_steering_note(
+                provider_name=provider_name,
+                upstream_path=upstream_path,
+                payload=payload,
+                message=note.message,
+            )
+        except ValueError as exc:
+            self._release_operator_steering_note(note, error=str(exc))
+            logger.warning(
+                "operator_steering_injection_skipped note_id=%s session_id=%s dispatch_id=%s path=%s reason=%s",
+                note.note_id,
+                note.session_id,
+                note.dispatch_id,
+                upstream_path,
+                str(exc),
+            )
+            return OperatorSteeringInjection(request_body=request_body)
+
+        return OperatorSteeringInjection(
+            request_body=json.dumps(
+                injected_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            note=note,
+        )
+
+    @classmethod
+    def _payload_with_operator_steering_note(
+        cls,
+        *,
+        provider_name: str,
+        upstream_path: str,
+        payload: dict[str, Any],
+        message: str,
+    ) -> dict[str, Any]:
+        normalized_path = upstream_path.strip().lstrip("/")
+        steering_text = cls._operator_steering_text(message)
+        injected = dict(payload)
+        if provider_name == "anthropic":
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                raise ValueError("Anthropic steering delivery requires a messages array")
+            injected["messages"] = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": steering_text}],
+                },
+            ]
+            return injected
+
+        if normalized_path == "chat/completions":
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                raise ValueError("chat steering delivery requires a messages array")
+            injected["messages"] = [
+                *messages,
+                {"role": "user", "content": steering_text},
+            ]
+            return injected
+
+        if normalized_path == "responses":
+            steering_item = {
+                "role": "user",
+                "content": [{"type": "input_text", "text": steering_text}],
+            }
+            input_value = payload.get("input")
+            if input_value is None:
+                injected["input"] = [steering_item]
+                return injected
+            if isinstance(input_value, list):
+                injected["input"] = [*input_value, steering_item]
+                return injected
+            if isinstance(input_value, str):
+                injected["input"] = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": input_value}],
+                    },
+                    steering_item,
+                ]
+                return injected
+            raise ValueError("Responses steering delivery requires string or array input")
+
+        raise ValueError(f"unsupported steering endpoint: {normalized_path}")
+
+    @staticmethod
+    def _operator_steering_text(message: str) -> str:
+        return (
+            "Operator steering note for the current active run. "
+            "Apply it only to this run, then continue from the existing context.\n\n"
+            f"{message}"
+        )
+
+    @staticmethod
+    def _is_operator_steering_delivery_endpoint(
+        *, method: str, provider_name: str, upstream_path: str
+    ) -> bool:
+        if str(method or "").upper() != "POST":
+            return False
+        normalized_path = upstream_path.strip().lstrip("/")
+        if provider_name == "anthropic":
+            return normalized_path == "messages"
+        return normalized_path in {"responses", "chat/completions"}
+
+    def _active_model_usage_correlation_context(
+        self,
+        *,
+        session_id: str,
+    ) -> ModelUsageCorrelationContext | None:
+        correlation_context = self.model_usage_store.get_active_correlation_context(
+            session_id=session_id,
+            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        )
+        if correlation_context is None:
+            correlation_context = self.model_usage_store.get_active_correlation_context(
+                session_id=session_id,
+            )
+        return correlation_context
+
+    def _mark_operator_steering_delivered(
+        self,
+        note: OperatorSteeringNote | None,
+        *,
+        provider_name: str,
+        provider_endpoint: str,
+    ) -> None:
+        if note is None:
+            return
+        try:
+            self.operator_steering_store.mark_delivered(
+                note.note_id,
+                provider=provider_name,
+                provider_endpoint=provider_endpoint,
+            )
+        except Exception as exc:
+            logger.warning(
+                "operator_steering_mark_delivered_failed note_id=%s session_id=%s dispatch_id=%s exception_class=%s exception_message=%s",
+                note.note_id,
+                note.session_id,
+                note.dispatch_id,
+                exc.__class__.__name__,
+                str(exc),
+            )
+
+    def _release_operator_steering_note(
+        self,
+        note: OperatorSteeringNote | None,
+        *,
+        error: str | None = None,
+    ) -> None:
+        if note is None:
+            return
+        try:
+            self.operator_steering_store.release_claim(note.note_id, error=error)
+        except Exception as exc:
+            logger.warning(
+                "operator_steering_release_failed note_id=%s session_id=%s dispatch_id=%s exception_class=%s exception_message=%s",
+                note.note_id,
+                note.session_id,
+                note.dispatch_id,
+                exc.__class__.__name__,
+                str(exc),
+            )
 
     def _record_model_usage_event(
         self,

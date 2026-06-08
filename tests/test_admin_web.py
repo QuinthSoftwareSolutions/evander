@@ -86,6 +86,7 @@ from agent_sandbox.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
 )
+from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -10601,7 +10602,6 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "mssql": True,
         "mssql_init_root": "/tmp/init",
         "playwright": True,
-        "web_search_enabled": False,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
     }
@@ -11381,6 +11381,70 @@ def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credential
     assert payload["title"] == "Cached remote title"
     assert payload["body"] == "Cached remote description"
     assert payload["state"] == "In Progress"
+
+
+def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-steer",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    register_model_usage_correlation_context(
+        runtime_dir=service.config.runtime_dir,
+        session_id="session-steer",
+        dispatch_id="dispatch-steer",
+        workflow_run_id="workflow-steer",
+        effect_id="effect-steer",
+        directory_path="root",
+        model="gpt-5.2-codex",
+    )
+    client = TestClient(create_app(service))
+
+    locked_create = client.post(
+        "/api/operator-steering/notes",
+        json={
+            "session_id": "session-steer",
+            "dispatch_id": "dispatch-steer",
+            "worker_execution_id": "worker-steer",
+            "message": "Move from exploration to implementation.",
+        },
+    )
+    assert locked_create.status_code == 403
+    assert locked_create.json()["error"] == "Privileged operations are locked."
+
+    _unlock_privileged_operations(client)
+    created = client.post(
+        "/api/operator-steering/notes",
+        json={
+            "session_id": "session-steer",
+            "dispatch_id": "dispatch-steer",
+            "worker_execution_id": "worker-steer",
+            "message": "Move from exploration to implementation.",
+        },
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    note = created_payload["note"]
+    assert created_payload["directory_path"] == "root"
+    assert note["status"] == "pending"
+    assert note["session_id"] == "session-steer"
+    assert note["dispatch_id"] == "dispatch-steer"
+    assert note["worker_execution_id"] == "worker-steer"
+
+    listed = client.get(
+        "/api/operator-steering/notes",
+        params={"session_id": "session-steer", "dispatch_id": "dispatch-steer"},
+    )
+    assert listed.status_code == 200
+    assert [entry["note_id"] for entry in listed.json()["notes"]] == [note["note_id"]]
+
+    cancelled = client.post(f"/api/operator-steering/notes/{note['note_id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["note"]["status"] == "cancelled"
 
 
 def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:

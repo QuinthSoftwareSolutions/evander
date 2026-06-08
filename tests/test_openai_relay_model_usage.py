@@ -16,6 +16,7 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
+from agent_sandbox.operator_steering import operator_steering_note_store
 from agent_sandbox.relays.openai import OpenAIRelay, create_app
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
@@ -235,6 +236,188 @@ def test_openai_relay_records_usage_without_raw_prompt_or_completion_text(
             "path": "/v1/responses",
         },
     }
+
+
+def test_openai_relay_delivers_operator_steering_note_on_next_responses_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-steer",
+        workflow_run_id="workflow-1",
+        effect_id="effect-1",
+        execution_backend="libvirt_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-steer",
+        message="Stop analyzing and write the tests now.",
+        created_by="operator@example.com",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-steered",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.2-codex",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Do the work."}],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert isinstance(payload["input"], list)
+    assert len(payload["input"]) == 2
+    steering_item = payload["input"][1]
+    assert steering_item["role"] == "user"
+    assert "Stop analyzing and write the tests now." in steering_item["content"][0]["text"]
+
+    delivered = steering_store.get_note(note.note_id)
+    assert delivered is not None
+    assert delivered.status == "delivered"
+    assert delivered.provider == "openai"
+    assert delivered.provider_endpoint == "responses"
+    assert delivered.delivery_attempts == 1
+
+
+def test_openai_relay_does_not_deliver_operator_steering_note_to_responses_compact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-steer",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-steer",
+        message="This should wait for a real generation call.",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-compact",
+                "type": "response",
+                "model": "gpt-5.2-codex",
+                "usage": {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+            },
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses/compact",
+        json={"model": "gpt-5.2-codex", "input": "compact this"},
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"] == {"model": "gpt-5.2-codex", "input": "compact this"}
+    pending = steering_store.get_note(note.note_id)
+    assert pending is not None
+    assert pending.status == "pending"
+    assert pending.delivery_attempts == 0
+
+
+def test_openai_relay_delivers_operator_steering_note_on_next_chat_completion_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-chat-steer",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-chat-steer",
+        message="Keep the response brief.",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-steered",
+                "object": "chat.completion",
+                "model": "gpt-5.2-codex",
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/chat/completions",
+        json={
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert isinstance(payload["messages"], list)
+    assert payload["messages"][-1]["role"] == "user"
+    assert "Keep the response brief." in payload["messages"][-1]["content"]
+    delivered = steering_store.get_note(note.note_id)
+    assert delivered is not None
+    assert delivered.status == "delivered"
+    assert delivered.provider_endpoint == "chat/completions"
 
 
 def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
@@ -554,6 +737,139 @@ def test_openai_relay_records_anthropic_http_usage(tmp_path: Path, monkeypatch) 
     assert event.raw_usage_metadata["request_metadata"]["path"] == "/v1/messages"
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
+
+
+def test_openai_relay_delivers_operator_steering_note_on_next_anthropic_message_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        workflow_run_id="workflow-anthropic",
+        effect_id="effect-anthropic",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="claude-sonnet-4-6",
+        agent_harness="claude",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        message="Move from exploration to implementation.",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-steered",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 6, "output_tokens": 7},
+            },
+        )
+
+    monkeypatch.setenv("ANTHROPIC_TEST_KEY", "anthropic-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "secret prompt text"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert isinstance(payload["messages"], list)
+    steering_message = payload["messages"][-1]
+    assert steering_message["role"] == "user"
+    assert "Move from exploration to implementation." in steering_message["content"][0]["text"]
+    delivered = steering_store.get_note(note.note_id)
+    assert delivered is not None
+    assert delivered.status == "delivered"
+    assert delivered.provider == "anthropic"
+    assert delivered.provider_endpoint == "messages"
+    assert delivered.delivery_attempts == 1
+
+
+def test_openai_relay_does_not_deliver_operator_steering_note_to_anthropic_count_tokens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        directory_path="root/team-a",
+        model="claude-sonnet-4-6",
+        agent_harness="claude",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        message="This should wait for a real message call.",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"input_tokens": 11})
+
+    monkeypatch.setenv("ANTHROPIC_TEST_KEY", "anthropic-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages/count_tokens",
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "count this"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "count this"}],
+    }
+    pending = steering_store.get_note(note.note_id)
+    assert pending is not None
+    assert pending.status == "pending"
+    assert pending.delivery_attempts == 0
 
 
 def test_openai_relay_records_anthropic_streaming_usage(tmp_path: Path, monkeypatch) -> None:
