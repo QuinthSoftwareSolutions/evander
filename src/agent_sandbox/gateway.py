@@ -270,6 +270,8 @@ class _ToolCallAuditContext:
     started_at: float
     raw_args: dict[str, Any]
     session_id: str | None = None
+    argument_session_id: str | None = None
+    ambient_session_id: str | None = None
     request_id: str | None = None
     correlation_id: str | None = None
     transport_session_id: str | None = None
@@ -300,6 +302,14 @@ _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS = {
     ToolName.APPROVAL_SUBMIT.value,
     ToolName.APPROVAL_CHECK.value,
 }
+
+_SESSION_ID_CONTEXT_CONFLICT_MESSAGE = (
+    "session_id is bound by the MCP connection; omit it or use the connected session"
+)
+_SESSION_ID_PARAMETER_DESCRIPTION = (
+    "Optional legacy caller session id. Agents should omit this field; the MCP gateway supplies "
+    "the connected session id and rejects conflicting values."
+)
 
 
 def _approval_gate_arguments(args: dict[str, Any]) -> dict[str, Any]:
@@ -407,12 +417,7 @@ def _session_actor_user_id(session: Any) -> str | None:
     return None
 
 
-def _tool_call_context_from_request(
-    tool_name: str,
-    args: dict[str, Any],
-    ctx: Any | None,
-    transport_session_map: dict[str, str] | None,
-) -> _ToolCallAuditContext:
+def _request_from_context(ctx: Any | None) -> Any | None:
     request_context = None
     if ctx is not None:
         try:
@@ -421,24 +426,74 @@ def _tool_call_context_from_request(
             request_context = getattr(ctx, "_request_context", None)
         except AttributeError:
             request_context = getattr(ctx, "request_context", None)
-    request = getattr(request_context, "request", None) if request_context is not None else None
+    return getattr(request_context, "request", None) if request_context is not None else None
+
+
+def _ambient_session_id_from_request(
+    request: Any | None,
+    transport_session_map: dict[str, str] | None = None,
+) -> str | None:
+    if request is None:
+        return None
     headers = getattr(request, "headers", None)
     query_params = getattr(request, "query_params", None)
     transport_session_id = _string_from_headers(headers, "mcp-session-id")
-    session_id = str(args.get("session_id") or "").strip() or None
-    if session_id is None:
-        if query_params is not None:
-            candidate = str(query_params.get("session_id") or "").strip()
-            if candidate:
-                session_id = candidate
-        if session_id is None:
-            candidate = _string_from_headers(headers, "x-agent-sandbox-session-id")
-            if candidate:
-                session_id = candidate
-        if session_id is None and transport_session_id and transport_session_map is not None:
-            candidate = str(transport_session_map.get(transport_session_id) or "").strip()
-            if candidate:
-                session_id = candidate
+    if query_params is not None:
+        candidate = str(query_params.get("session_id") or "").strip()
+        if candidate:
+            if transport_session_id and transport_session_map is not None:
+                transport_session_map[transport_session_id] = candidate
+            return candidate
+    candidate = _string_from_headers(headers, "x-agent-sandbox-session-id")
+    if candidate:
+        if transport_session_id and transport_session_map is not None:
+            transport_session_map[transport_session_id] = candidate
+        return candidate
+    if transport_session_id and transport_session_map is not None:
+        candidate = str(transport_session_map.get(transport_session_id) or "").strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _ambient_session_id_from_context(
+    ctx: Any | None,
+    transport_session_map: dict[str, str] | None = None,
+) -> str | None:
+    return _ambient_session_id_from_request(
+        _request_from_context(ctx),
+        transport_session_map=transport_session_map,
+    )
+
+
+def _resolve_bound_session_id(argument_session_id: str | None, ambient_session_id: str | None) -> str:
+    explicit = str(argument_session_id or "").strip()
+    ambient = str(ambient_session_id or "").strip()
+    if ambient and explicit and explicit != ambient:
+        raise ToolError(_SESSION_ID_CONTEXT_CONFLICT_MESSAGE)
+    if ambient:
+        return ambient
+    if explicit:
+        return explicit
+    raise ToolError("session_id is required")
+
+
+def _tool_call_context_from_request(
+    tool_name: str,
+    args: dict[str, Any],
+    ctx: Any | None,
+    transport_session_map: dict[str, str] | None,
+) -> _ToolCallAuditContext:
+    request = _request_from_context(ctx)
+    headers = getattr(request, "headers", None)
+    query_params = getattr(request, "query_params", None)
+    transport_session_id = _string_from_headers(headers, "mcp-session-id")
+    argument_session_id = str(args.get("session_id") or "").strip() or None
+    ambient_session_id = _ambient_session_id_from_request(
+        request,
+        transport_session_map=transport_session_map,
+    )
+    session_id = ambient_session_id or argument_session_id
     if session_id is None and isinstance(args.get("target_session_id"), str):
         candidate = str(args.get("target_session_id") or "").strip()
         session_id = candidate or None
@@ -478,6 +533,8 @@ def _tool_call_context_from_request(
         started_at=time.perf_counter(),
         raw_args=dict(args),
         session_id=session_id,
+        argument_session_id=argument_session_id,
+        ambient_session_id=ambient_session_id,
         request_id=request_id,
         correlation_id=correlation_id,
         transport_session_id=transport_session_id,
@@ -851,36 +908,10 @@ def _resolve_session_id_from_context(
     *,
     transport_session_map: dict[str, str] | None = None,
 ) -> str:
-    normalized = str(session_id or "").strip()
-    if normalized:
-        return normalized
-    if ctx is None:
-        raise ToolError("session_id is required")
-    request = getattr(ctx.request_context, "request", None)
-    if request is None:
-        raise ToolError("session_id is required")
-    headers = getattr(request, "headers", None)
-    transport_session_id = ""
-    if headers is not None:
-        transport_session_id = str(headers.get("mcp-session-id") or "").strip()
-    query_params = getattr(request, "query_params", None)
-    if query_params is not None:
-        candidate = str(query_params.get("session_id") or "").strip()
-        if candidate:
-            if transport_session_id and transport_session_map is not None:
-                transport_session_map[transport_session_id] = candidate
-            return candidate
-    if headers is not None:
-        candidate = str(headers.get("x-agent-sandbox-session-id") or "").strip()
-        if candidate:
-            if transport_session_id and transport_session_map is not None:
-                transport_session_map[transport_session_id] = candidate
-            return candidate
-    if transport_session_id and transport_session_map is not None:
-        candidate = str(transport_session_map.get(transport_session_id) or "").strip()
-        if candidate:
-            return candidate
-    raise ToolError("session_id is required")
+    return _resolve_bound_session_id(
+        session_id,
+        _ambient_session_id_from_context(ctx, transport_session_map=transport_session_map),
+    )
 
 
 def _resolve_session_id_from_request(request: Request) -> str:
@@ -1079,6 +1110,37 @@ def create_server(context: RuntimeContext) -> FastMCP:
             set(context.policy.effective_policy_for_session(session).redacted_keys)
             | token_redacted_keys
         )
+
+    def _tool_input_parameters(raw_tool_name: str) -> dict[str, Any] | None:
+        tools = getattr(server._tool_manager, "_tools", {})
+        tool = tools.get(raw_tool_name) if isinstance(tools, dict) else None
+        if tool is None:
+            for candidate in server._tool_manager.list_tools():
+                if getattr(candidate, "name", None) == raw_tool_name:
+                    tool = candidate
+                    break
+        parameters = getattr(tool, "parameters", None)
+        return parameters if isinstance(parameters, dict) else None
+
+    def _tool_accepts_session_id(raw_tool_name: str) -> bool:
+        parameters = _tool_input_parameters(raw_tool_name)
+        properties = parameters.get("properties") if isinstance(parameters, dict) else None
+        return isinstance(properties, dict) and "session_id" in properties
+
+    def _bind_caller_session_argument(
+        *,
+        raw_tool_name: str,
+        arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        if not _tool_accepts_session_id(raw_tool_name):
+            return
+        resolved_session_id = _resolve_bound_session_id(
+            call_context.argument_session_id,
+            call_context.ambient_session_id,
+        )
+        arguments["session_id"] = resolved_session_id
+        call_context.session_id = resolved_session_id
 
     def audit_success(
         session_id: str,
@@ -8530,6 +8592,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(session_id, ToolName.EMAIL_SEND_APPROVED, args, str(exc))
             raise
 
+    def _deprecate_session_id_parameter_schema() -> None:
+        for tool in server._tool_manager.list_tools():
+            parameters = getattr(tool, "parameters", None)
+            if not isinstance(parameters, dict):
+                continue
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            session_schema = properties.get("session_id")
+            if not isinstance(session_schema, dict):
+                continue
+            session_schema["description"] = _SESSION_ID_PARAMETER_DESCRIPTION
+            required = parameters.get("required")
+            if isinstance(required, list) and "session_id" in required:
+                parameters["required"] = [item for item in required if item != "session_id"]
+
     def _inject_approval_request_id_schema() -> None:
         for tool in server._tool_manager.list_tools():
             if tool.name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
@@ -8543,6 +8621,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if "approval_request_id" not in properties:
                 properties["approval_request_id"] = dict(_APPROVAL_REQUEST_ID_PARAMETER_SCHEMA)
 
+    _deprecate_session_id_parameter_schema()
     _inject_approval_request_id_schema()
 
     def audit_approval_gate(
@@ -8785,44 +8864,52 @@ def create_server(context: RuntimeContext) -> FastMCP:
             transport_session_map,
         )
         sanitized_arguments = _approval_gate_arguments(raw_arguments)
-        dispatch_call_args = list(call_args)
-        dispatch_call_kwargs = dict(call_kwargs)
-        if len(dispatch_call_args) > 1:
-            dispatch_call_args[1] = sanitized_arguments
-            dispatch_call_kwargs.pop("arguments", None)
-        else:
-            dispatch_call_kwargs["arguments"] = sanitized_arguments
         token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
-        approval_context_token = set_tool_approval_context(
-            session_id=call_context.session_id,
-            workflow_run_id=call_context.workflow_run_id,
-            lease_id=call_context.mcp_tool_approval_lease_id,
-        )
         try:
-            enforce_tool_argument_policy(
+            _bind_caller_session_argument(
                 raw_tool_name=raw_tool_name,
-                raw_arguments=raw_arguments,
-                sanitized_arguments=sanitized_arguments,
+                arguments=sanitized_arguments,
                 call_context=call_context,
             )
-            consumed_approval = maybe_require_invocation_approval(
-                raw_tool_name=raw_tool_name,
-                raw_arguments=raw_arguments,
-                sanitized_arguments=sanitized_arguments,
-                call_context=call_context,
+            dispatch_call_args = list(call_args)
+            dispatch_call_kwargs = dict(call_kwargs)
+            if len(dispatch_call_args) > 1:
+                dispatch_call_args[1] = sanitized_arguments
+                dispatch_call_kwargs.pop("arguments", None)
+            else:
+                dispatch_call_kwargs["arguments"] = sanitized_arguments
+            approval_context_token = set_tool_approval_context(
+                session_id=call_context.session_id,
+                workflow_run_id=call_context.workflow_run_id,
+                lease_id=call_context.mcp_tool_approval_lease_id,
             )
-            tool_enum = ToolName._value2member_map_.get(raw_tool_name)
-            if tool_enum is not None and consumed_approval is None:
-                try:
-                    context.policy.consume_tool_approval_lease_use(
-                        session_id=call_context.session_id,
-                        tool_name=tool_enum,
-                        workflow_run_id=call_context.workflow_run_id,
-                        mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
-                    )
-                except PolicyError as exc:
-                    raise ToolError(str(exc)) from exc
-            return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+            try:
+                enforce_tool_argument_policy(
+                    raw_tool_name=raw_tool_name,
+                    raw_arguments=raw_arguments,
+                    sanitized_arguments=sanitized_arguments,
+                    call_context=call_context,
+                )
+                consumed_approval = maybe_require_invocation_approval(
+                    raw_tool_name=raw_tool_name,
+                    raw_arguments=raw_arguments,
+                    sanitized_arguments=sanitized_arguments,
+                    call_context=call_context,
+                )
+                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+                if tool_enum is not None and consumed_approval is None:
+                    try:
+                        context.policy.consume_tool_approval_lease_use(
+                            session_id=call_context.session_id,
+                            tool_name=tool_enum,
+                            workflow_run_id=call_context.workflow_run_id,
+                            mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+                        )
+                    except PolicyError as exc:
+                        raise ToolError(str(exc)) from exc
+                return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+            finally:
+                reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
                 tool_enum = ToolName._value2member_map_.get(raw_tool_name)
@@ -8868,7 +8955,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 _mark_tool_call_audited()
             raise
         finally:
-            reset_tool_approval_context(approval_context_token)
             _TOOL_CALL_AUDIT_CONTEXT.reset(token)
 
     server._tool_manager.call_tool = audited_call_tool

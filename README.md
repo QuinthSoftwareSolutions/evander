@@ -814,6 +814,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   }
   ```
 
+- Agents connected through a session-scoped MCP gateway URL should omit `session_id` from
+  self-scoped tool calls. The gateway binds the caller session from the MCP connection and rejects
+  conflicting legacy `session_id` arguments.
 - Channel targets use the literal `team-id/channel-id` format. Chat targets use the literal
   `chat:<chat-id>` format.
 - The Teams adapter polls:
@@ -1037,16 +1040,18 @@ Use this when you want the guest to wake only for new review feedback and post t
 
 ### Setup steps
 
-1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
+1. Include PR feedback tools/stream metadata in the session manifest. Agents should omit
+   `session_id` in self-scoped MCP calls when using a session-scoped gateway connection; the gateway
+   supplies the caller session.
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. For Azure DevOps PR feedback and completion cleanup, keep `agent-sandbox-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
 4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `agent-sandbox-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
-   Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
+   Use `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
    when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
    `searchCriteria.status`), and pagination continues with `next_cursor`.
-   Use `get_pull_request(session_id, provider, repo, pr_id, include_reviewers?, include_commits?)`
+   Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
    For full thread history (including already-consumed items), call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`

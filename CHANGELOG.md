@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-08 - Ambient MCP Session IDs
+
+- Bound self-scoped MCP tool calls to the session id carried by the MCP
+  connection, made exposed `session_id` parameters optional legacy fields, and
+  rejected conflicting caller-supplied session ids before provider dispatch.
+
 ## 2026-06-08 - Claude Container Thread Logs
 
 - Rendered Claude project JSONL transcripts in container worker log modes so

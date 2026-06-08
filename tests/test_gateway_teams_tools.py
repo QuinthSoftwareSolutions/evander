@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -182,6 +183,39 @@ def call_tool(server, name: str, arguments: dict[str, object]):
     return result
 
 
+def call_tool_with_context(
+    server,
+    name: str,
+    arguments: dict[str, object],
+    context: object,
+):
+    result = asyncio.run(server._tool_manager.call_tool(name, arguments, context=context))
+    if isinstance(result, tuple) and len(result) == 2:
+        structured = result[1]
+        if isinstance(structured, dict) and set(structured) == {"result"}:
+            return structured["result"]
+        return structured
+    return result
+
+
+def make_request_context(
+    *,
+    session_id: str | None = None,
+    transport_session_id: str | None = None,
+):
+    query_params: dict[str, str] = {}
+    if session_id is not None:
+        query_params["session_id"] = session_id
+    headers: dict[str, str] = {}
+    if transport_session_id is not None:
+        headers["mcp-session-id"] = transport_session_id
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params=query_params, headers=headers)
+        )
+    )
+
+
 def read_audit_events(path: Path) -> list[dict[str, object]]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return [json.loads(line) for line in lines]
@@ -204,6 +238,110 @@ def patch_httpx_client(
         "agent_sandbox.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
+
+
+def test_teams_tools_use_ambient_session_context(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.TEAMS_GET_MESSAGES,
+                ToolName.TEAMS_POST_STATUS,
+                ToolName.ADD_MESSAGE_REACTION,
+            ],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="allowed",
+                metadata={
+                    "source": "teams_graph_api",
+                    "target": "team-a/channel-1",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "user-1",
+                },
+            )
+        ]
+    )
+    context.teams_service = fake_teams
+    server = create_server(context)
+    request_context = make_request_context(
+        session_id="session-1",
+        transport_session_id="transport-1",
+    )
+
+    read_result = call_tool_with_context(
+        server,
+        "teams_get_messages",
+        {"channel_target": "team-a/channel-1"},
+        request_context,
+    )
+    post_result = call_tool_with_context(
+        server,
+        "teams_post_status",
+        {"channel_target": "team-a/channel-1", "message": "Host relay is healthy."},
+        request_context,
+    )
+    reaction_result = call_tool_with_context(
+        server,
+        "add_message_reaction",
+        {
+            "provider": "teams",
+            "message_id": "msg-1",
+            "emoji": "eyes",
+            "channel_target": "team-a/channel-1",
+        },
+        request_context,
+    )
+
+    assert [message["message_id"] for message in read_result["messages"]] == ["msg-1"]
+    assert post_result["session_id"] == "session-1"
+    assert reaction_result["session_id"] == "session-1"
+    assert fake_teams.post_calls == [
+        ("Host relay is healthy.", "team-a/channel-1", "session-1", None, ()),
+    ]
+    assert fake_teams.reaction_calls == [("team-a/channel-1", "msg-1", "eyes", "session-1")]
+
+
+def test_teams_get_messages_rejects_conflicting_session_id_from_ambient_context(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="claude-test-agent",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="session_id is bound by the MCP connection"):
+        call_tool_with_context(
+            server,
+            "teams_get_messages",
+            {"session_id": "claude-truman", "channel_target": "team-a/channel-1"},
+            make_request_context(session_id="claude-test-agent"),
+        )
+
+    assert fake_teams.last_channel_target is None
+    events = read_audit_events(context.config.audit_log_path)
+    assert events[-1]["session_id"] == "claude-test-agent"
+    assert "session_id is bound by the MCP connection" in str(events[-1]["reason"])
 
 
 def test_teams_get_messages_passes_target_and_scopes_bare_since_cursor(
@@ -1252,9 +1390,13 @@ def test_teams_post_status_schema_describes_mentions(tmp_path: Path) -> None:
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
 
     mentions = tools["teams_post_status"].parameters["properties"]["mentions"]
+    session_id = tools["teams_post_status"].parameters["properties"]["session_id"]
+    required = tools["teams_post_status"].parameters.get("required", [])
 
     assert "Teams user refs to mention" in mentions["description"]
     assert "Plain @name text" in mentions["description"]
+    assert "session_id" not in required
+    assert "Agents should omit this field" in session_id["description"]
 
 
 def test_teams_post_status_forwards_normalized_mentions(tmp_path: Path) -> None:
