@@ -31,6 +31,9 @@ dev = [
 [project.entry-points."agent_sandbox.providers"]
 builtin = "agent_sandbox.providers.builtin:register_providers"
 
+[project.entry-points."agent_sandbox.addons"]
+team = "truman_team_addon:register_addon"
+
 [project.scripts]
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
 agent-sandbox-openai-relay = "agent_sandbox.relays.openai:main"

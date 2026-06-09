@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Team Add-on State Model
+
+- Added the optional `truman_team_addon` package with private add-on state for
+  hierarchical teams, projects, persistent agents, prioritized tasks,
+  deliverables, review requests, and release packages.
+- Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`
+  while keeping canonical state under `runtime/addons/team-addon/state.json`
+  and leaving Truman core session/workflow schemas team-agnostic.
+
 ## 2026-06-09 - Optional Add-on Boundary
 
 - Added a generic add-on loader with explicit module/entry-point discovery,
@@ -12,6 +21,8 @@ material. Newer entries are added incrementally as changes land.
   provider bridging for optional opinionated modules.
 - Kept add-ons disabled by default and documented that domain-specific concepts
   such as hierarchical agent teams belong outside Truman core.
+- Required Admin Web authentication for add-on UI routes mounted under
+  `/addons/<addon_id>/` when Admin Web auth is enabled.
 - Made workflow validation preserve `effect:agent:create` execution-backend
   checks after provider-specific fields are normalized under node `config`.
 

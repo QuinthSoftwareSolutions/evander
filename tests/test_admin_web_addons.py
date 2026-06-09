@@ -116,3 +116,22 @@ def test_admin_web_addon_api_routes_follow_admin_auth(
 
     assert response.status_code == 401
     assert response.json()["error"] == "Authentication required"
+
+
+def test_admin_web_addon_ui_routes_follow_admin_auth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = _write_admin_addon_module(tmp_path)
+    monkeypatch.syspath_prepend(module_root)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    importlib.invalidate_caches()
+    sys.modules.pop("admin_addon", None)
+
+    client = TestClient(create_app(AdminService(_write_config(tmp_path, module_name="admin_addon"))))
+
+    response = client.get("/addons/team-addon/")
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "Authentication required"

@@ -156,7 +156,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or (path.startswith("/api/workflow-webhooks/") and request.method == "POST")
         ):
             return await call_next(request)
-        if path.startswith("/api/"):
+        if path.startswith("/api/") or path.startswith("/addons/"):
             if self._auth.read_session(request) is None:
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)

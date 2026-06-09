@@ -85,3 +85,10 @@ A hierarchical agent-team module should live as an external add-on. Team,
 manager, project lead, task, deliverable, review, and release-package schemas
 belong in that package. Only generic hooks that are useful to other add-ons
 should be proposed for Truman core.
+
+The bundled `truman_team_addon` package provides the initial state-model layer
+for this pattern. It is still disabled by default; enable it with
+`addon_loader.modules: ["truman_team_addon"]` or by enabling the
+`agent_sandbox.addons` entry-point group. Its canonical state lives under
+`runtime/addons/team-addon/state.json`, while Truman session metadata remains a
+non-canonical integration index.
