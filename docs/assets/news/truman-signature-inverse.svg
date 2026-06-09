@@ -1,0 +1,44 @@
+<svg width="640" height="180" viewBox="0 0 640 180" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Truman signature inverse</title>
+  <desc id="desc">A light handwritten Truman signature wordmark for dark news entries.</desc>
+  <defs>
+    <linearGradient id="ink" x1="52" y1="96" x2="552" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EFF7FF"/>
+      <stop offset="0.58" stop-color="#BEEFFF"/>
+      <stop offset="1" stop-color="#EFF7FF"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="112" y1="135" x2="572" y2="135" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7CE8FF"/>
+      <stop offset="0.72" stop-color="#91FFC7"/>
+      <stop offset="1" stop-color="#F4CE7A"/>
+    </linearGradient>
+    <filter id="glow" x="-4%" y="-8%" width="108%" height="116%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#7CE8FF" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <path
+      d="M48 63C84 56 125 55 159 59M104 61C95 82 89 106 84 132M154 82C139 104 127 124 135 129C144 134 165 111 178 91C172 109 167 127 175 130C184 134 200 108 212 87C206 107 203 126 211 129C223 134 238 95 250 86C260 80 272 83 272 96C272 116 251 137 238 130C228 124 234 102 252 88M286 130C292 111 299 94 308 82C318 100 319 119 313 133C333 102 350 80 363 86C376 93 360 126 370 130C380 134 397 107 411 86C405 106 402 126 411 130C421 134 438 106 450 88C445 106 442 126 451 130C462 135 480 105 493 86C487 108 484 128 493 130C505 134 523 105 537 87C535 107 536 125 546 130C560 137 579 112 592 88"
+      stroke="url(#ink)"
+      stroke-width="13"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M113 137C184 130 254 132 324 136C402 141 479 142 570 128"
+      stroke="url(#accent)"
+      stroke-width="5"
+      stroke-linecap="round"
+      opacity="0.96"
+    />
+    <path
+      d="M568 127C584 123 596 117 606 107"
+      stroke="#F4CE7A"
+      stroke-width="5"
+      stroke-linecap="round"
+      opacity="0.96"
+    />
+    <circle cx="553" cy="71" r="4.5" fill="#7CE8FF"/>
+    <circle cx="574" cy="62" r="3.2" fill="#91FFC7"/>
+  </g>
+</svg>

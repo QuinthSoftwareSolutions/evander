@@ -252,12 +252,30 @@ type ReleaseChangelog = {
   entries: ReleaseChangelogEntry[];
 };
 
+type ReleaseNewsBlock =
+  | {
+      kind: "paragraph";
+      text: string;
+      src?: null;
+      dark_src?: null;
+      alt?: null;
+      title?: null;
+    }
+  | {
+      kind: "image";
+      src: string;
+      dark_src: string | null;
+      alt: string;
+      title: string | null;
+      text?: null;
+    };
+
 type ReleaseNews = {
   source: string | null;
   path: string | null;
   index: number;
   heading: string | null;
-  paragraphs: string[];
+  blocks: ReleaseNewsBlock[];
   has_previous: boolean;
   has_next: boolean;
   previous_index: number | null;
@@ -1554,8 +1572,30 @@ function ProductContextPanel({
             <article className="release-news-entry">
               <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
               <div className="release-news-copy">
-                {releaseInfo.news.paragraphs.map((paragraph, index) => (
-                  <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
+                {releaseInfo.news.blocks.map((block, index) => (
+                  block.kind === "image" ? (
+                    <figure className="release-news-image" key={`${releaseInfo.news?.heading ?? "news"}-image-${index}`}>
+                      <img
+                        className={block.dark_src ? "release-news-image-light" : undefined}
+                        src={block.src}
+                        alt={block.alt}
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      {block.dark_src ? (
+                        <img
+                          className="release-news-image-dark"
+                          src={block.dark_src}
+                          alt={block.alt}
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      ) : null}
+                      {block.title ? <figcaption>{block.title}</figcaption> : null}
+                    </figure>
+                  ) : (
+                    <p key={`${releaseInfo.news?.heading ?? "news"}-paragraph-${index}`}>{block.text}</p>
+                  )
               ))}
             </div>
             <p className="panel-meta release-news-source">
