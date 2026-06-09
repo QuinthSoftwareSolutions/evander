@@ -256,6 +256,28 @@ type ReleaseNewsBlock =
   | {
       kind: "paragraph";
       text: string;
+      level?: null;
+      items?: [];
+      src?: null;
+      dark_src?: null;
+      alt?: null;
+      title?: null;
+    }
+  | {
+      kind: "heading";
+      text: string;
+      level: number;
+      items?: [];
+      src?: null;
+      dark_src?: null;
+      alt?: null;
+      title?: null;
+    }
+  | {
+      kind: "list";
+      items: string[];
+      text?: null;
+      level?: null;
       src?: null;
       dark_src?: null;
       alt?: null;
@@ -268,6 +290,8 @@ type ReleaseNewsBlock =
       alt: string;
       title: string | null;
       text?: null;
+      level?: null;
+      items?: [];
     };
 
 type ReleaseNews = {
@@ -297,6 +321,49 @@ function releaseNewsImageClassName(block: Extract<ReleaseNewsBlock, { kind: "ima
   return descriptor.includes("signature")
     ? "release-news-image release-news-image-signature"
     : "release-news-image";
+}
+
+function renderReleaseNewsBlock(block: ReleaseNewsBlock, key: string): ReactNode {
+  if (block.kind === "image") {
+    return (
+      <figure className={releaseNewsImageClassName(block)} key={key}>
+        <img
+          className={block.dark_src ? "release-news-image-light" : undefined}
+          src={block.src}
+          alt={block.alt}
+          loading="lazy"
+          decoding="async"
+        />
+        {block.dark_src ? (
+          <img
+            className="release-news-image-dark"
+            src={block.dark_src}
+            alt={block.alt}
+            loading="lazy"
+            decoding="async"
+          />
+        ) : null}
+        {block.title ? <figcaption>{block.title}</figcaption> : null}
+      </figure>
+    );
+  }
+  if (block.kind === "heading") {
+    return (
+      <h4 className="release-news-subheading" key={key}>
+        {block.text}
+      </h4>
+    );
+  }
+  if (block.kind === "list") {
+    return (
+      <ul className="release-news-list" key={key}>
+        {block.items.map((item, index) => (
+          <li key={`${key}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    );
+  }
+  return <p key={key}>{block.text}</p>;
 }
 
 type TelemetryStatus = "available" | "missing" | "unsupported" | "permission_denied";
@@ -1579,31 +1646,9 @@ function ProductContextPanel({
             <article className="release-news-entry">
               <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
               <div className="release-news-copy">
-                {releaseInfo.news.blocks.map((block, index) => (
-                  block.kind === "image" ? (
-                    <figure className={releaseNewsImageClassName(block)} key={`${releaseInfo.news?.heading ?? "news"}-image-${index}`}>
-                      <img
-                        className={block.dark_src ? "release-news-image-light" : undefined}
-                        src={block.src}
-                        alt={block.alt}
-                        loading="lazy"
-                        decoding="async"
-                      />
-                      {block.dark_src ? (
-                        <img
-                          className="release-news-image-dark"
-                          src={block.dark_src}
-                          alt={block.alt}
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      ) : null}
-                      {block.title ? <figcaption>{block.title}</figcaption> : null}
-                    </figure>
-                  ) : (
-                    <p key={`${releaseInfo.news?.heading ?? "news"}-paragraph-${index}`}>{block.text}</p>
-                  )
-              ))}
+                {releaseInfo.news.blocks.map((block, index) =>
+                  renderReleaseNewsBlock(block, `${releaseInfo.news?.heading ?? "news"}-${block.kind}-${index}`),
+                )}
             </div>
             <p className="panel-meta release-news-source">
               {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
