@@ -85,12 +85,18 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     resume_mode=resume_mode,
                     dispatch_id=lease["dispatch_id"],
                 )
+                result_payload = _coerce_mapping(result)
+                if _result_reports_failure(result_payload):
+                    error = _resume_failure_message(result_payload)
+                    state = _record_wake_failure(repo, lease=lease, error=error)
+                    errors.append(f"{agent['id']}: {error}")
+                    continue
                 dispatches.append(
                     {
                         "agent_id": agent["id"],
                         "session_id": agent["session_id"],
                         "dispatch_id": lease["dispatch_id"],
-                        "result": _coerce_mapping(result),
+                        "result": result_payload,
                     }
                 )
                 _mirror_session_metadata(
@@ -101,7 +107,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     session_id=agent["session_id"],
                 )
             except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
-                errors.append(f"{agent['id']}: {exc}")
+                error = str(exc)
+                try:
+                    state = _record_wake_failure(repo, lease=lease, error=error)
+                except Exception as release_exc:  # pragma: no cover - defensive diagnostics
+                    error = f"{error}; failed to release team runtime lease: {release_exc}"
+                errors.append(f"{agent['id']}: {error}")
         return {
             "success": not errors,
             "revision": state.revision,
@@ -415,45 +426,12 @@ class TeamStateQueryProvider(QueryProviderBase):
         team_id = _optional_text(payload.get("team_id"))
         project_id = _optional_text(payload.get("project_id"))
         agent_id = _optional_text(payload.get("agent_id"))
-        filtered = team_state_payload(state)
-        if team_id is not None:
-            filtered["teams"] = {
-                key: value for key, value in filtered["teams"].items() if key == team_id
-            }
-            filtered["projects"] = {
-                key: value
-                for key, value in filtered["projects"].items()
-                if value.get("team_id") == team_id
-            }
-            filtered["agents"] = {
-                key: value
-                for key, value in filtered["agents"].items()
-                if value.get("team_id") == team_id
-            }
-        if project_id is not None:
-            filtered["projects"] = {
-                key: value for key, value in filtered["projects"].items() if key == project_id
-            }
-            filtered["agents"] = {
-                key: value
-                for key, value in filtered["agents"].items()
-                if value.get("project_id") == project_id
-            }
-        if agent_id is not None:
-            filtered["agents"] = {
-                key: value for key, value in filtered["agents"].items() if key == agent_id
-            }
-        visible_agent_ids = set(filtered["agents"])
-        filtered["tasks"] = {
-            key: value
-            for key, value in filtered["tasks"].items()
-            if value.get("owner_agent_id") in visible_agent_ids
-        }
-        filtered["ephemeral_assignments"] = {
-            key: value
-            for key, value in filtered.get("ephemeral_assignments", {}).items()
-            if value.get("parent_agent_id") in visible_agent_ids
-        }
+        filtered = _filtered_team_state_payload(
+            state,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+        )
         return {
             "success": True,
             "revision": state.revision,
@@ -618,6 +596,22 @@ def _mirror_session_metadata(
     )
 
 
+def _record_wake_failure(
+    repo: TeamStateRepository,
+    *,
+    lease: Mapping[str, Any],
+    error: str,
+) -> Any:
+    state, _result = repo.apply_agent_action(
+        action={},
+        session_id=_required_text(lease["agent"].get("session_id"), "session_id"),
+        dispatch_id=_required_text(lease.get("dispatch_id"), "dispatch_id"),
+        valid=False,
+        error=error,
+    )
+    return state
+
+
 def _publish_team_events(context: Any, events: Any) -> list[str]:
     if not isinstance(events, list):
         return []
@@ -695,6 +689,196 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return dict(vars(value))
     return {"result": value}
+
+
+def _result_reports_failure(result: Mapping[str, Any]) -> bool:
+    if "success" not in result:
+        return False
+    return not _truthy_result_success(result.get("success"))
+
+
+def _truthy_result_success(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, int | float):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"", "0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _resume_failure_message(result: Mapping[str, Any]) -> str:
+    return (
+        _optional_text(result.get("message"))
+        or _optional_text(result.get("error"))
+        or "resume_agent failed"
+    )
+
+
+def _filtered_team_state_payload(
+    state: Any,
+    *,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+) -> dict[str, Any]:
+    filtered = team_state_payload(state)
+    teams = filtered["teams"]
+    projects = filtered["projects"]
+    agents = filtered["agents"]
+
+    visible_team_ids = set(teams)
+    visible_project_ids = set(projects)
+    visible_agent_ids = set(agents)
+
+    if team_id is not None:
+        visible_team_ids &= {team_id}
+        visible_project_ids = {
+            key for key, value in projects.items() if value.get("team_id") in visible_team_ids
+        }
+        visible_agent_ids = {
+            key for key, value in agents.items() if value.get("team_id") in visible_team_ids
+        }
+
+    if project_id is not None:
+        if project_id in visible_project_ids and project_id in projects:
+            visible_project_ids = {project_id}
+            visible_team_ids &= {_required_text(projects[project_id].get("team_id"), "team_id")}
+            visible_agent_ids = {
+                key
+                for key in visible_agent_ids
+                if agents[key].get("project_id") == project_id
+            }
+        else:
+            visible_team_ids = set()
+            visible_project_ids = set()
+            visible_agent_ids = set()
+
+    if agent_id is not None:
+        if agent_id in visible_agent_ids and agent_id in agents:
+            agent = agents[agent_id]
+            visible_agent_ids = {agent_id}
+            visible_team_ids &= {_required_text(agent.get("team_id"), "team_id")}
+            agent_project_id = _optional_text(agent.get("project_id"))
+            visible_project_ids = (
+                visible_project_ids & {agent_project_id}
+                if agent_project_id is not None
+                else set()
+            )
+        else:
+            visible_team_ids = set()
+            visible_project_ids = set()
+            visible_agent_ids = set()
+
+    filtered["teams"] = {
+        key: {**value, "project_ids": _filter_ids(value.get("project_ids"), visible_project_ids)}
+        for key, value in teams.items()
+        if key in visible_team_ids
+    }
+    filtered["projects"] = {
+        key: value for key, value in projects.items() if key in visible_project_ids
+    }
+    filtered["agents"] = {
+        key: {
+            **value,
+            "reports_to_agent_id": value.get("reports_to_agent_id")
+            if value.get("reports_to_agent_id") in visible_agent_ids
+            else None,
+            "subordinate_agent_ids": _filter_ids(
+                value.get("subordinate_agent_ids"),
+                visible_agent_ids,
+            ),
+        }
+        for key, value in agents.items()
+        if key in visible_agent_ids
+    }
+    filtered["agent_runtimes"] = {
+        key: value
+        for key, value in filtered.get("agent_runtimes", {}).items()
+        if key in visible_agent_ids
+    }
+    filtered["tasks"] = {
+        key: value
+        for key, value in filtered["tasks"].items()
+        if value.get("project_id") in visible_project_ids
+        and value.get("owner_agent_id") in visible_agent_ids
+    }
+    visible_task_ids = set(filtered["tasks"])
+    filtered["deliverables"] = {
+        key: value
+        for key, value in filtered.get("deliverables", {}).items()
+        if value.get("task_id") in visible_task_ids
+        and value.get("producer_agent_id") in visible_agent_ids
+    }
+    visible_deliverable_ids = set(filtered["deliverables"])
+    filtered["review_requests"] = {
+        key: value
+        for key, value in filtered.get("review_requests", {}).items()
+        if value.get("deliverable_id") in visible_deliverable_ids
+        and value.get("reviewer_agent_id") in visible_agent_ids
+    }
+    visible_review_ids = set(filtered["review_requests"])
+    filtered["deliverables"] = {
+        key: {
+            **value,
+            "review_request_ids": _filter_ids(value.get("review_request_ids"), visible_review_ids),
+        }
+        for key, value in filtered["deliverables"].items()
+    }
+    filtered["tasks"] = {
+        key: {
+            **value,
+            "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+        }
+        for key, value in filtered["tasks"].items()
+    }
+    filtered["inbox"] = {
+        key: value
+        for key, value in filtered.get("inbox", {}).items()
+        if (
+            value.get("recipient_agent_id") in visible_agent_ids
+            or value.get("sender_agent_id") in visible_agent_ids
+        )
+        and (value.get("task_id") is None or value.get("task_id") in visible_task_ids)
+    }
+    filtered["action_records"] = {
+        key: value
+        for key, value in filtered.get("action_records", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+    }
+    filtered["release_packages"] = {
+        key: {
+            **value,
+            "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+        }
+        for key, value in filtered.get("release_packages", {}).items()
+        if value.get("project_id") in visible_project_ids
+        and all(
+            deliverable_id in visible_deliverable_ids
+            for deliverable_id in _string_items(value.get("deliverable_ids"))
+        )
+    }
+    filtered["ephemeral_assignments"] = {
+        key: value
+        for key, value in filtered.get("ephemeral_assignments", {}).items()
+        if value.get("parent_agent_id") in visible_agent_ids
+        and value.get("project_id") in visible_project_ids
+        and value.get("task_id") in visible_task_ids
+    }
+    return filtered
+
+
+def _filter_ids(value: object, allowed: set[str]) -> list[str]:
+    return [item for item in _string_items(value) if item in allowed]
+
+
+def _string_items(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
 
 
 def _required_text(value: object, field_name: str) -> str:

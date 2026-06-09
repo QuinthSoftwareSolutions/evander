@@ -386,9 +386,16 @@ class TeamStateRepository:
                 result["error"] = "session_id does not match ephemeral assignment"
                 assignment.state = EphemeralAssignmentState.FAILED
                 assignment.error = str(result["error"])
-            elif normalized_create_result and not bool(normalized_create_result.get("success", True)):
+            elif normalized_create_result and not _bool_from_value(
+                normalized_create_result.get("success"),
+                default=True,
+            ):
                 assignment.state = EphemeralAssignmentState.FAILED
-                assignment.error = _optional_text(normalized_create_result.get("message")) or "spawn failed"
+                assignment.error = (
+                    _optional_text(normalized_create_result.get("message"))
+                    or _optional_text(normalized_create_result.get("error"))
+                    or "spawn failed"
+                )
                 result["error"] = assignment.error
             else:
                 assignment.state = EphemeralAssignmentState.RUNNING
@@ -1130,7 +1137,9 @@ def _create_ephemeral_assignments(
             state=EphemeralAssignmentState.REQUESTED,
             model=_optional_text(request.get("model")),
             agent_provider=_optional_text(request.get("agent_provider")),
-            execution_backend=_optional_text(request.get("execution_backend")),
+            execution_backend=(
+                _optional_text(request.get("execution_backend")) or "container_worker_vm"
+            ),
             container_image=_optional_text(request.get("container_image")),
             allowed_tools=_string_list(request.get("allowed_tools"), "allowed_tools"),
             ttl_hours=int(request["ttl_hours"]) if request.get("ttl_hours") is not None else None,
@@ -1272,7 +1281,7 @@ def _ephemeral_assignment_event_payload(
             "artifact_refs": list(assignment.artifact_refs),
             "model": assignment.model,
             "agent_provider": assignment.agent_provider,
-            "execution_backend": assignment.execution_backend,
+            "execution_backend": assignment.execution_backend or "container_worker_vm",
             "container_image": assignment.container_image,
             "allowed_tools": list(assignment.allowed_tools),
             "ttl_hours": assignment.ttl_hours,

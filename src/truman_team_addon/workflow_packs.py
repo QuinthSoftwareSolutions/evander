@@ -18,6 +18,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
+                "team-ephemeral-spawned",
                 "team-prompt-ephemeral-agent",
                 "team-agent-run-completed",
                 "team-route-completed-session",
@@ -79,6 +80,19 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     ]
                 },
             },
+            {
+                "id": "team-ephemeral-spawned",
+                "display_name": "Ephemeral team agent spawned",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": True,
+                            "left": "${{team-mark-ephemeral-spawned.success}}",
+                        }
+                    ]
+                },
+            },
         ],
         "queries": [
             {
@@ -119,8 +133,9 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "display_name": "Create ephemeral team agent",
                 "type": "effect:agent:create",
                 "session_id": "${{team-ephemeral-requested.payload.session_id}}",
+                "vm_name": "${{team-ephemeral-requested.payload.vm_name ?? team-ephemeral-requested.payload.session_id}}",
                 "existing_agent_behavior": "noop",
-                "execution_backend": "${{team-ephemeral-requested.payload.execution_backend ?? null}}",
+                "execution_backend": "${{team-ephemeral-requested.payload.execution_backend}}",
                 "agent_provider": "${{team-ephemeral-requested.payload.agent_provider ?? null}}",
                 "model": "${{team-ephemeral-requested.payload.model ?? null}}",
                 "container_image": "${{team-ephemeral-requested.payload.container_image ?? null}}",
@@ -134,6 +149,13 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "type": "effect:team:mark-ephemeral-spawned",
                 "assignment_id": "${{team-ephemeral-requested.payload.assignment_id}}",
                 "session_id": "${{team-create-ephemeral-agent.session_id}}",
+                "create_result": {
+                    "success": "${{team-create-ephemeral-agent.success}}",
+                    "message": "${{team-create-ephemeral-agent.message ?? null}}",
+                    "error": "${{team-create-ephemeral-agent.error ?? null}}",
+                    "execution_backend": "${{team-create-ephemeral-agent.execution_backend ?? null}}",
+                    "vm_name": "${{team-create-ephemeral-agent.vm_name ?? null}}",
+                },
             },
             {
                 "id": "team-prompt-ephemeral-agent",
@@ -184,7 +206,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
             {"source_id": "team-ephemeral-requested", "target_id": "team-create-ephemeral-agent"},
             {"source_id": "team-create-ephemeral-agent", "target_id": "team-mark-ephemeral-spawned"},
-            {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-prompt-ephemeral-agent"},
+            {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},
+            {"source_id": "team-ephemeral-spawned", "target_id": "team-prompt-ephemeral-agent"},
             {"source_id": "team-agent-run-completed", "target_id": "team-route-completed-session"},
             {"source_id": "team-route-completed-session", "target_id": "team-completed-persistent"},
             {"source_id": "team-completed-persistent", "target_id": "team-read-persistent-action"},
