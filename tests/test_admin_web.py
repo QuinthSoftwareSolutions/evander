@@ -633,6 +633,30 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "expected_states",
         "sync_proxy_cache",
     ]
+    ado_add_tag = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:ado:add-work-item-tag"
+    )
+    assert [field["key"] for field in ado_add_tag["fields"]] == [
+        "directory_path",
+        "project",
+        "work_item_id",
+        "tag",
+        "sync_proxy_cache",
+    ]
+    ado_remove_tag = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:ado:remove-work-item-tag"
+    )
+    assert [field["key"] for field in ado_remove_tag["fields"]] == [
+        "directory_path",
+        "project",
+        "work_item_id",
+        "tag",
+        "sync_proxy_cache",
+    ]
     ado_comment = next(
         node
         for node in catalog_payload["nodes"]
@@ -661,6 +685,32 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "add_tags",
         "remove_tags",
         "expected_statuses",
+    ]
+    pr_add_tag = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:add-tag"
+    )
+    assert [field["key"] for field in pr_add_tag["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "tag",
+        "directory_path",
+        "organization_url",
+        "project",
+    ]
+    pr_remove_tag = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:pull-request:remove-tag"
+    )
+    assert [field["key"] for field in pr_remove_tag["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "tag",
+        "directory_path",
+        "organization_url",
+        "project",
     ]
     event_emit = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"

@@ -4,8 +4,10 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AdoAddWorkItemTagEffectProvider",
     "AdoPipelineRunEffectProvider",
     "AdoPostWorkItemCommentEffectProvider",
+    "AdoRemoveWorkItemTagEffectProvider",
     "AdoUpdateWorkItemEffectProvider",
     "AgentBootstrapFrontendEffectProvider",
     "AgentCloneRepoEffectProvider",
@@ -28,6 +30,8 @@ __all__ = [
     "IssueUpdateStateEffectProvider",
     "NotificationSendEffectProvider",
     "PrCreateEffectProvider",
+    "PullRequestAddTagEffectProvider",
+    "PullRequestRemoveTagEffectProvider",
     "PullRequestUpdateEffectProvider",
     "RuntimeDiagnosticsSnapshotEffectProvider",
     "SemanticDeleteEffectProvider",
@@ -46,8 +50,10 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AdoAddWorkItemTagEffectProvider": ".ado_work_item_tag",
     "AdoPipelineRunEffectProvider": ".ado_pipeline_run",
     "AdoPostWorkItemCommentEffectProvider": ".ado_post_work_item_comment",
+    "AdoRemoveWorkItemTagEffectProvider": ".ado_work_item_tag",
     "AdoUpdateWorkItemEffectProvider": ".ado_update_work_item",
     "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
     "AgentCloneRepoEffectProvider": ".agent_clone_repo",
@@ -71,6 +77,8 @@ _EXPORT_MODULES = {
     "EventScheduleEffectProvider": ".event_schedule",
     "NotificationSendEffectProvider": ".notification_send",
     "PrCreateEffectProvider": ".pr_create",
+    "PullRequestAddTagEffectProvider": ".pull_request_update",
+    "PullRequestRemoveTagEffectProvider": ".pull_request_update",
     "PullRequestUpdateEffectProvider": ".pull_request_update",
     "RuntimeDiagnosticsSnapshotEffectProvider": ".runtime_diagnostics_snapshot",
     "SemanticDeleteEffectProvider": ".semantic_delete",

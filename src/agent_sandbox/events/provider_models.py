@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from agent_sandbox.effects.providers.schemas import (
+    AdoAddWorkItemTagEffectDefinition,
     AdoPipelineRunEffectDefinition,
     AdoPostWorkItemCommentEffectDefinition,
+    AdoRemoveWorkItemTagEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -27,7 +29,9 @@ from agent_sandbox.effects.providers.schemas import (
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
+    PullRequestAddTagEffectDefinition,
     PullRequestUpdateEffectDefinition,
+    PullRequestRemoveTagEffectDefinition,
     RuntimeDiagnosticsSnapshotEffectDefinition,
     SemanticDeleteEffectDefinition,
     SemanticEnsureCollectionEffectDefinition,
@@ -104,8 +108,10 @@ from agent_sandbox.triggers.providers.schemas import (
 )
 
 __all__ = [
+    "AdoAddWorkItemTagEffectDefinition",
     "AdoPipelineRunEffectDefinition",
     "AdoPostWorkItemCommentEffectDefinition",
+    "AdoRemoveWorkItemTagEffectDefinition",
     "AdoUpdateWorkItemEffectDefinition",
     "AdoWorkItemCommentCreatedTriggerDefinition",
     "AdoWorkItemMatchingTriggerDefinition",
@@ -155,8 +161,10 @@ __all__ = [
     "PullRequestFeedbackQueryDefinition",
     "PullRequestGetQueryDefinition",
     "PullRequestListQueryDefinition",
+    "PullRequestAddTagEffectDefinition",
     "PullRequestCompletedTriggerDefinition",
     "PullRequestNewFeedbackTriggerDefinition",
+    "PullRequestRemoveTagEffectDefinition",
     "PullRequestUpdateEffectDefinition",
     "RuntimeDiagnosticsSnapshotEffectDefinition",
     "ReviewNewRequestTriggerDefinition",

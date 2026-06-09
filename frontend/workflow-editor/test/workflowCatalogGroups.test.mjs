@@ -30,6 +30,8 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:issue:upsert-ado-proxy", "Upsert ADO proxy"),
     catalogNode("effect", "effect:ado:pipeline-run", "ADO pipeline run"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
+    catalogNode("effect", "effect:ado:add-work-item-tag", "ADO add work item tag"),
+    catalogNode("effect", "effect:ado:remove-work-item-tag", "ADO remove work item tag"),
     catalogNode("effect", "effect:session:update-metadata", "Session update metadata"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
     catalogNode("effect", "effect:http:request", "HTTP request"),
@@ -38,6 +40,8 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
+    catalogNode("effect", "effect:pull-request:add-tag", "Pull request add tag"),
+    catalogNode("effect", "effect:pull-request:remove-tag", "Pull request remove tag"),
   ], "effect");
 
   assert.deepEqual(
@@ -85,7 +89,9 @@ test("groups effect node types by related functionality", () => {
       {
         label: "ADO",
         types: [
+          "effect:ado:add-work-item-tag",
           "effect:ado:pipeline-run",
+          "effect:ado:remove-work-item-tag",
           "effect:ado:update-work-item",
           "effect:issue:upsert-ado-proxy",
         ],
@@ -100,7 +106,12 @@ test("groups effect node types by related functionality", () => {
       },
       {
         label: "Git & PRs",
-        types: ["effect:pr:create", "effect:pull-request:update"],
+        types: [
+          "effect:pr:create",
+          "effect:pull-request:add-tag",
+          "effect:pull-request:remove-tag",
+          "effect:pull-request:update",
+        ],
       },
       {
         label: "Communications",

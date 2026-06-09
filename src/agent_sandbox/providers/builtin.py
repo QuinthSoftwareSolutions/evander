@@ -9,6 +9,10 @@ from agent_sandbox.effects.providers.ado_post_work_item_comment import (
     AdoPostWorkItemCommentEffectProvider,
 )
 from agent_sandbox.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
+from agent_sandbox.effects.providers.ado_work_item_tag import (
+    AdoAddWorkItemTagEffectProvider,
+    AdoRemoveWorkItemTagEffectProvider,
+)
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
     AgentBootstrapFrontendEffectProvider,
@@ -42,7 +46,11 @@ from agent_sandbox.effects.providers.issue_upsert_ado_proxy import (
 )
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
-from agent_sandbox.effects.providers.pull_request_update import PullRequestUpdateEffectProvider
+from agent_sandbox.effects.providers.pull_request_update import (
+    PullRequestAddTagEffectProvider,
+    PullRequestRemoveTagEffectProvider,
+    PullRequestUpdateEffectProvider,
+)
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
@@ -220,6 +228,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectProvider,
             "effect:ado:pipeline-run": AdoPipelineRunEffectProvider,
             "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectProvider,
+            "effect:ado:add-work-item-tag": AdoAddWorkItemTagEffectProvider,
+            "effect:ado:remove-work-item-tag": AdoRemoveWorkItemTagEffectProvider,
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
@@ -233,6 +243,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,
+            "effect:pull-request:add-tag": PullRequestAddTagEffectProvider,
+            "effect:pull-request:remove-tag": PullRequestRemoveTagEffectProvider,
             "effect:pull-request:update": PullRequestUpdateEffectProvider,
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,
             "effect:semantic:upsert": SemanticUpsertEffectProvider,

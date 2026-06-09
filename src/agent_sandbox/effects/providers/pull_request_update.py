@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from agent_sandbox.pull_request_automation import build_pull_request_provider
 
@@ -17,7 +17,9 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
         payload = self._effect_payload()
         if resolved_config:
             payload.update(dict(resolved_config))
+        return self._execute_update(payload)
 
+    def _execute_update(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         provider_name = self._require_string(payload.get("provider"), field_name="provider")
         repo = self._require_string(payload.get("repo"), field_name="repo")
         pr_id = self._require_string(payload.get("pr_id"), field_name="pr_id")
@@ -98,11 +100,56 @@ class PullRequestUpdateEffectProvider(EffectProviderBase):
             return None
         return str(value)
 
-    @staticmethod
-    def _coerce_string_list(value: Any) -> list[str]:
+    def _coerce_string_list(self, value: Any) -> list[str]:
         if value is None:
             return []
         raw_items = [value] if isinstance(value, str) else value
         if not isinstance(raw_items, (list, tuple, set)):
-            raise ValueError("effect:pull-request:update lists must resolve to a string or list")
+            raise ValueError(f"{self.NODE_TYPE} lists must resolve to a string or list")
         return [str(item).strip() for item in raw_items if str(item).strip()]
+
+
+class PullRequestTagEffectProvider(PullRequestUpdateEffectProvider):
+    ACTION: ClassVar[Literal["add", "remove"]]
+    NODE_TYPE: ClassVar[str]
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = self._effect_payload()
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        tag = self._require_string(payload.get("tag"), field_name="tag")
+        if self.ACTION == "add":
+            payload["add_tags"] = [tag]
+            payload["remove_tags"] = []
+        else:
+            payload["add_tags"] = []
+            payload["remove_tags"] = [tag]
+        response = self._execute_update(payload)
+        response["tag"] = tag
+        return response
+
+    def _effect_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        effect = self.effect_definition
+        for field_name in (
+            "provider",
+            "repo",
+            "pr_id",
+            "tag",
+            "directory_path",
+            "organization_url",
+            "project",
+        ):
+            if effect is not None and hasattr(effect, field_name):
+                payload[field_name] = getattr(effect, field_name)
+        return payload
+
+
+class PullRequestAddTagEffectProvider(PullRequestTagEffectProvider):
+    ACTION = "add"
+    NODE_TYPE = "effect:pull-request:add-tag"
+
+
+class PullRequestRemoveTagEffectProvider(PullRequestTagEffectProvider):
+    ACTION = "remove"
+    NODE_TYPE = "effect:pull-request:remove-tag"

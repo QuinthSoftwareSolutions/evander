@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Collapsed workflow-editor create-panel subgroups by default and reorganized
   node catalogue families so Azure DevOps, issue, session, artifact, and usage
   nodes are easier to find.
+- Added dedicated Azure DevOps work-item and pull-request tag effects that add
+  or remove a single tag idempotently.
 
 ## 2026-06-08 - Operator Steering Notes
 

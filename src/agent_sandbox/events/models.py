@@ -496,7 +496,11 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:ado:post-work-item-comment": (
             provider_models.AdoPostWorkItemCommentEffectDefinition
         ),
+        "effect:ado:add-work-item-tag": provider_models.AdoAddWorkItemTagEffectDefinition,
+        "effect:ado:remove-work-item-tag": provider_models.AdoRemoveWorkItemTagEffectDefinition,
         "effect:ado:update-work-item": provider_models.AdoUpdateWorkItemEffectDefinition,
+        "effect:pull-request:add-tag": provider_models.PullRequestAddTagEffectDefinition,
+        "effect:pull-request:remove-tag": provider_models.PullRequestRemoveTagEffectDefinition,
         "effect:pull-request:update": provider_models.PullRequestUpdateEffectDefinition,
         "effect:communication:send-message": (
             provider_models.CommunicationSendMessageEffectDefinition

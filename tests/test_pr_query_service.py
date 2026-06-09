@@ -694,6 +694,54 @@ def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
     assert result.tags == ["ready", "reviewed"]
 
 
+def test_azure_query_provider_update_pull_request_noops_existing_or_missing_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17"):
+            return httpx.Response(
+                200,
+                json={
+                    "pullRequestId": 17,
+                    "title": "Old title",
+                    "status": "active",
+                    "_links": {
+                        "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
+                    },
+                },
+            )
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/labels"):
+            return httpx.Response(200, json={"value": [{"name": "ready"}]})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.update_pull_request(
+        repo="repo-1",
+        pr_id="17",
+        add_tags=["ready"],
+        remove_tags=["missing"],
+    )
+
+    assert result.updated is False
+    assert result.skipped is False
+    assert result.added_tags == []
+    assert result.removed_tags == []
+    assert result.tags == ["ready"]
+    assert requests == [
+        ("GET", "/org/proj/_apis/git/repositories/repo-1/pullRequests/17"),
+        ("GET", "/org/proj/_apis/git/repositories/repo-1/pullRequests/17/labels"),
+    ]
+
+
 def test_azure_query_provider_update_pull_request_skips_unexpected_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

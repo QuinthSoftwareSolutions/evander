@@ -148,7 +148,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "ado",
       label: "ADO",
-      description: "Run Azure DevOps pipelines or update Azure DevOps work items.",
+      description: "Run Azure DevOps pipelines or manage Azure DevOps work items and tags.",
       types: ["effect:issue:upsert-ado-proxy"],
       prefixes: ["effect:ado:"],
     },
@@ -167,7 +167,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "git-pr",
       label: "Git & PRs",
-      description: "Promote branches or create pull requests.",
+      description: "Promote branches, create pull requests, or manage pull request tags.",
       prefixes: ["effect:git:", "effect:pr:", "effect:pull-request:"],
     },
     {
