@@ -432,7 +432,7 @@ Storage layout for directory config:
 ### Claude Code provider bootstrap
 
 - `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user and verifies `claude --version`.
-- The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, and telemetry disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
+- The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, telemetry disabled, and Claude Code commit-message attribution disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
 - The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
 - Host-side routing is selected with `model_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
 

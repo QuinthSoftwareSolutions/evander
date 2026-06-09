@@ -117,6 +117,9 @@ fi
 
 cat > ~/.claude/settings.json <<CONFIG
 {
+  "attribution": {
+    "commit": ""
+  },
   "env": {
     "ANTHROPIC_AUTH_TOKEN": "relay-placeholder",
     "ANTHROPIC_BASE_URL": "${CLAUDE_ANTHROPIC_BASE_URL}",

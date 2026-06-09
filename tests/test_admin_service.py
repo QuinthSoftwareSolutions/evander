@@ -1609,6 +1609,14 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
         in written_files["/home/agent/.agent-sandbox/session.env"]
     )
     assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
+    assert (
+        '"commit": ""'
+        in written_files["/home/agent/.claude/settings.json"]
+    )
+    assert (
+        "http://192.168.250.1:11434/session/claude-session"
+        in written_files["/home/agent/.claude/settings.json"]
+    )
     assert "/home/agent/.claude/mcp-config.json" in written_files
 
 

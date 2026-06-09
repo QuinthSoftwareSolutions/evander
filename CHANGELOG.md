@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Claude Commit Attribution
+
+- Wrote Claude Code settings for container-worker and VM-backed Claude agents
+  so generated commit messages no longer include Claude co-author trailers.
+
 ## 2026-06-09 - Admin Chat Reenable Prewarm
 
 - Made Admin Web chat sessions that were marked disabled while the assistant

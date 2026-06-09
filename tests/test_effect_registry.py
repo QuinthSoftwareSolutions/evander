@@ -2538,6 +2538,19 @@ def test_container_session_files_include_claude_provider_config() -> None:
         in by_path["/home/agent/.agent-sandbox/session.env"]
     )
     assert "model = \"claude-sonnet-4-6\"" in by_path["/home/agent/.codex/config.toml"]
+    assert by_path["/home/agent/.claude/settings.json"] == (
+        "{\n"
+        '  "attribution": {\n'
+        '    "commit": ""\n'
+        "  },\n"
+        '  "env": {\n'
+        '    "ANTHROPIC_AUTH_TOKEN": "relay-placeholder",\n'
+        '    "ANTHROPIC_BASE_URL": "http://relay.test:11434/session/session-1",\n'
+        '    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",\n'
+        '    "DISABLE_TELEMETRY": "1"\n'
+        "  }\n"
+        "}\n"
+    )
     assert by_path["/home/agent/.claude/mcp-config.json"] == (
         "{\n"
         '  "mcpServers": {\n'
