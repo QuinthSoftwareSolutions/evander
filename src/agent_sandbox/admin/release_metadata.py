@@ -33,6 +33,8 @@ _BUILD_ENV_VARS: Final[tuple[str, ...]] = (
 _NEWS_IMAGE_RE: Final[re.Pattern[str]] = re.compile(
     r'^!\[(?P<alt>[^\]]*)\]\((?P<src>[^\s)]+)(?:\s+"(?P<title>[^"]*)")?\)$'
 )
+_NEWS_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"^(?P<marks>#{3,6})\s+(?P<text>.+)$")
+_NEWS_LIST_ITEM_RE: Final[re.Pattern[str]] = re.compile(r"^[-*]\s+(?P<text>.+)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,8 @@ class ReleaseChangelogData:
 class ReleaseNewsBlockData:
     kind: str
     text: str | None = None
+    level: int | None = None
+    items: tuple[str, ...] = ()
     src: str | None = None
     dark_src: str | None = None
     alt: str | None = None
@@ -294,8 +298,9 @@ def _read_news(
 def _parse_news_blocks(lines: list[str], *, project_dir: Path) -> list[ReleaseNewsBlockData]:
     blocks: list[ReleaseNewsBlockData] = []
     current_parts: list[str] = []
+    current_items: list[str] = []
 
-    def flush() -> None:
+    def flush_paragraph() -> None:
         if not current_parts:
             return
         text = " ".join(part.strip() for part in current_parts if part.strip()).strip()
@@ -303,14 +308,38 @@ def _parse_news_blocks(lines: list[str], *, project_dir: Path) -> list[ReleaseNe
             blocks.append(ReleaseNewsBlockData(kind="paragraph", text=text))
         current_parts.clear()
 
+    def flush_list() -> None:
+        if not current_items:
+            return
+        blocks.append(ReleaseNewsBlockData(kind="list", items=tuple(current_items)))
+        current_items.clear()
+
     for line in lines:
         stripped = line.strip()
         if not stripped:
-            flush()
+            flush_paragraph()
+            continue
+        heading_match = _NEWS_HEADING_RE.match(stripped)
+        if heading_match is not None:
+            flush_paragraph()
+            flush_list()
+            blocks.append(
+                ReleaseNewsBlockData(
+                    kind="heading",
+                    text=heading_match.group("text").strip(),
+                    level=len(heading_match.group("marks")),
+                )
+            )
+            continue
+        list_item_match = _NEWS_LIST_ITEM_RE.match(stripped)
+        if list_item_match is not None:
+            flush_paragraph()
+            current_items.append(list_item_match.group("text").strip())
             continue
         image_match = _NEWS_IMAGE_RE.match(stripped)
         if image_match is not None:
-            flush()
+            flush_paragraph()
+            flush_list()
             image_source = _news_image_source(image_match.group("src"))
             if image_source is None:
                 current_parts.append(stripped)
@@ -327,8 +356,10 @@ def _parse_news_blocks(lines: list[str], *, project_dir: Path) -> list[ReleaseNe
                 )
             )
             continue
+        flush_list()
         current_parts.append(stripped)
-    flush()
+    flush_paragraph()
+    flush_list()
     return blocks
 
 

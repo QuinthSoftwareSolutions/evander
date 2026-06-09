@@ -2148,6 +2148,9 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "# News\n\n"
         "## 2026-05-21 - Control Plane Confidence\n\n"
         "Operators now get release context and deployment hints in one place.\n\n"
+        "### Practical tips\n\n"
+        "- Open the dashboard first.\n\n"
+        "- Download the changelog when you need the full record.\n\n"
         '![Truman signature](docs/assets/news/truman-signature.svg "Signed by Truman")\n\n'
         "The dashboard news feed explains what changed and how to use it.\n"
         "\n"
@@ -2187,6 +2190,31 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                 {
                     "kind": "paragraph",
                     "text": "Operators now get release context and deployment hints in one place.",
+                    "level": None,
+                    "items": [],
+                    "src": None,
+                    "dark_src": None,
+                    "alt": None,
+                    "title": None,
+                },
+                {
+                    "kind": "heading",
+                    "text": "Practical tips",
+                    "level": 3,
+                    "items": [],
+                    "src": None,
+                    "dark_src": None,
+                    "alt": None,
+                    "title": None,
+                },
+                {
+                    "kind": "list",
+                    "text": None,
+                    "level": None,
+                    "items": [
+                        "Open the dashboard first.",
+                        "Download the changelog when you need the full record.",
+                    ],
                     "src": None,
                     "dark_src": None,
                     "alt": None,
@@ -2195,6 +2223,8 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                 {
                     "kind": "image",
                     "text": None,
+                    "level": None,
+                    "items": [],
                     "src": "/api/admin/news/assets/truman-signature.svg",
                     "dark_src": "/api/admin/news/assets/truman-signature-inverse.svg",
                     "alt": "Truman signature",
@@ -2203,6 +2233,8 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                 {
                     "kind": "paragraph",
                     "text": "The dashboard news feed explains what changed and how to use it.",
+                    "level": None,
+                    "items": [],
                     "src": None,
                     "dark_src": None,
                     "alt": None,
@@ -2227,6 +2259,8 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
             {
                 "kind": "paragraph",
                 "text": "Older posts remain available without loading the whole news archive.",
+                "level": None,
+                "items": [],
                 "src": None,
                 "dark_src": None,
                 "alt": None,
