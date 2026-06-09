@@ -67,6 +67,7 @@ def collect_domain_validation_diagnostics(
         ),
         include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
+        addon_loader=worker_config.addon_loader,
     )
     node_capabilities = {
         **{

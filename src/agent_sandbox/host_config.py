@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.config import GatewayConfig, load_config
 
 DEFAULT_RUNTIME_DIR = Path("/var/lib/agent-sandbox")
@@ -36,6 +37,7 @@ class HostConfig(BaseModel):
     host_agent_control_state_path: Path = Path(
         "/var/lib/agent-sandbox/host-agent-control-state.json"
     )
+    addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
     enable_directory_scoped_config: bool = True
 
     @model_validator(mode="after")
@@ -91,6 +93,7 @@ class HostConfig(BaseModel):
                 "directories_store_path": config.directories_store_path,
                 "pr_map_path": config.pr_map_path,
                 "host_agent_control_state_path": config.host_agent_control_state_path,
+                "addon_loader": config.addon_loader,
                 "enable_directory_scoped_config": config.enable_directory_scoped_config,
             }
         )
@@ -165,6 +168,7 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "directories_store_path": host_config.directories_store_path,
             "pr_map_path": host_config.pr_map_path,
             "host_agent_control_state_path": host_config.host_agent_control_state_path,
+            "addon_loader": host_config.addon_loader,
             "enable_directory_scoped_config": host_config.enable_directory_scoped_config,
         }
     )

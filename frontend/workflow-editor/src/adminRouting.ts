@@ -1,4 +1,4 @@
-export type AdminTab =
+export type BuiltinAdminTab =
   | "dashboard"
   | "agents"
   | "approvals"
@@ -15,11 +15,27 @@ export type AdminTab =
   | "workers"
   | "workflow";
 
+export type AdminTab = BuiltinAdminTab | `addon:${string}`;
+
 export type AdminTabDefinition = {
   key: AdminTab;
   label: string;
   shortLabel: string;
   description: string;
+  addonId?: string;
+  apiBasePath?: string;
+  uiPath?: string | null;
+};
+
+export type AdminAddonNavigationPayload = {
+  addon_id: string;
+  display_name: string;
+  tab_key: `addon:${string}`;
+  label: string;
+  short_label: string;
+  description: string;
+  api_base_path: string;
+  ui_path?: string | null;
 };
 
 export type AdminHashParamValue = string | number | boolean | null | undefined;
@@ -53,14 +69,20 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
 
-const TAB_ALIASES: Readonly<Record<string, AdminTab>> = {
+const TAB_ALIASES: Readonly<Record<string, BuiltinAdminTab>> = {
   settings: "configuration",
 };
 
+const ADDON_TAB_PATTERN = /^addon:[a-z0-9][a-z0-9._-]{0,127}$/;
+
 export function tabsForExecutionBackend(
   executionBackend: "libvirt_vm" | "container_worker_vm" | null,
+  addonTabs: ReadonlyArray<AdminTabDefinition> = [],
 ): ReadonlyArray<AdminTabDefinition> {
-  return TABS.filter((tab) => tab.key !== "vms" || executionBackend === "libvirt_vm");
+  return [
+    ...TABS.filter((tab) => tab.key !== "vms" || executionBackend === "libvirt_vm"),
+    ...addonTabs,
+  ];
 }
 
 export function tabFromHash(hash: string): AdminTab | null {
@@ -76,6 +98,9 @@ export function tabFromHash(hash: string): AdminTab | null {
   }
   if (path.includes("/")) {
     return null;
+  }
+  if (ADDON_TAB_PATTERN.test(resolvedTab)) {
+    return resolvedTab as AdminTab;
   }
   return TABS.some((tab) => tab.key === resolvedTab) ? (resolvedTab as AdminTab) : null;
 }
@@ -102,6 +127,32 @@ export function adminHash(tab: AdminTab, params: Record<string, AdminHashParamVa
   }
   const queryText = query.toString();
   return `#${tab}${queryText ? `?${queryText}` : ""}`;
+}
+
+export function addonTabsFromPayload(
+  addons: ReadonlyArray<AdminAddonNavigationPayload> | null | undefined,
+): ReadonlyArray<AdminTabDefinition> {
+  if (!addons?.length) {
+    return [];
+  }
+  const tabs: AdminTabDefinition[] = [];
+  const seen = new Set<string>();
+  for (const addon of addons) {
+    if (!ADDON_TAB_PATTERN.test(addon.tab_key) || seen.has(addon.tab_key)) {
+      continue;
+    }
+    seen.add(addon.tab_key);
+    tabs.push({
+      key: addon.tab_key,
+      label: addon.label || addon.display_name || addon.addon_id,
+      shortLabel: addon.short_label || addon.label || addon.addon_id,
+      description: addon.description || addon.display_name || addon.addon_id,
+      addonId: addon.addon_id,
+      apiBasePath: addon.api_base_path,
+      uiPath: addon.ui_path ?? null,
+    });
+  }
+  return tabs;
 }
 
 export function usersModeFromHash(hash: string): AdminUsersMode {

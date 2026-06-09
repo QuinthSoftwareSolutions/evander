@@ -1163,6 +1163,13 @@ body {
   height: 100%;
 }
 
+.admin-addon-frame {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  border: 0;
+}
+
 .admin-placeholder-card,
 .admin-login-card {
   max-width: 34rem;

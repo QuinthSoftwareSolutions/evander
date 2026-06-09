@@ -103,9 +103,10 @@ config, with explicit edges describing routing between node ids. Domain workflow
 provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
 `triggers`/`gates`/`effects`/`queries`/`edges` at load time.
 Provider plugin loading is configured separately under `provider_loader`.
-Changes to `provider_loader` are picked up by the long-running trigger and effect
-orchestrator workers on config reload; they rebuild provider factories before using
-new graph nodes from the updated provider catalog.
+Optional add-on workflow provider contributions are configured under `addon_loader`.
+Changes to `provider_loader` or `addon_loader` are picked up by the long-running
+trigger and effect orchestrator workers on config reload; they rebuild provider
+factories before using new graph nodes from the updated provider catalog.
 The live `config.json` is an operator-local file ignored by Git; use
 `config/trigger-orchestrator/config-example.json` as the checked-in starting point.
 
@@ -149,6 +150,9 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.include_builtin` | `config/trigger-orchestrator/config.json` | Optional override for implicit built-in provider loading; defaults from selected profile. |
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
+| `addon_loader.modules` | Host config and `config/trigger-orchestrator/config.json` | Explicit add-on Python modules. Admin Web uses host config for add-on routes/navigation; workflow workers use their config to include add-on provider contributions. |
+| `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `agent_sandbox.addons`. Defaults to `false`. |
+| `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules/entry points. |
 
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
@@ -1043,6 +1047,7 @@ Key bootstrap fields include:
 - `audit_log_path`
 - `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`
 - `discord_command_store_path`, `directories_store_path`, `pr_map_path`, `host_agent_control_state_path`
+- `addon_loader`
 - `enable_directory_scoped_config`
 
 ## 3) Legacy gateway import keys
@@ -1060,6 +1065,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
+| `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module/entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Add-ons are disabled by default. |
 | `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, Admin Web directory edit surfaces, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |

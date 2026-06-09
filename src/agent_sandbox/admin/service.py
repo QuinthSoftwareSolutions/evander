@@ -1405,7 +1405,11 @@ def _workflow_agent_create_diagnostics(
     for effect in effects:
         if not isinstance(effect, dict) or effect.get("type") != "effect:agent:create":
             continue
-        execution_backend = str(effect.get("execution_backend") or "").strip()
+        effect_config = effect.get("config")
+        execution_backend_value = effect.get("execution_backend")
+        if not execution_backend_value and isinstance(effect_config, dict):
+            execution_backend_value = effect_config.get("execution_backend")
+        execution_backend = str(execution_backend_value or "").strip()
         if execution_backend:
             continue
         diagnostics.append(

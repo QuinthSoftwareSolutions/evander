@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Optional Add-on Boundary
+
+- Added a generic add-on loader with explicit module/entry-point discovery,
+  runtime storage namespacing, Admin Web API/UI mount hooks, and workflow
+  provider bridging for optional opinionated modules.
+- Kept add-ons disabled by default and documented that domain-specific concepts
+  such as hierarchical agent teams belong outside Truman core.
+- Made workflow validation preserve `effect:agent:create` execution-backend
+  checks after provider-specific fields are normalized under node `config`.
+
 ## 2026-06-09 - Workflow Mobile Dark Canvas
 
 - Kept the compact workflow canvas on dark theme backgrounds instead of

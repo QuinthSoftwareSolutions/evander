@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from agent_sandbox.addons import AddonLoaderConfig
 from agent_sandbox.models import (
     DirectoryPath,
     McpToolPolicyRule,
@@ -127,6 +128,7 @@ class GatewayConfig(BaseModel):
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
     teams_message_store_path: Path = Path("/var/lib/agent-sandbox/teams_messages.json")
     directories_store_path: Path = Path("/var/lib/agent-sandbox/directories.json")
+    addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
     enable_directory_scoped_config: bool = False
     execution_backend: Literal["libvirt_vm", "container_worker_vm"] = "libvirt_vm"
     container_worker_base_url: str | None = None
@@ -1117,6 +1119,7 @@ class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
     provider_loader: OrchestrationProviderLoaderConfig = Field(
         default_factory=OrchestrationProviderLoaderConfig
     )
+    addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
 
     @model_validator(mode="before")
     @classmethod

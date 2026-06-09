@@ -23,6 +23,11 @@
     "provider_modules": [],
     "provider_profile": "profiles/agent-default"
   },
+  "addon_loader": {
+    "modules": [],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": null
+  },
   "runtime_dir": "runtime",
   "workflow_event_journal_path": "runtime/workflow-events.jsonl",
   "scheduled_internal_event_store_path": "runtime/scheduled-internal-events.json",

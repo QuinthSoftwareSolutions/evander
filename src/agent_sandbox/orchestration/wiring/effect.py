@@ -84,6 +84,7 @@ def build_effect_provider_runtime_wiring(
         ),
         include_entry_points=worker_config.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
+        addon_loader=worker_config.addon_loader,
     )
     provider_factory = build_effect_provider_factory(
         runtime_dir=config.runtime_dir,

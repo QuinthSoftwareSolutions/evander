@@ -2901,6 +2901,7 @@ def _build_workflow_config_snapshot(
 def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
     payload = {
         "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
+        "addon_loader": worker_config.addon_loader.model_dump(mode="json"),
         "provider_include_builtin": worker_config.provider_include_builtin,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

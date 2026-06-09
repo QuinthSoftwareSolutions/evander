@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  addonTabsFromPayload,
   adminHash,
   currentTab,
   hashQueryParam,
@@ -71,6 +72,7 @@ test("hashes for valid tabs translate into safe Azure post-login next paths", ()
   assert.equal(nextPathFromHash("#workflow?trace_id=trace-1"), "/#workflow?trace_id=trace-1");
   assert.equal(nextPathFromHash("#users/groups"), "/#users/groups");
   assert.equal(nextPathFromHash("#settings"), "/#settings");
+  assert.equal(nextPathFromHash("#addon:team-addon"), "/#addon:team-addon");
 });
 
 test("admin hashes carry non-empty query parameters", () => {
@@ -87,6 +89,68 @@ test("dashboard is the first visible tab and vms stay backend-gated", () => {
   );
   assert.equal(tabsForExecutionBackend("container_worker_vm").some((tab) => tab.key === "vms"), false);
   assert.equal(tabsForExecutionBackend("libvirt_vm").some((tab) => tab.key === "vms"), true);
+});
+
+test("add-on navigation payloads append dynamic admin tabs", () => {
+  const addonTabs = addonTabsFromPayload([
+    {
+      addon_id: "team-addon",
+      display_name: "Team Add-on",
+      tab_key: "addon:team-addon",
+      label: "Teams",
+      short_label: "Teams",
+      description: "Team-oriented add-on surface.",
+      api_base_path: "/api/addons/team-addon",
+      ui_path: "/addons/team-addon/",
+    },
+  ]);
+
+  assert.equal(tabFromHash("#addon:team-addon"), "addon:team-addon");
+  assert.deepEqual(
+    tabsForExecutionBackend("container_worker_vm", addonTabs).map((tab) => tab.key).slice(-1),
+    ["addon:team-addon"],
+  );
+  assert.equal(addonTabs[0].addonId, "team-addon");
+  assert.equal(addonTabs[0].uiPath, "/addons/team-addon/");
+});
+
+test("invalid add-on hashes and duplicate payloads are ignored", () => {
+  assert.equal(tabFromHash("#addon:TeamAddon"), null);
+  assert.deepEqual(
+    addonTabsFromPayload([
+      {
+        addon_id: "team-addon",
+        display_name: "Team Add-on",
+        tab_key: "addon:team-addon",
+        label: "Teams",
+        short_label: "Teams",
+        description: "Team add-on.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: null,
+      },
+      {
+        addon_id: "team-addon",
+        display_name: "Duplicate",
+        tab_key: "addon:team-addon",
+        label: "Duplicate",
+        short_label: "Dup",
+        description: "Duplicate.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: null,
+      },
+      {
+        addon_id: "bad",
+        display_name: "Bad",
+        tab_key: "addon:Bad",
+        label: "Bad",
+        short_label: "Bad",
+        description: "Bad.",
+        api_base_path: "/api/addons/bad",
+        ui_path: null,
+      },
+    ]).map((tab) => tab.label),
+    ["Teams"],
+  );
 });
 
 test("users tab is labeled users and groups", () => {

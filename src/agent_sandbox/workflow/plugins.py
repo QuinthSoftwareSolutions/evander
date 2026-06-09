@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from agent_sandbox.addons import AddonLoaderConfig, load_addons
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope
 
 from agent_sandbox.effects.providers.base import EffectProviderBase
@@ -50,6 +51,7 @@ def load_provider_plugins(
     module_names: Sequence[str] | None = None,
     include_entry_points: bool = True,
     include_builtin: bool = False,
+    addon_loader: AddonLoaderConfig | Mapping[str, Any] | None = None,
 ) -> LoadedProviderCatalog:
     trigger_providers: dict[str, type[TriggerProviderBase]] = {}
     gate_providers: dict[str, type[GateProviderBase]] = {}
@@ -78,6 +80,13 @@ def load_provider_plugins(
             registration_specs.append(
                 (f"entry_point:{discovered.value}", _load_registration_from_entry_point(discovered))
             )
+
+    if addon_loader is not None:
+        addon_catalog = load_addons(addon_loader)
+        for addon in addon_catalog.registrations:
+            if addon.workflow_providers is None:
+                continue
+            registration_specs.append((f"addon:{addon.addon_id}", addon.workflow_providers))
 
     for source, raw_registration in registration_specs:
         registration = _coerce_registration(source=source, value=raw_registration)
