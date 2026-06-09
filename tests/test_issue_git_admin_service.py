@@ -514,6 +514,66 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
     assert not created_path.exists()
 
 
+def test_issue_git_admin_service_delete_local_issue_names_vm_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    monkeypatch.setattr(
+        issue_git_module._admin_service,
+        "_dominfo_field",
+        lambda vm_name, field_name: "running" if vm_name == "vm-1" else None,
+    )
+
+    created = service.create_issue(title="Fix dashboard", body="Build it")
+
+    delete_result = service.delete_local_issue(created.issue_id)
+
+    assert delete_result.success is False
+    assert store.get(created.issue_id) is not None
+    assert "Cannot delete local issue 1" in delete_result.message
+    assert "VM 'vm-1' still exists (state: running)" in delete_result.message
+    assert "Admin Web > Agents or VMs & Issues" in delete_result.message
+
+
+def test_issue_git_admin_service_delete_local_issue_names_session_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    monkeypatch.setattr(
+        issue_git_module._admin_service, "_dominfo_field", lambda *args, **kwargs: None
+    )
+
+    created = service.create_issue(title="Fix dashboard", body="Build it")
+    blocking_session_id = "issue-1-root-example-example_backup-20260601T072318Z-run"
+    admin.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=blocking_session_id,
+            vm_provider="container_worker_vm",
+            directory_path="root/example/example_backup",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-agent-1",
+            },
+        )
+    )
+
+    delete_result = service.delete_local_issue(created.issue_id)
+
+    assert delete_result.success is False
+    assert store.get(created.issue_id) is not None
+    assert "Cannot delete local issue 1" in delete_result.message
+    assert "Destroy vm-1 before deleting local issue" not in delete_result.message
+    assert f"session {blocking_session_id!r}" in delete_result.message
+    assert "directory: 'root/example/example_backup'" in delete_result.message
+    assert "backend: 'container_worker_vm'" in delete_result.message
+    assert "agent id: 'container-agent-1'" in delete_result.message
+    assert "selecting directory 'root/example/example_backup'" in delete_result.message
+
+
 def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_records(
     tmp_path: Path,
 ) -> None:

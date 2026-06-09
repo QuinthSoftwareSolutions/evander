@@ -68,6 +68,41 @@ class EventScheduleEffectDefinition(EffectDefinition):
         return self
 
 
+class ArtifactSpaceCreateEffectDefinition(EffectDefinition):
+    type: Literal["effect:artifact-space:create"]
+    path: ConfigValue
+    display_name: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    grants: ConfigValue | None = None
+    subject: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("metadata", "grants")
+    @classmethod
+    def validate_object_fields(cls, value: ConfigValue | None, info) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError(f"effect:artifact-space:create {info.field_name} must be a JSON object")
+
+
+class ArtifactSpacePublishVersionEffectDefinition(EffectDefinition):
+    type: Literal["effect:artifact-space:publish-version"]
+    space_path: ConfigValue
+    artifact_id: ConfigValue
+    artifact_key: ConfigValue
+    subject: ConfigValue | None = None
+    metadata: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+    require_existing_artifact: ConfigValue | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:artifact-space:publish-version metadata must be a JSON object")
+
+
 class VmCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:create"]
     provider: ConfigValue | None = None

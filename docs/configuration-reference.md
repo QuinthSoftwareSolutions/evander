@@ -103,9 +103,10 @@ config, with explicit edges describing routing between node ids. Domain workflow
 provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
 `triggers`/`gates`/`effects`/`queries`/`edges` at load time.
 Provider plugin loading is configured separately under `provider_loader`.
-Changes to `provider_loader` are picked up by the long-running trigger and effect
-orchestrator workers on config reload; they rebuild provider factories before using
-new graph nodes from the updated provider catalog.
+Optional add-on workflow provider contributions are configured under `addon_loader`.
+Changes to `provider_loader` or `addon_loader` are picked up by the long-running
+trigger and effect orchestrator workers on config reload; they rebuild provider
+factories before using new graph nodes from the updated provider catalog.
 The live `config.json` is an operator-local file ignored by Git; use
 `config/trigger-orchestrator/config-example.json` as the checked-in starting point.
 
@@ -149,6 +150,19 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.include_builtin` | `config/trigger-orchestrator/config.json` | Optional override for implicit built-in provider loading; defaults from selected profile. |
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
+| `addon_loader.modules` | Host config and `config/trigger-orchestrator/config.json` | Explicit add-on Python modules. Admin Web uses host config for add-on routes/navigation; workflow workers use their config to include add-on provider contributions. |
+| `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `agent_sandbox.addons`. Defaults to `false`. |
+| `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules/entry points. |
+
+For the bundled Team Add-on, prefer explicit module loading:
+`addon_loader.modules: ["truman_team_addon"]`. Configure this in the host
+config to expose Admin Web routes/navigation, and in
+`config/trigger-orchestrator/config.json` to make `effect:team:*` and
+`query:team:*` workflow providers available to the trigger/effect workers. The
+team runtime loop is still opt-in; materialize
+`truman_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
+workflow pack and list that file in `workflow_packs` only on deployments that
+want autonomous team wakeups.
 
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
@@ -457,6 +471,8 @@ Type-specific keys:
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
 | `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
+| `effect:artifact-space:create` | `path` | `display_name`, `metadata`, `grants`, `subject`, `expected_revision`, `outputs` |
+| `effect:artifact-space:publish-version` | `space_path`, `artifact_id`, `artifact_key` | `subject`, `metadata`, `expected_revision`, `require_existing_artifact`, `outputs` |
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
@@ -619,6 +635,11 @@ immutable caller-provided `key`. Reusing a key fails.
 session's `/artifacts` folder. `destination_path`, when set, is a relative
 prefix under `/artifacts`; existing files cause the import to fail unless
 `overwrite` is true.
+Artifact spaces add a generic hierarchical catalogue over immutable published
+artifact keys. Spaces live in `runtime/artifact-spaces.json`, use opaque
+subjects such as `session:<id>` or add-on-defined subjects for access checks,
+and create new version records instead of overwriting existing published
+artifacts.
 
 ### Query definition schema keys
 
@@ -640,6 +661,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:state:get` | `namespace`, `key` | `outputs` |
+| `query:artifact-space:list` | _none beyond envelope_ | `path`, `recursive`, `subject`, `include_versions`, `outputs` |
+| `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
@@ -1043,6 +1066,7 @@ Key bootstrap fields include:
 - `audit_log_path`
 - `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`
 - `discord_command_store_path`, `directories_store_path`, `pr_map_path`, `host_agent_control_state_path`
+- `addon_loader`
 - `enable_directory_scoped_config`
 
 ## 3) Legacy gateway import keys
@@ -1060,6 +1084,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
+| `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module/entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Add-ons are disabled by default. |
 | `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, Admin Web directory edit surfaces, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |

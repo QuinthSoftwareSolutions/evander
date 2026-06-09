@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team Add-on</title>
+    <link rel="stylesheet" href="team-ui.css" />
+    <script type="module" src="team-ui.js"></script>
+  </head>
+  <body data-team-addon-ui>
+    <div class="team-shell">
+      <header class="team-header">
+        <div>
+          <p class="section-label">Add-on</p>
+          <h1>Teams</h1>
+        </div>
+        <div class="team-header-actions">
+          <span id="revision-badge" class="revision-badge">Revision 0</span>
+          <button id="refresh-button" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
+
+      <main class="team-layout">
+        <section class="team-main">
+          <section class="summary-panel" aria-labelledby="summary-heading">
+            <h2 id="summary-heading">Overview</h2>
+            <div id="summary-grid" class="summary-grid"></div>
+          </section>
+
+          <section class="content-grid">
+            <div class="content-panel" aria-labelledby="hierarchy-heading">
+              <h2 id="hierarchy-heading">Hierarchy</h2>
+              <div id="hierarchy-view" class="hierarchy-view"></div>
+            </div>
+
+            <div class="content-panel" aria-labelledby="agents-heading">
+              <h2 id="agents-heading">Agents</h2>
+              <div id="agents-view" class="agents-view"></div>
+            </div>
+          </section>
+
+          <section class="content-panel" aria-labelledby="projects-heading">
+            <h2 id="projects-heading">Projects</h2>
+            <div id="projects-view" class="projects-view"></div>
+          </section>
+        </section>
+
+        <aside class="forms-panel" aria-labelledby="forms-heading">
+          <h2 id="forms-heading">Setup</h2>
+          <div class="form-stack">
+            <details open>
+              <summary>Create team</summary>
+              <form id="create-team-form" data-endpoint="/teams" data-method="POST">
+                <label>Team ID <input name="id" required /></label>
+                <label>Name <input name="name" required /></label>
+                <label>Manager agent ID <input name="manager_agent_id" required /></label>
+                <label>Manager session ID <input name="manager_session_id" required /></label>
+                <label>Manager role <input name="manager_role" value="manager" /></label>
+                <button type="submit">Create team</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Create project</summary>
+              <form id="create-project-form" data-endpoint="/projects" data-method="POST">
+                <label>Project ID <input name="id" required /></label>
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Name <input name="name" required /></label>
+                <label>Lead agent ID <input name="lead_agent_id" required /></label>
+                <label>Lead session ID <input name="lead_session_id" required /></label>
+                <label>Lead role <input name="lead_role" value="project_lead" /></label>
+                <label>Goal ID <input name="goal_id" /></label>
+                <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+                <button type="submit">Create project</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Register agent</summary>
+              <form id="register-agent-form" data-endpoint="/agents" data-method="POST">
+                <label>Agent ID <input name="id" required /></label>
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Project <select name="project_id" required data-options="projects"></select></label>
+                <label>Role <input name="role" required /></label>
+                <label>Session ID <input name="session_id" required /></label>
+                <label>Reports to <select name="reports_to_agent_id" required data-options="agents"></select></label>
+                <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
+                <button type="submit">Register agent</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Create task</summary>
+              <form id="create-task-form" data-endpoint="/tasks" data-method="POST">
+                <label>Task ID <input name="id" required /></label>
+                <label>Owner <select name="owner_agent_id" required data-options="agents"></select></label>
+                <label>Project <select name="project_id" required data-options="projects"></select></label>
+                <label>Priority <input name="priority" type="number" min="0" value="10" required /></label>
+                <label>Title <input name="title" required /></label>
+                <label>Description <textarea name="description" rows="3" required></textarea></label>
+                <label>Created by <select name="created_by_agent_id" required data-options="agents"></select></label>
+                <label>State <select name="state" data-options="task-states"></select></label>
+                <button type="submit">Create task</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Update task</summary>
+              <form id="update-task-form">
+                <label>Task <select name="task_id" required data-options="tasks"></select></label>
+                <label>State <select name="state" data-options="task-states"></select></label>
+                <label>Priority <input name="priority" type="number" min="0" /></label>
+                <label>Title <input name="title" /></label>
+                <label>Description <textarea name="description" rows="3"></textarea></label>
+                <button type="submit">Update task</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Record deliverable</summary>
+              <form id="record-deliverable-form" data-endpoint="/deliverables" data-method="POST">
+                <label>Deliverable ID <input name="id" required /></label>
+                <label>Task <select name="task_id" required data-options="tasks"></select></label>
+                <label>Producer <select name="producer_agent_id" required data-options="agents"></select></label>
+                <label>Summary <textarea name="summary" rows="3" required></textarea></label>
+                <label>Artifact refs <textarea name="artifact_refs" rows="2"></textarea></label>
+                <label>State <select name="state" data-options="record-states"></select></label>
+                <button type="submit">Record deliverable</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Request review</summary>
+              <form id="record-review-form" data-endpoint="/review-requests" data-method="POST">
+                <label>Review ID <input name="id" required /></label>
+                <label>Deliverable <select name="deliverable_id" required data-options="deliverables"></select></label>
+                <label>Reviewer <select name="reviewer_agent_id" required data-options="agents"></select></label>
+                <label>Findings <textarea name="findings" rows="3"></textarea></label>
+                <label>State <select name="state" data-options="record-states"></select></label>
+                <button type="submit">Request review</button>
+              </form>
+            </details>
+          </div>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>

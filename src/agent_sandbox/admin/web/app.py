@@ -14,6 +14,14 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Redire
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from agent_sandbox.addons import (
+    AddonContext,
+    addon_admin_navigation_payloads,
+    addon_runtime_dir,
+    load_addons,
+    resolve_addon_admin_api_routes,
+    resolve_addon_admin_ui_routes,
+)
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.agents import agent_routes
@@ -148,7 +156,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or (path.startswith("/api/workflow-webhooks/") and request.method == "POST")
         ):
             return await call_next(request)
-        if path.startswith("/api/"):
+        if path.startswith("/api/") or path.startswith("/addons/"):
             if self._auth.read_session(request) is None:
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
@@ -163,6 +171,7 @@ def create_app(service: AdminService) -> Starlette:
     )
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
+    addon_catalog = load_addons(service.config.addon_loader)
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)
@@ -335,6 +344,7 @@ def create_app(service: AdminService) -> Starlette:
                     ),
                 },
                 "deployment": service.read_deployment_status().model_dump(mode="json"),
+                "addons": addon_admin_navigation_payloads(addon_catalog),
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
@@ -462,6 +472,22 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service))
+    for addon in addon_catalog.registrations:
+        context = AddonContext(
+            addon_id=addon.addon_id,
+            runtime_dir=service.config.runtime_dir,
+            addon_runtime_dir=addon_runtime_dir(service.config.runtime_dir, addon.addon_id),
+            project_dir=service.project_dir,
+            config=service.config,
+            service=service,
+            auth=auth,
+        )
+        api_routes = resolve_addon_admin_api_routes(addon, context)
+        if api_routes:
+            routes.append(Mount(f"/api/addons/{addon.addon_id}", routes=list(api_routes)))
+        ui_routes = resolve_addon_admin_ui_routes(addon, context)
+        if ui_routes:
+            routes.append(Mount(f"/addons/{addon.addon_id}", routes=list(ui_routes)))
     if dist_dir.exists():
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))
@@ -474,6 +500,7 @@ def create_app(service: AdminService) -> Starlette:
     app.state.auth = auth
     app.state.admin_user_store = admin_user_store
     app.state.dashboard_cache = dashboard_cache
+    app.state.addon_catalog = addon_catalog
     app.add_middleware(AuthMiddleware, auth=auth)
     return app
 

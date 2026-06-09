@@ -368,6 +368,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:artifact:stage",
         "effect:artifact:publish-artifacts",
         "effect:artifact:import-published",
+        "effect:artifact-space:create",
+        "effect:artifact-space:publish-version",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
         "effect:chat-assistant:ensure-session",

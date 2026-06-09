@@ -1,0 +1,688 @@
+const API_BASE = "/api/addons/team-addon";
+
+const taskStates = [
+  "pending",
+  "in_progress",
+  "blocked",
+  "waiting_for_review",
+  "finished",
+  "accepted",
+  "rejected",
+];
+const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
+const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
+const terminalRecordStates = new Set(["accepted", "rejected"]);
+
+let state = emptyState();
+
+const elements = {
+  revisionBadge: document.querySelector("#revision-badge"),
+  statusMessage: document.querySelector("#status-message"),
+  summaryGrid: document.querySelector("#summary-grid"),
+  hierarchyView: document.querySelector("#hierarchy-view"),
+  agentsView: document.querySelector("#agents-view"),
+  projectsView: document.querySelector("#projects-view"),
+  refreshButton: document.querySelector("#refresh-button"),
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindForms();
+  elements.refreshButton?.addEventListener("click", () => {
+    void loadState({ preserveForms: true });
+  });
+  void loadState();
+});
+
+function emptyState() {
+  return {
+    revision: 0,
+    teams: {},
+    projects: {},
+    agents: {},
+    agent_runtimes: {},
+    tasks: {},
+    deliverables: {},
+    review_requests: {},
+    inbox: {},
+    action_records: {},
+    release_packages: {},
+    ephemeral_assignments: {},
+  };
+}
+
+function bindForms() {
+  document.querySelectorAll("form[data-endpoint]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitCreateForm(form);
+    });
+  });
+
+  const updateTaskForm = document.querySelector("#update-task-form");
+  updateTaskForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitTaskUpdate(updateTaskForm);
+  });
+  updateTaskForm?.elements.task_id?.addEventListener("change", () => {
+    syncTaskUpdateForm(updateTaskForm);
+  });
+}
+
+async function loadState({ preserveForms = false } = {}) {
+  const drafts = preserveForms ? captureFormDrafts() : null;
+  setStatus("Loading team state.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}/state`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    state = normalizeState(await response.json());
+    render();
+    if (drafts) {
+      restoreFormDrafts(drafts);
+    }
+    setStatus(`Loaded revision ${state.revision}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
+  }
+}
+
+function normalizeState(payload) {
+  return { ...emptyState(), ...(payload || {}) };
+}
+
+function render() {
+  elements.revisionBadge.textContent = `Revision ${state.revision}`;
+  renderSummary();
+  renderHierarchy();
+  renderAgents();
+  renderProjects();
+  refreshSelects();
+}
+
+function renderSummary() {
+  const teams = values(state.teams);
+  const projects = values(state.projects);
+  const agents = values(state.agents).filter((agent) => agent.status !== "archived");
+  const tasks = values(state.tasks);
+  const deliverables = values(state.deliverables);
+  const reviews = values(state.review_requests);
+  const ephemeral = values(state.ephemeral_assignments);
+
+  const metrics = [
+    ["Teams", teams.length],
+    ["Projects", projects.filter((project) => project.status !== "archived").length],
+    ["Agents", agents.length],
+    ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
+    ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
+    ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
+  ];
+
+  elements.summaryGrid.innerHTML = metrics
+    .map(([label, value]) => {
+      return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
+    })
+    .join("");
+
+  if (!teams.length) {
+    elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+  }
+}
+
+function renderHierarchy() {
+  const teams = values(state.teams);
+  if (!teams.length) {
+    elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+    return;
+  }
+
+  elements.hierarchyView.innerHTML = teams
+    .map((team) => {
+      const manager = state.agents[team.manager_agent_id];
+      return `
+        <article class="hierarchy-team">
+          <p class="section-label">${escapeHtml(team.id)}</p>
+          <h3>${escapeHtml(team.name)}</h3>
+          ${
+            manager
+              ? `<ul class="hierarchy-list">${renderAgentBranch(manager.id, new Set())}</ul>`
+              : `<p class="empty-state">Manager missing.</p>`
+          }
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderAgentBranch(agentId, seen) {
+  const agent = state.agents[agentId];
+  if (!agent || seen.has(agentId)) {
+    return "";
+  }
+  seen.add(agentId);
+  const children = (agent.subordinate_agent_ids || [])
+    .map((childId) => renderAgentBranch(childId, new Set(seen)))
+    .filter(Boolean)
+    .join("");
+  return `
+    <li>
+      <div class="hierarchy-node">
+        <div class="agent-line">
+          <strong>${escapeHtml(agent.id)}</strong>
+          <span class="state-pill">${escapeHtml(agent.role)}</span>
+        </div>
+        <div class="meta-line">${escapeHtml(agent.session_id)}</div>
+      </div>
+      ${children ? `<ul>${children}</ul>` : ""}
+    </li>
+  `;
+}
+
+function renderAgents() {
+  const agents = values(state.agents).sort(byId);
+  if (!agents.length) {
+    elements.agentsView.innerHTML = `<p class="empty-state">No agents registered.</p>`;
+    return;
+  }
+  elements.agentsView.innerHTML = `
+    <ul class="agent-list">
+      ${agents
+        .map((agent) => {
+          const tasks = orderedTasksForAgent(agent.id);
+          const openTasks = tasks.filter((task) => !terminalTaskStates.has(task.state));
+          const maxConcurrent = agent.ephemeral_policy?.max_concurrent ?? 0;
+          return `
+            <li class="agent-item">
+              <div class="agent-line">
+                <strong>${escapeHtml(agent.id)}</strong>
+                <span class="state-pill ${escapeHtml(agent.status || "active")}">${escapeHtml(agent.status || "active")}</span>
+              </div>
+              <div class="meta-line">${escapeHtml(agent.role)} - ${escapeHtml(agent.session_id)}</div>
+              <div class="meta-line">Reports to ${escapeHtml(agent.reports_to_agent_id || "operator")} - ${openTasks.length} open task(s) - max ephemeral ${maxConcurrent}</div>
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderProjects() {
+  const projects = values(state.projects).sort(byId);
+  if (!projects.length) {
+    elements.projectsView.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+    return;
+  }
+
+  elements.projectsView.innerHTML = projects
+    .map((project) => {
+      const projectTasks = values(state.tasks)
+        .filter((task) => task.project_id === project.id)
+        .sort(byPriority);
+      const projectDeliverables = values(state.deliverables).filter((deliverable) => {
+        const task = state.tasks[deliverable.task_id];
+        return task?.project_id === project.id;
+      });
+      return `
+        <article class="project-block">
+          <div class="project-header">
+            <div>
+              <strong>${escapeHtml(project.name)}</strong>
+              <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+            </div>
+            <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+          </div>
+          <div class="project-columns">
+            <div>
+              <p class="subheading">Goals</p>
+              ${renderGoals(project.goals || [])}
+              <p class="subheading">Deliverables</p>
+              ${renderDeliverables(projectDeliverables)}
+            </div>
+            <div>
+              <p class="subheading">Tasks</p>
+              ${renderTasks(projectTasks)}
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderGoals(goals) {
+  if (!goals.length) {
+    return `<p class="empty-state">No goals.</p>`;
+  }
+  return `
+    <ul class="goal-list">
+      ${goals
+        .map((goal) => {
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(goal.description)}</strong>
+                <span class="state-pill ${escapeHtml(goal.state)}">${escapeHtml(goal.state)}</span>
+              </div>
+              <div class="meta-line">${escapeHtml(goal.id)}</div>
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderTasks(tasks) {
+  if (!tasks.length) {
+    return `<p class="empty-state">No tasks.</p>`;
+  }
+  return `
+    <ul class="task-list">
+      ${tasks
+        .map((task) => {
+          return `
+            <li class="task-item">
+              <div class="task-line">
+                <strong>${escapeHtml(task.title)}</strong>
+                <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+              </div>
+              <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
+              <div class="meta-line">${escapeHtml(task.description)}</div>
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderDeliverables(deliverables) {
+  if (!deliverables.length) {
+    return `<p class="empty-state">No deliverables.</p>`;
+  }
+  return `
+    <ul class="deliverable-list">
+      ${deliverables
+        .map((deliverable) => {
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(deliverable.summary)}</strong>
+                <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+              </div>
+              <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
+              ${renderReviewSummary(deliverable.review_request_ids || [])}
+              ${renderArtifactRefs(deliverable.artifact_refs || [])}
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderReviewSummary(reviewIds) {
+  if (!reviewIds.length) {
+    return "";
+  }
+  const reviews = reviewIds.map((reviewId) => state.review_requests[reviewId]).filter(Boolean);
+  if (!reviews.length) {
+    return "";
+  }
+  return `
+    <ul class="review-list">
+      ${reviews
+        .map((review) => {
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(review.id)}</strong>
+                <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
+              </div>
+              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}</div>
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderArtifactRefs(refs) {
+  if (!refs.length) {
+    return "";
+  }
+  return `<div class="meta-line">Artifacts: ${refs.map((ref) => escapeHtml(ref)).join(", ")}</div>`;
+}
+
+function refreshSelects() {
+  const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
+  const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
+  const agents = values(state.agents).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
+  const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
+  const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
+  const options = {
+    teams,
+    projects,
+    agents,
+    tasks,
+    deliverables,
+    "task-states": taskStates.map((item) => [item, item]),
+    "record-states": recordStates.map((item) => [item, item]),
+  };
+
+  document.querySelectorAll("select[data-options]").forEach((select) => {
+    const key = select.dataset.options;
+    fillSelect(select, options[key] || []);
+  });
+
+  const updateTaskForm = document.querySelector("#update-task-form");
+  if (updateTaskForm) {
+    syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
+  }
+}
+
+function fillSelect(select, options) {
+  const currentValue = select.value;
+  const placeholder = select.required ? "Select" : "Default";
+  select.innerHTML = `<option value="">${placeholder}</option>${options
+    .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
+    .join("")}`;
+  if (options.some(([value]) => value === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+async function submitCreateForm(form) {
+  const endpoint = form.dataset.endpoint;
+  const method = form.dataset.method || "POST";
+  const payload = payloadForForm(form);
+  await submitMutation(form, endpoint, method, payload);
+}
+
+async function submitTaskUpdate(form) {
+  const data = formData(form);
+  const taskId = text(data.task_id);
+  if (!taskId) {
+    setStatus("Task is required.", "error");
+    return;
+  }
+  const payload = {};
+  const stateValue = text(data.state);
+  const priority = text(data.priority);
+  const title = text(data.title);
+  const description = text(data.description);
+  if (stateValue) payload.state = stateValue;
+  if (priority) payload.priority = Number(priority);
+  if (title) payload.title = title;
+  if (description) payload.description = description;
+  await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
+    resetOnSuccess: false,
+  });
+}
+
+async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true } = {}) {
+  const drafts = captureFormDrafts();
+  const body = { ...payload, expected_revision: state.revision };
+  setFormBusy(form, true);
+  setStatus("Saving.", "loading");
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    if (resetOnSuccess) {
+      form.reset();
+    }
+    render();
+    setStatus(`Saved revision ${state.revision}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Save failed.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+function payloadForForm(form) {
+  const formId = formIdentifier(form);
+  const data = formData(form);
+  if (formId === "create-team-form") {
+    return {
+      id: text(data.id),
+      name: text(data.name),
+      manager_agent_id: text(data.manager_agent_id),
+      manager_session_id: text(data.manager_session_id),
+      manager_role: text(data.manager_role) || "manager",
+    };
+  }
+  if (formId === "create-project-form") {
+    const goals = [];
+    const goalDescription = text(data.goal_description);
+    if (goalDescription) {
+      goals.push({
+        id: text(data.goal_id) || `${text(data.id)}-goal`,
+        description: goalDescription,
+      });
+    }
+    return {
+      id: text(data.id),
+      team_id: text(data.team_id),
+      name: text(data.name),
+      lead_agent_id: text(data.lead_agent_id),
+      lead_session_id: text(data.lead_session_id),
+      lead_role: text(data.lead_role) || "project_lead",
+      goals,
+    };
+  }
+  if (formId === "register-agent-form") {
+    return {
+      id: text(data.id),
+      team_id: text(data.team_id),
+      project_id: text(data.project_id),
+      role: text(data.role),
+      session_id: text(data.session_id),
+      reports_to_agent_id: text(data.reports_to_agent_id),
+      ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
+    };
+  }
+  if (formId === "create-task-form") {
+    const payload = {
+      id: text(data.id),
+      owner_agent_id: text(data.owner_agent_id),
+      project_id: text(data.project_id),
+      priority: numberOrZero(data.priority),
+      title: text(data.title),
+      description: text(data.description),
+      created_by_agent_id: text(data.created_by_agent_id),
+    };
+    if (text(data.state)) {
+      payload.state = text(data.state);
+    }
+    return payload;
+  }
+  if (formId === "record-deliverable-form") {
+    const payload = {
+      id: text(data.id),
+      task_id: text(data.task_id),
+      producer_agent_id: text(data.producer_agent_id),
+      summary: text(data.summary),
+      artifact_refs: splitList(data.artifact_refs),
+    };
+    if (text(data.state)) {
+      payload.state = text(data.state);
+    }
+    return payload;
+  }
+  if (formId === "record-review-form") {
+    const payload = {
+      id: text(data.id),
+      deliverable_id: text(data.deliverable_id),
+      reviewer_agent_id: text(data.reviewer_agent_id),
+      findings: splitList(data.findings),
+    };
+    if (text(data.state)) {
+      payload.state = text(data.state);
+    }
+    return payload;
+  }
+  return {};
+}
+
+function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
+  const taskId = form.elements.task_id?.value;
+  const task = taskId ? state.tasks[taskId] : null;
+  if (!task) {
+    return;
+  }
+  if (!keepEditedValues || !form.elements.state.value) {
+    form.elements.state.value = task.state || "";
+  }
+  if (!keepEditedValues || !form.elements.priority.value) {
+    form.elements.priority.value = String(task.priority ?? "");
+  }
+  if (!keepEditedValues || !form.elements.title.value) {
+    form.elements.title.value = task.title || "";
+  }
+  if (!keepEditedValues || !form.elements.description.value) {
+    form.elements.description.value = task.description || "";
+  }
+}
+
+function formData(form) {
+  return Object.fromEntries(new FormData(form).entries());
+}
+
+function formIdentifier(form) {
+  return form.getAttribute("id") || "";
+}
+
+function captureFormDrafts() {
+  const drafts = {};
+  document.querySelectorAll("form").forEach((form) => {
+    const formId = formIdentifier(form);
+    if (formId) {
+      drafts[formId] = formData(form);
+    }
+  });
+  return drafts;
+}
+
+function restoreFormDrafts(drafts) {
+  Object.entries(drafts || {}).forEach(([formId, values]) => {
+    const form = document.getElementById(formId);
+    if (!form) {
+      return;
+    }
+    Object.entries(values).forEach(([name, value]) => {
+      const field = form.elements[name];
+      if (!field) {
+        return;
+      }
+      field.value = value;
+    });
+  });
+  const updateTaskForm = document.querySelector("#update-task-form");
+  if (updateTaskForm) {
+    syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
+  }
+}
+
+function setFormBusy(form, busy) {
+  form.querySelectorAll("button, input, select, textarea").forEach((field) => {
+    field.disabled = busy;
+  });
+}
+
+function setStatus(message, level) {
+  elements.statusMessage.textContent = message;
+  elements.statusMessage.className = `status-message ${level || ""}`.trim();
+}
+
+async function responseText(response) {
+  const textValue = await response.text();
+  if (!textValue) {
+    return `${response.status} ${response.statusText}`;
+  }
+  try {
+    const payload = JSON.parse(textValue);
+    return payload.error || textValue;
+  } catch {
+    return textValue;
+  }
+}
+
+function orderedTasksForAgent(agentId) {
+  return values(state.tasks)
+    .filter((task) => task.owner_agent_id === agentId)
+    .sort(byPriority);
+}
+
+function byId(left, right) {
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function byPriority(left, right) {
+  return (
+    Number(left.priority ?? 0) - Number(right.priority ?? 0) ||
+    String(left.created_at || "").localeCompare(String(right.created_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function values(collection) {
+  return Object.values(collection || {});
+}
+
+function text(value) {
+  return String(value ?? "").trim();
+}
+
+function numberOrZero(value) {
+  const parsed = Number.parseInt(text(value), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function splitList(value) {
+  return text(value)
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function escapeHtml(value) {
+  return text(value).replace(/[&<>"']/g, (char) => {
+    return {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[char];
+  });
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}

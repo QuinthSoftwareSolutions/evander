@@ -5,6 +5,63 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Team Add-on Packaging
+
+- Documented the bundled-but-disabled Team Add-on enablement path for Admin
+  Web, workflow workers, and the optional runtime workflow pack.
+- Added packaging-boundary tests that pin the Team Add-on entry point, packaged
+  static UI assets, and opt-in workflow provider loading.
+
+## 2026-06-09 - Admin Log Auth Refresh
+
+- Made the Admin Web Agents page refresh global auth state when background
+  agent-list or log polling receives a 401, returning operators to sign-in
+  with an explicit expired-session message instead of leaving stale log output.
+
+## 2026-06-09 - Team Runtime Loop And Artifact Spaces
+
+- Added generic hierarchical artifact spaces over immutable published artifact
+  keys, including workflow effects, queries, and Admin API routes for space
+  creation, version registration, listing, and latest-version lookup.
+- Extended the optional Team Add-on with runtime leases, inbox items, structured
+  agent action records, workflow providers for waking due persistent agents and
+  applying action artifacts, and a packaged runtime workflow definition.
+- Added event-mediated ephemeral worker assignments to the Team Add-on, including
+  per-parent concurrency limits, add-on-owned lifecycle state, completion
+  routing, and cleanup through existing Truman agent create/prompt/destroy nodes.
+- Kept team runtime state canonical under the add-on while mirroring only a
+  compact `metadata.team_addon` index into Truman session metadata.
+- Added an optional package-owned Team Add-on Admin Web UI mounted under
+  `/addons/team-addon/`, with state overview and setup forms backed by the
+  add-on API.
+
+## 2026-06-09 - Issue Delete Blocker Messages
+
+- Made local issue deletion failures name the blocking VM or linked agent
+  sessions, including session directory and backend, so container-backed
+  issue sessions no longer produce misleading "destroy vm-..." guidance.
+
+## 2026-06-09 - Team Add-on State Model
+
+- Added the optional `truman_team_addon` package with private add-on state for
+  hierarchical teams, projects, persistent agents, prioritized tasks,
+  deliverables, review requests, and release packages.
+- Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`
+  while keeping canonical state under `runtime/addons/team-addon/state.json`
+  and leaving Truman core session/workflow schemas team-agnostic.
+
+## 2026-06-09 - Optional Add-on Boundary
+
+- Added a generic add-on loader with explicit module/entry-point discovery,
+  runtime storage namespacing, Admin Web API/UI mount hooks, and workflow
+  provider bridging for optional opinionated modules.
+- Kept add-ons disabled by default and documented that domain-specific concepts
+  such as hierarchical agent teams belong outside Truman core.
+- Required Admin Web authentication for add-on UI routes mounted under
+  `/addons/<addon_id>/` when Admin Web auth is enabled.
+- Made workflow validation preserve `effect:agent:create` execution-backend
+  checks after provider-specific fields are normalized under node `config`.
+
 ## 2026-06-09 - Workflow Mobile Dark Canvas
 
 - Kept the compact workflow canvas on dark theme backgrounds instead of

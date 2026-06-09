@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import companyLogoDark from "../altlogo-dark.png";
 import companyLogoLight from "../altlogo-light.png";
@@ -31,7 +31,16 @@ import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
 import { Tooltip } from "./features/admin/Tooltip";
-import { currentTab, nextPathFromHash, tabsForExecutionBackend, TABS, type AdminTab } from "./adminRouting";
+import {
+  addonTabsFromPayload,
+  currentTab,
+  nextPathFromHash,
+  tabsForExecutionBackend,
+  TABS,
+  type AdminAddonNavigationPayload,
+  type AdminTab,
+  type AdminTabDefinition,
+} from "./adminRouting";
 
 type AdminSession = {
   auth_mode: "none" | "local_password" | "azure_sso";
@@ -67,6 +76,7 @@ type AdminState = {
     enabled: boolean;
     show_launcher_when_disabled: boolean;
   };
+  addons?: AdminAddonNavigationPayload[];
   deployment?: DeploymentStatus;
 };
 
@@ -624,6 +634,20 @@ function PlaceholderView({ title, description }: { title: string; description: s
   );
 }
 
+function AddonView({ tab }: { tab: AdminTabDefinition }) {
+  if (tab.uiPath) {
+    return (
+      <iframe
+        className="admin-addon-frame"
+        title={tab.label}
+        src={tab.uiPath}
+        sandbox="allow-forms allow-same-origin allow-scripts"
+      />
+    );
+  }
+  return <PlaceholderView title={tab.label} description={tab.description} />;
+}
+
 function formatDeploymentStartedAt(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -1179,6 +1203,11 @@ export default function AdminRoot() {
   });
   const suppressNextHashChangeRef = useRef(false);
   const adminExecutionBackend = adminState?.execution_backend ?? null;
+  const addonTabs = useMemo(() => addonTabsFromPayload(adminState?.addons), [adminState?.addons]);
+  const visibleTabs = useMemo(
+    () => tabsForExecutionBackend(adminExecutionBackend, addonTabs),
+    [adminExecutionBackend, addonTabs],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1310,7 +1339,6 @@ export default function AdminRoot() {
     if (adminExecutionBackend === null) {
       return;
     }
-    const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
     if (visibleTabs.some((tab) => tab.key === selectedTab)) {
       return;
     }
@@ -1318,7 +1346,7 @@ export default function AdminRoot() {
     suppressNextHashChangeRef.current = true;
     window.location.hash = fallbackTab;
     setSelectedTab(fallbackTab);
-  }, [adminExecutionBackend, selectedTab]);
+  }, [adminExecutionBackend, selectedTab, visibleTabs]);
 
   useEffect(() => {
     window.localStorage.setItem(WORKFLOW_SIDEBAR_STORAGE_KEY, String(workflowSidebarCollapsed));
@@ -1382,6 +1410,23 @@ export default function AdminRoot() {
       setSessionError(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Unable to load admin state.");
+    }
+  }
+
+  async function refreshAuthSession(message?: string) {
+    try {
+      const payload = await fetchJson<AdminSession>("/api/auth/session", { credentials: "same-origin" });
+      if (payload.branding) {
+        setBranding(normalizeAdminBranding(payload.branding));
+        setBrandingLoaded(true);
+      }
+      setSession(payload);
+      if (payload.auth_required && !payload.authenticated) {
+        setAdminState(null);
+      }
+      setSessionError(message ?? null);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to load session.");
     }
   }
 
@@ -1489,7 +1534,6 @@ export default function AdminRoot() {
     }
   }
 
-  const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
   const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
     ? selectedTab
     : visibleTabs[0]?.key ?? "workflow";
@@ -1584,6 +1628,7 @@ export default function AdminRoot() {
     setWorkflowHasUnsavedChanges,
     refreshDirectoryState: async () => loadDirectoryState(selectedDirectoryPath),
     refreshAdminState,
+    refreshAuthSession,
   };
 
   function navigateToTab(nextTab: AdminTab) {
@@ -1790,6 +1835,8 @@ export default function AdminRoot() {
               <ArtifactsPage />
             ) : renderedTab === "tool-calls" ? (
               <ToolCallsPage />
+            ) : activeTab.key.startsWith("addon:") ? (
+              <AddonView tab={activeTab} />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />
             )}

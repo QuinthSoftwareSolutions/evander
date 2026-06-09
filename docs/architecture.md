@@ -119,6 +119,14 @@ The trigger/effect runtime is designed as two layers with explicit ownership bou
 2. Domain behavior belongs in provider plugins/handler packs that can be layered onto core at config time.
 3. `agent-default` remains the convenience default for broad compatibility, but orchestration-only deployments should use the dedicated orchestration-core config template (`config/trigger-orchestrator/orchestration-core.config.json.example`).
 
+## Optional Add-ons
+
+Add-ons are external, opt-in layers for opinionated product experiences on top
+of Truman. Core exposes generic loading, Admin Web mounting, workflow-provider
+bridging, and runtime storage namespacing; add-ons own their domain concepts.
+For example, a hierarchical agent-team module belongs in an add-on package, not
+in core session, workflow, or Admin Web models. See [add-ons](addons.md).
+
 ## Host-Driven Feedback Heartbeat (Design)
 
 This model keeps feedback polling on the host while preserving host-side policy and secret

@@ -451,6 +451,10 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:for": GateForDefinition,
         "gate:while": GateWhileDefinition,
         "effect:event:emit": provider_models.EventEmitEffectDefinition,
+        "effect:artifact-space:create": provider_models.ArtifactSpaceCreateEffectDefinition,
+        "effect:artifact-space:publish-version": (
+            provider_models.ArtifactSpacePublishVersionEffectDefinition
+        ),
         "effect:vm:create": provider_models.VmCreateEffectDefinition,
         "effect:vm:clone-repo": provider_models.VmCloneRepoEffectDefinition,
         "effect:vm:bootstrap-python": provider_models.VmBootstrapPythonEffectDefinition,
@@ -517,6 +521,8 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:git:push-branch": provider_models.GitPushBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
         "effect:event:schedule": provider_models.EventScheduleEffectDefinition,
+        "query:artifact-space:list": provider_models.ArtifactSpaceListQueryDefinition,
+        "query:artifact-space:latest": provider_models.ArtifactSpaceLatestQueryDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,

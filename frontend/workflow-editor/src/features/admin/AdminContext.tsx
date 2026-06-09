@@ -52,6 +52,7 @@ export type AdminUiState = {
   setWorkflowHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
   refreshDirectoryState: () => Promise<void>;
   refreshAdminState: () => Promise<void>;
+  refreshAuthSession: (message?: string) => Promise<void>;
 };
 
 const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
@@ -84,6 +85,7 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   setWorkflowHasUnsavedChanges: () => {},
   refreshDirectoryState: async () => {},
   refreshAdminState: async () => {},
+  refreshAuthSession: async () => {},
 };
 
 export const AdminUiContext = createContext<AdminUiState>(DEFAULT_ADMIN_UI_STATE);

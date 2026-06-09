@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from agent_sandbox.queries.providers.schemas import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
+    ArtifactSpaceLatestQueryDefinition,
+    ArtifactSpaceListQueryDefinition,
     CommunicationMessagesQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
@@ -28,6 +30,8 @@ from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node
 
 _QUERY_MODEL_BY_TYPE = {
     "query:vm:run-state": VmRunStateQueryDefinition,
+    "query:artifact-space:list": ArtifactSpaceListQueryDefinition,
+    "query:artifact-space:latest": ArtifactSpaceLatestQueryDefinition,
     "query:git:pr-note": GitPrNoteQueryDefinition,
     "query:session-context": SessionContextQueryDefinition,
     "query:session:list": SessionListQueryDefinition,

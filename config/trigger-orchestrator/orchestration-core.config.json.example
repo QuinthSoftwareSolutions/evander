@@ -23,5 +23,10 @@
     "include_builtin": null,
     "provider_modules": [],
     "provider_entry_points_enabled": false
+  },
+  "addon_loader": {
+    "modules": [],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": null
   }
 }
