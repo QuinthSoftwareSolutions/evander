@@ -12,6 +12,14 @@ from agent_sandbox.addons import addon_json_object_store
 from agent_sandbox.models import utc_now
 from agent_sandbox.storage import JsonObjectStore
 
+from .git_naming import (
+    canonical_release_branch,
+    ephemeral_agent_branch,
+    feature_branch,
+    release_branch,
+    review_branch,
+    validate_branch_name,
+)
 from .models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -22,10 +30,12 @@ from .models import (
     EphemeralAssignmentState,
     EphemeralAgentPolicy,
     AgentStatus,
+    GitPromotionRecord,
     PersistentAgent,
     Project,
     ProjectGoal,
     ProjectStatus,
+    ReleasePackage,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -40,6 +50,7 @@ STATE_FILE = "state.json"
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
+GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
 
 _NON_TERMINAL_TASK_STATES = frozenset(
     {
@@ -455,6 +466,26 @@ class TeamStateRepository:
                 normalized_action.get("artifact_refs"),
                 "artifact_refs",
             )
+            agent_branch = _optional_text(normalized_action.get("agent_branch"))
+            commit_sha = _optional_text(normalized_action.get("commit_sha"))
+            if agent_branch is not None:
+                expected_branch = ephemeral_agent_branch(
+                    assignment.session_id, assignment.id
+                )
+                if agent_branch != expected_branch:
+                    assignment.state = EphemeralAssignmentState.FAILED
+                    assignment.error = (
+                        f"agent_branch {agent_branch!r} does not match expected "
+                        f"ephemeral branch {expected_branch!r}"
+                    )
+                    assignment.updated_at = utc_now()
+                    result["error"] = assignment.error
+                    result["state"] = assignment.state.value
+                    result["success"] = False
+                    return state_model
+                assignment.agent_branch = agent_branch
+            if commit_sha is not None:
+                assignment.commit_sha = commit_sha
             assignment.error = _optional_text(normalized_action.get("error"))
             assignment.state = (
                 EphemeralAssignmentState.FAILED
@@ -717,6 +748,8 @@ class TeamStateRepository:
             "decided_review_request_ids": [],
             "updated_goal_ids": [],
             "operator_escalation_event_ids": [],
+            "git_promotion_event_ids": [],
+            "release_package_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
             "created_ephemeral_assignment_ids": [],
@@ -978,6 +1011,46 @@ class TeamStateRepository:
                 )
                 if updated_id is not None:
                     result["updated_goal_ids"].append(updated_id)
+                    progress = True
+
+            for promotion in _list_of_mappings(
+                normalized_action.get("git_review_promotions"), "git_review_promotions"
+            ):
+                promotion_id = _apply_git_review_promotion(
+                    state_model,
+                    actor=agent,
+                    request=promotion,
+                    result=result,
+                )
+                if promotion_id is not None:
+                    result["git_promotion_event_ids"].append(promotion_id)
+                    progress = True
+
+            for feature_update in _list_of_mappings(
+                normalized_action.get("git_feature_updates"), "git_feature_updates"
+            ):
+                promotion_id = _apply_git_feature_update(
+                    state_model,
+                    actor=agent,
+                    update=feature_update,
+                    result=result,
+                )
+                if promotion_id is not None:
+                    result["git_promotion_event_ids"].append(promotion_id)
+                    progress = True
+
+            for release_request in _list_of_mappings(
+                normalized_action.get("git_release_requests"), "git_release_requests"
+            ):
+                release_id = _apply_git_release_request(
+                    state_model,
+                    actor=agent,
+                    request=release_request,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if release_id is not None:
+                    result["release_package_ids"].append(release_id)
                     progress = True
 
             for inbox_item_id in _string_list(
@@ -1546,6 +1619,340 @@ def _apply_goal_update(
     return goal_id
 
 
+def _project_git_or_error(
+    project: Project,
+    result: dict[str, Any],
+) -> Any:
+    if project.git is None:
+        result["errors"].append(
+            f"project {project.id} has no git configuration for promotions"
+        )
+        return None
+    return project.git
+
+
+def _bare_repo_fields(git: Any) -> dict[str, str]:
+    if git.bare_repo_name:
+        return {"bare_repo_name": git.bare_repo_name}
+    return {"bare_repo_path": git.bare_repo_path}
+
+
+def _emit_git_promotion_event(
+    result: dict[str, Any],
+    *,
+    promotion_id: str,
+    payload: dict[str, Any],
+) -> None:
+    result["events"].append(
+        {
+            "event_type": GIT_PROMOTION_EVENT_TYPE,
+            "correlation_key": promotion_id,
+            "idempotency_key": f"team-addon:{GIT_PROMOTION_EVENT_TYPE}:{promotion_id}",
+            "payload": payload,
+        }
+    )
+
+
+def _apply_git_review_promotion(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    assignment_id = _required_text(request.get("assignment_id"), "assignment_id")
+    assignment = state.ephemeral_assignments.get(assignment_id)
+    if assignment is None:
+        result["errors"].append(
+            f"git review promotion references missing ephemeral assignment {assignment_id}"
+        )
+        return None
+    if assignment.parent_agent_id != actor.id:
+        result["errors"].append(
+            f"agent {actor.id} cannot promote ephemeral assignment {assignment_id}"
+        )
+        return None
+    if assignment.state not in {
+        EphemeralAssignmentState.COMPLETED,
+        EphemeralAssignmentState.ACCEPTED,
+    }:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} is not completed or accepted"
+        )
+        return None
+    if not assignment.agent_branch:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} has no agent_branch to promote"
+        )
+        return None
+    deliverable_id = _optional_text(request.get("deliverable_id"))
+    if deliverable_id is not None and deliverable_id not in state.deliverables:
+        result["errors"].append(
+            f"git review promotion references missing deliverable {deliverable_id}"
+        )
+        return None
+    project = state.projects.get(assignment.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git review promotion references missing project {assignment.project_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    source_branch = assignment.agent_branch
+    target_branch = review_branch(actor.team_id, assignment_id)
+    promotion_id = f"promotion-{uuid4().hex}"
+    state.git_promotions[promotion_id] = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        task_id=assignment.task_id,
+        deliverable_id=deliverable_id,
+        actor_agent_id=actor.id,
+        source_branch=source_branch,
+        target_branch=target_branch,
+        promotion_kind="review",
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_kind": "review",
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "assignment_id": assignment_id,
+    }
+    payload.update(_bare_repo_fields(git))
+    if deliverable_id is not None:
+        payload["deliverable_id"] = deliverable_id
+    _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
+    return promotion_id
+
+
+def _apply_git_feature_update(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    update: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    task_id = _required_text(update.get("task_id"), "task_id")
+    task = state.tasks.get(task_id)
+    if task is None:
+        result["errors"].append(
+            f"git feature update references missing task {task_id}"
+        )
+        return None
+    if task.owner_agent_id != actor.id and not _supervises(
+        state, actor.id, task.owner_agent_id
+    ):
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to consolidate task {task_id}"
+        )
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git feature update references missing project {task.project_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    raw_sources = _string_list(
+        update.get("source_review_branches"), "source_review_branches"
+    )
+    if not raw_sources:
+        result["errors"].append(
+            f"git feature update for task {task_id} requires source_review_branches"
+        )
+        return None
+    try:
+        source_branches = [validate_branch_name(branch) for branch in raw_sources]
+        target_branch = validate_branch_name(
+            _optional_text(update.get("feature_branch"))
+            or feature_branch(actor.team_id, task_id, actor.id)
+        )
+    except ValueError as exc:
+        result["errors"].append(f"git feature update has invalid branch name: {exc}")
+        return None
+    promotion_id = f"promotion-{uuid4().hex}"
+    state.git_promotions[promotion_id] = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        task_id=task_id,
+        actor_agent_id=actor.id,
+        source_branch=source_branches[0],
+        target_branch=target_branch,
+        promotion_kind="feature",
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_kind": "feature",
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "base_branch": git.base_branch,
+        "source_branches": source_branches,
+        "target_branch": target_branch,
+        "task_id": task_id,
+    }
+    _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
+    return promotion_id
+
+
+def _apply_git_release_request(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    project_id = _required_text(request.get("project_id"), "project_id")
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(
+            f"git release request references missing project {project_id}"
+        )
+        return None
+    permitted = _is_project_lead_for(state, actor.id, project_id) or (
+        _is_team_manager(state, actor) and project.team_id == actor.team_id
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to request releases on project {project_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    deliverable_ids = _string_list(request.get("deliverable_ids"), "deliverable_ids")
+    if not deliverable_ids:
+        result["errors"].append(
+            f"git release request for project {project_id} requires deliverable_ids"
+        )
+        return None
+    feature_branches: list[str] = []
+    valid = True
+    for deliverable_id in deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            result["errors"].append(
+                f"git release request references missing deliverable {deliverable_id}"
+            )
+            valid = False
+            continue
+        task = state.tasks.get(deliverable.task_id)
+        if task is None or task.project_id != project_id:
+            result["errors"].append(
+                f"deliverable {deliverable_id} does not belong to project {project_id}"
+            )
+            valid = False
+            continue
+        if deliverable.state != TeamRecordState.ACCEPTED:
+            result["errors"].append(
+                f"deliverable {deliverable_id} is not accepted and cannot be released"
+            )
+            valid = False
+            continue
+        feature = deliverable.git_refs.feature_branch
+        if feature:
+            feature_branches = _append_unique(feature_branches, feature)
+        elif not deliverable.artifact_refs:
+            result["errors"].append(
+                f"deliverable {deliverable_id} has neither a feature branch nor artifact refs"
+            )
+            valid = False
+    if not valid:
+        return None
+    release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
+    if release_id in state.release_packages:
+        result["errors"].append(f"release package {release_id} already exists")
+        return None
+    target_release_branch = validate_branch_name(
+        _optional_text(request.get("release_branch"))
+        or release_branch(actor.team_id, release_id)
+    )
+    target_canonical_branch = validate_branch_name(
+        _optional_text(request.get("canonical_branch"))
+        or canonical_release_branch(project, release_id)
+    )
+    promotion_ids: list[str] = []
+    # Internal feature branches are consolidated into a release branch, which is then
+    # pushed to the canonical remote. Only create git promotions when there is at least
+    # one feature branch to consolidate; pure artifact deliverables need no push.
+    if feature_branches:
+        release_promotion_id = f"promotion-{uuid4().hex}"
+        state.git_promotions[release_promotion_id] = GitPromotionRecord(
+            id=release_promotion_id,
+            project_id=project.id,
+            release_package_id=release_id,
+            actor_agent_id=actor.id,
+            source_branch=feature_branches[0],
+            target_branch=target_release_branch,
+            promotion_kind="release",
+        )
+        promotion_ids.append(release_promotion_id)
+        canonical_promotion_id = f"promotion-{uuid4().hex}"
+        state.git_promotions[canonical_promotion_id] = GitPromotionRecord(
+            id=canonical_promotion_id,
+            project_id=project.id,
+            release_package_id=release_id,
+            actor_agent_id=actor.id,
+            source_branch=target_release_branch,
+            target_branch=target_canonical_branch,
+            promotion_kind="canonical_push",
+        )
+        promotion_ids.append(canonical_promotion_id)
+    state.release_packages[release_id] = ReleasePackage(
+        id=release_id,
+        project_id=project.id,
+        deliverable_ids=deliverable_ids,
+        feature_branches=feature_branches,
+        release_branch=target_release_branch,
+        canonical_branch=target_canonical_branch,
+        git_promotion_record_ids=promotion_ids,
+        state=TeamRecordState.PENDING,
+    )
+    if feature_branches:
+        _emit_git_promotion_event(
+            result,
+            promotion_id=promotion_ids[0],
+            payload={
+                "promotion_id": promotion_ids[0],
+                "promotion_kind": "release",
+                "project_id": project.id,
+                "release_package_id": release_id,
+                "host_repo_path": git.host_repo_path,
+                "base_branch": git.base_branch,
+                "source_branches": list(feature_branches),
+                "target_branch": target_release_branch,
+            },
+        )
+        canonical_payload: dict[str, Any] = {
+            "promotion_id": promotion_ids[1],
+            "promotion_kind": "canonical_push",
+            "project_id": project.id,
+            "release_package_id": release_id,
+            "host_repo_path": git.host_repo_path,
+            "base_branch": git.base_branch,
+            "source_branch": target_release_branch,
+            "target_branch": target_canonical_branch,
+        }
+        if git.canonical_origin_url is not None:
+            canonical_payload["canonical_origin_url"] = git.canonical_origin_url
+        if git.provider is not None:
+            canonical_payload["provider"] = git.provider
+        _emit_git_promotion_event(
+            result,
+            promotion_id=promotion_ids[1],
+            payload=canonical_payload,
+        )
+        result["git_promotion_event_ids"].extend(promotion_ids)
+    projects_to_recalc.add(project_id)
+    return release_id
+
+
 def _recalculate_project_status(state: TeamState, project_id: str) -> None:
     project = state.projects.get(project_id)
     if project is None or project.status == ProjectStatus.ARCHIVED:
@@ -1902,6 +2309,7 @@ __all__ = [
     "ADDON_ID",
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
+    "GIT_PROMOTION_EVENT_TYPE",
     "OPERATOR_ESCALATION_EVENT_TYPE",
     "STATE_FILE",
     "TeamStateConflictError",

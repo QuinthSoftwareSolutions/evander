@@ -344,6 +344,74 @@ def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) 
     }
 
 
+def test_apply_agent_action_publishes_git_promotion_event(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path, max_ephemeral=1)
+
+    def _set_git(state):
+        from truman_team_addon.models import ProjectGitConfig
+
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+        )
+        return state
+
+    repo.update(_set_git)
+    repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-1",
+                "task_id": "task",
+                "session_id": "eph-1",
+                "title": "Slice",
+                "prompt": "Implement a slice.",
+            }
+        ],
+    )
+    repo.apply_ephemeral_action(
+        session_id="eph-1",
+        action={
+            "ephemeral_assignment_id": "ephemeral-1",
+            "summary": "Done.",
+            "agent_branch": "agents/eph-1/ephemeral-1",
+            "commit_sha": "abc1234",
+        },
+    )
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            action={
+                "agent_id": "backend",
+                "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["git_promotion_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    git_events = [
+        event for event in events if event.event_type == "team.git.promotion_requested"
+    ]
+    assert len(git_events) == 1
+    payload = git_events[0].payload
+    assert payload["promotion_kind"] == "review"
+    assert payload["source_branch"] == "agents/eph-1/ephemeral-1"
+    assert payload["target_branch"] == "team/team/reviews/ephemeral-1"
+    assert payload["host_repo_path"] == "/opt/repos/Truman"
+    assert payload["bare_repo_name"] == "Truman.git"
+
+
 def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     tmp_path: Path,
 ) -> None:

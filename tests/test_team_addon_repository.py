@@ -8,6 +8,8 @@ from pydantic import ValidationError
 
 from truman_team_addon.models import (
     EphemeralAgentPolicy,
+    EphemeralAssignmentState,
+    ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
     TeamInboxItemType,
@@ -1034,3 +1036,429 @@ def test_apply_agent_action_goal_update_resets_no_progress_count(tmp_path: Path)
 
     assert result["success"] is True
     assert state.agent_runtimes["lead"].no_progress_count == 0
+
+
+def _set_project_git(
+    repo: TeamStateRepository,
+    *,
+    bare_repo_name: str | None = "Truman.git",
+    canonical_origin_url: str | None = "https://example.invalid/Truman.git",
+    provider: str | None = "azure_devops",
+) -> None:
+    def _mutate(state):
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name=bare_repo_name,
+            canonical_origin_url=canonical_origin_url,
+            provider=provider,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def _seed_completed_ephemeral(
+    repo: TeamStateRepository,
+    *,
+    assignment_id: str = "ephemeral-1",
+    session_id: str = "eph-1",
+    agent_branch: str | None = None,
+) -> None:
+    def _enable(state):
+        state.agents["backend"].ephemeral_policy = EphemeralAgentPolicy(max_concurrent=2)
+        return state
+
+    repo.update(_enable)
+    _seed_task(repo, task_id="task")
+    repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": assignment_id,
+                "task_id": "task",
+                "session_id": session_id,
+                "title": "Slice",
+                "prompt": "Implement a slice.",
+            }
+        ],
+    )
+    repo.apply_ephemeral_action(
+        session_id=session_id,
+        action={
+            "ephemeral_assignment_id": assignment_id,
+            "summary": "Done.",
+            "agent_branch": agent_branch
+            if agent_branch is not None
+            else f"agents/{session_id}/{assignment_id}",
+            "commit_sha": "abc1234",
+        },
+    )
+
+
+def test_apply_ephemeral_action_accepts_matching_agent_branch(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _enable(state):
+        state.agents["backend"].ephemeral_policy = EphemeralAgentPolicy(max_concurrent=1)
+        return state
+
+    repo.update(_enable)
+    _seed_task(repo, task_id="task")
+    repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-1",
+                "task_id": "task",
+                "session_id": "eph-1",
+                "title": "Slice",
+                "prompt": "Implement a slice.",
+            }
+        ],
+    )
+
+    state, result = repo.apply_ephemeral_action(
+        session_id="eph-1",
+        action={
+            "ephemeral_assignment_id": "ephemeral-1",
+            "summary": "Done.",
+            "agent_branch": "agents/eph-1/ephemeral-1",
+            "commit_sha": "deadbeef",
+        },
+    )
+
+    assert result["success"] is True
+    assignment = state.ephemeral_assignments["ephemeral-1"]
+    assert assignment.state == EphemeralAssignmentState.COMPLETED
+    assert assignment.agent_branch == "agents/eph-1/ephemeral-1"
+    assert assignment.commit_sha == "deadbeef"
+
+
+def test_apply_ephemeral_action_rejects_mismatched_agent_branch(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _enable(state):
+        state.agents["backend"].ephemeral_policy = EphemeralAgentPolicy(max_concurrent=1)
+        return state
+
+    repo.update(_enable)
+    _seed_task(repo, task_id="task")
+    repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-1",
+                "task_id": "task",
+                "session_id": "eph-1",
+                "title": "Slice",
+                "prompt": "Implement a slice.",
+            }
+        ],
+    )
+
+    state, result = repo.apply_ephemeral_action(
+        session_id="eph-1",
+        action={
+            "ephemeral_assignment_id": "ephemeral-1",
+            "summary": "Done.",
+            "agent_branch": "agents/other/wrong",
+        },
+    )
+
+    assert result["success"] is False
+    assignment = state.ephemeral_assignments["ephemeral-1"]
+    assert assignment.state == EphemeralAssignmentState.FAILED
+    assert assignment.agent_branch is None
+    assert "does not match" in (result["error"] or "")
+
+
+def test_apply_agent_action_git_review_promotion_parent_only(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_completed_ephemeral(repo)
+
+    # lead is not the parent of the ephemeral assignment and cannot promote it.
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
+        },
+    )
+    assert result["success"] is False
+    assert any("cannot promote" in error for error in result["errors"])
+    assert state.git_promotions == {}
+
+    # backend (the parent) may promote its completed assignment's branch.
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
+        },
+    )
+    assert result["success"] is True
+    assert len(result["git_promotion_event_ids"]) == 1
+    promotion_id = result["git_promotion_event_ids"][0]
+    promotion = state.git_promotions[promotion_id]
+    assert promotion.promotion_kind == "review"
+    assert promotion.state == "pending"
+    assert promotion.source_branch == "agents/eph-1/ephemeral-1"
+    assert promotion.target_branch == "team/team/reviews/ephemeral-1"
+    assert promotion.project_id == "project"
+    event = result["events"][0]
+    assert event["event_type"] == "team.git.promotion_requested"
+    assert event["payload"]["promotion_kind"] == "review"
+    assert event["payload"]["host_repo_path"] == "/opt/repos/Truman"
+    assert event["payload"]["bare_repo_name"] == "Truman.git"
+    assert event["payload"]["source_branch"] == "agents/eph-1/ephemeral-1"
+    assert event["payload"]["target_branch"] == "team/team/reviews/ephemeral-1"
+
+
+def test_apply_agent_action_git_review_promotion_requires_git_config(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_completed_ephemeral(repo)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("no git configuration" in error for error in result["errors"])
+    assert state.git_promotions == {}
+
+
+def test_apply_agent_action_git_feature_update_default_branch(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_feature_updates": [
+                {
+                    "task_id": "task",
+                    "source_review_branches": [
+                        "team/team/reviews/ephemeral-1",
+                        "team/team/reviews/ephemeral-2",
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert len(result["git_promotion_event_ids"]) == 1
+    promotion = state.git_promotions[result["git_promotion_event_ids"][0]]
+    assert promotion.promotion_kind == "feature"
+    assert promotion.target_branch == "team/team/features/task-backend"
+    event = result["events"][0]
+    assert event["payload"]["promotion_kind"] == "feature"
+    assert event["payload"]["source_branches"] == [
+        "team/team/reviews/ephemeral-1",
+        "team/team/reviews/ephemeral-2",
+    ]
+    assert event["payload"]["target_branch"] == "team/team/features/task-backend"
+
+
+def test_apply_agent_action_git_feature_update_supervisor_allowed(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+
+    # lead supervises backend (the task owner) and may consolidate the task branches.
+    _state, lead_result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_feature_updates": [
+                {"task_id": "task", "source_review_branches": ["team/team/reviews/x"]}
+            ],
+        },
+    )
+    assert lead_result["success"] is True
+
+    # worker neither owns nor supervises the task owner.
+    _state, worker_result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "git_feature_updates": [
+                {"task_id": "task", "source_review_branches": ["team/team/reviews/x"]}
+            ],
+        },
+    )
+    assert worker_result["success"] is False
+    assert any("not permitted" in error for error in worker_result["errors"])
+
+
+def test_apply_agent_action_git_feature_update_rejects_bad_branch(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_feature_updates": [
+                {
+                    "task_id": "task",
+                    "source_review_branches": ["bad:branch"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("invalid branch name" in error for error in result["errors"])
+    assert state.git_promotions == {}
+
+
+def _seed_accepted_feature_deliverable(
+    repo: TeamStateRepository,
+    *,
+    deliverable_id: str,
+    task_id: str,
+    feature: str | None,
+    artifact_refs: list[str] | None = None,
+) -> None:
+    _seed_task(repo, task_id=task_id)
+    repo.record_deliverable(
+        deliverable_id=deliverable_id,
+        task_id=task_id,
+        producer_agent_id="backend",
+        summary="Deliverable summary.",
+        artifact_refs=artifact_refs or [],
+    )
+
+    def _mutate(state):
+        deliverable = state.deliverables[deliverable_id]
+        deliverable.state = TeamRecordState.ACCEPTED
+        if feature is not None:
+            deliverable.git_refs.feature_branch = feature
+        return state
+
+    repo.update(_mutate)
+
+
+def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["release_package_ids"] == ["rel-1"]
+    release = state.release_packages["rel-1"]
+    assert release.state == TeamRecordState.PENDING
+    assert release.feature_branches == ["team/team/features/task-backend"]
+    assert release.release_branch == "team/team/releases/rel-1"
+    assert release.canonical_branch == "releases/project/rel-1"
+    assert len(release.git_promotion_record_ids) == 2
+    kinds = sorted(
+        state.git_promotions[pid].promotion_kind
+        for pid in release.git_promotion_record_ids
+    )
+    assert kinds == ["canonical_push", "release"]
+    assert len(result["git_promotion_event_ids"]) == 2
+    payloads = {event["payload"]["promotion_kind"]: event["payload"] for event in result["events"]}
+    assert payloads["release"]["source_branches"] == ["team/team/features/task-backend"]
+    assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
+    assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
+    assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
+    assert payloads["canonical_push"]["canonical_origin_url"] == (
+        "https://example.invalid/Truman.git"
+    )
+    assert payloads["canonical_push"]["provider"] == "azure_devops"
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+        artifact_refs=["artifact-space:/teams/team/result"],
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    release = state.release_packages["rel-1"]
+    assert release.feature_branches == []
+    assert release.git_promotion_record_ids == []
+    assert result["git_promotion_event_ids"] == []
+    assert state.git_promotions == {}
+
+
+def test_apply_agent_action_git_release_request_rejects_unaccepted(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("not accepted" in error for error in result["errors"])
+    assert state.release_packages == {}
+
+
+def test_apply_agent_action_git_release_request_requires_lead_or_manager(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_release_requests": [
+                {"project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("not permitted" in error for error in result["errors"])
+    assert state.release_packages == {}
