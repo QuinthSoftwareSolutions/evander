@@ -34,6 +34,7 @@ from .models import (
     GitPromotionRecord,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
@@ -120,6 +121,7 @@ class TeamStateRepository:
         manager_agent_id: str,
         manager_session_id: str,
         manager_role: str = "manager",
+        operator_communication_target_id: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
@@ -138,9 +140,25 @@ class TeamStateRepository:
                 id=team_id,
                 name=name,
                 manager_agent_id=manager.id,
+                operator_communication_target_id=operator_communication_target_id,
                 created_at=now,
                 updated_at=now,
             )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_team(
+        self,
+        *,
+        team_id: str,
+        operator_communication_target_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            team = _require_present(state.teams, team_id, "team")
+            team.operator_communication_target_id = operator_communication_target_id
+            team.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -154,6 +172,7 @@ class TeamStateRepository:
         lead_agent_id: str,
         lead_session_id: str,
         goals: list[ProjectGoal] | None = None,
+        git: ProjectGitConfig | None = None,
         lead_role: str = "project_lead",
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -179,11 +198,32 @@ class TeamStateRepository:
                 name=name,
                 lead_agent_id=lead.id,
                 goals=goals or [],
+                git=git,
                 created_at=now,
                 updated_at=now,
             )
             team.project_ids = _append_unique(team.project_ids, project_id)
             team.updated_at = now
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_project(
+        self,
+        *,
+        project_id: str,
+        git: ProjectGitConfig | None = None,
+        set_git: bool = False,
+        goals: list[ProjectGoal] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            project = _require_present(state.projects, project_id, "project")
+            if set_git:
+                project.git = git
+            if goals is not None:
+                project.goals = goals
+            project.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -343,6 +383,81 @@ class TeamStateRepository:
                 deliverable.review_request_ids,
                 review.id,
             )
+            return state_model
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def record_review_decision(
+        self,
+        *,
+        review_request_id: str,
+        state: TeamRecordState,
+        findings: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_id = _required_text(review_request_id, "review_request_id")
+        if not _is_review_decision_state(state):
+            raise ValueError(
+                f"review decision state {state.value} must be accepted, rejected, or blocked"
+            )
+        findings_list = list(findings or [])
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            review = _require_present(
+                state_model.review_requests, normalized_id, "review request"
+            )
+            projects_to_recalc: set[str] = set()
+            _cascade_review_decision(
+                state_model,
+                review=review,
+                decision_state=state,
+                findings=findings_list,
+                projects_to_recalc=projects_to_recalc,
+            )
+            for project_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, project_id)
+            return state_model
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_release_package(
+        self,
+        *,
+        project_id: str,
+        deliverable_ids: list[str],
+        release_id: str | None = None,
+        release_branch: str | None = None,
+        canonical_branch: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_project_id = _required_text(project_id, "project_id")
+        request = {
+            "id": _optional_text(release_id),
+            "project_id": normalized_project_id,
+            "deliverable_ids": list(deliverable_ids),
+            "release_branch": _optional_text(release_branch),
+            "canonical_branch": _optional_text(canonical_branch),
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            project = _require_present(
+                state_model.projects, normalized_project_id, "project"
+            )
+            result: dict[str, Any] = {"errors": [], "events": [], "git_promotion_event_ids": [], "created_deliverable_ids": []}
+            projects_to_recalc: set[str] = set()
+            _build_release_package(
+                state_model,
+                project=project,
+                request=request,
+                result=result,
+                projects_to_recalc=projects_to_recalc,
+                actor_agent_id=project.lead_agent_id,
+                team_id=project.team_id,
+            )
+            if result["errors"]:
+                raise ValueError("; ".join(result["errors"]))
+            for recalc_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, recalc_id)
             return state_model
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -1677,17 +1792,45 @@ def _apply_review_decision(
     except ValueError:
         result["errors"].append(f"review decision has invalid state {raw_state}")
         return None
-    if decision_state not in {
-        TeamRecordState.ACCEPTED,
-        TeamRecordState.REJECTED,
-        TeamRecordState.BLOCKED,
-    }:
+    if not _is_review_decision_state(decision_state):
         result["errors"].append(
             f"review decision state {raw_state} must be accepted, rejected, or blocked"
         )
         return None
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=decision_state,
+        findings=_string_list(decision.get("findings"), "findings"),
+        projects_to_recalc=projects_to_recalc,
+    )
+    return review.id
+
+
+def _is_review_decision_state(decision_state: TeamRecordState) -> bool:
+    return decision_state in {
+        TeamRecordState.ACCEPTED,
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }
+
+
+def _cascade_review_decision(
+    state: TeamState,
+    *,
+    review: ReviewRequest,
+    decision_state: TeamRecordState,
+    findings: list[str],
+    projects_to_recalc: set[str],
+) -> None:
+    """Apply a review decision and cascade it to the deliverable, task, and project.
+
+    This is the single source of truth for review decision cascade rules, shared by
+    the ``review_decisions`` agent action and the Admin API decision endpoint.
+    """
+
     review.state = decision_state
-    review.findings = _string_list(decision.get("findings"), "findings")
+    review.findings = findings
     review.decision_at = utc_now()
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
     task = _require_present(state.tasks, deliverable.task_id, "task")
@@ -1718,7 +1861,6 @@ def _apply_review_decision(
         task.state = TeamTaskState.BLOCKED
         task.updated_at = now
     projects_to_recalc.add(task.project_id)
-    return review.id
 
 
 def _apply_goal_update(
@@ -1965,9 +2107,37 @@ def _apply_git_release_request(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
         )
         return None
+    return _build_release_package(
+        state,
+        project=project,
+        request=request,
+        result=result,
+        projects_to_recalc=projects_to_recalc,
+        actor_agent_id=actor.id,
+        team_id=actor.team_id,
+    )
+
+
+def _build_release_package(
+    state: TeamState,
+    *,
+    project: Project,
+    request: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+    actor_agent_id: str,
+    team_id: str,
+) -> str | None:
+    """Validate deliverables and build a pending ReleasePackage with git promotions.
+
+    Shared by the ``git_release_requests`` agent action and the Admin API manual
+    release-package endpoint so both enforce identical validation and branch naming.
+    """
+
     git = _project_git_or_error(project, result)
     if git is None:
         return None
+    project_id = project.id
     deliverable_ids = _string_list(request.get("deliverable_ids"), "deliverable_ids")
     if not deliverable_ids:
         result["errors"].append(
@@ -2013,7 +2183,7 @@ def _apply_git_release_request(
         return None
     target_release_branch = validate_branch_name(
         _optional_text(request.get("release_branch"))
-        or release_branch(actor.team_id, release_id)
+        or release_branch(team_id, release_id)
     )
     target_canonical_branch = validate_branch_name(
         _optional_text(request.get("canonical_branch"))
@@ -2029,7 +2199,7 @@ def _apply_git_release_request(
             id=release_promotion_id,
             project_id=project.id,
             release_package_id=release_id,
-            actor_agent_id=actor.id,
+            actor_agent_id=actor_agent_id,
             source_branch=feature_branches[0],
             target_branch=target_release_branch,
             promotion_kind="release",
@@ -2040,7 +2210,7 @@ def _apply_git_release_request(
             id=canonical_promotion_id,
             project_id=project.id,
             release_package_id=release_id,
-            actor_agent_id=actor.id,
+            actor_agent_id=actor_agent_id,
             source_branch=target_release_branch,
             target_branch=target_canonical_branch,
             promotion_kind="canonical_push",
