@@ -1707,13 +1707,14 @@ export default function AdminRoot() {
                 </button>
               ) : null}
             </div>
-            <ChatLauncher
-              enabled={Boolean(session.authenticated || !session.auth_required)}
-              assistantEnabled={Boolean(adminState?.assistant?.enabled)}
-              showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
-            />
           </div>
         </header>
+
+        <ChatLauncher
+          enabled={Boolean(session.authenticated || !session.auth_required)}
+          assistantEnabled={Boolean(adminState?.assistant?.enabled)}
+          showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
+        />
 
         <div className="admin-shell-layout">
           <nav className={`admin-shell-nav${workflowSidebarCollapsed ? " collapsed" : ""}`} aria-label="Admin sections">

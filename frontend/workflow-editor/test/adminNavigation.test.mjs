@@ -77,7 +77,7 @@ const configurationStateResponse = {
   },
 };
 
-async function createAdminPage(t) {
+async function createAdminPage(t, options = {}) {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -134,7 +134,55 @@ async function createAdminPage(t) {
 
     if (pathname === "/api/admin/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
-      await route.fulfill(jsonResponse(adminStateResponse));
+      await route.fulfill(
+        jsonResponse({
+          ...adminStateResponse,
+          assistant: options.assistant ?? adminStateResponse.assistant,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/chat/session") {
+      await route.fulfill(
+        jsonResponse({
+          user_id: "admin",
+          thread_id: "thread-1",
+          assistant_capability_mode: "read-only",
+          assistant_session: {
+            status: "ready",
+            error: null,
+            updated_at: "2026-06-09T12:00:00Z",
+          },
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/chat/transcript/thread-1") {
+      await route.fulfill(
+        jsonResponse({
+          thread_id: "thread-1",
+          messages: [],
+          assistant_capability_mode: "read-only",
+          assistant_session: {
+            status: "ready",
+            error: null,
+            updated_at: "2026-06-09T12:00:00Z",
+          },
+          updated_at: "2026-06-09T12:00:00Z",
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/chat/stream/thread-1") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        headers: { "Cache-Control": "no-cache" },
+        body: "",
+      });
       return;
     }
 
@@ -282,4 +330,32 @@ test("admin shell keeps mobile section access and dashboard content in the first
       `expected first dashboard card in the first mobile viewport, got y=${panelBox.y} with stored collapse state ${storedCollapseState ?? "unset"}`,
     );
   }
+});
+
+test("admin shell anchors expanded chat launcher to the viewport", async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    assistant: {
+      enabled: true,
+      show_launcher_when_disabled: false,
+    },
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => window.localStorage.setItem("admin-web:chat:ui", "expanded"));
+
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const panel = page.locator(".chat-panel");
+  await panel.waitFor({ state: "visible" });
+  const panelBox = await panel.boundingBox();
+  assert.ok(panelBox, "expected expanded chat panel bounds");
+  const viewport = page.viewportSize();
+  assert.ok(viewport, "expected viewport size");
+  assert.ok(panelBox.y >= 0, `expected chat panel to stay below the viewport top, got y=${panelBox.y}`);
+  assert.ok(
+    viewport.height - (panelBox.y + panelBox.height) <= 24,
+    `expected chat panel to be anchored to viewport bottom, got bottom gap ${viewport.height - (panelBox.y + panelBox.height)}`,
+  );
+  assert.equal(await page.locator(".admin-shell-header .chat-launcher").count(), 0);
 });

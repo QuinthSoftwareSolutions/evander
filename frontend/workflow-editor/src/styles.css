@@ -574,19 +574,13 @@ body {
 }
 
 @media (max-width: 720px) {
-  .admin-shell-actions .chat-launcher.is-minimized {
-    position: static;
-    order: 5;
-    flex: 0 0 auto;
-    right: auto;
-    bottom: auto;
-    z-index: auto;
-    max-width: 2.5rem;
-  }
-
-  .admin-shell-actions .chat-launcher.is-expanded {
+  .chat-launcher {
     right: max(0.5rem, env(safe-area-inset-right));
     bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  .chat-launcher.is-minimized {
+    max-width: 2.5rem;
   }
 
   .chat-launcher.is-minimized .chat-pill {
@@ -1715,6 +1709,11 @@ select {
     border-radius: 16px;
     overflow: hidden;
     background: rgba(247, 250, 248, 0.82);
+  }
+
+  :root[data-theme="dark"] .admin-workflow-panel .canvas-shell {
+    border-color: rgba(125, 170, 190, 0.16);
+    background: rgba(16, 28, 36, 0.92);
   }
 
   .admin-workflow-panel .node-drag-surface {

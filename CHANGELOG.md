@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Workflow Mobile Dark Canvas
+
+- Kept the compact workflow canvas on dark theme backgrounds instead of
+  reverting the mobile canvas surface to a light panel.
+
+## 2026-06-09 - Admin Chat Viewport Anchor
+
+- Moved the Admin Web assistant launcher out of the header so expanded chat
+  panels stay anchored to the viewport instead of clipping against the header.
+
 ## 2026-06-09 - Claude Commit Attribution
 
 - Wrote Claude Code settings for container-worker and VM-backed Claude agents
