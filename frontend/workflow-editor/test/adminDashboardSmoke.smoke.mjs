@@ -690,6 +690,31 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         {
           kind: "paragraph",
           text: "The latest dashboard update puts release context next to practical operator guidance.",
+          level: null,
+          items: [],
+          src: null,
+          dark_src: null,
+          alt: null,
+          title: null,
+        },
+        {
+          kind: "heading",
+          text: "Practical tips",
+          level: 3,
+          items: [],
+          src: null,
+          dark_src: null,
+          alt: null,
+          title: null,
+        },
+        {
+          kind: "list",
+          text: null,
+          level: null,
+          items: [
+            "Open the dashboard first.",
+            "Download the changelog when you need the full deployment record.",
+          ],
           src: null,
           dark_src: null,
           alt: null,
@@ -698,6 +723,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         {
           kind: "image",
           text: null,
+          level: null,
+          items: [],
           src: "/api/admin/news/assets/truman-signature.svg",
           dark_src: "/api/admin/news/assets/truman-signature-inverse.svg",
           alt: "Truman signature",
@@ -706,6 +733,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         {
           kind: "paragraph",
           text: "Use the changelog download when you need the full deployment record, then scan News for the human-readable story.",
+          level: null,
+          items: [],
           src: null,
           dark_src: null,
           alt: null,
@@ -1278,6 +1307,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("News: Safer workflows, clearer operations", { exact: true }).count(), 0);
   await assert.doesNotReject(() => releasePanel.locator(".release-news-title").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-subheading").filter({ hasText: "Practical tips" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-list").filter({ hasText: "Open the dashboard first." }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByAltText("Truman signature").first().waitFor({ state: "attached" }));
   assert.equal(await releasePanel.locator(".release-news-image img").count(), 2);
   assert.equal((await releasePanel.locator(".release-news-image figcaption").textContent())?.trim(), "Signed by Truman");

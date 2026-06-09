@@ -1209,8 +1209,10 @@ class ReleaseChangelogPayload(BaseModel):
 
 
 class ReleaseNewsBlockPayload(BaseModel):
-    kind: Literal["paragraph", "image"]
+    kind: Literal["paragraph", "heading", "list", "image"]
     text: str | None = None
+    level: int | None = None
+    items: list[str] = Field(default_factory=list)
     src: str | None = None
     dark_src: str | None = None
     alt: str | None = None
@@ -7913,6 +7915,8 @@ class AdminService:
                         ReleaseNewsBlockPayload(
                             kind=block.kind,
                             text=block.text,
+                            level=block.level,
+                            items=list(block.items),
                             src=block.src,
                             dark_src=block.dark_src,
                             alt=block.alt,
