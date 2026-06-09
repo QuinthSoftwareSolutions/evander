@@ -10069,31 +10069,40 @@ export default function App() {
                     </summary>
                     <p className="create-group-description">{group.description}</p>
                     <div className="create-subgroups">
-                      {group.subgroups.map((subgroup) => (
-                        <details key={subgroup.key} className="create-subgroup" open>
-                          <summary className="create-subgroup-summary">
-                            <Tooltip content={subgroup.description}>
-                              <span>{subgroup.label}</span>
-                            </Tooltip>
-                            <span className="create-subgroup-count">{subgroup.entries.length}</span>
-                          </summary>
-                          <div className="create-group-actions create-subgroup-actions">
-                            {subgroup.entries.map((entry) => (
-                              <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                                <button
-                                  type="button"
-                                  draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
-                                  onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                                  onClick={() => addNode(entry.kind, entry.type)}
-                                  disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
-                                >
-                                  {entry.label}
-                                </button>
+                      {group.subgroups.map((subgroup) => {
+                        const subgroupHasTutorialAllowedNodeType = subgroup.entries.some((entry) =>
+                          tutorialAllowsNodeType(entry.kind, entry.type),
+                        );
+                        return (
+                          <details
+                            key={subgroup.key}
+                            className="create-subgroup"
+                            open={subgroupHasTutorialAllowedNodeType || undefined}
+                          >
+                            <summary className="create-subgroup-summary">
+                              <Tooltip content={subgroup.description}>
+                                <span>{subgroup.label}</span>
                               </Tooltip>
-                            ))}
-                          </div>
-                        </details>
-                      ))}
+                              <span className="create-subgroup-count">{subgroup.entries.length}</span>
+                            </summary>
+                            <div className="create-group-actions create-subgroup-actions">
+                              {subgroup.entries.map((entry) => (
+                                <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+                                  <button
+                                    type="button"
+                                    draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                                    onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                                    onClick={() => addNode(entry.kind, entry.type)}
+                                    disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                                  >
+                                    {entry.label}
+                                  </button>
+                                </Tooltip>
+                              ))}
+                            </div>
+                          </details>
+                        );
+                      })}
                     </div>
                   </details>
                 );
