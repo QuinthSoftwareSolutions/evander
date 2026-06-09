@@ -1662,6 +1662,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "git_author_name",
         "git_author_email",
+        "git_committer_name",
+        "git_committer_email",
     ]
     agent_bootstrap_frontend = next(
         node
@@ -6740,6 +6742,91 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in response.json()["permissions"]
     assert response.json()["permissions"] == response.json()["effective_permissions"]
+    assert response.json()["branding"]["page_title"] == "evander Control Plane Admin"
+    assert response.json()["branding"]["header_title"] == "evander Control Plane"
+
+
+def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/admin/branding")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "page_title": "evander Control Plane Admin",
+        "header_title": "evander Control Plane",
+        "header_logo": {
+            "light_url": None,
+            "dark_url": None,
+            "alt": "evander Control Plane logo",
+        },
+        "product_logo": {
+            "light_url": None,
+            "dark_url": None,
+            "alt": "evander Control Plane logo",
+        },
+        "company_logo": {
+            "light_url": None,
+            "dark_url": None,
+            "alt": "Company logo",
+        },
+    }
+
+
+def test_admin_web_branding_reads_env_and_serves_assets_without_login(
+    tmp_path: Path, monkeypatch
+) -> None:
+    asset_dir = tmp_path / "branding"
+    (asset_dir / "logos").mkdir(parents=True)
+    logo_path = asset_dir / "logos" / "product-light.png"
+    logo_path.write_bytes(b"brand-logo")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE", "Factory Alpha Admin")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE", "Factory Alpha")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR", str(asset_dir))
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL",
+        "logos/product-light.png",
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_ALT", "Factory Alpha logo")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_DARK_URL",
+        "https://assets.example.test/company-dark.png",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    branding = client.get("/api/admin/branding")
+    index = client.get("/")
+    logo = client.get("/api/admin/branding/assets/logos/product-light.png")
+    blocked = client.get("/api/admin/branding/assets/%2e%2e/gateway.yaml")
+    still_requires_auth = client.get("/api/workflow-editor/document")
+
+    assert branding.status_code == 200
+    payload = branding.json()
+    assert payload["page_title"] == "Factory Alpha Admin"
+    assert payload["header_title"] == "Factory Alpha"
+    assert payload["product_logo"] == {
+        "light_url": "/api/admin/branding/assets/logos/product-light.png",
+        "dark_url": "/api/admin/branding/assets/logos/product-light.png",
+        "alt": "Factory Alpha logo",
+    }
+    assert payload["header_logo"] == payload["product_logo"]
+    assert payload["company_logo"] == {
+        "light_url": "https://assets.example.test/company-dark.png",
+        "dark_url": "https://assets.example.test/company-dark.png",
+        "alt": "Company logo",
+    }
+    assert "<title>Factory Alpha Admin</title>" in index.text
+    assert "window.__ADMIN_WEB_BRANDING__=" in index.text
+    assert "Factory Alpha" in index.text
+    assert logo.status_code == 200
+    assert logo.content == b"brand-logo"
+    assert blocked.status_code == 404
+    assert still_requires_auth.status_code == 401
 
 
 def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monkeypatch) -> None:

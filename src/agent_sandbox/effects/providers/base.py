@@ -12,6 +12,7 @@ from agent_sandbox.events.models import (
 from agent_sandbox.provider_runtime.contracts import (
     AgentResumer,
     GitBranchPromoter,
+    GitBranchPusher,
     IssueUpdater,
     ProviderRuntimeBase,
     PullRequestCreator,
@@ -48,6 +49,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     issue_updater: IssueUpdater | None = None
     session_metadata_updater: SessionMetadataUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
+    git_branch_pusher: GitBranchPusher | None = None
     pull_request_creator: PullRequestCreator | None = None
     admin_service: Any | None = None
 
@@ -70,6 +72,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
             ("issue_updater", "update_issue_metadata"),
             ("session_metadata_updater", "session_update_metadata"),
             ("git_branch_promoter", "promote_agent_branch"),
+            ("git_branch_pusher", "push_branch"),
             ("pull_request_creator", "pr_create"),
         ):
             if getattr(self, field_name) is None and hasattr(self.admin_service, method_name):

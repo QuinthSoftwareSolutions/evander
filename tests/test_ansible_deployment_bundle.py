@@ -62,7 +62,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert site.index("- role: semantic_store_qdrant") < site.index("- role: verification")
 
 
-def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
+def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
@@ -91,12 +91,14 @@ def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
 
     assert "handle /api/*" in caddyfile
     assert "handle /healthz" in caddyfile
+    assert "@admin_web_index path / /index.html" in caddyfile
+    assert "handle @admin_web_index" in caddyfile
     assert (
         "reverse_proxy {{ agent_sandbox_admin_web_caddy_upstream_host }}:{{ agent_sandbox_admin_web_caddy_upstream_port }}"
         in caddyfile
     )
     assert "root * {{ agent_sandbox_admin_web_frontend_dist_dir }}" in caddyfile
-    assert "try_files {path} /index.html" in caddyfile
+    assert "try_files {path} =404" in caddyfile
     assert "file_server" in caddyfile
 
     assert "Verify managed Admin Web Caddy is active" in verification

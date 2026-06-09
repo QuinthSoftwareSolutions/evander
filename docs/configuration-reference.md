@@ -450,7 +450,7 @@ Type-specific keys:
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
-| `effect:agent:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `clone_branch`, `vm_user`, `directory_path`, `git_author_name`, `git_author_email`, `outputs` |
+| `effect:agent:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `clone_branch`, `vm_user`, `directory_path`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -481,11 +481,14 @@ Type-specific keys:
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:revoke-mcp-tool-approval-lease` | one of `mcp_tool_approval_lease_id` (preferred), `lease_id`; optional `session_id`, `workflow_run_id` | `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
+| `effect:git:push-branch` | `host_repo_path`, `local_branch`, `origin_branch` | `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
 For `effect:agent:clone-repo`, set both `git_author_name` and
-`git_author_email` when a workflow should attribute commits to a specific
-person. Leave both unset to use the default agent Git identity.
+`git_author_email` when a workflow should set a specific Git author. Set both
+`git_committer_name` and `git_committer_email` when the Git committer should be
+different. Leave the committer pair unset to use the author/default identity for
+both roles.
 
 `effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
 runtime deep-merges that patch into the created session manifest after built-in
@@ -532,6 +535,12 @@ destination branch exists and its tip is not contained in the local branch, the
 effect returns `success: false` with `reason: destination_branch_ahead` and does
 not push. Use a downstream `gate:filter` on `success == false` when an agent
 should be prompted to fetch and merge the destination branch.
+
+`effect:git:push-branch` performs only the trusted host checkout branch push
+portion of that PR automation path. It normalizes ref-prefixed branch names,
+rejects refspec-shaped branch values, uses the canonical origin URL when
+provided, preflights the destination branch, and returns the same
+`destination_branch_ahead` shape without creating or updating a pull request.
 
 `effect:event:schedule` stores a one-shot pending scheduled internal event
 instead of publishing immediately. It validates the event type, keeps the
@@ -1523,6 +1532,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | `AGENT_SANDBOX_MODEL_PRICING_PATH` | `src/agent_sandbox/model_usage/pricing.py` and Admin Web Configuration | Optional override for the local model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `config/model-pricing.openai.json`; Admin Web displays and edits the active catalog after privileged unlock with revision checks. |
+| `AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE`, `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE`, `AGENT_SANDBOX_ADMIN_WEB_*_LOGO_*`, `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, and sign-in company logo without rebuilding per environment. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/services.py`. |
 

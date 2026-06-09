@@ -39,6 +39,7 @@ from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvid
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
+from agent_sandbox.effects.providers.git_push_branch import GitPushBranchEffectProvider
 from agent_sandbox.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
 from agent_sandbox.effects.providers.issue_upsert_ado_proxy import (
@@ -242,6 +243,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
+            "effect:git:push-branch": GitPushBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,
             "effect:pull-request:add-tag": PullRequestAddTagEffectProvider,
             "effect:pull-request:remove-tag": PullRequestRemoveTagEffectProvider,

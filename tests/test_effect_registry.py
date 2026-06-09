@@ -34,6 +34,7 @@ from agent_sandbox.effects.providers.ado_work_item_tag import (
     AdoAddWorkItemTagEffectProvider,
     AdoRemoveWorkItemTagEffectProvider,
 )
+from agent_sandbox.effects.providers.git_push_branch import GitPushBranchEffectProvider
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.pull_request_update import (
     PullRequestAddTagEffectProvider,
@@ -398,6 +399,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
+        "effect:git:push-branch",
         "effect:pr:create",
         "effect:pull-request:add-tag",
         "effect:pull-request:remove-tag",
@@ -435,6 +437,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
         is SessionRevokeMcpToolApprovalLeaseEffectProvider
     )
+    assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:git:push-branch"] is GitPushBranchEffectProvider
 
 
 def test_event_schedule_effect_definition_validates_contract_shape() -> None:
@@ -1670,6 +1673,39 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_author_identity() -> None:
 
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_name"] is None
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] is None
+
+
+def test_agent_clone_repo_libvirt_uses_explicit_git_committer_identity() -> None:
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone repo",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+        git_author_name="Ada Lovelace",
+        git_author_email="ada@example.com",
+        git_committer_name="Truman Bot",
+        git_committer_email="truman@example.com",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_name"] == "Truman Bot"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] == "truman@example.com"
 
 
 def test_agent_clone_repo_requires_complete_git_author_identity() -> None:
@@ -1695,6 +1731,35 @@ def test_agent_clone_repo_requires_complete_git_author_identity() -> None:
     with pytest.raises(
         ValueError,
         match="git_author_name and git_author_email must both be set",
+    ):
+        factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls == []
+
+
+def test_agent_clone_repo_requires_complete_git_committer_identity() -> None:
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone repo",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+        git_committer_name="Truman Bot",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="git_committer_name and git_committer_email must both be set",
     ):
         factory.build(effect, directory_path="root/team-a").execute()
 
@@ -1728,6 +1793,8 @@ def test_agent_clone_repo_libvirt_does_not_use_session_issue_owner_metadata() ->
 
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] is None
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] is None
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_name"] is None
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] is None
 
 
 def test_vm_bootstrap_python_provider_passes_expected_arguments() -> None:
@@ -4283,6 +4350,8 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
 
     assert "git config user.name 'Ada Lovelace'" in command
     assert "git config user.email ada@example.com" in command
+    assert "git config author.name 'Ada Lovelace'" in command
+    assert "git config author.email ada@example.com" in command
     assert "git config agent-sandbox.gitAuthorName 'Ada Lovelace'" in command
     assert "git config agent-sandbox.gitAuthorEmail ada@example.com" in command
     assert "config alias.push-agent" in command
@@ -4291,6 +4360,33 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
     assert "CLONE_BRANCH=main" in command
     assert 'git config agent-sandbox.baseBranch "$BASE_BRANCH"' in command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
+
+
+def test_agent_clone_container_configures_separate_git_committer_identity() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        target_dir="/home/agent/repos/repo",
+        repo_source="https://dev.azure.com/org/project/_git/repo",
+        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git",
+        clone_branch="main",
+        git_author_identity=GitAuthorIdentity(
+            name="Ada Lovelace",
+            email="ada@example.com",
+        ),
+        git_committer_identity=GitAuthorIdentity(
+            name="Truman Bot",
+            email="truman@example.com",
+        ),
+    )
+
+    assert "git config user.name 'Ada Lovelace'" in command
+    assert "git config user.email ada@example.com" in command
+    assert "git config author.name 'Ada Lovelace'" in command
+    assert "git config author.email ada@example.com" in command
+    assert "git config committer.name 'Truman Bot'" in command
+    assert "git config committer.email truman@example.com" in command
+    assert "git config agent-sandbox.gitAuthorName 'Ada Lovelace'" in command
+    assert "git config agent-sandbox.gitCommitterName 'Truman Bot'" in command
 
 
 def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(

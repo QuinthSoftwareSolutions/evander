@@ -73,6 +73,9 @@ class AdminServiceProviderAdapter:
     def promote_agent_branch(self, **kwargs: Any) -> Any:
         return self._admin_service.promote_agent_branch(**kwargs)
 
+    def push_branch(self, **kwargs: Any) -> Any:
+        return self._admin_service.push_branch(**kwargs)
+
     def pr_create(self, **kwargs: Any) -> Any:
         return self._admin_service.pr_create(**kwargs)
 

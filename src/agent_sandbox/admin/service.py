@@ -1895,6 +1895,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Import a published artifact archive into a session artifacts folder."
     ),
     "effect:git:promote-agent-branch": ("Promote an agent branch into a trusted host checkout."),
+    "effect:git:push-branch": "Push a trusted host checkout branch to a remote branch.",
     "effect:pr:create": "Create a pull request from a host-side checkout.",
     "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
@@ -3266,7 +3267,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Optional git user.name for cloned repositories. "
+                    "Optional author.name for cloned repositories. "
                     "Set together with git_author_email."
                 ),
             ),
@@ -3276,8 +3277,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Optional git user.email for cloned repositories. "
+                    "Optional author.email for cloned repositories. "
                     "Set together with git_author_name."
+                ),
+            ),
+            _field(
+                "git_committer_name",
+                "Git committer name",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional committer.name for cloned repositories. "
+                    "Set together with git_committer_email."
+                ),
+            ),
+            _field(
+                "git_committer_email",
+                "Git committer email",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional committer.email for cloned repositories. "
+                    "Set together with git_committer_name."
                 ),
             ),
         ],
@@ -4333,6 +4354,21 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("agent_branch", "Agent branch", "string", required=True, bindable=True),
             _field("review_branch", "Review branch", "string", bindable=True),
             _field("remote_name", "Remote name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:git:push-branch",
+        label="Push git branch",
+        fields=[
+            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
+            _field("local_branch", "Local branch", "string", required=True, bindable=True),
+            _field("origin_branch", "Origin branch", "string", required=True, bindable=True),
+            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
+            _field("provider", "Provider", "string", bindable=True),
+            _field("base_branch", "Base branch", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("work_item_id", "Work item ID", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -12200,6 +12236,29 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             fill=fill,
         )
 
+    def push_branch(
+        self,
+        *,
+        host_repo_path: str,
+        local_branch: str,
+        origin_branch: str,
+        canonical_origin_url: str | None = None,
+        provider: str | None = None,
+        base_branch: str | None = None,
+        session_id: str | None = None,
+        work_item_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.issue_git_admin.push_branch(
+            host_repo_path=host_repo_path,
+            local_branch=local_branch,
+            origin_branch=origin_branch,
+            canonical_origin_url=canonical_origin_url,
+            provider=provider,
+            base_branch=base_branch,
+            session_id=session_id,
+            work_item_id=work_item_id,
+        )
+
     def promote_agent_branch(
         self,
         *,
@@ -19275,6 +19334,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path: str = "root",
         git_author_name: str | None = None,
         git_author_email: str | None = None,
+        git_committer_name: str | None = None,
+        git_committer_email: str | None = None,
     ) -> VmActionResult:
         return self.vm_agent_admin.clone_repo_into_vm(
             vm_name=vm_name,
@@ -19285,6 +19346,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             git_author_name=git_author_name,
             git_author_email=git_author_email,
+            git_committer_name=git_committer_name,
+            git_committer_email=git_committer_email,
         )
 
     def bootstrap_python_in_vm(

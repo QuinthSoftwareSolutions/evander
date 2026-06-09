@@ -55,6 +55,9 @@ class FakeIssueGitFacade:
     def pr_create(self, **kwargs: object) -> dict[str, object]:
         return self._record("pr_create", **kwargs)
 
+    def push_branch(self, **kwargs: object) -> dict[str, object]:
+        return self._record("push_branch", **kwargs)
+
     def git_pr_note_query(self, **kwargs: object) -> dict[str, object]:
         return self._record("git_pr_note_query", **kwargs)
 
@@ -198,6 +201,256 @@ def test_issue_git_admin_service_pr_create_invokes_script_and_parses_result(
     ]
     assert result["success"] is True
     assert result["pr_number"] == 42
+
+
+def _git_args(cmd: list[str]) -> list[str]:
+    assert cmd[:3] and cmd[0] == "git"
+    args = cmd[3:]
+    while len(args) >= 2 and args[0] == "-c":
+        args = args[2:]
+    return args
+
+
+def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    repo = tmp_path / "trusted"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.append(cmd)
+        args = _git_args(cmd)
+        if args == ["remote", "get-url", "agent-sandbox-pr-origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+        if args[:3] == ["remote", "add", "agent-sandbox-pr-origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
+            )
+        if args == [
+            "ls-remote",
+            "--exit-code",
+            "agent-sandbox-pr-origin",
+            "refs/heads/feature/topic",
+        ]:
+            return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
+        if args == [
+            "push",
+            "agent-sandbox-pr-origin",
+            "review/session/work:refs/heads/feature/topic",
+        ]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="pushed branch\n"
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+
+    result = service.push_branch(
+        host_repo_path=str(repo),
+        local_branch="refs/heads/review/session/work",
+        origin_branch="refs/heads/feature/topic",
+        canonical_origin_url="git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
+        provider="azure_devops",
+        base_branch="origin/main",
+        session_id="session-1",
+    )
+
+    assert result["success"] is True
+    assert result["action"] == "git_push_branch"
+    assert result["preflight_success"] is True
+    assert result["local_branch"] == "review/session/work"
+    assert result["origin_branch"] == "feature/topic"
+    assert result["base_branch"] == "main"
+    assert result["remote_name"] == "agent-sandbox-pr-origin"
+    assert (
+        result["push_remote_url"]
+        == "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    )
+    assert "pushed branch" in result["message"]
+    remote_add = next(
+        cmd
+        for cmd in captured
+        if _git_args(cmd)[:3] == ["remote", "add", "agent-sandbox-pr-origin"]
+    )
+    assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
+    assert any(arg.startswith("http.extraHeader=Authorization: Basic ") for arg in push_cmd)
+    assert all("push_existing_pr_branch.sh" not in part for cmd in captured for part in cmd)
+    assert all("open_agent_pr.sh" not in part for cmd in captured for part in cmd)
+
+
+def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_canonical_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    repo = tmp_path / "trusted"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.append(cmd)
+        args = _git_args(cmd)
+        if args == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="git@ssh.dev.azure.com:v3/example-org/example-project/example-repo\n",
+                stderr="",
+            )
+        if args == ["remote", "get-url", "agent-sandbox-pr-origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+        if args[:3] == ["remote", "add", "agent-sandbox-pr-origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
+            )
+        if args == [
+            "ls-remote",
+            "--exit-code",
+            "agent-sandbox-pr-origin",
+            "refs/heads/feature/topic",
+        ]:
+            return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
+        if args == [
+            "push",
+            "agent-sandbox-pr-origin",
+            "review/session/work:refs/heads/feature/topic",
+        ]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="pushed branch\n"
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+
+    result = service.push_branch(
+        host_repo_path=str(repo),
+        local_branch="review/session/work",
+        origin_branch="feature/topic",
+        provider="azure_devops",
+    )
+
+    assert result["success"] is True
+    assert result["remote_name"] == "agent-sandbox-pr-origin"
+    assert (
+        result["push_remote_url"]
+        == "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    )
+    remote_add = next(
+        cmd
+        for cmd in captured
+        if _git_args(cmd)[:3] == ["remote", "add", "agent-sandbox-pr-origin"]
+    )
+    assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    assert not any(
+        _git_args(cmd)[0] in {"ls-remote", "fetch", "push"} and _git_args(cmd)[-2] == "origin"
+        for cmd in captured
+    )
+    push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
+    assert any(arg.startswith("http.extraHeader=Authorization: Basic ") for arg in push_cmd)
+
+
+def test_issue_git_admin_service_push_branch_reports_destination_ahead_without_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    repo = tmp_path / "trusted"
+    (repo / ".git").mkdir(parents=True)
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.append(cmd)
+        args = _git_args(cmd)
+        if args == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="ssh://example/repo.git\n", stderr=""
+            )
+        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
+            )
+        if args == ["ls-remote", "--exit-code", "origin", "refs/heads/feature/topic"]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="remote-tip\trefs/heads/feature/topic\n",
+                stderr="",
+            )
+        if args == [
+            "fetch",
+            "origin",
+            "+refs/heads/feature/topic:refs/remotes/origin/feature/topic",
+        ]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if args == ["rev-parse", "--verify", "refs/remotes/origin/feature/topic^{commit}"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="remote-tip\n", stderr=""
+            )
+        if args == [
+            "merge-base",
+            "--is-ancestor",
+            "refs/remotes/origin/feature/topic",
+            "review/session/work",
+        ]:
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+        if args == [
+            "rev-list",
+            "--left-right",
+            "--count",
+            "refs/remotes/origin/feature/topic...review/session/work",
+        ]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="3 2\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+
+    result = service.push_branch(
+        host_repo_path=str(repo),
+        local_branch="review/session/work",
+        origin_branch="feature/topic",
+        base_branch="main",
+        session_id="session-1",
+    )
+
+    assert result["success"] is False
+    assert result["preflight_success"] is False
+    assert result["reason"] == "destination_branch_ahead"
+    assert result["destination_commit"] == "remote-tip"
+    assert result["local_commit"] == "local-tip"
+    assert result["destination_ahead_count"] == 3
+    assert result["local_ahead_count"] == 2
+    assert not any(_git_args(cmd)[0] == "push" for cmd in captured)
+
+
+def test_issue_git_admin_service_push_branch_rejects_refspec_branch_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    repo = tmp_path / "trusted"
+    (repo / ".git").mkdir(parents=True)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
+
+    with pytest.raises(ValueError, match="valid origin_branch"):
+        service.push_branch(
+            host_repo_path=str(repo),
+            local_branch="review/session/work",
+            origin_branch="feature/topic:refs/heads/other",
+        )
 
 
 def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path: Path) -> None:
@@ -403,6 +656,14 @@ def test_admin_service_delegates_issue_git_methods() -> None:
         == "pr_create"
     )
     assert (
+        service.push_branch(
+            host_repo_path="/repo",
+            local_branch="review/session/work",
+            origin_branch="feature/topic",
+        )["name"]
+        == "push_branch"
+    )
+    assert (
         service.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")[
             "name"
         ]
@@ -436,6 +697,20 @@ def test_admin_service_delegates_issue_git_methods() -> None:
                 "body_artifact_ids": None,
                 "draft": None,
                 "fill": True,
+            },
+        ),
+        (
+            "push_branch",
+            (),
+            {
+                "host_repo_path": "/repo",
+                "local_branch": "review/session/work",
+                "origin_branch": "feature/topic",
+                "canonical_origin_url": None,
+                "provider": None,
+                "base_branch": None,
+                "session_id": None,
+                "work_item_id": None,
             },
         ),
         (

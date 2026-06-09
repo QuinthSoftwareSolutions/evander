@@ -405,6 +405,8 @@ class VmAgentAdminSupport:
         vm_ip: str | None = None,
         git_author_name: str | None = None,
         git_author_email: str | None = None,
+        git_committer_name: str | None = None,
+        git_committer_email: str | None = None,
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
         completed = _admin_service._run_subprocess(
@@ -455,13 +457,30 @@ class VmAgentAdminSupport:
         branch_suffix_line = (
             'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
         )
-        git_user_name = str(git_author_name or "Truman Bot").strip() or "Truman Bot"
-        git_user_email = str(git_author_email or "truman@quinth.se").strip() or "truman@quinth.se"
-        git_author_config_line = ""
-        if git_author_name and git_author_email:
-            git_author_config_line = (
-                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorName "${GIT_USER_NAME}"\n'
-                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorEmail "${GIT_USER_EMAIL}"\n'
+        normalized_author_name = str(git_author_name or "").strip()
+        normalized_author_email = str(git_author_email or "").strip()
+        if bool(normalized_author_name) != bool(normalized_author_email):
+            raise ValueError("git_author_name and git_author_email must both be set")
+        normalized_committer_name = str(git_committer_name or "").strip()
+        normalized_committer_email = str(git_committer_email or "").strip()
+        if bool(normalized_committer_name) != bool(normalized_committer_email):
+            raise ValueError("git_committer_name and git_committer_email must both be set")
+        git_user_name = normalized_author_name or "Truman Bot"
+        git_user_email = normalized_author_email or "truman@quinth.se"
+        git_identity_config_line = ""
+        if normalized_author_name and normalized_author_email:
+            git_identity_config_line += (
+                'git -C "${TARGET_DIR}" config author.name "${GIT_AUTHOR_NAME}"\n'
+                'git -C "${TARGET_DIR}" config author.email "${GIT_AUTHOR_EMAIL}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorName "${GIT_AUTHOR_NAME}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitAuthorEmail "${GIT_AUTHOR_EMAIL}"\n'
+            )
+        if normalized_committer_name and normalized_committer_email:
+            git_identity_config_line += (
+                'git -C "${TARGET_DIR}" config committer.name "${GIT_COMMITTER_NAME}"\n'
+                'git -C "${TARGET_DIR}" config committer.email "${GIT_COMMITTER_EMAIL}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitCommitterName "${GIT_COMMITTER_NAME}"\n'
+                'git -C "${TARGET_DIR}" config agent-sandbox.gitCommitterEmail "${GIT_COMMITTER_EMAIL}"\n'
             )
         remote_script = f"""
 set -euo pipefail
@@ -474,6 +493,10 @@ VM_NAME="{vm_name}"
 PR_NOTES_REF="{pr_notes_ref}"
 GIT_USER_NAME={shlex.quote(git_user_name)}
 GIT_USER_EMAIL={shlex.quote(git_user_email)}
+GIT_AUTHOR_NAME={shlex.quote(normalized_author_name)}
+GIT_AUTHOR_EMAIL={shlex.quote(normalized_author_email)}
+GIT_COMMITTER_NAME={shlex.quote(normalized_committer_name)}
+GIT_COMMITTER_EMAIL={shlex.quote(normalized_committer_email)}
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
 SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
@@ -511,7 +534,7 @@ if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
 fi
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
 git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
-{issue_config_line}{branch_suffix_line}{git_author_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+{issue_config_line}{branch_suffix_line}{git_identity_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
 import os
@@ -2225,6 +2248,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         directory_path: str = "root",
         git_author_name: str | None = None,
         git_author_email: str | None = None,
+        git_committer_name: str | None = None,
+        git_committer_email: str | None = None,
     ) -> VmActionResult:
         resolved_vm_name = vm_name.strip()
         if not resolved_vm_name:
@@ -2281,6 +2306,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 vm_ip=vm_ip,
                 git_author_name=git_author_name,
                 git_author_email=git_author_email,
+                git_committer_name=git_committer_name,
+                git_committer_email=git_committer_email,
             )
             guest_remote_url = (
                 f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{resolved_repo_name}.git"

@@ -118,15 +118,20 @@ body {
   display: flex;
   align-items: center;
   gap: 0.85rem;
-  white-space: nowrap;
+  min-width: 0;
 }
 
 .admin-shell-logo {
-  width: clamp(2.65rem, 3.4vw, 3.35rem);
+  width: clamp(3.1rem, 7vw, 6.75rem);
   height: clamp(2.65rem, 3.4vw, 3.35rem);
   object-fit: contain;
   flex: 0 0 auto;
   filter: drop-shadow(0 10px 24px rgba(17, 43, 58, 0.14));
+}
+
+.admin-shell-logo-placeholder,
+.admin-login-logo-placeholder {
+  visibility: hidden;
 }
 
 .admin-shell-header h1 {
@@ -136,6 +141,8 @@ body {
   line-height: 1.05;
   letter-spacing: 0;
   color: #10232f;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-shell-header p {

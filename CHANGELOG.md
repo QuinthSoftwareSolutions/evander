@@ -5,6 +5,22 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Typed Git Branch Push Effect
+
+- Added `effect:git:push-branch` for typed host-side trusted checkout branch pushes,
+  preserving destination-branch preflight outputs without allowing workflow-configured
+  shell scripts or creating/updating pull requests.
+
+## 2026-06-09 - Admin Web Branding
+
+- Made the Admin Web browser title, shell header title, header logo, product
+  logo, and sign-in company logo configurable from `config/admin-web.env`,
+  with API-served local branding assets for Caddy-backed deployments.
+- Proxied managed Caddy HTML entrypoints through Admin Web so configured
+  branding is injected before the React app starts; static/no-bootstrap
+  frontend paths now show blank branding until runtime branding loads instead
+  of briefly showing the default title or logos.
+
 ## 2026-06-09 - Workflow Catalog Organization
 
 - Collapsed workflow-editor create-panel subgroups by default and reorganized
@@ -12,6 +28,13 @@ material. Newer entries are added incrementally as changes land.
   nodes are easier to find.
 - Added dedicated Azure DevOps work-item and pull-request tag effects that add
   or remove a single tag idempotently.
+
+## 2026-06-09 - Clone Repo Git Committer Identity
+
+- Added optional `git_committer_name` and `git_committer_email` inputs to
+  `effect:agent:clone-repo` so workflows can configure Git author and
+  committer identities separately while preserving existing author-only
+  behavior.
 
 ## 2026-06-08 - Operator Steering Notes
 

@@ -19,6 +19,10 @@ sequence with Ansible, including the dedicated container-worker VM playbook, see
 
 If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
 service and configure `config/admin-web.env` before exposing it beyond localhost.
+Use the Admin Web branding variables in that env file when a deployment needs a different browser
+title, shell header title, or logo set; relative logo paths can be served from
+`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied `/api/admin/branding/assets/...`
+route.
 
 ## Bootstrap Flow
 
@@ -2370,6 +2374,11 @@ For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment so the PR
 mirror-refresh path can authenticate automatically against the Azure-hosted canonical repository. When
 `open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
 associates the PR with that work item in Azure DevOps.
+
+When a workflow only needs to update an existing PR source branch from a trusted host checkout, use
+`effect:git:push-branch` instead of `effect:pr:create`. The typed push effect keeps the destination
+branch preflight and returns `reason: destination_branch_ahead` for merge-required retries, but it
+does not create a new PR or patch an existing PR description.
 
 ## Live Smoke Tests
 

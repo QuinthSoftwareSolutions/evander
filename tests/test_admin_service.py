@@ -10474,6 +10474,74 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     assert "config agent-sandbox.workBranch" in remote_script
 
 
+def test_clone_repo_into_vm_configures_separate_author_and_committer(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_ssh_input: list[str] = []
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
+            )
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
+            )
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
+            )
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+    )
+    result = service.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+        repo_source="/src/repo",
+        git_author_name="Ada Lovelace",
+        git_author_email="ada@example.com",
+        git_committer_name="Truman Bot",
+        git_committer_email="truman@example.com",
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert "GIT_USER_NAME='Ada Lovelace'" in remote_script
+    assert "GIT_USER_EMAIL=ada@example.com" in remote_script
+    assert "GIT_AUTHOR_NAME='Ada Lovelace'" in remote_script
+    assert "GIT_AUTHOR_EMAIL=ada@example.com" in remote_script
+    assert "GIT_COMMITTER_NAME='Truman Bot'" in remote_script
+    assert "GIT_COMMITTER_EMAIL=truman@example.com" in remote_script
+    assert 'git -C "${TARGET_DIR}" config user.name "${GIT_USER_NAME}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config author.name "${GIT_AUTHOR_NAME}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config author.email "${GIT_AUTHOR_EMAIL}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config committer.name "${GIT_COMMITTER_NAME}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config committer.email "${GIT_COMMITTER_EMAIL}"' in remote_script
+    assert 'config agent-sandbox.gitAuthorName "${GIT_AUTHOR_NAME}"' in remote_script
+    assert 'config agent-sandbox.gitCommitterName "${GIT_COMMITTER_NAME}"' in remote_script
+
+
 def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

@@ -238,6 +238,8 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     git_author_name: ConfigValue | None = None
     git_author_email: ConfigValue | None = None
+    git_committer_name: ConfigValue | None = None
+    git_committer_email: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":
@@ -987,6 +989,18 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
                 "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
             )
         return self
+
+
+class GitPushBranchEffectDefinition(EffectDefinition):
+    type: Literal["effect:git:push-branch"]
+    host_repo_path: ConfigValue
+    local_branch: ConfigValue
+    origin_branch: ConfigValue
+    canonical_origin_url: ConfigValue | None = None
+    provider: ConfigValue | None = None
+    base_branch: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    work_item_id: ConfigValue | None = None
 
 
 class PrCreateEffectDefinition(EffectDefinition):
