@@ -12446,6 +12446,139 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             metadata=metadata,
         )
 
+    def list_artifact_spaces(
+        self,
+        *,
+        path: str | None = None,
+        recursive: bool = True,
+        subject: str | None = None,
+        include_versions: bool = False,
+    ) -> dict[str, Any]:
+        from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
+
+        state = ArtifactSpaceStore(self.config.runtime_dir).read()
+        root_path = normalize_space_path(path or "/")
+        spaces: list[dict[str, Any]] = []
+        for space in state.spaces.values():
+            matches = space.path == root_path or (
+                recursive and space.path.startswith(root_path.rstrip("/") + "/")
+            )
+            if not matches:
+                continue
+            if not space.grants.allows(subject, "read"):
+                continue
+            spaces.append(space.model_dump(mode="json"))
+        spaces.sort(key=lambda item: item["path"])
+        readable_paths = {space["path"] for space in spaces}
+        versions = (
+            [
+                version.model_dump(mode="json")
+                for version in state.versions.values()
+                if version.space_path in readable_paths
+            ]
+            if include_versions
+            else []
+        )
+        return {
+            "success": True,
+            "revision": state.revision,
+            "spaces": spaces,
+            "versions": versions,
+            "count": len(spaces),
+        }
+
+    def create_artifact_space(
+        self,
+        *,
+        path: str,
+        display_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        grants: dict[str, Any] | None = None,
+        subject: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        from agent_sandbox.artifact_spaces import ArtifactSpaceStore, normalize_space_path
+
+        state = ArtifactSpaceStore(self.config.runtime_dir).ensure_space(
+            path=path,
+            display_name=display_name,
+            metadata=metadata,
+            grants=grants,
+            subject=subject,
+            expected_revision=expected_revision,
+        )
+        return {
+            "success": True,
+            "revision": state.revision,
+            "space": state.spaces[normalize_space_path(path)].model_dump(mode="json"),
+        }
+
+    def publish_artifact_space_version(
+        self,
+        *,
+        space_path: str,
+        artifact_id: str,
+        artifact_key: str,
+        subject: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        expected_revision: int | None = None,
+        require_existing_artifact: bool = True,
+    ) -> dict[str, Any]:
+        from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+
+        if require_existing_artifact and not self._published_artifact_store().exists(artifact_key):
+            raise FileNotFoundError(f"published artifact key does not exist: {artifact_key}")
+        state = ArtifactSpaceStore(self.config.runtime_dir).publish_version(
+            space_path=space_path,
+            artifact_id=artifact_id,
+            artifact_key=artifact_key,
+            created_by_subject=subject,
+            metadata=metadata,
+            expected_revision=expected_revision,
+        )
+        versions = state.versions_for_space(space_path, artifact_id=artifact_id)
+        return {
+            "success": True,
+            "revision": state.revision,
+            "version": versions[-1].model_dump(mode="json"),
+        }
+
+    def latest_artifact_space_versions(
+        self,
+        *,
+        space_path: str,
+        artifact_id: str | None = None,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        from agent_sandbox.artifact_spaces import (
+            ArtifactSpacePermissionError,
+            ArtifactSpaceStore,
+            normalize_space_path,
+        )
+
+        state = ArtifactSpaceStore(self.config.runtime_dir).read()
+        normalized_space_path = normalize_space_path(space_path)
+        space = state.spaces.get(normalized_space_path)
+        if space is None:
+            raise FileNotFoundError(f"artifact space does not exist: {normalized_space_path}")
+        if not space.grants.allows(subject, "read"):
+            raise ArtifactSpacePermissionError(
+                f"subject {subject or '<anonymous>'} cannot read artifact space {normalized_space_path}"
+            )
+        versions = [
+            version.model_dump(mode="json")
+            for version in state.latest_versions_for_space(
+                normalized_space_path,
+                artifact_id=artifact_id,
+            )
+        ]
+        return {
+            "success": True,
+            "revision": state.revision,
+            "versions": versions,
+            "count": len(versions),
+        }
+
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
 

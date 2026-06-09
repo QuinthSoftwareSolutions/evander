@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import { fetchJson, formatTimestamp } from "../admin/api";
+import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
@@ -77,6 +77,7 @@ const REFRESH_MS = 5000;
 const LOG_PAGE_LIMIT = 300;
 const LOG_SCROLL_BOTTOM_THRESHOLD = 24;
 const AGENT_SELECTION_STORAGE_KEY = "admin-web:agents:selected-agent";
+const AUTH_EXPIRED_MESSAGE = "Your admin session expired. Sign in again to resume live updates.";
 
 type AgentLogViewState = {
   text: string;
@@ -746,7 +747,7 @@ function SkillIcon() {
 }
 
 export function AgentsPage() {
-  const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const { privilegedUnlocked, refreshAuthSession, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<AgentRecord[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
@@ -948,7 +949,12 @@ export function AgentsPage() {
         await refreshSummaryAgents();
         if (!cancelled) setError(null);
       } catch (reason: unknown) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled) {
+          if (isApiAuthError(reason)) {
+            await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+          }
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1023,6 +1029,9 @@ export function AgentsPage() {
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
         if (!cancelled) {
+          if (isApiAuthError(reason)) {
+            await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+          }
           setAgentLog((current) => ({
             ...current,
             text: current.text || message,

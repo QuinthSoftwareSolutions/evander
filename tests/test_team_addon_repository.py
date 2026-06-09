@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from truman_team_addon.models import ProjectGoal
+from truman_team_addon.models import EphemeralAgentPolicy, ProjectGoal
 from truman_team_addon.repository import TeamStateConflictError, TeamStateRepository
 
 
@@ -55,6 +55,56 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.revision == 3
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
+
+
+def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=1,
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role="backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=1),
+        expected_revision=2,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Build backend",
+        description="Implement backend work.",
+        created_by_agent_id="lead",
+        expected_revision=3,
+    )
+
+    with pytest.raises(ValueError, match="max_concurrent=1"):
+        repo.request_ephemeral_assignments(
+            parent_agent_id="backend",
+            requests=[
+                {"task_id": "task", "title": "One", "prompt": "Do one thing."},
+                {"task_id": "task", "title": "Two", "prompt": "Do another thing."},
+            ],
+        )
+
+    assert repo.read().ephemeral_assignments == {}
 
 
 def test_repository_stale_revision_rejects_without_writing(tmp_path: Path) -> None:

@@ -29,6 +29,18 @@ class TeamRecordState(str, Enum):
     BLOCKED = "blocked"
 
 
+class EphemeralAssignmentState(str, Enum):
+    REQUESTED = "requested"
+    SPAWN_PENDING = "spawn_pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CLEANUP_PENDING = "cleanup_pending"
+    CLEANED_UP = "cleaned_up"
+    FAILED = "failed"
+
+
 class ProjectStatus(str, Enum):
     ACTIVE = "active"
     BLOCKED = "blocked"
@@ -40,6 +52,19 @@ class AgentStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     ARCHIVED = "archived"
+
+
+class TeamInboxItemType(str, Enum):
+    QUESTION = "question"
+    STATUS_REQUEST = "status_request"
+    PROGRESS_REPORT = "progress_report"
+    DELIVERABLE_NOTICE = "deliverable_notice"
+    ESCALATION = "escalation"
+
+
+class TeamInboxItemState(str, Enum):
+    PENDING = "pending"
+    HANDLED = "handled"
 
 
 class TeamModel(BaseModel):
@@ -144,6 +169,28 @@ class PersistentAgent(TeamModel):
         return self
 
 
+class AgentRuntime(TeamModel):
+    agent_id: str
+    wake_leased_until: datetime | None = None
+    active_dispatch_id: str | None = None
+    wake_reason: str | None = None
+    last_wake_at: datetime | None = None
+    next_wake_at: datetime | None = None
+    no_progress_count: int = Field(default=0, ge=0)
+    last_progress_at: datetime | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("active_dispatch_id", "wake_reason", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
@@ -216,6 +263,48 @@ class ReviewRequest(TeamModel):
         return _text_list(value, "findings")
 
 
+class AgentInboxItem(TeamModel):
+    id: str
+    recipient_agent_id: str
+    item_type: TeamInboxItemType
+    sender_agent_id: str | None = None
+    task_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    state: TeamInboxItemState = TeamInboxItemState.PENDING
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "recipient_agent_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("sender_agent_id", "task_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class AgentActionRecord(TeamModel):
+    id: str
+    agent_id: str
+    dispatch_id: str
+    action: dict[str, Any] = Field(default_factory=dict)
+    success: bool = True
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "agent_id", "dispatch_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
@@ -235,16 +324,86 @@ class ReleasePackage(TeamModel):
         return _unique_text_list(value, info.field_name)
 
 
+class EphemeralAssignment(TeamModel):
+    id: str
+    parent_agent_id: str
+    project_id: str
+    task_id: str
+    session_id: str
+    title: str
+    prompt: str
+    state: EphemeralAssignmentState = EphemeralAssignmentState.REQUESTED
+    artifact_refs: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    error: str | None = None
+    model: str | None = None
+    agent_provider: str | None = None
+    execution_backend: str | None = None
+    container_image: str | None = None
+    allowed_tools: list[str] = Field(default_factory=list)
+    ttl_hours: int | None = Field(default=None, ge=1)
+    directory_path: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "parent_agent_id",
+        "project_id",
+        "task_id",
+        "session_id",
+        "title",
+        "prompt",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "summary",
+        "error",
+        "model",
+        "agent_provider",
+        "execution_backend",
+        "container_image",
+        "directory_path",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("artifact_refs", "allowed_tools", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
 class TeamState(TeamModel):
     schema_version: int = SCHEMA_VERSION
     revision: int = Field(default=0, ge=0)
     teams: dict[str, Team] = Field(default_factory=dict)
     projects: dict[str, Project] = Field(default_factory=dict)
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
+    agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
+    inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
+    action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
+    ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
     @classmethod
@@ -258,10 +417,14 @@ class TeamState(TeamModel):
         self._validate_teams(errors)
         self._validate_projects(errors)
         self._validate_agents(errors)
+        self._validate_agent_runtimes(errors)
         self._validate_tasks(errors)
         self._validate_deliverables(errors)
         self._validate_reviews(errors)
+        self._validate_inbox(errors)
+        self._validate_action_records(errors)
         self._validate_releases(errors)
+        self._validate_ephemeral_assignments(errors)
         if errors:
             raise ValueError("; ".join(errors))
         return self
@@ -277,15 +440,22 @@ class TeamState(TeamModel):
             "teams",
             "projects",
             "agents",
+            "agent_runtimes",
             "tasks",
             "deliverables",
             "review_requests",
+            "inbox",
+            "action_records",
             "release_packages",
+            "ephemeral_assignments",
         ):
             collection = getattr(self, collection_name)
             for key, record in collection.items():
-                if key != record.id:
-                    errors.append(f"{collection_name}.{key} key does not match record id {record.id}")
+                record_id = getattr(record, "id", getattr(record, "agent_id", None))
+                if key != record_id:
+                    errors.append(
+                        f"{collection_name}.{key} key does not match record id {record_id}"
+                    )
 
     def _validate_teams(self, errors: list[str]) -> None:
         for team in self.teams.values():
@@ -339,6 +509,13 @@ class TeamState(TeamModel):
                     errors.append(f"agent {agent.id} subordinate {subordinate_id} does not report back")
         for agent_id in self.agents:
             self._validate_no_reporting_cycle(agent_id, errors)
+
+    def _validate_agent_runtimes(self, errors: list[str]) -> None:
+        for agent_id, runtime in self.agent_runtimes.items():
+            if runtime.agent_id != agent_id:
+                errors.append(f"agent runtime {agent_id} does not point back")
+            if agent_id not in self.agents:
+                errors.append(f"agent runtime {agent_id} references missing agent")
 
     def _validate_no_reporting_cycle(self, agent_id: str, errors: list[str]) -> None:
         seen: set[str] = set()
@@ -402,6 +579,26 @@ class TeamState(TeamModel):
                     f"review request {review.id} references missing reviewer {review.reviewer_agent_id}"
                 )
 
+    def _validate_inbox(self, errors: list[str]) -> None:
+        for item in self.inbox.values():
+            if item.recipient_agent_id not in self.agents:
+                errors.append(
+                    f"inbox item {item.id} references missing recipient {item.recipient_agent_id}"
+                )
+            if item.sender_agent_id is not None and item.sender_agent_id not in self.agents:
+                errors.append(
+                    f"inbox item {item.id} references missing sender {item.sender_agent_id}"
+                )
+            if item.task_id is not None and item.task_id not in self.tasks:
+                errors.append(f"inbox item {item.id} references missing task {item.task_id}")
+
+    def _validate_action_records(self, errors: list[str]) -> None:
+        for record in self.action_records.values():
+            if record.agent_id not in self.agents:
+                errors.append(
+                    f"action record {record.id} references missing agent {record.agent_id}"
+                )
+
     def _validate_releases(self, errors: list[str]) -> None:
         for release in self.release_packages.values():
             project = self.projects.get(release.project_id)
@@ -416,6 +613,42 @@ class TeamState(TeamModel):
                 task = self.tasks.get(deliverable.task_id)
                 if task is not None and task.project_id != project.id:
                     errors.append(f"release {release.id} includes deliverable {deliverable_id} outside project")
+
+    def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
+        for assignment in self.ephemeral_assignments.values():
+            parent = self.agents.get(assignment.parent_agent_id)
+            if parent is None:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} references missing parent "
+                    f"{assignment.parent_agent_id}"
+                )
+            project = self.projects.get(assignment.project_id)
+            if project is None:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} references missing project "
+                    f"{assignment.project_id}"
+                )
+            task = self.tasks.get(assignment.task_id)
+            if task is None:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} references missing task "
+                    f"{assignment.task_id}"
+                )
+            if parent is not None and parent.project_id != assignment.project_id:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} parent {parent.id} "
+                    f"belongs to project {parent.project_id}"
+                )
+            if task is not None and task.project_id != assignment.project_id:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} task {task.id} "
+                    f"belongs to project {task.project_id}"
+                )
+            if task is not None and task.owner_agent_id != assignment.parent_agent_id:
+                errors.append(
+                    f"ephemeral assignment {assignment.id} task {task.id} "
+                    f"is owned by {task.owner_agent_id}"
+                )
 
 
 def _required_text(value: object, field_name: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,12 +21,27 @@ from agent_sandbox.addons import (
 )
 from agent_sandbox.workflow.plugins import load_provider_plugins
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_load_addons_defaults_to_empty_catalog() -> None:
     catalog = load_addons()
 
     assert catalog.registrations == ()
     assert catalog.loaded_addons == ()
+
+
+def test_bundled_team_addon_packaging_contract_is_declared() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    assert addon_entry_points["team"] == "truman_team_addon:register_addon"
+    assert package_data["truman_team_addon"] == ["ui_static/*"]
+    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/index.html").is_file()
+    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/truman_team_addon/ui_static/team-ui.css").is_file()
 
 
 def test_load_addons_supports_explicit_module_list(tmp_path: Path, monkeypatch) -> None:
@@ -193,3 +209,32 @@ def register_addon():
 
     assert "trigger:addon:test" in catalog.trigger_providers
     assert "addon:provider-addon" in catalog.loaded_plugins
+
+
+def test_bundled_team_addon_workflow_providers_are_optional() -> None:
+    disabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+    assert "effect:team:wake-due-agents" not in disabled.effect_providers
+    assert "query:team:state" not in disabled.query_providers
+    assert "effect:team:wake-due-agents" not in disabled.node_definition_resolvers
+
+    enabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+        addon_loader=AddonLoaderConfig(
+            modules=["truman_team_addon"],
+            enabled_addon_ids=["team-addon"],
+        ),
+    )
+
+    assert "addon:team-addon" in enabled.loaded_plugins
+    assert "effect:team:wake-due-agents" in enabled.effect_providers
+    assert "effect:team:apply-agent-action" in enabled.effect_providers
+    assert "effect:team:mark-ephemeral-cleaned-up" in enabled.effect_providers
+    assert "query:team:agent-action-artifact" in enabled.query_providers
+    assert "query:team:session-routing" in enabled.query_providers
+    assert "effect:team:wake-due-agents" in enabled.node_definition_resolvers

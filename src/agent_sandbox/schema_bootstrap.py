@@ -623,6 +623,22 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "status": {"type": "string"},
         "payload": {"type": "object"},
     },
+    "effect:artifact-space:create": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "space": {"type": "object"},
+        "state": {"type": "object"},
+        "error": {"type": "string"},
+        "permission_denied": {"type": "boolean"},
+    },
+    "effect:artifact-space:publish-version": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "version": {"type": "object"},
+        "state": {"type": "object"},
+        "error": {"type": "string"},
+        "permission_denied": {"type": "boolean"},
+    },
     "effect:vm:create": {
         "provider": {"type": "string"},
         "session_id": {"type": "string"},
@@ -1250,6 +1266,20 @@ _QUERY_OUTPUT_SCHEMAS = {
         "created_at": {"type": "string"},
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
+    },
+    "query:artifact-space:list": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "spaces": {"type": "array"},
+        "versions": {"type": "array"},
+        "count": {"type": "integer"},
+    },
+    "query:artifact-space:latest": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "versions": {"type": "array"},
+        "count": {"type": "integer"},
+        "artifact_key": {"type": ["string", "null"]},
     },
     "query:session:list": {
         "sessions": {"type": "array"},

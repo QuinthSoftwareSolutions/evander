@@ -154,6 +154,16 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `agent_sandbox.addons`. Defaults to `false`. |
 | `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules/entry points. |
 
+For the bundled Team Add-on, prefer explicit module loading:
+`addon_loader.modules: ["truman_team_addon"]`. Configure this in the host
+config to expose Admin Web routes/navigation, and in
+`config/trigger-orchestrator/config.json` to make `effect:team:*` and
+`query:team:*` workflow providers available to the trigger/effect workers. The
+team runtime loop is still opt-in; materialize
+`truman_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
+workflow pack and list that file in `workflow_packs` only on deployments that
+want autonomous team wakeups.
+
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
 path derived from `effect_lock_path` with `.wake.sock`.
@@ -461,6 +471,8 @@ Type-specific keys:
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
 | `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
+| `effect:artifact-space:create` | `path` | `display_name`, `metadata`, `grants`, `subject`, `expected_revision`, `outputs` |
+| `effect:artifact-space:publish-version` | `space_path`, `artifact_id`, `artifact_key` | `subject`, `metadata`, `expected_revision`, `require_existing_artifact`, `outputs` |
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
@@ -623,6 +635,11 @@ immutable caller-provided `key`. Reusing a key fails.
 session's `/artifacts` folder. `destination_path`, when set, is a relative
 prefix under `/artifacts`; existing files cause the import to fail unless
 `overwrite` is true.
+Artifact spaces add a generic hierarchical catalogue over immutable published
+artifact keys. Spaces live in `runtime/artifact-spaces.json`, use opaque
+subjects such as `session:<id>` or add-on-defined subjects for access checks,
+and create new version records instead of overwriting existing published
+artifacts.
 
 ### Query definition schema keys
 
@@ -644,6 +661,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:state:get` | `namespace`, `key` | `outputs` |
+| `query:artifact-space:list` | _none beyond envelope_ | `path`, `recursive`, `subject`, `include_versions`, `outputs` |
+| `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |

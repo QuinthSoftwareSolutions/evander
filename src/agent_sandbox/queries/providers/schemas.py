@@ -41,6 +41,21 @@ class StateGetQueryDefinition(QueryDefinition):
     key: ConfigValue
 
 
+class ArtifactSpaceListQueryDefinition(QueryDefinition):
+    type: Literal["query:artifact-space:list"]
+    path: ConfigValue | None = None
+    recursive: ConfigValue | None = None
+    subject: ConfigValue | None = None
+    include_versions: ConfigValue | None = None
+
+
+class ArtifactSpaceLatestQueryDefinition(QueryDefinition):
+    type: Literal["query:artifact-space:latest"]
+    space_path: ConfigValue
+    artifact_id: ConfigValue | None = None
+    subject: ConfigValue | None = None
+
+
 class SessionListQueryDefinition(QueryDefinition):
     type: Literal["query:session:list"]
     directory_path: ConfigValue | None = None

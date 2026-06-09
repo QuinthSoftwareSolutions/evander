@@ -9,6 +9,7 @@ from agent_sandbox.models import SessionManifest
 from truman_team_addon.models import (
     AgentTask,
     Deliverable,
+    EphemeralAssignment,
     PersistentAgent,
     Project,
     ProjectGoal,
@@ -156,6 +157,28 @@ def test_team_state_rejects_reporting_cycle() -> None:
 
     with pytest.raises(ValidationError, match="reporting cycle"):
         TeamState.model_validate(state)
+
+
+def test_ephemeral_assignments_do_not_join_reporting_hierarchy() -> None:
+    state = _valid_state()
+    state.ephemeral_assignments = {
+        "ephemeral-1": EphemeralAssignment(
+            id="ephemeral-1",
+            parent_agent_id="ui",
+            project_id="project",
+            task_id="task",
+            session_id="session-ephemeral",
+            title="Draft UI implementation",
+            prompt="Implement a scoped UI draft.",
+        )
+    }
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    assert "session-ephemeral" not in {
+        agent.session_id for agent in validated.agents.values()
+    }
+    assert validated.agents["ui"].subordinate_agent_ids == []
 
 
 def test_tasks_are_ordered_by_priority_created_time_and_id() -> None:

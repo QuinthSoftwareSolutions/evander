@@ -15,6 +15,8 @@ from agent_sandbox.effects.providers.schemas import (
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
     AgentDestroyEffectDefinition,
+    ArtifactSpaceCreateEffectDefinition,
+    ArtifactSpacePublishVersionEffectDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
@@ -61,6 +63,8 @@ from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node
 _EFFECT_MODEL_BY_TYPE = {
     "effect:event:emit": EventEmitEffectDefinition,
     "effect:event:schedule": EventScheduleEffectDefinition,
+    "effect:artifact-space:create": ArtifactSpaceCreateEffectDefinition,
+    "effect:artifact-space:publish-version": ArtifactSpacePublishVersionEffectDefinition,
     "effect:vm:create": VmCreateEffectDefinition,
     "effect:vm:clone-repo": VmCloneRepoEffectDefinition,
     "effect:vm:bootstrap-python": VmBootstrapPythonEffectDefinition,

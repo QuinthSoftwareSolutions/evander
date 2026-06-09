@@ -26,6 +26,10 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
 )
+from agent_sandbox.effects.providers.artifact_space import (
+    ArtifactSpaceCreateEffectProvider,
+    ArtifactSpacePublishVersionEffectProvider,
+)
 from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
 from agent_sandbox.effects.providers.event_schedule import EventScheduleEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
@@ -94,6 +98,10 @@ from agent_sandbox.gates.providers.serialize_gate import SerializeGateProvider
 from agent_sandbox.gates.providers.switch_gate import SwitchGateProvider
 from agent_sandbox.gates.providers.while_gate import WhileGateProvider
 from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
+from agent_sandbox.queries.providers.artifact_space import (
+    ArtifactSpaceLatestQueryProvider,
+    ArtifactSpaceListQueryProvider,
+)
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
@@ -199,6 +207,8 @@ def register_providers() -> dict[str, dict[str, type]]:
         effect_providers={
             "effect:event:emit": EventEmitEffectProvider,
             "effect:event:schedule": EventScheduleEffectProvider,
+            "effect:artifact-space:create": ArtifactSpaceCreateEffectProvider,
+            "effect:artifact-space:publish-version": ArtifactSpacePublishVersionEffectProvider,
             "effect:vm:create": VmCreateEffectProvider,
             "effect:vm:clone-repo": VmCloneRepoEffectProvider,
             "effect:vm:bootstrap-python": VmBootstrapPythonEffectProvider,
@@ -253,6 +263,8 @@ def register_providers() -> dict[str, dict[str, type]]:
         },
         query_providers={
             "query:vm:run-state": VmRunStateQueryProvider,
+            "query:artifact-space:list": ArtifactSpaceListQueryProvider,
+            "query:artifact-space:latest": ArtifactSpaceLatestQueryProvider,
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
             "query:session:list": SessionListQueryProvider,

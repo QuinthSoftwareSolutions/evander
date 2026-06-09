@@ -1413,6 +1413,23 @@ export default function AdminRoot() {
     }
   }
 
+  async function refreshAuthSession(message?: string) {
+    try {
+      const payload = await fetchJson<AdminSession>("/api/auth/session", { credentials: "same-origin" });
+      if (payload.branding) {
+        setBranding(normalizeAdminBranding(payload.branding));
+        setBrandingLoaded(true);
+      }
+      setSession(payload);
+      if (payload.auth_required && !payload.authenticated) {
+        setAdminState(null);
+      }
+      setSessionError(message ?? null);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to load session.");
+    }
+  }
+
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
       return;
@@ -1611,6 +1628,7 @@ export default function AdminRoot() {
     setWorkflowHasUnsavedChanges,
     refreshDirectoryState: async () => loadDirectoryState(selectedDirectoryPath),
     refreshAdminState,
+    refreshAuthSession,
   };
 
   function navigateToTab(nextTab: AdminTab) {

@@ -78,9 +78,94 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
             return json_error(str(exc))
         return JSONResponse(payload.model_dump(mode="json"), status_code=201)
 
+    async def list_artifact_spaces(request: Request) -> JSONResponse:
+        params = request.query_params
+        try:
+            payload = service.list_artifact_spaces(
+                path=params.get("path") or None,
+                recursive=_parse_bool(params.get("recursive"), default=True),
+                subject=params.get("subject") or None,
+                include_versions=_parse_bool(params.get("include_versions"), default=False),
+            )
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload)
+
+    async def create_artifact_space(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be a JSON object")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object")
+        try:
+            result = service.create_artifact_space(
+                path=_required_string(payload.get("path"), "path"),
+                display_name=_optional_string(payload.get("display_name")),
+                metadata=_optional_object(payload.get("metadata"), "metadata"),
+                grants=_optional_object(payload.get("grants"), "grants"),
+                subject=_optional_string(payload.get("subject")),
+                expected_revision=_optional_int(payload.get("expected_revision")),
+            )
+        except (PermissionError, ValueError) as exc:
+            return json_error(str(exc))
+        return JSONResponse(result, status_code=201)
+
+    async def publish_artifact_space_version(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be a JSON object")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object")
+        try:
+            result = service.publish_artifact_space_version(
+                space_path=_required_string(payload.get("space_path"), "space_path"),
+                artifact_id=_required_string(payload.get("artifact_id"), "artifact_id"),
+                artifact_key=_required_string(payload.get("artifact_key"), "artifact_key"),
+                subject=_optional_string(payload.get("subject")),
+                metadata=_optional_object(payload.get("metadata"), "metadata"),
+                expected_revision=_optional_int(payload.get("expected_revision")),
+                require_existing_artifact=_parse_bool(
+                    payload.get("require_existing_artifact"),
+                    default=True,
+                ),
+            )
+        except FileNotFoundError as exc:
+            return json_error(str(exc), status_code=404)
+        except (PermissionError, ValueError) as exc:
+            return json_error(str(exc))
+        return JSONResponse(result, status_code=201)
+
+    async def latest_artifact_space_versions(request: Request) -> JSONResponse:
+        params = request.query_params
+        try:
+            payload = service.latest_artifact_space_versions(
+                space_path=_required_string(params.get("space_path"), "space_path"),
+                artifact_id=params.get("artifact_id") or None,
+                subject=params.get("subject") or None,
+            )
+        except FileNotFoundError as exc:
+            return json_error(str(exc), status_code=404)
+        except (PermissionError, ValueError) as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload)
+
     return [
         Route("/api/admin/artifacts", list_artifacts, methods=["GET"]),
         Route("/api/admin/artifacts/uploads", upload_artifact, methods=["POST"]),
+        Route("/api/admin/artifact-spaces", list_artifact_spaces, methods=["GET"]),
+        Route("/api/admin/artifact-spaces", create_artifact_space, methods=["POST"]),
+        Route(
+            "/api/admin/artifact-space-versions",
+            publish_artifact_space_version,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/artifact-space-versions/latest",
+            latest_artifact_space_versions,
+            methods=["GET"],
+        ),
         Route("/api/admin/artifact-downloads/{key:path}", download_artifact, methods=["GET"]),
         Route("/api/admin/artifacts/{key:path}", get_artifact, methods=["GET"]),
     ]
@@ -105,3 +190,41 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _required_string(value: Any, field_name: str) -> str:
+    text = _optional_string(value)
+    if text is None:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("integer value is required")
+    return int(value)
+
+
+def _optional_object(value: Any, field_name: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return dict(value)
+
+
+def _parse_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("boolean value is required")

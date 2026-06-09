@@ -138,6 +138,7 @@ async function createAdminPage(t, options = {}) {
         jsonResponse({
           ...adminStateResponse,
           assistant: options.assistant ?? adminStateResponse.assistant,
+          addons: options.addons ?? [],
         }),
       );
       return;
@@ -279,6 +280,43 @@ test("admin shell persisted collapsed navigation remains usable", async (t) => {
   await page.waitForFunction(() => window.location.hash === "#approvals");
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "true");
+});
+
+test("admin shell renders enabled add-on navigation in an iframe", async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    addons: [
+      {
+        addon_id: "team-addon",
+        display_name: "Team Add-on",
+        tab_key: "addon:team-addon",
+        label: "Teams",
+        short_label: "Teams",
+        description: "Hierarchical agent-team orchestration.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: "/addons/team-addon/",
+      },
+    ],
+  });
+  await page.route("**/addons/team-addon/", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><title>Team Add-on</title><main>Team Add-on</main>",
+    });
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#addon:team-addon`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await assert.doesNotReject(() => page.getByRole("button", { name: /^Teams\b/ }).waitFor({ state: "visible" }));
+  const frame = page.locator('iframe.admin-addon-frame[title="Teams"]');
+  await frame.waitFor({ state: "visible" });
+  assert.equal(
+    new URL(await frame.getAttribute("src"), `http://127.0.0.1:${address.port}`).pathname,
+    "/addons/team-addon/",
+  );
+  await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
 });
 
 test("admin shell keeps mobile section access and dashboard content in the first viewport", async (t) => {

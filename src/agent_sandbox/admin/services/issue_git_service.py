@@ -99,6 +99,88 @@ def _remote_project_for_issue(issue: LocalIssueRecord) -> str | None:
     return None
 
 
+def _issue_session_matches_issue(
+    *,
+    session_id: str,
+    session: Any,
+    issue_number: str,
+    vm_name: str,
+) -> bool:
+    normalized_session_id = str(session_id or "").strip()
+    session_vm_id = str(getattr(session, "vm_id", "") or "").strip()
+    return (
+        normalized_session_id == issue_number
+        or normalized_session_id.startswith(f"issue-{issue_number}-")
+        or session_vm_id == vm_name
+    )
+
+
+def _issue_session_backend(session: Any) -> str:
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    backend = str(
+        metadata.get("execution_backend")
+        or getattr(session, "vm_provider", None)
+        or ""
+    ).strip()
+    if backend:
+        return backend
+    if str(getattr(session, "vm_id", "") or "").strip():
+        return "libvirt_vm"
+    return "session"
+
+
+def _issue_session_agent_id(session_id: str, session: Any) -> str:
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    return (
+        str(
+            metadata.get("target_name")
+            or getattr(session, "vm_provider_id", None)
+            or getattr(session, "vm_id", None)
+            or session_id
+        ).strip()
+        or session_id
+    )
+
+
+def _local_issue_delete_blocker_message(
+    *,
+    issue_number: str,
+    vm_name: str,
+    existing_vm_state: str | None,
+    blocking_sessions: list[tuple[str, Any]],
+) -> str:
+    blocker_descriptions: list[str] = []
+    if existing_vm_state is not None:
+        state_detail = f"state: {existing_vm_state}" if existing_vm_state else "state unknown"
+        blocker_descriptions.append(
+            f"VM {vm_name!r} still exists ({state_detail}); destroy it from "
+            "Admin Web > Agents or VMs & Issues"
+        )
+
+    for session_id, session in sorted(blocking_sessions, key=lambda item: item[0]):
+        directory_path = str(getattr(session, "directory_path", "") or "root").strip() or "root"
+        backend = _issue_session_backend(session)
+        agent_id = _issue_session_agent_id(session_id, session)
+        blocker_descriptions.append(
+            f"session {session_id!r} (directory: {directory_path!r}; backend: {backend!r}; "
+            f"agent id: {agent_id!r}); find it in Admin Web > Sessions or Agents after "
+            f"selecting directory {directory_path!r}"
+        )
+
+    if not blocker_descriptions:
+        return f"Cannot delete local issue {issue_number}: linked execution state still exists."
+
+    blockers = "; ".join(blocker_descriptions)
+    return (
+        f"Cannot delete local issue {issue_number} because linked execution state still exists. "
+        f"Remove these blockers first: {blockers}."
+    )
+
+
 def _issue_updated_at_matches(issue: LocalIssueRecord, expected_updated_at: str) -> bool:
     expected = str(expected_updated_at).strip()
     if expected == issue.updated_at.isoformat():
@@ -2099,18 +2181,27 @@ class IssueGitAdminService:
         vm_name = f"vm-{issue_number}"
         existing_vm_state = _admin_service._dominfo_field(vm_name, "State")
         sessions = self._session_repository().read_all()
-        has_session = any(
-            session_id == issue_number
-            or session_id.startswith(f"issue-{issue_number}-")
-            or session.vm_id == vm_name
+        blocking_sessions = [
+            (session_id, session)
             for session_id, session in sessions.items()
-        )
-        if existing_vm_state is not None or has_session:
+            if _issue_session_matches_issue(
+                session_id=session_id,
+                session=session,
+                issue_number=issue_number,
+                vm_name=vm_name,
+            )
+        ]
+        if existing_vm_state is not None or blocking_sessions:
             return VmActionResult(
                 success=False,
                 vm_name=vm_name,
                 action="delete_local_issue",
-                message=f"Destroy {vm_name} before deleting local issue {issue_number}.",
+                message=_local_issue_delete_blocker_message(
+                    issue_number=issue_number,
+                    vm_name=vm_name,
+                    existing_vm_state=existing_vm_state,
+                    blocking_sessions=blocking_sessions,
+                ),
             )
 
         admin.local_issue_store.delete(issue.issue_id)

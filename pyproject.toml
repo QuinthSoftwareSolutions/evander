@@ -60,6 +60,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 agent_sandbox = ["templates/*.md", "workflow/builtin_packs/*.json"]
+truman_team_addon = ["ui_static/*"]
 
 [tool.ruff]
 line-length = 100

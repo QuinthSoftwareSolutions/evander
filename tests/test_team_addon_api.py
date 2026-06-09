@@ -42,10 +42,39 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
 
     assert disabled.get("/api/addons/team-addon/state").status_code == 404
+    assert disabled.get("/addons/team-addon/").status_code == 404
+
+    admin_state = enabled.get("/api/admin/state")
+    assert admin_state.status_code == 200
+    assert admin_state.json()["addons"] == [
+        {
+            "addon_id": "team-addon",
+            "display_name": "Team Add-on",
+            "tab_key": "addon:team-addon",
+            "label": "Teams",
+            "short_label": "Teams",
+            "description": "Hierarchical agent-team orchestration.",
+            "api_base_path": "/api/addons/team-addon",
+            "ui_path": "/addons/team-addon/",
+        }
+    ]
+
     response = enabled.get("/api/addons/team-addon/state")
 
     assert response.status_code == 200
     assert response.json()["revision"] == 0
+
+    ui = enabled.get("/addons/team-addon/")
+    assert ui.status_code == 200
+    assert "data-team-addon-ui" in ui.text
+
+    script = enabled.get("/addons/team-addon/team-ui.js")
+    assert script.status_code == 200
+    assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+
+    stylesheet = enabled.get("/addons/team-addon/team-ui.css")
+    assert stylesheet.status_code == 200
+    assert ".team-shell" in stylesheet.text
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
