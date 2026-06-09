@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Truman Signature Preview</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #eef3f6;
+        color: #172532;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        width: min(920px, calc(100vw - 32px));
+        display: grid;
+        gap: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      p {
+        margin: 0;
+        color: #587082;
+        font-size: 14px;
+      }
+
+      .preview-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+
+      .sample {
+        border: 1px solid rgba(23, 37, 50, 0.14);
+        border-radius: 8px;
+        padding: 24px;
+      }
+
+      .sample-light {
+        background: #fffdf8;
+      }
+
+      .sample-dark {
+        background: #06121c;
+      }
+
+      .sample img {
+        display: block;
+        width: min(100%, 420px);
+        height: auto;
+      }
+
+      .sample-small img {
+        width: 220px;
+      }
+
+      .caption {
+        margin-top: 14px;
+        font-size: 12px;
+        color: #7890a0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Truman signature</h1>
+        <p>Transparent SVG sign-off candidate for NEWS entries.</p>
+      </header>
+      <section class="preview-grid">
+        <div class="sample sample-light">
+          <img src="./truman-signature.svg" alt="Truman signature on a light background">
+          <div class="caption">Light NEWS panel</div>
+        </div>
+        <div class="sample sample-dark">
+          <img src="./truman-signature-inverse.svg" alt="Truman signature on a dark background">
+          <div class="caption">Dark NEWS panel</div>
+        </div>
+        <div class="sample sample-light sample-small">
+          <img src="./truman-signature.svg" alt="Small Truman signature">
+          <div class="caption">Small sign-off size</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

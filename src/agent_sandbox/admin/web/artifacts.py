@@ -10,6 +10,7 @@ from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import json_error
+from agent_sandbox.artifact_spaces import ArtifactSpaceConflictError
 
 
 def artifact_routes(service: AdminService) -> list[BaseRoute]:
@@ -107,6 +108,8 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
                 subject=_optional_string(payload.get("subject")),
                 expected_revision=_optional_int(payload.get("expected_revision")),
             )
+        except ArtifactSpaceConflictError as exc:
+            return _artifact_space_conflict_response(exc)
         except (PermissionError, ValueError) as exc:
             return json_error(str(exc))
         return JSONResponse(result, status_code=201)
@@ -131,6 +134,8 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
                     default=True,
                 ),
             )
+        except ArtifactSpaceConflictError as exc:
+            return _artifact_space_conflict_response(exc)
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         except (PermissionError, ValueError) as exc:
@@ -183,6 +188,17 @@ def _parse_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"Invalid datetime value: {value}") from exc
+
+
+def _artifact_space_conflict_response(exc: ArtifactSpaceConflictError) -> JSONResponse:
+    return json_error(
+        str(exc),
+        status_code=409,
+        details={
+            "expected_revision": exc.expected_revision,
+            "current_revision": exc.current_revision,
+        },
+    )
 
 
 def _optional_string(value: Any) -> str | None:

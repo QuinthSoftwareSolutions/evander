@@ -246,7 +246,7 @@ class ArtifactSpaceStore:
         normalized_path = normalize_space_path(path)
 
         def _mutate(state: ArtifactSpaceState) -> ArtifactSpaceState:
-            _ensure_parent_spaces(state, normalized_path)
+            _ensure_parent_spaces(state, normalized_path, subject=subject)
             if normalized_path in state.spaces:
                 space = state.spaces[normalized_path]
                 _require_permission(space, subject=subject, capability="manage")
@@ -326,6 +326,8 @@ def normalize_space_path(value: object) -> str:
         raise ValueError("artifact space path is required")
     if not text.startswith("/"):
         text = "/" + text
+    if text.startswith("//"):
+        raise ValueError("artifact space path must be a normalized absolute path")
     path = PurePosixPath(text)
     if str(path) != text or any(part in {"", ".", ".."} for part in path.parts[1:]):
         raise ValueError("artifact space path must be a normalized absolute path")
@@ -352,17 +354,33 @@ def artifact_space_state_payload(state: ArtifactSpaceState) -> dict[str, Any]:
     return state.model_dump(mode="json")
 
 
-def _ensure_parent_spaces(state: ArtifactSpaceState, path: str) -> None:
+def _ensure_parent_spaces(
+    state: ArtifactSpaceState,
+    path: str,
+    *,
+    subject: str | None,
+) -> None:
     normalized = normalize_space_path(path)
     missing: list[str] = []
+    existing_ancestor: ArtifactSpace | None = None
     current = parent_space_path(normalized)
-    while current is not None and current not in state.spaces:
+    while current is not None:
+        existing_ancestor = state.spaces.get(current)
+        if existing_ancestor is not None:
+            break
         missing.append(current)
         current = parent_space_path(current)
+    if not missing:
+        return
+    inherited_grants = ArtifactSpaceGrant()
+    if existing_ancestor is not None:
+        _require_permission(existing_ancestor, subject=subject, capability="manage")
+        inherited_grants = existing_ancestor.grants.model_copy(deep=True)
     for space_path in reversed(missing):
         state.spaces[space_path] = ArtifactSpace(
             path=space_path,
             parent_path=parent_space_path(space_path),
+            grants=inherited_grants.model_copy(deep=True),
         )
 
 
@@ -412,4 +430,3 @@ def _unique_text_list(value: object, field_name: str) -> list[str]:
     if duplicates:
         raise ValueError(f"{field_name} contains duplicate values: {', '.join(sorted(duplicates))}")
     return normalized
-

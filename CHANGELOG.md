@@ -5,6 +5,25 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Team Runtime Failure Handling
+
+- Made Team runtime wake effects treat normal `resume_agent` failure results as
+  failed dispatches and clear the leased wake through the Team state failure
+  path.
+- Defaulted ephemeral Team assignments to the container worker backend, wired
+  create results into spawned-state tracking, and gated ephemeral prompts on a
+  successful spawned marker.
+- Filtered scoped Team state query payloads across dependent records so
+  project- and agent-scoped views do not include unrelated Teams state.
+
+## 2026-06-09 - Team Runtime Review Fixes
+
+- Passed leased Team runtime dispatch IDs into agent resume calls so completion
+  watchers can emit the action-application event for persistent agents.
+- Hardened artifact-space creation by rejecting double-slash roots, preserving
+  ancestor grants on implicit parents, and returning 409 revision-conflict
+  payloads from Admin API mutations.
+
 ## 2026-06-09 - Team Add-on Packaging
 
 - Documented the bundled-but-disabled Team Add-on enablement path for Admin

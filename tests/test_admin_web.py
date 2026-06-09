@@ -2134,10 +2134,21 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "- Fixed missing build identity fallback.\n",
         encoding="utf-8",
     )
+    news_asset_dir = service.project_dir / "docs" / "assets" / "news"
+    news_asset_dir.mkdir(parents=True)
+    (news_asset_dir / "truman-signature.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        encoding="utf-8",
+    )
+    (news_asset_dir / "truman-signature-inverse.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        encoding="utf-8",
+    )
     (service.project_dir / "NEWS.md").write_text(
         "# News\n\n"
         "## 2026-05-21 - Control Plane Confidence\n\n"
         "Operators now get release context and deployment hints in one place.\n\n"
+        '![Truman signature](docs/assets/news/truman-signature.svg "Signed by Truman")\n\n'
         "The dashboard news feed explains what changed and how to use it.\n"
         "\n"
         "## 2026-05-20 - Earlier Update\n\n"
@@ -2149,6 +2160,8 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     response = client.get("/api/admin/release-info")
     older_response = client.get("/api/admin/release-info?news_index=1")
     invalid_response = client.get("/api/admin/release-info?news_index=-1")
+    asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    blocked_asset_response = client.get("/api/admin/news/assets/%2e%2e/NEWS.md")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -2170,9 +2183,31 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
             "path": str(service.project_dir / "NEWS.md"),
             "index": 0,
             "heading": "2026-05-21 - Control Plane Confidence",
-            "paragraphs": [
-                "Operators now get release context and deployment hints in one place.",
-                "The dashboard news feed explains what changed and how to use it.",
+            "blocks": [
+                {
+                    "kind": "paragraph",
+                    "text": "Operators now get release context and deployment hints in one place.",
+                    "src": None,
+                    "dark_src": None,
+                    "alt": None,
+                    "title": None,
+                },
+                {
+                    "kind": "image",
+                    "text": None,
+                    "src": "/api/admin/news/assets/truman-signature.svg",
+                    "dark_src": "/api/admin/news/assets/truman-signature-inverse.svg",
+                    "alt": "Truman signature",
+                    "title": "Signed by Truman",
+                },
+                {
+                    "kind": "paragraph",
+                    "text": "The dashboard news feed explains what changed and how to use it.",
+                    "src": None,
+                    "dark_src": None,
+                    "alt": None,
+                    "title": None,
+                },
             ],
             "has_previous": False,
             "has_next": True,
@@ -2188,8 +2223,15 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "path": str(service.project_dir / "NEWS.md"),
         "index": 1,
         "heading": "2026-05-20 - Earlier Update",
-        "paragraphs": [
-            "Older posts remain available without loading the whole news archive.",
+        "blocks": [
+            {
+                "kind": "paragraph",
+                "text": "Older posts remain available without loading the whole news archive.",
+                "src": None,
+                "dark_src": None,
+                "alt": None,
+                "title": None,
+            },
         ],
         "has_previous": True,
         "has_next": False,
@@ -2198,6 +2240,9 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     }
     assert invalid_response.status_code == 400
     assert invalid_response.json()["error"] == "news_index must be greater than or equal to 0."
+    assert asset_response.status_code == 200
+    assert asset_response.content.startswith(b'<svg xmlns="http://www.w3.org/2000/svg"')
+    assert blocked_asset_response.status_code == 404
 
     download_response = client.get("/api/admin/release-info/changelog")
     assert download_response.status_code == 200
@@ -2216,10 +2261,12 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 
     protected_response = client.get("/api/admin/release-info")
     protected_download_response = client.get("/api/admin/release-info/changelog")
+    protected_asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
     state_response = client.get("/api/admin/state")
 
     assert protected_response.status_code == 401
     assert protected_download_response.status_code == 401
+    assert protected_asset_response.status_code == 401
     assert state_response.status_code == 401
 
 
@@ -2495,7 +2542,8 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
     assert release_info.news.path == str(service.project_dir / "NEWS.md")
     assert release_info.news.index == 0
     assert release_info.news.heading == "2026-05-21 - Control Plane Confidence"
-    assert release_info.news.paragraphs == [
+    assert [block.kind for block in release_info.news.blocks] == ["paragraph", "paragraph"]
+    assert [block.text for block in release_info.news.blocks] == [
         "Operators now get release context and deployment hints in one place.",
         "The dashboard news feed explains what changed and how to use it.",
     ]
@@ -2506,7 +2554,8 @@ def test_admin_web_release_info_uses_project_metadata(monkeypatch, tmp_path: Pat
     assert older_release_info.news is not None
     assert older_release_info.news.index == 1
     assert older_release_info.news.heading == "2026-05-20 - Earlier Update"
-    assert older_release_info.news.paragraphs == [
+    assert [block.kind for block in older_release_info.news.blocks] == ["paragraph"]
+    assert [block.text for block in older_release_info.news.blocks] == [
         "Older posts remain available without loading the whole news archive.",
     ]
     assert older_release_info.news.has_previous is True

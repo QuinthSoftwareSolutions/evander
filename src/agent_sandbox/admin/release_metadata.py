@@ -8,10 +8,13 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 
 import tomllib
 
 
+NEWS_ASSET_BASE_PATH: Final[str] = "/api/admin/news/assets"
+NEWS_ASSET_DIRECTORY: Final[Path] = Path("docs/assets/news")
 _RELEASE_KIND_PREFIXES: Final[dict[str, str]] = {
     "added": "feature",
     "expanded": "feature",
@@ -26,6 +29,9 @@ _BUILD_ENV_VARS: Final[tuple[str, ...]] = (
     "agent_sandbox_repo_version",
     "AGENT_SANDBOX_BUILD_VERSION",
     "agent_sandbox_build_version",
+)
+_NEWS_IMAGE_RE: Final[re.Pattern[str]] = re.compile(
+    r'^!\[(?P<alt>[^\]]*)\]\((?P<src>[^\s)]+)(?:\s+"(?P<title>[^"]*)")?\)$'
 )
 
 
@@ -44,12 +50,22 @@ class ReleaseChangelogData:
 
 
 @dataclass(frozen=True, slots=True)
+class ReleaseNewsBlockData:
+    kind: str
+    text: str | None = None
+    src: str | None = None
+    dark_src: str | None = None
+    alt: str | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseNewsData:
     source: str | None
     path: str | None
     index: int
     heading: str | None
-    paragraphs: list[str]
+    blocks: list[ReleaseNewsBlockData]
     has_previous: bool
     has_next: bool
     previous_index: int | None
@@ -255,9 +271,9 @@ def _read_news(
     if not collecting or heading is None:
         return None, f"{news_path.name} does not contain news entry {news_index + 1}."
 
-    paragraphs = _parse_news_paragraphs(body_lines)
-    if not paragraphs:
-        return None, f"{news_path.name} news entry {news_index + 1} has no prose paragraphs."
+    blocks = _parse_news_blocks(body_lines, project_dir=project_dir)
+    if not blocks:
+        return None, f"{news_path.name} news entry {news_index + 1} has no renderable content."
 
     return (
         ReleaseNewsData(
@@ -265,7 +281,7 @@ def _read_news(
             path=str(news_path),
             index=news_index,
             heading=heading,
-            paragraphs=paragraphs,
+            blocks=blocks,
             has_previous=news_index > 0,
             has_next=has_next,
             previous_index=news_index - 1 if news_index > 0 else None,
@@ -275,8 +291,8 @@ def _read_news(
     )
 
 
-def _parse_news_paragraphs(lines: list[str]) -> list[str]:
-    paragraphs: list[str] = []
+def _parse_news_blocks(lines: list[str], *, project_dir: Path) -> list[ReleaseNewsBlockData]:
+    blocks: list[ReleaseNewsBlockData] = []
     current_parts: list[str] = []
 
     def flush() -> None:
@@ -284,7 +300,7 @@ def _parse_news_paragraphs(lines: list[str]) -> list[str]:
             return
         text = " ".join(part.strip() for part in current_parts if part.strip()).strip()
         if text:
-            paragraphs.append(text)
+            blocks.append(ReleaseNewsBlockData(kind="paragraph", text=text))
         current_parts.clear()
 
     for line in lines:
@@ -292,9 +308,77 @@ def _parse_news_paragraphs(lines: list[str]) -> list[str]:
         if not stripped:
             flush()
             continue
+        image_match = _NEWS_IMAGE_RE.match(stripped)
+        if image_match is not None:
+            flush()
+            image_source = _news_image_source(image_match.group("src"))
+            if image_source is None:
+                current_parts.append(stripped)
+                continue
+            src, asset_relative = image_source
+            title = image_match.group("title")
+            blocks.append(
+                ReleaseNewsBlockData(
+                    kind="image",
+                    src=src,
+                    dark_src=_news_dark_image_src(project_dir, asset_relative),
+                    alt=image_match.group("alt").strip(),
+                    title=title.strip() if title is not None and title.strip() else None,
+                )
+            )
+            continue
         current_parts.append(stripped)
     flush()
-    return paragraphs
+    return blocks
+
+
+def _news_image_source(raw_src: str) -> tuple[str, Path] | None:
+    normalized = raw_src.strip()
+    if not normalized or "\x00" in normalized:
+        return None
+    lowered = normalized.lower()
+    if (
+        lowered.startswith("http://")
+        or lowered.startswith("https://")
+        or lowered.startswith("data:")
+        or lowered.startswith("//")
+    ):
+        return None
+
+    relative = Path(normalized.lstrip("/"))
+    if relative.is_absolute() or not relative.parts:
+        return None
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        return None
+
+    news_asset_parts = NEWS_ASSET_DIRECTORY.parts
+    if relative.parts[: len(news_asset_parts)] == news_asset_parts:
+        asset_relative = Path(*relative.parts[len(news_asset_parts) :])
+    else:
+        asset_relative = relative
+    if not asset_relative.parts or any(part in {"", ".", ".."} for part in asset_relative.parts):
+        return None
+
+    return _news_asset_public_src(asset_relative), asset_relative
+
+
+def _news_dark_image_src(project_dir: Path, asset_relative: Path) -> str | None:
+    stem = asset_relative.stem
+    suffix = asset_relative.suffix
+    parent = asset_relative.parent
+    candidates = (
+        parent / f"{stem}-dark{suffix}",
+        parent / f"{stem}-inverse{suffix}",
+    )
+    root = project_dir / NEWS_ASSET_DIRECTORY
+    for candidate in candidates:
+        if (root / candidate).is_file():
+            return _news_asset_public_src(candidate)
+    return None
+
+
+def _news_asset_public_src(asset_relative: Path) -> str:
+    return f"{NEWS_ASSET_BASE_PATH}/{quote(asset_relative.as_posix(), safe='/._-~')}"
 
 
 def _parse_changelog_entries(lines: list[str]) -> list[ReleaseChangelogEntryData]:
