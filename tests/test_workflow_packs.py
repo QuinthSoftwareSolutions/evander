@@ -67,8 +67,9 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
                         {
                             "id": "effect-b",
                             "display_name": "echo",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "echo"},
                         }
                     ],
                     "edges": [{"source_id": "trigger-a", "target_id": "effect-b"}],
@@ -262,8 +263,9 @@ def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
                         {
                             "id": "effect-a",
                             "display_name": "Effect A",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "effect-a"},
                         },
                         {
                             "id": "trigger-b",
@@ -274,8 +276,9 @@ def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
                         {
                             "id": "effect-b",
                             "display_name": "Effect B",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "effect-b"},
                         },
                     ],
                     "edges": [

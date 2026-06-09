@@ -33,7 +33,6 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:ado:add-work-item-tag", "ADO add work item tag"),
     catalogNode("effect", "effect:ado:remove-work-item-tag", "ADO remove work item tag"),
     catalogNode("effect", "effect:session:update-metadata", "Session update metadata"),
-    catalogNode("effect", "effect:bash:script", "Bash script"),
     catalogNode("effect", "effect:http:request", "HTTP request"),
     catalogNode("effect", "effect:runtime:diagnostics-snapshot", "Runtime diagnostics snapshot"),
     catalogNode("effect", "effect:artifact:import-published", "Import published artifact"),
@@ -61,10 +60,6 @@ test("groups effect node types by related functionality", () => {
       {
         label: "VMs",
         types: ["effect:vm:start"],
-      },
-      {
-        label: "Shell & host scripts",
-        types: ["effect:bash:script"],
       },
       {
         label: "HTTP",

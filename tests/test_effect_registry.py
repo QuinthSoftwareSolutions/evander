@@ -376,7 +376,6 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:semantic:upsert",
         "effect:semantic:delete",
         "effect:state:update",
-        "effect:bash:script",
         "effect:http:request",
         "effect:runtime:diagnostics-snapshot",
         "effect:event:emit",

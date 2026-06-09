@@ -1833,9 +1833,6 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:state:update": "Set, patch, or delete graph-local workflow state.",
-    "effect:bash:script": (
-        "Deprecated high-risk host-side Bash execution from the effect orchestrator."
-    ),
     "effect:http:request": (
         "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
     ),
@@ -3788,20 +3785,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description="Optional optimistic concurrency guard. Missing records compare as version 0.",
             ),
-        ],
-    ),
-    WorkflowEditorNodeCatalogEntry(
-        kind="effect",
-        type="effect:bash:script",
-        label="Bash script",
-        fields=[
-            _field("script_path", "Script path", "string", required=True, bindable=True),
-            _field("args", "Args", "string_list", bindable=True),
-            _field("working_directory", "Working directory", "string", bindable=True),
-            _field("environment", "Environment", "json", bindable=True),
-            _field("stdin", "Stdin", "string", bindable=True, multiline=True),
-            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
-            _field("check", "Check exit code", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

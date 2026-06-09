@@ -377,17 +377,6 @@ class StateUpdateEffectDefinition(EffectDefinition):
         raise ValueError("effect:state:update patch must be a JSON object or binding")
 
 
-class BashScriptEffectDefinition(EffectDefinition):
-    type: Literal["effect:bash:script"]
-    script_path: ConfigValue
-    args: list[ConfigValue] = Field(default_factory=list)
-    working_directory: ConfigValue | None = None
-    environment: ConfigValue | None = None
-    stdin: ConfigValue | None = None
-    timeout_seconds: ConfigValue | None = None
-    check: ConfigValue | None = True
-
-
 class HttpRequestEffectDefinition(EffectDefinition):
     type: Literal["effect:http:request"]
     method: ConfigValue = "GET"
