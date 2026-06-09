@@ -296,6 +296,54 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
     assert events[0].payload["metadata"]["team_addon"]["ephemeral_assignment_id"] == "ephemeral-1"
 
 
+def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_target(state):
+        state.teams["team"].operator_communication_target_id = "operator:ops-channel"
+        return state
+
+    repo.update(_set_target)
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-manager",
+            action={
+                "agent_id": "manager",
+                "operator_escalations": [
+                    {
+                        "title": "Need a decision",
+                        "message": "Operator input required.",
+                        "urgency": "high",
+                    }
+                ],
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["operator_escalation_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == "team.operator.escalation_requested"
+    assert events[0].payload == {
+        "team_id": "team",
+        "manager_agent_id": "manager",
+        "communication_target_id": "operator:ops-channel",
+        "title": "Need a decision",
+        "message": "Operator input required.",
+        "urgency": "high",
+    }
+
+
 def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     tmp_path: Path,
 ) -> None:

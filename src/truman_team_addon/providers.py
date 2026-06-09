@@ -160,6 +160,10 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
             self.runtime_context,
             result.get("ephemeral_events"),
         )
+        published_event_ids += _publish_team_events(
+            self.runtime_context,
+            result.get("events"),
+        )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
         return {**result, "state": team_state_payload(state)}

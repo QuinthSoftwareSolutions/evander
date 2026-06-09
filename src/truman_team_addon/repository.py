@@ -38,6 +38,7 @@ ADDON_ID = "team-addon"
 STATE_FILE = "state.json"
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
+OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 
 _NON_TERMINAL_TASK_STATES = frozenset(
     {
@@ -711,10 +712,12 @@ class TeamStateRepository:
             "created_deliverable_ids": [],
             "created_task_ids": [],
             "created_status_request_ids": [],
+            "operator_escalation_event_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
             "created_ephemeral_assignment_ids": [],
             "ephemeral_events": [],
+            "events": [],
             "accepted_ephemeral_assignment_ids": [],
             "rejected_ephemeral_assignment_ids": [],
         }
@@ -877,6 +880,17 @@ class TeamStateRepository:
                 state_model.inbox[item.id] = item
                 result["created_status_request_ids"].append(item.id)
                 progress = True
+
+            for escalation in _list_of_mappings(
+                normalized_action.get("operator_escalations"), "operator_escalations"
+            ):
+                if _apply_operator_escalation(
+                    state_model,
+                    actor=agent,
+                    escalation=escalation,
+                    result=result,
+                ):
+                    progress = True
 
             for deliverable_payload in _list_of_mappings(
                 normalized_action.get("deliverables"), "deliverables"
@@ -1221,6 +1235,69 @@ def _apply_task_creation(
     return task_id
 
 
+def _apply_operator_escalation(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    escalation: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    if not _is_team_manager(state, actor):
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to send operator escalations"
+        )
+        return False
+    title = _required_text(escalation.get("title"), "title")
+    message = _required_text(escalation.get("message"), "message")
+    urgency = _optional_text(escalation.get("urgency")) or "normal"
+    project_id = _optional_text(escalation.get("project_id"))
+    task_id = _optional_text(escalation.get("task_id"))
+    team = state.teams.get(actor.team_id)
+    target = (
+        _optional_text(team.operator_communication_target_id) if team is not None else None
+    )
+    if not target:
+        result["errors"].append(
+            f"team {actor.team_id} has no operator_communication_target_id for escalations"
+        )
+        return False
+    escalation_id = f"escalation-{uuid4().hex}"
+    payload: dict[str, Any] = {
+        "team_id": actor.team_id,
+        "manager_agent_id": actor.id,
+        "communication_target_id": target,
+        "title": title,
+        "message": message,
+        "urgency": urgency,
+    }
+    if project_id is not None:
+        payload["project_id"] = project_id
+    if task_id is not None:
+        payload["task_id"] = task_id
+    inbox_id = f"inbox-{uuid4().hex}"
+    state.inbox[inbox_id] = AgentInboxItem(
+        id=inbox_id,
+        recipient_agent_id=actor.id,
+        sender_agent_id=actor.id,
+        task_id=task_id,
+        item_type=TeamInboxItemType.ESCALATION,
+        payload={"escalation_id": escalation_id, **payload},
+    )
+    result["created_inbox_item_ids"].append(inbox_id)
+    result["events"].append(
+        {
+            "event_type": OPERATOR_ESCALATION_EVENT_TYPE,
+            "correlation_key": escalation_id,
+            "idempotency_key": (
+                f"team-addon:{OPERATOR_ESCALATION_EVENT_TYPE}:{escalation_id}"
+            ),
+            "payload": payload,
+        }
+    )
+    result["operator_escalation_event_ids"].append(escalation_id)
+    return True
+
+
 def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
     if value is None:
         return []
@@ -1520,6 +1597,7 @@ __all__ = [
     "ADDON_ID",
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
+    "OPERATOR_ESCALATION_EVENT_TYPE",
     "STATE_FILE",
     "TeamStateConflictError",
     "TeamStateRepository",

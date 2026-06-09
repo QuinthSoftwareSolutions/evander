@@ -495,3 +495,101 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
 
     assert result["success"] is True
     assert state.agent_runtimes["backend"].no_progress_count == 0
+
+
+def _set_operator_target(repo: TeamStateRepository, target: str) -> None:
+    def _mutate(state):
+        state.teams["team"].operator_communication_target_id = target
+        return state
+
+    repo.update(_mutate)
+
+
+def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_operator_target(repo, "operator:ops-channel")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "operator_escalations": [
+                {
+                    "title": "Need a decision",
+                    "message": "Blocked waiting on operator input.",
+                    "urgency": "high",
+                    "project_id": "project",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert len(result["operator_escalation_event_ids"]) == 1
+    assert state.agent_runtimes["manager"].no_progress_count == 0
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["event_type"] == "team.operator.escalation_requested"
+    assert event["payload"] == {
+        "team_id": "team",
+        "manager_agent_id": "manager",
+        "communication_target_id": "operator:ops-channel",
+        "title": "Need a decision",
+        "message": "Blocked waiting on operator input.",
+        "urgency": "high",
+        "project_id": "project",
+    }
+    escalation_items = [
+        item
+        for item in state.inbox.values()
+        if item.item_type == TeamInboxItemType.ESCALATION
+    ]
+    assert len(escalation_items) == 1
+    audit = escalation_items[0]
+    assert audit.recipient_agent_id == "manager"
+    assert audit.payload["communication_target_id"] == "operator:ops-channel"
+    assert audit.payload["urgency"] == "high"
+
+
+def test_apply_agent_action_rejects_non_manager_operator_escalation(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_operator_target(repo, "operator:ops-channel")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "operator_escalations": [
+                {"title": "Hi", "message": "Please look."}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["operator_escalation_event_ids"] == []
+    assert result["events"] == []
+    assert any("not permitted" in error for error in result["errors"])
+    assert all(
+        item.item_type != TeamInboxItemType.ESCALATION for item in state.inbox.values()
+    )
+
+
+def test_apply_agent_action_escalation_without_target_records_failure(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "operator_escalations": [
+                {"title": "Hi", "message": "Please look."}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["operator_escalation_event_ids"] == []
+    assert result["events"] == []
+    assert any(
+        "operator_communication_target_id" in error for error in result["errors"]
+    )
+    assert state.inbox == {}
+    record = next(iter(state.action_records.values()))
+    assert record.success is False
