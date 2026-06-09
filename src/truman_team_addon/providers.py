@@ -83,6 +83,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     target=agent["session_id"],
                     prompt=prompt,
                     resume_mode=resume_mode,
+                    dispatch_id=lease["dispatch_id"],
                 )
                 dispatches.append(
                     {

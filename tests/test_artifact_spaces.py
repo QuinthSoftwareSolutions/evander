@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.artifact_spaces import ArtifactSpaceStore
+import pytest
+
+from agent_sandbox.artifact_spaces import (
+    ArtifactSpacePermissionError,
+    ArtifactSpaceStore,
+    normalize_space_path,
+)
 from agent_sandbox.effects.providers.artifact_space import (
     ArtifactSpaceCreateEffectProvider,
     ArtifactSpacePublishVersionEffectProvider,
@@ -71,6 +77,48 @@ def test_artifact_space_store_versions_are_hierarchical_and_immutable(tmp_path: 
     assert len(latest) == 1
     assert latest[0].version == 2
     assert latest[0].artifact_key == "builds/backend-v2"
+
+
+def test_artifact_space_implicit_parents_inherit_restricted_ancestor_grants(
+    tmp_path: Path,
+) -> None:
+    store = ArtifactSpaceStore(tmp_path)
+    store.ensure_space(
+        path="/teams",
+        grants={
+            "read_subjects": ["team-addon:agent:lead"],
+            "write_subjects": ["team-addon:agent:lead"],
+            "manage_subjects": ["team-addon:agent:lead"],
+        },
+        subject="team-addon:agent:lead",
+    )
+
+    with pytest.raises(ArtifactSpacePermissionError):
+        store.ensure_space(
+            path="/teams/team/projects/backend",
+            subject="team-addon:agent:backend",
+        )
+
+    state = store.ensure_space(
+        path="/teams/team/projects/backend",
+        subject="team-addon:agent:lead",
+    )
+
+    assert state.spaces["/teams/team"].grants.manage_subjects == ["team-addon:agent:lead"]
+    assert state.spaces["/teams/team/projects"].grants.manage_subjects == [
+        "team-addon:agent:lead"
+    ]
+    with pytest.raises(ArtifactSpacePermissionError):
+        store.ensure_space(
+            path="/teams/team/projects/frontend",
+            subject="team-addon:agent:backend",
+        )
+
+
+@pytest.mark.parametrize("path", ["//", "//team"])
+def test_artifact_space_rejects_double_slash_roots(path: str) -> None:
+    with pytest.raises(ValueError, match="normalized absolute path"):
+        normalize_space_path(path)
 
 
 def test_artifact_space_effects_and_queries(tmp_path: Path) -> None:
@@ -169,6 +217,17 @@ def test_artifact_space_admin_api(tmp_path: Path) -> None:
         json={"path": "/teams/team"},
     )
     assert response.status_code == 201
+    initial_revision = response.json()["revision"]
+
+    stale_create = client.post(
+        "/api/admin/artifact-spaces",
+        json={"path": "/teams/team/projects/backend", "expected_revision": 0},
+    )
+    assert stale_create.status_code == 409
+    assert stale_create.json()["details"] == {
+        "expected_revision": 0,
+        "current_revision": initial_revision,
+    }
 
     response = client.post(
         "/api/admin/artifact-space-versions",
@@ -179,6 +238,22 @@ def test_artifact_space_admin_api(tmp_path: Path) -> None:
         },
     )
     assert response.status_code == 201
+    published_revision = response.json()["revision"]
+
+    stale_publish = client.post(
+        "/api/admin/artifact-space-versions",
+        json={
+            "space_path": "/teams/team",
+            "artifact_id": "spec",
+            "artifact_key": "uploads/spec",
+            "expected_revision": initial_revision,
+        },
+    )
+    assert stale_publish.status_code == 409
+    assert stale_publish.json()["details"] == {
+        "expected_revision": initial_revision,
+        "current_revision": published_revision,
+    }
 
     latest = client.get(
         "/api/admin/artifact-space-versions/latest",
