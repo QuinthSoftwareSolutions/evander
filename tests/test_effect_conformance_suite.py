@@ -199,15 +199,6 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "command": ["pwd"],
         }
     )
-    bash_script = adapter.validate_python(
-        {
-            "id": "effect-script",
-            "display_name": "Run script",
-            "type": "effect:bash:script",
-            "script_path": "./scripts/example.sh",
-            "args": ["--flag", "value"],
-        }
-    )
     http_request = adapter.validate_python(
         {
             "id": "effect-http",
@@ -399,7 +390,6 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
     assert agent_exec.type == "effect:agent:exec"
-    assert bash_script.type == "effect:bash:script"
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]
     assert diagnostics_snapshot.type == "effect:runtime:diagnostics-snapshot"

@@ -462,7 +462,6 @@ Type-specific keys:
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:state:update` | `namespace`, `key`, `operation` | `value`, `patch`, `expected_version`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
-| `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:runtime:diagnostics-snapshot` | _none beyond envelope_ | `since`, `units`, `include_failed_units`, `include_journal`, `include_runtime_files`, `max_journal_lines_per_unit`, `max_runtime_file_bytes`, `command_timeout_seconds`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -731,9 +730,6 @@ Effect schema envelope example:
   }
 }
 ```
-
-`effect:bash:script` is retained for compatibility but is high-risk host-side shell execution and
-should not be used for new workflows. Prefer typed effects such as `effect:ado:pipeline-run`.
 
 The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
 deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,

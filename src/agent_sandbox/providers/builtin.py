@@ -30,7 +30,6 @@ from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
 from agent_sandbox.effects.providers.event_schedule import EventScheduleEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
-from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
 from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSessionEffectProvider
 from agent_sandbox.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
@@ -218,7 +217,6 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
-            "effect:bash:script": BashScriptEffectProvider,
             "effect:http:request": HttpRequestEffectProvider,
             "effect:runtime:diagnostics-snapshot": RuntimeDiagnosticsSnapshotEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,

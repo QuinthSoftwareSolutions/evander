@@ -5822,8 +5822,9 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
                         {
                             "id": "effect-cron",
                             "display_name": "Cleanup",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "cleanup"},
                         },
                     ],
                     "edges": [
@@ -5951,8 +5952,9 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
                         {
                             "id": "effect-cron",
                             "display_name": "Cleanup",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "cleanup"},
                         },
                     ],
                     "edges": [

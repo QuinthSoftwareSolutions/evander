@@ -281,7 +281,6 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
     assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
     push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
     assert any(arg.startswith("http.extraHeader=Authorization: Basic ") for arg in push_cmd)
-    assert all("push_existing_pr_branch.sh" not in part for cmd in captured for part in cmd)
     assert all("open_agent_pr.sh" not in part for cmd in captured for part in cmd)
 
 

@@ -812,15 +812,6 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "qdrant_base_url": {"type": "string"},
         "api_key_configured": {"type": "boolean"},
     },
-    "effect:bash:script": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "script_path": {"type": "string"},
-        "message": {"type": "string"},
-        "exit_code": {"type": "integer"},
-        "stdout": {"type": "string"},
-        "stderr": {"type": "string"},
-    },
     "effect:http:request": {
         "success": {"type": "boolean"},
         "status_code": {"type": "integer"},

@@ -110,12 +110,6 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:vm:"],
     },
     {
-      key: "shell",
-      label: "Shell & host scripts",
-      description: "Run host-side shell scripts.",
-      prefixes: ["effect:bash:"],
-    },
-    {
       key: "http",
       label: "HTTP",
       description: "Perform allowlisted host-side HTTP requests and expose upstream responses.",
@@ -246,7 +240,6 @@ const NAMESPACE_LABELS: Record<string, string> = {
   ado: "ADO",
   agent: "Agent",
   artifact: "Artifact",
-  bash: "Bash",
   cron: "Cron",
   communication: "Communication",
   discord: "Discord",

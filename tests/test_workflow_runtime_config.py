@@ -474,10 +474,10 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
                         },
                         {
                             "id": "effect-log-synthetic",
-                            "display_name": "Synthetic script",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
-                            "args": ["synthetic-workflow"],
+                            "display_name": "Synthetic event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "synthetic-workflow"},
                         },
                     ],
                     "edges": [
@@ -656,10 +656,10 @@ def test_load_config_composes_configured_pack_with_hidden_system_pack(
                         },
                         {
                             "id": "effect-log-synthetic",
-                            "display_name": "Synthetic script",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
-                            "args": ["synthetic-workflow"],
+                            "display_name": "Synthetic event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "synthetic-workflow"},
                         },
                     ],
                     "edges": [
@@ -732,10 +732,10 @@ def test_load_config_exposes_workflow_pack_graph_metadata(tmp_path: Path) -> Non
                         },
                         {
                             "id": "effect-log-synthetic",
-                            "display_name": "Synthetic script",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
-                            "args": ["synthetic-workflow"],
+                            "display_name": "Synthetic event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "synthetic-workflow"},
                         },
                     ],
                     "edges": [
@@ -1015,10 +1015,10 @@ def test_load_config_strips_legacy_system_nodes_from_configured_pack(
                         },
                         {
                             "id": "effect-log-synthetic",
-                            "display_name": "Synthetic script",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
-                            "args": ["synthetic-workflow"],
+                            "display_name": "Synthetic event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "synthetic-workflow"},
                         },
                         {
                             "id": "system.chat_assistant",
@@ -1103,10 +1103,10 @@ def test_load_config_strips_legacy_system_nodes_from_inline_workflow_ir(
                         },
                         {
                             "id": "effect-log-inline",
-                            "display_name": "Inline script",
-                            "type": "effect:bash:script",
-                            "script_path": "/bin/echo",
-                            "args": ["inline-workflow"],
+                            "display_name": "Inline event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "inline-workflow"},
                         },
                         {
                             "id": "system.chat_assistant",

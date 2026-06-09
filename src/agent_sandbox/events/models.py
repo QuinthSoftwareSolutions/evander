@@ -481,7 +481,6 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:semantic:upsert": provider_models.SemanticUpsertEffectDefinition,
         "effect:semantic:delete": provider_models.SemanticDeleteEffectDefinition,
         "effect:state:update": provider_models.StateUpdateEffectDefinition,
-        "effect:bash:script": provider_models.BashScriptEffectDefinition,
         "effect:http:request": provider_models.HttpRequestEffectDefinition,
         "effect:runtime:diagnostics-snapshot": (
             provider_models.RuntimeDiagnosticsSnapshotEffectDefinition
