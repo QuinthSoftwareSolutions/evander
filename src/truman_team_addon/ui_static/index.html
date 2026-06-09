@@ -45,6 +45,11 @@
             <h2 id="projects-heading">Projects</h2>
             <div id="projects-view" class="projects-view"></div>
           </section>
+
+          <section class="content-panel" aria-labelledby="releases-heading">
+            <h2 id="releases-heading">Releases</h2>
+            <div id="releases-view" class="releases-view"></div>
+          </section>
         </section>
 
         <aside class="forms-panel" aria-labelledby="forms-heading">
@@ -58,6 +63,7 @@
                 <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
                 <label>Manager role <input name="manager_role" value="manager" /></label>
+                <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                 <button type="submit">Create team</button>
               </form>
             </details>
@@ -73,6 +79,14 @@
                 <label>Lead role <input name="lead_role" value="project_lead" /></label>
                 <label>Goal ID <input name="goal_id" /></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+                <p class="subheading">Git config (optional)</p>
+                <label>Host repo path <input name="host_repo_path" /></label>
+                <label>Bare repo name <input name="bare_repo_name" /></label>
+                <label>Bare repo path <input name="bare_repo_path" /></label>
+                <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                <label>Provider <input name="provider" /></label>
+                <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                 <button type="submit">Create project</button>
               </form>
             </details>
@@ -140,6 +154,16 @@
                 <label>Findings <textarea name="findings" rows="3"></textarea></label>
                 <label>State <select name="state" data-options="record-states"></select></label>
                 <button type="submit">Request review</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Decide review</summary>
+              <form id="decide-review-form">
+                <label>Review <select name="review_request_id" required data-options="review-requests"></select></label>
+                <label>Decision <select name="state" required data-options="decision-states"></select></label>
+                <label>Findings <textarea name="findings" rows="3"></textarea></label>
+                <button type="submit">Submit decision</button>
               </form>
             </details>
           </div>

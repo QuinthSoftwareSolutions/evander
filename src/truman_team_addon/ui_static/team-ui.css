@@ -228,10 +228,22 @@ textarea {
 .task-list,
 .goal-list,
 .deliverable-list,
-.review-list {
+.review-list,
+.release-list {
   list-style: none;
   margin: 0.75rem 0 0;
   padding: 0;
+}
+
+.releases-view {
+  margin-top: 0.85rem;
+}
+
+.inline-list {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .hierarchy-list ul {
@@ -263,7 +275,8 @@ textarea {
 .task-list li + li,
 .goal-list li + li,
 .deliverable-list li + li,
-.review-list li + li {
+.review-list li + li,
+.release-list li + li {
   margin-top: 0.5rem;
 }
 
