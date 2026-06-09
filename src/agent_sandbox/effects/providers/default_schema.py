@@ -28,6 +28,7 @@ from agent_sandbox.effects.providers.schemas import (
     HttpRequestEffectDefinition,
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
+    GitPushBranchEffectDefinition,
     IssueUpsertAdoProxyEffectDefinition,
     IssueUpdateMetadataEffectDefinition,
     IssueUpdateStateEffectDefinition,
@@ -109,6 +110,7 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
     "effect:session:renew-if-expired": SessionRenewIfExpiredEffectDefinition,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,
+    "effect:git:push-branch": GitPushBranchEffectDefinition,
     "effect:pr:create": PrCreateEffectDefinition,
 }
 

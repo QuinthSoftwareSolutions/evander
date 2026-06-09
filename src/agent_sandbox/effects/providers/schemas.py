@@ -991,6 +991,18 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
         return self
 
 
+class GitPushBranchEffectDefinition(EffectDefinition):
+    type: Literal["effect:git:push-branch"]
+    host_repo_path: ConfigValue
+    local_branch: ConfigValue
+    origin_branch: ConfigValue
+    canonical_origin_url: ConfigValue | None = None
+    provider: ConfigValue | None = None
+    base_branch: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    work_item_id: ConfigValue | None = None
+
+
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
     host_repo_path: ConfigValue

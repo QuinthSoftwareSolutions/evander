@@ -76,6 +76,10 @@ class GitBranchPromoter(Protocol):
     def promote_agent_branch(self, **kwargs: Any) -> Any: ...
 
 
+class GitBranchPusher(Protocol):
+    def push_branch(self, **kwargs: Any) -> Any: ...
+
+
 class PullRequestCreator(Protocol):
     def pr_create(self, **kwargs: Any) -> Any: ...
 

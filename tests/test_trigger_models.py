@@ -23,6 +23,7 @@ from agent_sandbox.events.provider_models import (
     CommunicationNewMessageTriggerDefinition,
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
+    GitPushBranchEffectDefinition,
     GitPushTriggerDefinition,
     HttpRequestEffectDefinition,
     IssueUpdateStateEffectDefinition,
@@ -1242,6 +1243,34 @@ def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> No
                 "type": "effect:git:promote-agent-branch",
                 "host_repo_path": "/repo",
                 "agent_branch": "agents/session-1/topic",
+            }
+        )
+
+
+def test_git_push_branch_effect_requires_branch_fields() -> None:
+    effect = GitPushBranchEffectDefinition.model_validate(
+        {
+            "id": "effect-push",
+            "display_name": "Push branch",
+            "type": "effect:git:push-branch",
+            "host_repo_path": "/repo",
+            "local_branch": "review/session/work",
+            "origin_branch": "feature/topic",
+        }
+    )
+
+    assert effect.host_repo_path == "/repo"
+    assert effect.local_branch == "review/session/work"
+    assert effect.origin_branch == "feature/topic"
+
+    with pytest.raises(ValueError, match="Field required"):
+        GitPushBranchEffectDefinition.model_validate(
+            {
+                "id": "effect-push-missing-origin",
+                "display_name": "Push branch",
+                "type": "effect:git:push-branch",
+                "host_repo_path": "/repo",
+                "local_branch": "review/session/work",
             }
         )
 

@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Typed Git Branch Push Effect
+
+- Added `effect:git:push-branch` for typed host-side trusted checkout branch pushes,
+  preserving destination-branch preflight outputs without allowing workflow-configured
+  shell scripts or creating/updating pull requests.
+
 ## 2026-06-09 - Admin Web Branding
 
 - Made the Admin Web browser title, shell header title, header logo, product

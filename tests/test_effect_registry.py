@@ -34,6 +34,7 @@ from agent_sandbox.effects.providers.ado_work_item_tag import (
     AdoAddWorkItemTagEffectProvider,
     AdoRemoveWorkItemTagEffectProvider,
 )
+from agent_sandbox.effects.providers.git_push_branch import GitPushBranchEffectProvider
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.pull_request_update import (
     PullRequestAddTagEffectProvider,
@@ -398,6 +399,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
+        "effect:git:push-branch",
         "effect:pr:create",
         "effect:pull-request:add-tag",
         "effect:pull-request:remove-tag",
@@ -435,6 +437,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
         is SessionRevokeMcpToolApprovalLeaseEffectProvider
     )
+    assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:git:push-branch"] is GitPushBranchEffectProvider
 
 
 def test_event_schedule_effect_definition_validates_contract_shape() -> None:

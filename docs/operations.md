@@ -2375,6 +2375,11 @@ mirror-refresh path can authenticate automatically against the Azure-hosted cano
 `open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
 associates the PR with that work item in Azure DevOps.
 
+When a workflow only needs to update an existing PR source branch from a trusted host checkout, use
+`effect:git:push-branch` instead of `effect:pr:create`. The typed push effect keeps the destination
+branch preflight and returns `reason: destination_branch_ahead` for merge-required retries, but it
+does not create a new PR or patch an existing PR description.
+
 ## Live Smoke Tests
 
 Use [live-smoke-tests.md](live-smoke-tests.md) for the

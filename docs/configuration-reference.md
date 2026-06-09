@@ -481,6 +481,7 @@ Type-specific keys:
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:revoke-mcp-tool-approval-lease` | one of `mcp_tool_approval_lease_id` (preferred), `lease_id`; optional `session_id`, `workflow_run_id` | `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
+| `effect:git:push-branch` | `host_repo_path`, `local_branch`, `origin_branch` | `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
 For `effect:agent:clone-repo`, set both `git_author_name` and
@@ -534,6 +535,12 @@ destination branch exists and its tip is not contained in the local branch, the
 effect returns `success: false` with `reason: destination_branch_ahead` and does
 not push. Use a downstream `gate:filter` on `success == false` when an agent
 should be prompted to fetch and merge the destination branch.
+
+`effect:git:push-branch` performs only the trusted host checkout branch push
+portion of that PR automation path. It normalizes ref-prefixed branch names,
+rejects refspec-shaped branch values, uses the canonical origin URL when
+provided, preflights the destination branch, and returns the same
+`destination_branch_ahead` shape without creating or updating a pull request.
 
 `effect:event:schedule` stores a one-shot pending scheduled internal event
 instead of publishing immediately. It validates the event type, keeps the

@@ -281,6 +281,16 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "agent_branch": "agents/session-1/topic",
         }
     )
+    push_branch = adapter.validate_python(
+        {
+            "id": "effect-push-branch",
+            "display_name": "Push branch",
+            "type": "effect:git:push-branch",
+            "host_repo_path": "/repo",
+            "local_branch": "review/session-1/topic",
+            "origin_branch": "feature/issue-1",
+        }
+    )
     pr_create = adapter.validate_python(
         {
             "id": "effect-pr",
@@ -408,6 +418,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert artifact_publish.type == "effect:artifact:publish-artifacts"
     assert artifact_import.type == "effect:artifact:import-published"
     assert promote.type == "effect:git:promote-agent-branch"
+    assert push_branch.type == "effect:git:push-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"
 
