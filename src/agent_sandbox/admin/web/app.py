@@ -23,6 +23,7 @@ from agent_sandbox.addons import (
     resolve_addon_admin_ui_routes,
 )
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.release_metadata import NEWS_ASSET_BASE_PATH, NEWS_ASSET_DIRECTORY
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.agents import agent_routes
 from agent_sandbox.admin.web.capacity import capacity_routes
@@ -385,6 +386,20 @@ def create_app(service: AdminService) -> Starlette:
             service.read_release_info(news_index=news_index).model_dump(mode="json")
         )
 
+    async def get_news_asset(request: Request) -> FileResponse | JSONResponse:
+        relative_path = str(request.path_params.get("asset_path") or "").strip()
+        if not relative_path or "\x00" in relative_path:
+            return json_error("News asset not found.", status_code=404)
+        root = (service.project_dir / NEWS_ASSET_DIRECTORY).resolve()
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return json_error("News asset not found.", status_code=404)
+        if not candidate.is_file():
+            return json_error("News asset not found.", status_code=404)
+        return FileResponse(candidate)
+
     async def download_changelog(_: Request) -> FileResponse | JSONResponse:
         try:
             changelog_path = service.release_changelog_file()
@@ -452,6 +467,7 @@ def create_app(service: AdminService) -> Starlette:
             dashboard_cache.wrap("admin.release_info", get_release_info),
             methods=["GET"],
         ),
+        Route(f"{NEWS_ASSET_BASE_PATH}" + "/{asset_path:path}", get_news_asset, methods=["GET"]),
         Route("/api/admin/release-info/changelog", download_changelog, methods=["GET"]),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),

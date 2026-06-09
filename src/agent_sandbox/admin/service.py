@@ -19,7 +19,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -1208,12 +1208,21 @@ class ReleaseChangelogPayload(BaseModel):
     entries: list[ReleaseChangelogEntryPayload] = Field(default_factory=list)
 
 
+class ReleaseNewsBlockPayload(BaseModel):
+    kind: Literal["paragraph", "image"]
+    text: str | None = None
+    src: str | None = None
+    dark_src: str | None = None
+    alt: str | None = None
+    title: str | None = None
+
+
 class ReleaseNewsPayload(BaseModel):
     source: str | None = None
     path: str | None = None
     index: int = 0
     heading: str | None = None
-    paragraphs: list[str] = Field(default_factory=list)
+    blocks: list[ReleaseNewsBlockPayload] = Field(default_factory=list)
     has_previous: bool = False
     has_next: bool = False
     previous_index: int | None = None
@@ -7900,7 +7909,17 @@ class AdminService:
                     path=release_metadata.news.path,
                     index=release_metadata.news.index,
                     heading=release_metadata.news.heading,
-                    paragraphs=release_metadata.news.paragraphs,
+                    blocks=[
+                        ReleaseNewsBlockPayload(
+                            kind=block.kind,
+                            text=block.text,
+                            src=block.src,
+                            dark_src=block.dark_src,
+                            alt=block.alt,
+                            title=block.title,
+                        )
+                        for block in release_metadata.news.blocks
+                    ],
                     has_previous=release_metadata.news.has_previous,
                     has_next=release_metadata.news.has_next,
                     previous_index=release_metadata.news.previous_index,

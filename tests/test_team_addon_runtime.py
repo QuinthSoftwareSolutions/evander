@@ -7,7 +7,24 @@ from pathlib import Path
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from truman_team_addon.models import EphemeralAgentPolicy, ProjectGoal, TeamTaskState
+from truman_team_addon.models import (
+    AgentActionRecord,
+    AgentInboxItem,
+    AgentRuntime,
+    AgentTask,
+    Deliverable,
+    EphemeralAgentPolicy,
+    EphemeralAssignment,
+    PersistentAgent,
+    Project,
+    ProjectGoal,
+    ReleasePackage,
+    ReviewRequest,
+    Team,
+    TeamInboxItemType,
+    TeamState,
+    TeamTaskState,
+)
 from truman_team_addon.provider_schemas import (
     TeamAgentActionArtifactQueryDefinition,
     TeamApplyAgentActionEffectDefinition,
@@ -15,6 +32,7 @@ from truman_team_addon.provider_schemas import (
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamStateQueryDefinition,
     TeamWakeDueAgentsEffectDefinition,
 )
 from truman_team_addon.providers import (
@@ -24,6 +42,7 @@ from truman_team_addon.providers import (
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
+    TeamStateQueryProvider,
     TeamWakeDueAgentsEffectProvider,
 )
 from truman_team_addon.repository import TeamStateRepository
@@ -31,12 +50,13 @@ from truman_team_addon.workflow_packs import team_runtime_v1
 
 
 class FakeResumer:
-    def __init__(self) -> None:
+    def __init__(self, result: dict[str, object] | None = None) -> None:
         self.calls: list[dict[str, object]] = []
+        self.result = result or {"thread_id": "thread-1"}
 
     def resume_agent(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(dict(kwargs))
-        return {"thread_id": "thread-1"}
+        return dict(self.result)
 
 
 class FakeMetadataUpdater:
@@ -149,8 +169,44 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert result["success"] is True
     assert result["leased_count"] == 1
     assert resumer.calls[0]["target"] == "session-backend"
+    assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     assert "team-action.json" in str(resumer.calls[0]["prompt"])
     assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    resumer = FakeResumer({"success": False, "message": "vm not ready"})
+    metadata_updater = FakeMetadataUpdater()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_metadata_updater=metadata_updater,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["leased_count"] == 1
+    assert result["dispatches"] == []
+    assert result["errors"] == ["backend: vm not ready"]
+    reread = TeamStateRepository(tmp_path).read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert runtime.no_progress_count == 1
+    assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
+    assert metadata_updater.calls == []
 
 
 def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
@@ -312,6 +368,8 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
         ],
     )
     assignment = state.ephemeral_assignments[request_result["created_ephemeral_assignment_ids"][0]]
+    assert assignment.execution_backend == "container_worker_vm"
+    assert request_result["events"][0]["payload"]["execution_backend"] == "container_worker_vm"
 
     mark_spawned = TeamMarkEphemeralSpawnedEffectProvider()
     mark_spawned.initialize(
@@ -393,6 +451,97 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     assert final.deliverables["deliverable-ephemeral"].producer_agent_id == "backend"
 
 
+def test_mark_ephemeral_spawned_records_create_failure(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path, max_ephemeral=1)
+    state, request_result = repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-1",
+                "task_id": "task",
+                "title": "Draft implementation",
+                "prompt": "Implement a scoped backend slice.",
+            }
+        ],
+    )
+    assignment = state.ephemeral_assignments[request_result["created_ephemeral_assignment_ids"][0]]
+    mark_spawned = TeamMarkEphemeralSpawnedEffectProvider()
+    mark_spawned.initialize(
+        TeamMarkEphemeralSpawnedEffectDefinition(
+            id="spawned",
+            display_name="Spawned",
+            type="effect:team:mark-ephemeral-spawned",
+            assignment_id=assignment.id,
+            session_id=assignment.session_id,
+            create_result={"success": False, "message": "create failed"},
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = mark_spawned.execute()
+
+    assert result["success"] is False
+    assert result["state"] == "failed"
+    assert result["error"] == "create failed"
+    reread = TeamStateRepository(tmp_path).read()
+    assert reread.ephemeral_assignments[assignment.id].state.value == "failed"
+    assert reread.ephemeral_assignments[assignment.id].error == "create failed"
+
+
+def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    repo.store.write_object(_multi_team_state().model_dump(mode="json"))
+    project_query = TeamStateQueryProvider()
+    project_query.initialize(
+        TeamStateQueryDefinition(
+            id="state",
+            display_name="State",
+            type="query:team:state",
+            project_id="alpha-project",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    project_state = project_query.execute()["state"]
+
+    assert set(project_state["teams"]) == {"alpha-team"}
+    assert set(project_state["projects"]) == {"alpha-project"}
+    assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
+    assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(project_state["tasks"]) == {"alpha-task"}
+    assert set(project_state["deliverables"]) == {"alpha-deliverable"}
+    assert set(project_state["review_requests"]) == {"alpha-review"}
+    assert set(project_state["inbox"]) == {"alpha-inbox"}
+    assert set(project_state["action_records"]) == {"alpha-action"}
+    assert set(project_state["release_packages"]) == {"alpha-release"}
+    assert set(project_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
+
+    agent_query = TeamStateQueryProvider()
+    agent_query.initialize(
+        TeamStateQueryDefinition(
+            id="state-agent",
+            display_name="State Agent",
+            type="query:team:state",
+            agent_id="alpha-dev",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    agent_state = agent_query.execute()["state"]
+
+    assert set(agent_state["teams"]) == {"alpha-team"}
+    assert set(agent_state["projects"]) == {"alpha-project"}
+    assert set(agent_state["agents"]) == {"alpha-dev"}
+    assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
+    assert set(agent_state["tasks"]) == {"alpha-task"}
+    assert set(agent_state["deliverables"]) == {"alpha-deliverable"}
+    assert set(agent_state["review_requests"]) == set()
+    assert set(agent_state["inbox"]) == {"alpha-inbox"}
+    assert set(agent_state["action_records"]) == {"alpha-action"}
+    assert set(agent_state["release_packages"]) == {"alpha-release"}
+    assert set(agent_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
+
+
 def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     pack = team_runtime_v1()["config"]
     triggers = {node["id"]: node for node in pack["triggers"]}
@@ -404,6 +553,16 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert triggers["team-ephemeral-requested"]["type"] == "trigger:event"
     assert triggers["team-ephemeral-requested"]["event_type"] == "team.ephemeral.requested"
     assert effects["team-create-ephemeral-agent"]["type"] == "effect:agent:create"
+    assert effects["team-create-ephemeral-agent"]["execution_backend"] == (
+        "${{team-ephemeral-requested.payload.execution_backend}}"
+    )
+    assert effects["team-create-ephemeral-agent"]["vm_name"] == (
+        "${{team-ephemeral-requested.payload.vm_name ?? "
+        "team-ephemeral-requested.payload.session_id}}"
+    )
+    assert effects["team-mark-ephemeral-spawned"]["create_result"]["success"] == (
+        "${{team-create-ephemeral-agent.success}}"
+    )
     assert effects["team-prompt-ephemeral-agent"]["type"] == "effect:agent:prompt"
     assert effects["team-destroy-ephemeral-agent"]["type"] == "effect:agent:destroy"
     assert effects["team-mark-ephemeral-cleaned-up"]["type"] == (
@@ -414,6 +573,232 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
         "equals": True,
         "left": "${{team-route-completed-session.ephemeral}}",
     }
+    assert gates["team-ephemeral-spawned"]["when"]["all"][0] == {
+        "equals": True,
+        "left": "${{team-mark-ephemeral-spawned.success}}",
+    }
     assert ("team-ephemeral-requested", "team-create-ephemeral-agent") in edges
+    assert ("team-create-ephemeral-agent", "team-mark-ephemeral-spawned") in edges
+    assert ("team-mark-ephemeral-spawned", "team-ephemeral-spawned") in edges
+    assert ("team-ephemeral-spawned", "team-prompt-ephemeral-agent") in edges
+    assert ("team-mark-ephemeral-spawned", "team-prompt-ephemeral-agent") not in edges
     assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") in edges
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
+
+
+def _multi_team_state() -> TeamState:
+    return TeamState(
+        revision=7,
+        teams={
+            "alpha-team": Team(
+                id="alpha-team",
+                name="Alpha",
+                manager_agent_id="alpha-manager",
+                project_ids=["alpha-project"],
+            ),
+            "beta-team": Team(
+                id="beta-team",
+                name="Beta",
+                manager_agent_id="beta-manager",
+                project_ids=["beta-project"],
+            ),
+        },
+        projects={
+            "alpha-project": Project(
+                id="alpha-project",
+                team_id="alpha-team",
+                name="Alpha Project",
+                lead_agent_id="alpha-lead",
+            ),
+            "beta-project": Project(
+                id="beta-project",
+                team_id="beta-team",
+                name="Beta Project",
+                lead_agent_id="beta-lead",
+            ),
+        },
+        agents={
+            "alpha-manager": PersistentAgent(
+                id="alpha-manager",
+                team_id="alpha-team",
+                role="manager",
+                session_id="session-alpha-manager",
+                subordinate_agent_ids=["alpha-lead"],
+            ),
+            "alpha-lead": PersistentAgent(
+                id="alpha-lead",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                role="lead",
+                session_id="session-alpha-lead",
+                reports_to_agent_id="alpha-manager",
+                subordinate_agent_ids=["alpha-dev", "alpha-reviewer"],
+            ),
+            "alpha-dev": PersistentAgent(
+                id="alpha-dev",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                role="developer",
+                session_id="session-alpha-dev",
+                reports_to_agent_id="alpha-lead",
+            ),
+            "alpha-reviewer": PersistentAgent(
+                id="alpha-reviewer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                role="reviewer",
+                session_id="session-alpha-reviewer",
+                reports_to_agent_id="alpha-lead",
+            ),
+            "beta-manager": PersistentAgent(
+                id="beta-manager",
+                team_id="beta-team",
+                role="manager",
+                session_id="session-beta-manager",
+                subordinate_agent_ids=["beta-lead"],
+            ),
+            "beta-lead": PersistentAgent(
+                id="beta-lead",
+                team_id="beta-team",
+                project_id="beta-project",
+                role="lead",
+                session_id="session-beta-lead",
+                reports_to_agent_id="beta-manager",
+                subordinate_agent_ids=["beta-dev", "beta-reviewer"],
+            ),
+            "beta-dev": PersistentAgent(
+                id="beta-dev",
+                team_id="beta-team",
+                project_id="beta-project",
+                role="developer",
+                session_id="session-beta-dev",
+                reports_to_agent_id="beta-lead",
+            ),
+            "beta-reviewer": PersistentAgent(
+                id="beta-reviewer",
+                team_id="beta-team",
+                project_id="beta-project",
+                role="reviewer",
+                session_id="session-beta-reviewer",
+                reports_to_agent_id="beta-lead",
+            ),
+        },
+        agent_runtimes={
+            "alpha-dev": AgentRuntime(agent_id="alpha-dev", active_dispatch_id="alpha-dispatch"),
+            "beta-dev": AgentRuntime(agent_id="beta-dev", active_dispatch_id="beta-dispatch"),
+        },
+        tasks={
+            "alpha-task": AgentTask(
+                id="alpha-task",
+                owner_agent_id="alpha-dev",
+                project_id="alpha-project",
+                priority=1,
+                title="Alpha task",
+                description="Alpha work",
+                created_by_agent_id="alpha-lead",
+                deliverable_ids=["alpha-deliverable"],
+            ),
+            "beta-task": AgentTask(
+                id="beta-task",
+                owner_agent_id="beta-dev",
+                project_id="beta-project",
+                priority=1,
+                title="Beta task",
+                description="Beta work",
+                created_by_agent_id="beta-lead",
+                deliverable_ids=["beta-deliverable"],
+            ),
+        },
+        deliverables={
+            "alpha-deliverable": Deliverable(
+                id="alpha-deliverable",
+                task_id="alpha-task",
+                producer_agent_id="alpha-dev",
+                summary="Alpha deliverable",
+                review_request_ids=["alpha-review"],
+            ),
+            "beta-deliverable": Deliverable(
+                id="beta-deliverable",
+                task_id="beta-task",
+                producer_agent_id="beta-dev",
+                summary="Beta deliverable",
+                review_request_ids=["beta-review"],
+            ),
+        },
+        review_requests={
+            "alpha-review": ReviewRequest(
+                id="alpha-review",
+                deliverable_id="alpha-deliverable",
+                reviewer_agent_id="alpha-reviewer",
+            ),
+            "beta-review": ReviewRequest(
+                id="beta-review",
+                deliverable_id="beta-deliverable",
+                reviewer_agent_id="beta-reviewer",
+            ),
+        },
+        inbox={
+            "alpha-inbox": AgentInboxItem(
+                id="alpha-inbox",
+                recipient_agent_id="alpha-dev",
+                sender_agent_id="alpha-lead",
+                task_id="alpha-task",
+                item_type=TeamInboxItemType.QUESTION,
+                payload={"text": "alpha"},
+            ),
+            "beta-inbox": AgentInboxItem(
+                id="beta-inbox",
+                recipient_agent_id="beta-dev",
+                sender_agent_id="beta-lead",
+                task_id="beta-task",
+                item_type=TeamInboxItemType.QUESTION,
+                payload={"text": "beta"},
+            ),
+        },
+        action_records={
+            "alpha-action": AgentActionRecord(
+                id="alpha-action",
+                agent_id="alpha-dev",
+                dispatch_id="alpha-dispatch",
+                action={"notes": "alpha"},
+            ),
+            "beta-action": AgentActionRecord(
+                id="beta-action",
+                agent_id="beta-dev",
+                dispatch_id="beta-dispatch",
+                action={"notes": "beta"},
+            ),
+        },
+        release_packages={
+            "alpha-release": ReleasePackage(
+                id="alpha-release",
+                project_id="alpha-project",
+                deliverable_ids=["alpha-deliverable"],
+            ),
+            "beta-release": ReleasePackage(
+                id="beta-release",
+                project_id="beta-project",
+                deliverable_ids=["beta-deliverable"],
+            ),
+        },
+        ephemeral_assignments={
+            "alpha-ephemeral": EphemeralAssignment(
+                id="alpha-ephemeral",
+                parent_agent_id="alpha-dev",
+                project_id="alpha-project",
+                task_id="alpha-task",
+                session_id="session-alpha-ephemeral",
+                title="Alpha ephemeral",
+                prompt="Alpha prompt",
+            ),
+            "beta-ephemeral": EphemeralAssignment(
+                id="beta-ephemeral",
+                parent_agent_id="beta-dev",
+                project_id="beta-project",
+                task_id="beta-task",
+                session_id="session-beta-ephemeral",
+                title="Beta ephemeral",
+                prompt="Beta prompt",
+            ),
+        },
+    )

@@ -686,9 +686,31 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       path: "NEWS.md",
       index: 0,
       heading: "Safer workflows, clearer operations",
-      paragraphs: [
-        "The latest dashboard update puts release context next to practical operator guidance.",
-        "Use the changelog download when you need the full deployment record, then scan News for the human-readable story.",
+      blocks: [
+        {
+          kind: "paragraph",
+          text: "The latest dashboard update puts release context next to practical operator guidance.",
+          src: null,
+          dark_src: null,
+          alt: null,
+          title: null,
+        },
+        {
+          kind: "image",
+          text: null,
+          src: "/api/admin/news/assets/truman-signature.svg",
+          dark_src: "/api/admin/news/assets/truman-signature-inverse.svg",
+          alt: "Truman signature",
+          title: "Signed by Truman",
+        },
+        {
+          kind: "paragraph",
+          text: "Use the changelog download when you need the full deployment record, then scan News for the human-readable story.",
+          src: null,
+          dark_src: null,
+          alt: null,
+          title: null,
+        },
       ],
       has_previous: false,
       has_next: true,
@@ -1105,6 +1127,15 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname.startsWith("/api/admin/news/assets/")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5h8" stroke="black"/></svg>',
+      });
+      return;
+    }
+
     assert.fail(`unexpected API request: ${pathname}${url.search}`);
   });
 
@@ -1247,6 +1278,9 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("News: Safer workflows, clearer operations", { exact: true }).count(), 0);
   await assert.doesNotReject(() => releasePanel.locator(".release-news-title").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByAltText("Truman signature").first().waitFor({ state: "attached" }));
+  assert.equal(await releasePanel.locator(".release-news-image img").count(), 2);
+  assert.equal((await releasePanel.locator(".release-news-image figcaption").textContent())?.trim(), "Signed by Truman");
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
   assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);
