@@ -47,6 +47,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       ],
     },
     {
+      key: "ado",
+      label: "ADO",
+      description: "Start from Azure DevOps work items or work item comments.",
+      prefixes: ["trigger:ado:"],
+    },
+    {
       key: "communications",
       label: "Communications",
       description: "Start from inbound chat, provider-neutral communication targets, Teams, Discord, or email activity.",
@@ -95,7 +101,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "agents",
       label: "Agents",
       description: "Create, manage, prompt, or execute work inside agent sessions.",
-      prefixes: ["effect:agent:"],
+      prefixes: ["effect:agent:", "effect:chat-assistant:"],
     },
     {
       key: "vms",
@@ -140,15 +146,28 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:artifact:"],
     },
     {
-      key: "issues-sessions",
-      label: "Issues & sessions",
-      description: "Update tracked issues or session metadata.",
-      prefixes: ["effect:issue:", "effect:ado:", "effect:session:"],
+      key: "ado",
+      label: "ADO",
+      description: "Run Azure DevOps pipelines or manage Azure DevOps work items and tags.",
+      types: ["effect:issue:upsert-ado-proxy"],
+      prefixes: ["effect:ado:"],
+    },
+    {
+      key: "issues",
+      label: "Issues",
+      description: "Update tracked local issue state or metadata.",
+      prefixes: ["effect:issue:"],
+    },
+    {
+      key: "sessions",
+      label: "Sessions",
+      description: "Update session metadata, renew sessions, or manage MCP tool approvals.",
+      prefixes: ["effect:session:"],
     },
     {
       key: "git-pr",
       label: "Git & PRs",
-      description: "Promote branches or create pull requests.",
+      description: "Promote branches, create pull requests, or manage pull request tags.",
       prefixes: ["effect:git:", "effect:pr:", "effect:pull-request:"],
     },
     {
@@ -169,7 +188,13 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "runtime",
       label: "Runtime state",
       description: "Read VM, agent, or workflow runtime state.",
-      prefixes: ["query:vm:", "query:agent:", "query:state:"],
+      prefixes: ["query:vm:", "query:state:"],
+    },
+    {
+      key: "artifacts",
+      label: "Artifacts",
+      description: "Read published agent artifact content.",
+      types: ["query:agent:artifact-text"],
     },
     {
       key: "sessions",
@@ -179,10 +204,16 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["query:session:"],
     },
     {
-      key: "work-tracking",
-      label: "Work tracking",
-      description: "Read tracked issues or Azure DevOps work items.",
-      prefixes: ["query:issue:", "query:ado:"],
+      key: "issues",
+      label: "Issues",
+      description: "Read tracked local issue records.",
+      prefixes: ["query:issue:"],
+    },
+    {
+      key: "ado",
+      label: "ADO",
+      description: "Read Azure DevOps work items.",
+      prefixes: ["query:ado:"],
     },
     {
       key: "communications",
@@ -201,6 +232,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       label: "Semantic store",
       description: "Read semantic store status, search results, or points.",
       prefixes: ["query:semantic:"],
+    },
+    {
+      key: "usage",
+      label: "Usage & telemetry",
+      description: "Read workflow and model usage records.",
+      types: ["query:model-usage:list"],
     },
   ],
 };

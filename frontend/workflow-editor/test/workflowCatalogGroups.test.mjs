@@ -21,13 +21,18 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:semantic:upsert", "Semantic upsert"),
     catalogNode("effect", "effect:state:update", "State update"),
     catalogNode("effect", "effect:agent:prompt", "Agent prompt"),
+    catalogNode("effect", "effect:chat-assistant:ensure-session", "Chat assistant ensure session"),
     catalogNode("effect", "effect:vm:start", "VM start"),
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
     catalogNode("effect", "effect:pr:create", "PR create"),
     catalogNode("effect", "effect:pull-request:update", "Pull request update"),
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
+    catalogNode("effect", "effect:issue:upsert-ado-proxy", "Upsert ADO proxy"),
     catalogNode("effect", "effect:ado:pipeline-run", "ADO pipeline run"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
+    catalogNode("effect", "effect:ado:add-work-item-tag", "ADO add work item tag"),
+    catalogNode("effect", "effect:ado:remove-work-item-tag", "ADO remove work item tag"),
+    catalogNode("effect", "effect:session:update-metadata", "Session update metadata"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
     catalogNode("effect", "effect:http:request", "HTTP request"),
     catalogNode("effect", "effect:runtime:diagnostics-snapshot", "Runtime diagnostics snapshot"),
@@ -35,6 +40,8 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
+    catalogNode("effect", "effect:pull-request:add-tag", "Pull request add tag"),
+    catalogNode("effect", "effect:pull-request:remove-tag", "Pull request remove tag"),
   ], "effect");
 
   assert.deepEqual(
@@ -45,7 +52,11 @@ test("groups effect node types by related functionality", () => {
     [
       {
         label: "Agents",
-        types: ["effect:agent:exec", "effect:agent:prompt"],
+        types: [
+          "effect:agent:exec",
+          "effect:agent:prompt",
+          "effect:chat-assistant:ensure-session",
+        ],
       },
       {
         label: "VMs",
@@ -76,16 +87,31 @@ test("groups effect node types by related functionality", () => {
         types: ["effect:artifact:import-published", "effect:artifact:publish-artifacts"],
       },
       {
-        label: "Issues & sessions",
+        label: "ADO",
         types: [
+          "effect:ado:add-work-item-tag",
           "effect:ado:pipeline-run",
+          "effect:ado:remove-work-item-tag",
           "effect:ado:update-work-item",
-          "effect:issue:update-metadata",
+          "effect:issue:upsert-ado-proxy",
         ],
       },
       {
+        label: "Issues",
+        types: ["effect:issue:update-metadata"],
+      },
+      {
+        label: "Sessions",
+        types: ["effect:session:update-metadata"],
+      },
+      {
         label: "Git & PRs",
-        types: ["effect:pr:create", "effect:pull-request:update"],
+        types: [
+          "effect:pr:create",
+          "effect:pull-request:add-tag",
+          "effect:pull-request:remove-tag",
+          "effect:pull-request:update",
+        ],
       },
       {
         label: "Communications",
@@ -107,6 +133,7 @@ test("groups trigger node types into domain families", () => {
     catalogNode("trigger", "trigger:teams:direct-message", "Teams direct message"),
     catalogNode("trigger", "trigger:email:new-message", "Email message"),
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
+    catalogNode("trigger", "trigger:ado:work-item-matching", "ADO work item matching"),
     catalogNode("trigger", "trigger:approval:pending-created", "Pending approval"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
@@ -134,6 +161,10 @@ test("groups trigger node types into domain families", () => {
         types: ["trigger:approval:pending-created", "trigger:ticket:created"],
       },
       {
+        label: "ADO",
+        types: ["trigger:ado:work-item-matching"],
+      },
+      {
         label: "Communications",
         types: [
           "trigger:communication:new-message",
@@ -156,7 +187,10 @@ test("groups pull request query nodes with git metadata", () => {
     catalogNode("query", "query:pull-request:list", "Pull request list"),
     catalogNode("query", "query:pull-request:get", "Pull request get"),
     catalogNode("query", "query:git:pr-note", "Git PR note"),
+    catalogNode("query", "query:ado:work-items", "ADO work items"),
+    catalogNode("query", "query:agent:artifact-text", "Agent artifact text"),
     catalogNode("query", "query:issue:get", "Issue get"),
+    catalogNode("query", "query:model-usage:list", "Model usage list"),
     catalogNode("query", "query:communication:messages", "Communication messages"),
     catalogNode("query", "query:state:get", "State get"),
     catalogNode("query", "query:session-context", "Session context"),
@@ -174,12 +208,20 @@ test("groups pull request query nodes with git metadata", () => {
         types: ["query:state:get"],
       },
       {
+        label: "Artifacts",
+        types: ["query:agent:artifact-text"],
+      },
+      {
         label: "Sessions",
         types: ["query:session-context", "query:session:list"],
       },
       {
-        label: "Work tracking",
+        label: "Issues",
         types: ["query:issue:get"],
+      },
+      {
+        label: "ADO",
+        types: ["query:ado:work-items"],
       },
       {
         label: "Communications",
@@ -188,6 +230,10 @@ test("groups pull request query nodes with git metadata", () => {
       {
         label: "Git & PRs",
         types: ["query:git:pr-note", "query:pull-request:get", "query:pull-request:list"],
+      },
+      {
+        label: "Usage & telemetry",
+        types: ["query:model-usage:list"],
       },
     ],
   );

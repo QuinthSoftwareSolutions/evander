@@ -470,7 +470,11 @@ Type-specific keys:
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
+| `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
+| `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
+| `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
@@ -650,7 +654,8 @@ semantics as `query:session:list`. Use `query:ado:work-items` for remote Azure
 DevOps discovery.
 
 `query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
-and `effect:pull-request:update` accept Azure DevOps `provider` as
+`effect:pull-request:update`, `effect:pull-request:add-tag`, and
+`effect:pull-request:remove-tag` accept Azure DevOps `provider` as
 `azure_devops`, `azure-devops`, or `ado`. `query:pull-request:get` also accepts
 GitHub `provider` as `github`. It returns normalized pull request metadata and
 does not store cursor or workflow state. For Azure DevOps, `project` can be

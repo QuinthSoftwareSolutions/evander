@@ -479,6 +479,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
   "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
+  "effect:ado:add-work-item-tag": "Add a tag to an Azure DevOps work item when it is not already present.",
+  "effect:ado:remove-work-item-tag": "Remove a tag from an Azure DevOps work item when it is present.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Renew an expired or soon-expiring session.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
@@ -487,6 +489,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "effect:pull-request:update": "Update pull request metadata or tags.",
+  "effect:pull-request:add-tag": "Add a tag to a pull request when it is not already present.",
+  "effect:pull-request:remove-tag": "Remove a tag from a pull request when it is present.",
   "query:vm:run-state": "Read the current run state for a VM.",
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:pull-request:list": "List provider pull requests.",
@@ -1962,6 +1966,22 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       sync_proxy_cache: true,
     };
   }
+  if (
+    kind === "effect" &&
+    (type === "effect:ado:add-work-item-tag" || type === "effect:ado:remove-work-item-tag")
+  ) {
+    const isAdd = type === "effect:ado:add-work-item-tag";
+    return {
+      id,
+      display_name: isAdd ? "ADO add work item tag" : "ADO remove work item tag",
+      type,
+      directory_path: "root",
+      project: "Project name",
+      work_item_id: "12345",
+      tag: "tag-name",
+      sync_proxy_cache: true,
+    };
+  }
   if (kind === "effect" && type === "effect:ado:pipeline-run") {
     return {
       id,
@@ -2054,6 +2074,21 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       repo: "repo-name",
       pr_id: "123",
       expected_statuses: ["active"],
+    };
+  }
+  if (
+    kind === "effect" &&
+    (type === "effect:pull-request:add-tag" || type === "effect:pull-request:remove-tag")
+  ) {
+    const isAdd = type === "effect:pull-request:add-tag";
+    return {
+      id,
+      display_name: isAdd ? "Add pull request tag" : "Remove pull request tag",
+      type,
+      provider: "azure_devops",
+      repo: "repo-name",
+      pr_id: "123",
+      tag: "tag-name",
     };
   }
   if (kind === "query" && type === "query:vm:run-state") {
@@ -10069,31 +10104,40 @@ export default function App() {
                     </summary>
                     <p className="create-group-description">{group.description}</p>
                     <div className="create-subgroups">
-                      {group.subgroups.map((subgroup) => (
-                        <details key={subgroup.key} className="create-subgroup" open>
-                          <summary className="create-subgroup-summary">
-                            <Tooltip content={subgroup.description}>
-                              <span>{subgroup.label}</span>
-                            </Tooltip>
-                            <span className="create-subgroup-count">{subgroup.entries.length}</span>
-                          </summary>
-                          <div className="create-group-actions create-subgroup-actions">
-                            {subgroup.entries.map((entry) => (
-                              <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                                <button
-                                  type="button"
-                                  draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
-                                  onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                                  onClick={() => addNode(entry.kind, entry.type)}
-                                  disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
-                                >
-                                  {entry.label}
-                                </button>
+                      {group.subgroups.map((subgroup) => {
+                        const subgroupHasTutorialAllowedNodeType = subgroup.entries.some((entry) =>
+                          tutorialAllowsNodeType(entry.kind, entry.type),
+                        );
+                        return (
+                          <details
+                            key={subgroup.key}
+                            className="create-subgroup"
+                            open={subgroupHasTutorialAllowedNodeType || undefined}
+                          >
+                            <summary className="create-subgroup-summary">
+                              <Tooltip content={subgroup.description}>
+                                <span>{subgroup.label}</span>
                               </Tooltip>
-                            ))}
-                          </div>
-                        </details>
-                      ))}
+                              <span className="create-subgroup-count">{subgroup.entries.length}</span>
+                            </summary>
+                            <div className="create-group-actions create-subgroup-actions">
+                              {subgroup.entries.map((entry) => (
+                                <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+                                  <button
+                                    type="button"
+                                    draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                                    onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                                    onClick={() => addNode(entry.kind, entry.type)}
+                                    disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                                  >
+                                    {entry.label}
+                                  </button>
+                                </Tooltip>
+                              ))}
+                            </div>
+                          </details>
+                        );
+                      })}
                     </div>
                   </details>
                 );

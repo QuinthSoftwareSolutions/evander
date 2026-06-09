@@ -30,7 +30,15 @@ from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffec
 from agent_sandbox.effects.providers.ado_post_work_item_comment import (
     AdoPostWorkItemCommentEffectProvider,
 )
+from agent_sandbox.effects.providers.ado_work_item_tag import (
+    AdoAddWorkItemTagEffectProvider,
+    AdoRemoveWorkItemTagEffectProvider,
+)
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
+from agent_sandbox.effects.providers.pull_request_update import (
+    PullRequestAddTagEffectProvider,
+    PullRequestRemoveTagEffectProvider,
+)
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
@@ -56,6 +64,8 @@ from agent_sandbox.events.provider_models import (
     AgentPromptEffectDefinition,
     ChatAssistantEnsureSessionEffectDefinition,
     EventScheduleEffectDefinition,
+    PullRequestAddTagEffectDefinition,
+    PullRequestRemoveTagEffectDefinition,
     PullRequestUpdateEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -378,6 +388,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:issue:upsert-ado-proxy",
         "effect:ado:pipeline-run",
         "effect:ado:post-work-item-comment",
+        "effect:ado:add-work-item-tag",
+        "effect:ado:remove-work-item-tag",
         "effect:ado:update-work-item",
         "effect:communication:send-message",
         "effect:notification:send",
@@ -387,6 +399,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
+        "effect:pull-request:add-tag",
+        "effect:pull-request:remove-tag",
         "effect:pull-request:update",
     }
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
@@ -400,6 +414,22 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:post-work-item-comment"]
         is AdoPostWorkItemCommentEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:add-work-item-tag"]
+        is AdoAddWorkItemTagEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:remove-work-item-tag"]
+        is AdoRemoveWorkItemTagEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:pull-request:add-tag"]
+        is PullRequestAddTagEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:pull-request:remove-tag"]
+        is PullRequestRemoveTagEffectProvider
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:session:revoke-mcp-tool-approval-lease"]
@@ -570,6 +600,101 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
     }
     assert output["updated"] is True
     assert output["added_tags"] == ["reviewed"]
+
+
+def test_pull_request_tag_effect_providers_resolve_single_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_effect = PullRequestAddTagEffectDefinition(
+        id="effect-pr-add-tag",
+        display_name="Add PR tag",
+        type="effect:pull-request:add-tag",
+        provider="ado",
+        repo="repo-1",
+        pr_id="17",
+        tag="reviewed",
+    )
+    remove_effect = PullRequestRemoveTagEffectDefinition(
+        id="effect-pr-remove-tag",
+        display_name="Remove PR tag",
+        type="effect:pull-request:remove-tag",
+        provider="azure-devops",
+        repo="repo-1",
+        pr_id="17",
+        tag="stale",
+    )
+    assert add_effect.provider == "azure_devops"
+    assert remove_effect.provider == "azure_devops"
+    captured_requests: list[dict[str, object]] = []
+
+    class StubPrProvider:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def update_pull_request(self, **kwargs: object) -> UpdatePullRequestResponse:
+            captured_requests.append(dict(kwargs))
+            tag = (kwargs.get("add_tags") or kwargs.get("remove_tags") or [""])[0]
+            return UpdatePullRequestResponse(
+                success=True,
+                updated=True,
+                skipped=False,
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                status="active",
+                title="Existing title",
+                url="https://example.test/pr/17",
+                tags=[tag] if kwargs.get("add_tags") else [],
+                added_tags=list(kwargs.get("add_tags") or []),
+                removed_tags=list(kwargs.get("remove_tags") or []),
+            )
+
+    monkeypatch.setattr(
+        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        ),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+
+    add_output = factory.build(add_effect, directory_path="root/team-a").execute()
+    remove_output = factory.build(remove_effect, directory_path="root/team-a").execute()
+
+    assert captured_requests == [
+        {
+            "repo": "repo-1",
+            "pr_id": "17",
+            "project": "default",
+            "title": None,
+            "description": None,
+            "status": None,
+            "add_tags": ["reviewed"],
+            "remove_tags": [],
+            "expected_statuses": [],
+        },
+        {
+            "repo": "repo-1",
+            "pr_id": "17",
+            "project": "default",
+            "title": None,
+            "description": None,
+            "status": None,
+            "add_tags": [],
+            "remove_tags": ["stale"],
+            "expected_statuses": [],
+        },
+    ]
+    assert add_output["tag"] == "reviewed"
+    assert add_output["added_tags"] == ["reviewed"]
+    assert remove_output["tag"] == "stale"
+    assert remove_output["removed_tags"] == ["stale"]
 
 
 def test_vm_create_provider_returns_required_outputs() -> None:

@@ -1856,12 +1856,20 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
+    "effect:ado:add-work-item-tag": (
+        "Add a tag to an Azure DevOps work item when it is not already present."
+    ),
+    "effect:ado:remove-work-item-tag": (
+        "Remove a tag from an Azure DevOps work item when it is present."
+    ),
     "effect:ado:post-work-item-comment": (
         "Post an HTML-formatted comment to an Azure DevOps work item."
     ),
     "effect:pull-request:update": (
         "Update pull request metadata or tags with an optional status guard."
     ),
+    "effect:pull-request:add-tag": "Add a tag to a pull request when it is not already present.",
+    "effect:pull-request:remove-tag": "Remove a tag from a pull request when it is present.",
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
     "effect:communication:send-message": (
         "Send a message through a directory-scoped communication target."
@@ -4044,6 +4052,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:ado:add-work-item-tag",
+        label="ADO add work item tag",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", required=True, bindable=True),
+            _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
+            _field("tag", "Tag", "string", required=True, bindable=True),
+            _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:remove-work-item-tag",
+        label="ADO remove work item tag",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", required=True, bindable=True),
+            _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
+            _field("tag", "Tag", "string", required=True, bindable=True),
+            _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:ado:post-work-item-comment",
         label="ADO post work item comment",
         fields=[
@@ -4353,6 +4385,54 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("add_tags", "Add tags", "string_list", bindable=True),
             _field("remove_tags", "Remove tags", "string_list", bindable=True),
             _field("expected_statuses", "Expected statuses", "string_list", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:pull-request:add-tag",
+        label="Pull request add tag",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("tag", "Tag", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:pull-request:remove-tag",
+        label="Pull request remove tag",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("tag", "Tag", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

@@ -704,6 +704,24 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
         return value
 
 
+class AdoAddWorkItemTagEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:add-work-item-tag"]
+    directory_path: ConfigValue
+    project: ConfigValue
+    work_item_id: ConfigValue
+    tag: ConfigValue
+    sync_proxy_cache: ConfigValue | None = False
+
+
+class AdoRemoveWorkItemTagEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:remove-work-item-tag"]
+    directory_path: ConfigValue
+    project: ConfigValue
+    work_item_id: ConfigValue
+    tag: ConfigValue
+    sync_proxy_cache: ConfigValue | None = False
+
+
 class AdoPostWorkItemCommentEffectDefinition(EffectDefinition):
     type: Literal["effect:ado:post-work-item-comment"]
     directory_path: ConfigValue
@@ -736,6 +754,46 @@ class AdoPipelineRunEffectDefinition(EffectDefinition):
         return value
 
 
+def _normalize_static_pull_request_provider(value: ConfigValue) -> ConfigValue:
+    if isinstance(value, str) and "${{" not in value:
+        normalized = value.strip()
+        if normalized in {"ado", "azure-devops", "azure_devops"}:
+            return "azure_devops"
+    return value
+
+
+class PullRequestAddTagEffectDefinition(EffectDefinition):
+    type: Literal["effect:pull-request:add-tag"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    tag: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        return _normalize_static_pull_request_provider(value)
+
+
+class PullRequestRemoveTagEffectDefinition(EffectDefinition):
+    type: Literal["effect:pull-request:remove-tag"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    tag: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        return _normalize_static_pull_request_provider(value)
+
+
 class PullRequestUpdateEffectDefinition(EffectDefinition):
     type: Literal["effect:pull-request:update"]
     provider: ConfigValue
@@ -754,11 +812,7 @@ class PullRequestUpdateEffectDefinition(EffectDefinition):
     @field_validator("provider")
     @classmethod
     def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
-        if isinstance(value, str) and "${{" not in value:
-            normalized = value.strip()
-            if normalized in {"ado", "azure-devops", "azure_devops"}:
-                return "azure_devops"
-        return value
+        return _normalize_static_pull_request_provider(value)
 
     @field_validator("add_tags", "remove_tags", "expected_statuses")
     @classmethod

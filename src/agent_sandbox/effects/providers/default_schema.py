@@ -5,8 +5,10 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.effects.providers.schemas import (
+    AdoAddWorkItemTagEffectDefinition,
     AdoPipelineRunEffectDefinition,
     AdoPostWorkItemCommentEffectDefinition,
+    AdoRemoveWorkItemTagEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -31,6 +33,8 @@ from agent_sandbox.effects.providers.schemas import (
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
+    PullRequestAddTagEffectDefinition,
+    PullRequestRemoveTagEffectDefinition,
     PullRequestUpdateEffectDefinition,
     RuntimeDiagnosticsSnapshotEffectDefinition,
     SemanticDeleteEffectDefinition,
@@ -90,7 +94,11 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectDefinition,
     "effect:ado:pipeline-run": AdoPipelineRunEffectDefinition,
     "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectDefinition,
+    "effect:ado:add-work-item-tag": AdoAddWorkItemTagEffectDefinition,
+    "effect:ado:remove-work-item-tag": AdoRemoveWorkItemTagEffectDefinition,
     "effect:ado:update-work-item": AdoUpdateWorkItemEffectDefinition,
+    "effect:pull-request:add-tag": PullRequestAddTagEffectDefinition,
+    "effect:pull-request:remove-tag": PullRequestRemoveTagEffectDefinition,
     "effect:pull-request:update": PullRequestUpdateEffectDefinition,
     "effect:communication:send-message": CommunicationSendMessageEffectDefinition,
     "effect:notification:send": NotificationSendEffectDefinition,
