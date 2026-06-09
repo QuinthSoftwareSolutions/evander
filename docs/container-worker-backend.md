@@ -341,9 +341,11 @@ all fetch and push traffic goes through the private restricted-SSH mirror.
 
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
 `/home/agent`: `.agent-sandbox/session.env`, shell profiles, Codex config in both supported
-locations, and NuGet config when `nuget=true`. The Codex config points at the session-scoped OpenAI
-relay URL and MCP gateway URL. If `dotnet=true` or `playwright=true`, the profile points at the
-read-only worker cache mounts and keeps writable per-session cache paths under `/home/agent`.
+locations, Claude Code settings and MCP config, and NuGet config when `nuget=true`. The Codex
+config points at the session-scoped OpenAI relay URL and MCP gateway URL, while the Claude Code
+settings disable commit-message attribution trailers. If `dotnet=true` or `playwright=true`, the
+profile points at the read-only worker cache mounts and keeps writable per-session cache paths
+under `/home/agent`.
 With `playwright=true`, the profile resolves the seeded Playwright Chromium binary and exports it as
 `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`.
 

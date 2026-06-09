@@ -352,13 +352,13 @@ export function ReportsPage() {
                 </p>
               </div>
               <div className="inline-actions compact-actions">
-                <button type="button" onClick={() => void applyPreset(24)} disabled={loading}>
+                <button className="admin-action-button compact" type="button" onClick={() => void applyPreset(24)} disabled={loading}>
                   24h
                 </button>
-                <button type="button" onClick={() => void applyPreset(24 * 7)} disabled={loading}>
+                <button className="admin-action-button compact" type="button" onClick={() => void applyPreset(24 * 7)} disabled={loading}>
                   7d
                 </button>
-                <button type="button" onClick={() => void applyPreset(24 * 30)} disabled={loading}>
+                <button className="admin-action-button compact" type="button" onClick={() => void applyPreset(24 * 30)} disabled={loading}>
                   30d
                 </button>
               </div>
@@ -384,7 +384,7 @@ export function ReportsPage() {
                 />
               </label>
               <div className="inline-actions compact-actions">
-                <button type="submit" className="primary" disabled={loading}>
+                <button type="submit" className="admin-action-button primary compact" disabled={loading}>
                   {loading ? "Loading..." : "Run report"}
                 </button>
               </div>
@@ -398,7 +398,7 @@ export function ReportsPage() {
                   <div className="eyebrow">Ranked by activity</div>
                   <h2>Graphs</h2>
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap mobile-paired-table">
                   <table className="admin-table report-activity-table">
                     <thead>
                       <tr>
@@ -444,6 +444,57 @@ export function ReportsPage() {
                       ) : null}
                     </tbody>
                   </table>
+                </div>
+                <div className="mobile-record-list report-activity-mobile-record-list" aria-label="Workflow graph activity">
+                  {report?.graphs.map((graph) => (
+                    <button
+                      key={graph.graph_id}
+                      type="button"
+                      className={`mobile-record-card${selectedGraph?.graph_id === graph.graph_id ? " selected" : ""}`}
+                      aria-pressed={selectedGraph?.graph_id === graph.graph_id}
+                      onClick={() => setSelectedGraphId(graph.graph_id)}
+                    >
+                      <div className="mobile-record-title-row">
+                        <strong>{graph.name}</strong>
+                      </div>
+                      <div className="feature-list-meta">{graph.directory_paths.join(", ") || "root"}</div>
+                      <div className="activity-bar" aria-hidden="true">
+                        <span
+                          style={{ width: `${Math.max(4, (graph.activity_count / maxActivity) * 100)}%` }}
+                        />
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Activity</span>
+                        <span>{graph.activity_count}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Runs</span>
+                        <span>{graph.run_count}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Trigger</span>
+                        <span>{graph.trigger_event_count}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Gate</span>
+                        <span>{graph.gate_execution_count}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Effect</span>
+                        <span>{graph.effect_execution_count}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Latest</span>
+                        <span>{formatTimestamp(graph.latest_activity_at)}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {loading && !report ? (
+                    <div className="empty-state mobile-record-empty">Loading workflow graph activity...</div>
+                  ) : null}
+                  {!loading && (report?.graphs.length ?? 0) === 0 ? (
+                    <div className="empty-state mobile-record-empty">No workflow graphs found.</div>
+                  ) : null}
                 </div>
               </article>
 
@@ -527,7 +578,7 @@ export function ReportsPage() {
                   <div className="eyebrow">Traceability snapshots</div>
                   <h2>Reports</h2>
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap mobile-paired-table">
                   <table className="admin-table report-conformance-table">
                     <thead>
                       <tr>
@@ -585,6 +636,51 @@ export function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
+                <div className="mobile-record-list report-conformance-mobile-record-list" aria-label="Conformance reports">
+                  {conformanceReports.map((item) => (
+                    <button
+                      key={item.kind}
+                      type="button"
+                      className={`mobile-record-card${selectedConformanceReport?.kind === item.kind ? " selected" : ""}`}
+                      aria-pressed={selectedConformanceReport?.kind === item.kind}
+                      onClick={() => setConformanceSelectedKind(item.kind)}
+                    >
+                      <div className="mobile-record-title-row">
+                        <strong>{CONFORMANCE_REPORT_TITLES[item.kind]}</strong>
+                        <span className={`status-pill ${stateClassName(item.state)}`}>
+                          {stateLabel(item.state)}
+                        </span>
+                      </div>
+                      <div className="feature-list-meta">{item.artifact_path}</div>
+                      <div className="mobile-record-row">
+                        <span>Generated</span>
+                        <span>{formatTimestamp(item.generated_at)}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Updated</span>
+                        <span>{formatTimestamp(conformanceReport?.generated_at)}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Requirements</span>
+                        <span>{formatRequirementCount(item)}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>State</span>
+                        <span>{stateLabel(item.state)}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Summary</span>
+                        <span>{summarizeRequirementCounts(item.requirement_counts)}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {conformanceLoading && conformanceReports.length === 0 ? (
+                    <div className="empty-state mobile-record-empty">Loading conformance reports...</div>
+                  ) : null}
+                  {!conformanceLoading && conformanceReports.length === 0 ? (
+                    <div className="empty-state mobile-record-empty">No conformance reports found.</div>
+                  ) : null}
+                </div>
               </article>
 
               <article className="admin-panel detail-panel">
@@ -597,7 +693,7 @@ export function ReportsPage() {
                     <div className="feature-toolbar-actions report-panel-actions">
                       <button
                         type="button"
-                        className="primary"
+                        className="admin-action-button primary compact"
                         onClick={() => void runSelectedConformanceReport()}
                         disabled={conformanceLoading || conformanceRunKind !== null}
                       >

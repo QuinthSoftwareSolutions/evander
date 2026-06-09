@@ -712,6 +712,49 @@ def test_list_agents_summary_mode_skips_container_reconciliation_and_omits_vm_st
     assert inspect_calls == ["exec-current"]
 
 
+def test_list_agents_summary_mode_skips_stale_session_effective_policy_for_missing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="stale-session",
+            vm_id="stale-vm",
+            vm_provider="libvirt",
+            directory_path="root/missing-team",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    summary_agents = service.list_agents(
+        directory_path="root",
+        direct_only=False,
+        include_inactive=True,
+        reconcile_containers=False,
+        omit_vm_state=True,
+        summary_only=True,
+        backend="all",
+    )
+
+    assert [(agent.agent_id, agent.directory_path, agent.effective_tool_policy) for agent in summary_agents] == [
+        ("stale-vm", "root/missing-team", None)
+    ]
+
+    with pytest.raises(ValueError, match="references missing directory_path 'root/missing-team'"):
+        service.list_agents(
+            directory_path="root",
+            direct_only=False,
+            include_inactive=True,
+            reconcile_containers=False,
+            omit_vm_state=False,
+            summary_only=False,
+            backend="all",
+        )
+
+
 def test_list_agents_ignores_execution_cleanup_success_for_session_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1566,6 +1609,14 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
         in written_files["/home/agent/.agent-sandbox/session.env"]
     )
     assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
+    assert (
+        '"commit": ""'
+        in written_files["/home/agent/.claude/settings.json"]
+    )
+    assert (
+        "http://192.168.250.1:11434/session/claude-session"
+        in written_files["/home/agent/.claude/settings.json"]
+    )
     assert "/home/agent/.claude/mcp-config.json" in written_files
 
 

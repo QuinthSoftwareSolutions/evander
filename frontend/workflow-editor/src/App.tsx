@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Touch as ReactTouch,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import {
@@ -606,7 +607,15 @@ function isCompactCanvasTouchViewport(): boolean {
   return window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT;
 }
 
-type CompactCanvasTouchMode = "idle" | "pane-scroll" | "node-drag" | "multi-touch-pan";
+type CompactActivePanel = null | "create" | "inspector" | "runs" | "graphs" | "save";
+type CompactCanvasMode = "select" | "pan" | "connect";
+type CompactCanvasTouchMode = "idle" | "pane-scroll" | "pane-pan" | "node-drag" | "multi-touch-pan";
+type CompactPanePanState = {
+  touchId: number;
+  clientX: number;
+  clientY: number;
+  viewport: Viewport;
+};
 
 function eventTargetInsideWorkflowNodeDragSurface(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -3913,8 +3922,12 @@ export default function App() {
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [runSnapshotError, setRunSnapshotError] = useState<string | null>(null);
+  const [compactActivePanel, setCompactActivePanel] = useState<CompactActivePanel>(null);
+  const [compactCanvasMode, setCompactCanvasMode] = useState<CompactCanvasMode>("select");
+  const [compactCreateSearch, setCompactCreateSearch] = useState("");
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
+  const compactPanePanRef = useRef<CompactPanePanState | null>(null);
   const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
@@ -4322,8 +4335,12 @@ export default function App() {
     if (typeof window === "undefined") return;
 
     const handleResize = () => {
-      setIsCompactCanvasTouchMode(isCompactCanvasTouchViewport());
-      if (window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+      const isCompact = isCompactCanvasTouchViewport();
+      setIsCompactCanvasTouchMode(isCompact);
+      if (isCompact) return;
+      setCompactActivePanel(null);
+      setCompactCanvasMode("select");
+      setCompactCreateSearch("");
       const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
       setSidebarWidth((current) => clampWorkflowSidebarWidth(current, containerWidth));
     };
@@ -4336,6 +4353,7 @@ export default function App() {
   useEffect(() => {
     if (isCompactCanvasTouchMode) return;
     compactCanvasTouchModeRef.current = "idle";
+    compactPanePanRef.current = null;
   }, [isCompactCanvasTouchMode]);
 
   useEffect(() => {
@@ -5920,6 +5938,24 @@ export default function App() {
     setCanvasViewport(instance.getViewport());
   }
 
+  function fitWorkflowCanvas() {
+    if (!flowInstance) return;
+    void flowInstance.fitView({ padding: 0.18, duration: 180 });
+  }
+
+  function selectCompactCanvasMode(nextMode: CompactCanvasMode) {
+    setCompactCanvasMode(nextMode);
+    compactCanvasTouchModeRef.current = "idle";
+    compactPanePanRef.current = null;
+    if (nextMode !== "connect") {
+      closeConnectionUi();
+    }
+  }
+
+  function toggleCompactPanel(panel: Exclude<CompactActivePanel, null>) {
+    setCompactActivePanel((current) => current === panel ? null : panel);
+  }
+
   function flowPositionFromScreenPoint(clientX: number, clientY: number): { x: number; y: number } | null {
     if (flowInstance) {
       return flowInstance.screenToFlowPosition({ x: clientX, y: clientY });
@@ -6002,6 +6038,27 @@ export default function App() {
     setPendingConnection(null);
   }
 
+  function setPendingConnectionFromRoute(
+    sourceId: string,
+    route: WorkflowConnectionRouteOption,
+    sourcePoint: CanvasPoint,
+    cursorPoint: CanvasPoint = sourcePoint,
+  ) {
+    setPendingConnection({
+      sourceId,
+      sourcePort: route.sourcePort,
+      routeLabel: route.label,
+      routeClass: route.routeClass,
+      sourcePoint,
+      cursorPoint,
+    });
+    setNodeConnectionMenu(null);
+    setSelectedEdgeId(null);
+    setWorkflowTutorialHint(null);
+    setError(null);
+    appShellRef.current?.focus();
+  }
+
   function startPendingConnection(route: WorkflowConnectionRouteOption) {
     const expectedAction = tutorialCurrentRequiredAction();
     const canStartConnection = Boolean(
@@ -6019,17 +6076,35 @@ export default function App() {
       return;
     }
     if (!nodeConnectionMenu) return;
-    setPendingConnection({
-      sourceId: nodeConnectionMenu.nodeId,
-      sourcePort: route.sourcePort,
-      routeLabel: route.label,
-      routeClass: route.routeClass,
-      sourcePoint: nodeConnectionMenu.sourcePoint,
-      cursorPoint: nodeConnectionMenu.position,
-    });
-    setNodeConnectionMenu(null);
+    setPendingConnectionFromRoute(
+      nodeConnectionMenu.nodeId,
+      route,
+      nodeConnectionMenu.sourcePoint,
+      nodeConnectionMenu.position,
+    );
+  }
+
+  function startCompactConnectionFromNode(node: Node<GraphNodeData>) {
+    if (workflowEditLocked) return;
+    const sourcePoint = nodeCenterCanvasPoint(node);
+    const routes = node.data.type === "gate:switch" && node.data.outputPorts.length === 0
+      ? []
+      : workflowConnectionRouteOptions(node.data.outputPorts);
+    setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
-    setWorkflowTutorialHint(null);
+    setSnapGuides([]);
+    if (routes.length === 1 && routes[0]) {
+      setPendingConnectionFromRoute(node.id, routes[0], sourcePoint);
+      return;
+    }
+    setNodeConnectionMenu({
+      nodeId: node.id,
+      position: sourcePoint,
+      sourcePoint,
+      routes,
+      failedCount: node.data.statusBadges.find((badge) => badge.status === "failed")?.count ?? 0,
+    });
+    setPendingConnection(null);
     setError(null);
     appShellRef.current?.focus();
   }
@@ -6252,6 +6327,11 @@ export default function App() {
       appShellRef.current?.focus();
       return;
     }
+    if (isCompactCanvasTouchMode && compactCanvasMode === "connect") {
+      event.stopPropagation();
+      startCompactConnectionFromNode(node);
+      return;
+    }
     setNodeConnectionMenu(null);
     const additiveSelection = event.ctrlKey || event.metaKey;
     setProgrammaticSelection(additiveSelection ? [...selectedNodeIds, node.id] : [node.id], node.id);
@@ -6273,9 +6353,29 @@ export default function App() {
     canvasCursorPointRef.current = null;
   }
 
+  function compactPanePanTouch(event: ReactTouchEvent<HTMLElement>): ReactTouch | null {
+    const panState = compactPanePanRef.current;
+    if (!panState) return event.touches[0] ?? null;
+    return Array.from(event.touches).find((touch) => touch.identifier === panState.touchId) ?? null;
+  }
+
+  function updateCompactPanePan(event: ReactTouchEvent<HTMLElement>) {
+    const panState = compactPanePanRef.current;
+    const touch = compactPanePanTouch(event);
+    if (!panState || !touch || !flowInstance) return;
+    const nextViewport = {
+      ...panState.viewport,
+      x: panState.viewport.x + (touch.clientX - panState.clientX),
+      y: panState.viewport.y + (touch.clientY - panState.clientY),
+    };
+    flowInstance.setViewport(nextViewport);
+    setCanvasViewport(nextViewport);
+  }
+
   function handleCanvasTouchStartCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length >= 2) {
+      compactPanePanRef.current = null;
       compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
@@ -6283,6 +6383,21 @@ export default function App() {
       compactCanvasTouchModeRef.current = "node-drag";
       return;
     }
+    if (compactCanvasMode === "pan") {
+      compactCanvasTouchModeRef.current = "pane-pan";
+      const touch = event.touches[0];
+      compactPanePanRef.current = touch
+        ? {
+            touchId: touch.identifier,
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            viewport: flowInstance?.getViewport() ?? canvasViewport,
+          }
+        : null;
+      event.stopPropagation();
+      return;
+    }
+    compactPanePanRef.current = null;
     compactCanvasTouchModeRef.current = "pane-scroll";
     event.stopPropagation();
   }
@@ -6290,10 +6405,17 @@ export default function App() {
   function handleCanvasTouchMoveCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length >= 2) {
+      compactPanePanRef.current = null;
       compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
     if (compactCanvasTouchModeRef.current === "node-drag") return;
+    if (compactCanvasTouchModeRef.current === "pane-pan") {
+      updateCompactPanePan(event);
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+      return;
+    }
     if (compactCanvasTouchModeRef.current === "multi-touch-pan") {
       event.stopPropagation();
       event.nativeEvent.stopImmediatePropagation();
@@ -6307,6 +6429,7 @@ export default function App() {
   function handleCanvasTouchEndCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length === 0) {
+      compactPanePanRef.current = null;
       compactCanvasTouchModeRef.current = "idle";
       return;
     }
@@ -6322,6 +6445,7 @@ export default function App() {
   function handleCanvasTouchCancelCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length === 0) {
+      compactPanePanRef.current = null;
       compactCanvasTouchModeRef.current = "idle";
       return;
     }
@@ -6524,6 +6648,11 @@ export default function App() {
     if (event.key === "Escape" && (pendingConnection || nodeConnectionMenu)) {
       event.preventDefault();
       closeConnectionUi();
+      return;
+    }
+    if (event.key === "Escape" && compactActivePanel) {
+      event.preventDefault();
+      setCompactActivePanel(null);
       return;
     }
     const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
@@ -9708,10 +9837,676 @@ export default function App() {
   const inspectorConfigurationFields = inspectorFields.filter((field) => field.key !== "outputs");
   const inspectorOutputFields = inspectorFields.filter((field) => field.key === "outputs");
 
+  function renderCompactToolbar() {
+    const modeButton = (mode: CompactCanvasMode, label: string) => (
+      <button
+        type="button"
+        className={`compact-workflow-toolbar-button${compactCanvasMode === mode ? " active" : ""}`}
+        aria-pressed={compactCanvasMode === mode}
+        onClick={() => selectCompactCanvasMode(mode)}
+      >
+        {label}
+      </button>
+    );
+    const panelButton = (panel: Exclude<CompactActivePanel, null>, label: string, disabled = false) => (
+      <button
+        type="button"
+        className={`compact-workflow-toolbar-button${compactActivePanel === panel ? " active" : ""}${panel === "save" && hasUnsavedWorkflowChanges ? " dirty" : ""}`}
+        aria-pressed={compactActivePanel === panel}
+        disabled={disabled}
+        onClick={() => toggleCompactPanel(panel)}
+      >
+        {label}
+      </button>
+    );
+
+    return (
+      <div className="compact-workflow-toolbar" aria-label="Workflow tools">
+        <button
+          type="button"
+          className="compact-workflow-toolbar-button"
+          onClick={() => {
+            fitWorkflowCanvas();
+            setCompactActivePanel(null);
+          }}
+          disabled={!flowInstance}
+        >
+          Fit
+        </button>
+        {modeButton("pan", "Pan")}
+        {modeButton("select", "Select")}
+        {modeButton("connect", "Connect")}
+        {panelButton("create", "Create", workflowEditLocked)}
+        {panelButton("inspector", "Inspector")}
+        {panelButton("runs", "Runs", workflowRunReadLocked)}
+        {panelButton("graphs", "Graphs")}
+        {panelButton("save", "Save")}
+      </div>
+    );
+  }
+
+  function renderCreatePanelBody(compact = false) {
+    const normalizedSearch = compactCreateSearch.trim().toLowerCase();
+    const groups = createEntriesByKind
+      .map((group) => {
+        const entries = normalizedSearch
+          ? group.entries.filter((entry) => {
+              const haystack = [
+                entry.label,
+                entry.type,
+                entry.kind,
+                nodeTypeDescription(entry),
+              ].join(" ").toLowerCase();
+              return haystack.includes(normalizedSearch);
+            })
+          : group.entries;
+        return {
+          ...group,
+          entries,
+          subgroups: groupWorkflowNodeCatalogEntries(entries, group.kind),
+        };
+      })
+      .filter((group) => !compact || group.entries.length > 0);
+
+    return (
+      <>
+        {compact ? (
+          <label className="compact-workflow-search">
+            <span>Search nodes</span>
+            <input
+              value={compactCreateSearch}
+              onChange={(event) => setCompactCreateSearch(event.target.value)}
+              placeholder="Trigger, gate, effect, query"
+            />
+          </label>
+        ) : null}
+        {compact && groups.length === 0 ? (
+          <div className="empty-state">No matching nodes.</div>
+        ) : null}
+        {groups.map((group) => {
+          const hasTutorialAllowedNodeType = group.entries.some((entry) =>
+            tutorialAllowsNodeType(entry.kind, entry.type),
+          );
+          return (
+            <details
+              key={group.kind}
+              className="create-group"
+              open={compact || hasTutorialAllowedNodeType}
+            >
+              <summary className="create-group-summary">
+                <Tooltip content={group.description}>
+                  <span>{group.label}</span>
+                </Tooltip>
+                <span className="create-group-count">{group.entries.length}</span>
+              </summary>
+              <p className="create-group-description">{group.description}</p>
+              <div className="create-subgroups">
+                {group.subgroups.map((subgroup) => {
+                  const subgroupHasTutorialAllowedNodeType = subgroup.entries.some((entry) =>
+                    tutorialAllowsNodeType(entry.kind, entry.type),
+                  );
+                  return (
+                    <details
+                      key={subgroup.key}
+                      className="create-subgroup"
+                      open={compact || subgroupHasTutorialAllowedNodeType || undefined}
+                    >
+                      <summary className="create-subgroup-summary">
+                        <Tooltip content={subgroup.description}>
+                          <span>{subgroup.label}</span>
+                        </Tooltip>
+                        <span className="create-subgroup-count">{subgroup.entries.length}</span>
+                      </summary>
+                      <div className="create-group-actions create-subgroup-actions">
+                        {subgroup.entries.map((entry) => (
+                          <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+                            <button
+                              type="button"
+                              draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                              onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                              onClick={() => {
+                                addNode(entry.kind, entry.type);
+                                if (compact) setCompactActivePanel(null);
+                              }}
+                              disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                            >
+                              {entry.label}
+                            </button>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            </details>
+          );
+        })}
+      </>
+    );
+  }
+
+  function renderSavePanelContent() {
+    return (
+      <div className="sidebar-section compact-panel-section save-panel-section">
+        <div className="section-label">Save</div>
+        <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
+          Validate
+        </button>
+        <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
+          {saveState === "saving" ? "Saving..." : "Save workflow"}
+        </button>
+        <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
+          <strong>
+            {hasUnsavedWorkflowChanges
+              ? "Unsaved workflow changes"
+              : saveState === "saved"
+                ? "Workflow saved"
+                : "No unsaved workflow changes"}
+          </strong>
+          {hasUnsavedWorkflowChanges && dirtyNodeSummary ? <span>{dirtyNodeSummary}</span> : null}
+        </div>
+        {error ? <div className="error-box save-error-box">{error}</div> : null}
+        {document ? (
+          <div className="path-note">
+            <div>{document.config_path}</div>
+            <div>{document.layout_path}</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderGraphsPanelContent() {
+    return (
+      <div className="sidebar-section compact-panel-section workflow-graphs-section">
+        <div className="collapsible-sidebar-summary compact-section-heading">
+          <span className="section-label">Graphs</span>
+          <span className="collapsible-sidebar-meta">
+            {visibleWorkflowGraphs.length} {visibleWorkflowGraphs.length === 1 ? "graph" : "graphs"}
+          </span>
+        </div>
+        <p className="runtime-summary">{graphViewContext}</p>
+        <div className="workflow-graph-list">
+          {visibleWorkflowGraphs.length === 0 ? (
+            <p className="runtime-summary">No graphs associated with this directory.</p>
+          ) : (
+            visibleWorkflowGraphs.map((graph) => (
+              <button
+                type="button"
+                key={graph.id}
+                className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
+                onClick={() => selectWorkflowGraph(graph)}
+                disabled={workflowEditLocked}
+              >
+                <span className="workflow-graph-name">{graph.name}</span>
+                <span className="workflow-graph-meta">
+                  {graph.node_ids.length} {graph.node_ids.length === 1 ? "node" : "nodes"}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+        {selectedGraph ? (
+          <div className="workflow-graph-editor">
+            <label className="inspector-label">
+              <span>Graph name</span>
+              <input
+                value={graphNameDraft}
+                onChange={(event) => setGraphNameDraft(event.target.value)}
+                disabled={workflowEditLocked}
+              />
+            </label>
+            <label className="inspector-label">
+              <span>Description</span>
+              <textarea
+                value={graphDescriptionDraft}
+                rows={3}
+                onChange={(event) => setGraphDescriptionDraft(event.target.value)}
+                disabled={workflowEditLocked}
+              />
+            </label>
+            <label className="inspector-label">
+              <span>Directory path</span>
+              <p className="field-description">
+                Single canonical directory scope for this graph. If omitted in older data, the editor falls back to the selected directory or root.
+              </p>
+              <input
+                value={graphDirectoryDraft}
+                placeholder={selectedDirectoryPath}
+                onChange={(event) => setGraphDirectoryDraft(event.target.value)}
+                disabled={workflowEditLocked}
+              />
+            </label>
+            <label className="inspector-label">
+              <span>User IDs</span>
+              <p className="field-description">
+                Ownership and audit metadata only. These IDs do not grant visibility or change who can run the graph.
+              </p>
+              <textarea
+                value={graphUsersDraft}
+                rows={3}
+                onChange={(event) => setGraphUsersDraft(event.target.value)}
+                disabled={workflowEditLocked}
+              />
+            </label>
+            <button
+              type="button"
+              className="primary"
+              onClick={applyWorkflowGraphChanges}
+              disabled={workflowEditLocked}
+            >
+              Apply graph details
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderRunsPanelContent() {
+    if (!canReadWorkflowRuns) {
+      return (
+        <div className="sidebar-section compact-panel-section">
+          <div className="section-label">Runs</div>
+          <p className="runtime-summary">Permission required: workflow_runs.read.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="sidebar-section compact-panel-section current-runs-section">
+        <div className="current-runs-summary compact-section-heading">
+          <span className="section-label current-runs-label">Current runs</span>
+          <span className="current-runs-count">{visibleRuns.length}</span>
+        </div>
+        <p className="runtime-summary">
+          {visibleRuns.length === 0
+            ? "No active or errored workflow runs."
+            : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
+        </p>
+        {runSnapshotError ? <div className="runtime-run-error">{runSnapshotError}</div> : null}
+        <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
+          <select
+            value={runDetailLookupKind}
+            onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
+            aria-label="Run lookup key"
+          >
+            <option value="auto">Auto</option>
+            <option value="run_id">Run ID</option>
+            <option value="event_id">Event ID</option>
+            <option value="trigger_event_id">Trigger event</option>
+            <option value="trace_id">Trace ID</option>
+            <option value="session_id">Session ID</option>
+            <option value="artifact_id">Artifact ID</option>
+          </select>
+          <input
+            value={runDetailLookup}
+            onChange={(event) => setRunDetailLookup(event.target.value)}
+            placeholder="Lookup id"
+            aria-label="Workflow run lookup id"
+          />
+          <button
+            type="submit"
+            className="subtle-button"
+            disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
+          >
+            {runDetailLoading ? "Loading..." : "Inspect"}
+          </button>
+        </form>
+        {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
+        <div className="run-search-panel">
+          <div className="run-search-header">
+            <span className="section-label">Latest runs</span>
+            {runSearchResult ? (
+              <span className="current-runs-count">{runSearchResult.returned}</span>
+            ) : null}
+          </div>
+          <form className="run-search-form" onSubmit={submitWorkflowRunSearch}>
+            <select
+              value={runSearchScope}
+              onChange={(event) => setRunSearchScope(event.target.value)}
+              aria-label="Run search scope"
+            >
+              <optgroup label="Graphs">
+                {runSearchScopeOptions
+                  .filter((option) => option.kind === "graph")
+                  .map((option) => (
+                    <option value={option.value} key={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="Nodes">
+                {runSearchScopeOptions
+                  .filter((option) => option.kind === "node")
+                  .map((option) => (
+                    <option value={option.value} key={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+              </optgroup>
+            </select>
+            <label className="checkbox-row run-search-checkbox">
+              <input
+                type="checkbox"
+                checked={runSearchWithoutSession}
+                onChange={(event) => setRunSearchWithoutSession(event.target.checked)}
+              />
+              <span>No agent session</span>
+            </label>
+            <label className="checkbox-row run-search-checkbox">
+              <input
+                type="checkbox"
+                checked={runSearchIncludeCompleted}
+                onChange={(event) => setRunSearchIncludeCompleted(event.target.checked)}
+              />
+              <span>Completed</span>
+            </label>
+            <button
+              type="submit"
+              className="subtle-button"
+              disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
+            >
+              {runSearchLoading ? "Loading..." : "Find"}
+            </button>
+          </form>
+          {runSearchError ? <div className="runtime-run-error">{runSearchError}</div> : null}
+          {runSearchResult ? (
+            <div className="runtime-run-meta">
+              {runSearchResult.matched} matched {runSearchResult.filters.graph_name ?? selectedRunSearchScope?.label ?? ""}
+              {runSearchResult.has_more ? `; showing ${runSearchResult.returned}` : ""}
+            </div>
+          ) : null}
+          {runSearchResult && runSearchResult.runs.length === 0 ? (
+            <div className="runtime-run-meta">No matching runs.</div>
+          ) : null}
+          {runSearchResult && runSearchResult.runs.length > 0 ? (
+            <div className="runtime-runs run-search-results">
+              {runSearchResult.runs.map((run) => renderRunSearchResult(run))}
+            </div>
+          ) : null}
+        </div>
+        <div className="runtime-runs">
+          {visibleRuns.map((run: WorkflowRunSummary) => (
+            <div key={run.event_id} className="runtime-run-card">
+              <div className="runtime-run-header">
+                <div className="runtime-run-event">{run.event_id}</div>
+                <div
+                  className={`runtime-run-state state-${workflowRunStateClassName(run.run_state, run.delivery_state)}`}
+                >
+                  {workflowRunStateLabel(run.run_state, run.delivery_state)}
+                </div>
+              </div>
+              <div className="runtime-run-meta">
+                Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+              </div>
+              {run.run_state === "errored" ? (
+                <div className="runtime-run-error">
+                  Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
+                  {run.error ? `: ${run.error}` : ""}
+                </div>
+              ) : null}
+              <div className="runtime-run-nodes">
+                {run.active_nodes.map((activity, index) => (
+                  <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+                    {summarizeRunNode(activity)}
+                  </div>
+                ))}
+              </div>
+              <div className="runtime-run-actions">
+                <button
+                  type="button"
+                  className="subtle-button"
+                  onClick={() => inspectWorkflowRun(run.event_id)}
+                  disabled={runDetailLoading || workflowRunReadLocked}
+                >
+                  Inspect
+                </button>
+                {run.run_state === "errored" && run.resumable ? (
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    onClick={() => void resumeWorkflowRun(run.event_id)}
+                    disabled={Boolean(resumingRunIds[run.event_id]) || workflowRunControlLocked}
+                  >
+                    {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="subtle-button runtime-run-clear"
+                  onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
+                  disabled={Boolean(clearingRunIds[run.event_id]) || workflowRunControlLocked}
+                >
+                  {clearingRunIds[run.event_id]
+                    ? run.run_state === "errored"
+                      ? "Dismissing..."
+                      : "Clearing..."
+                    : run.run_state === "errored"
+                      ? "Dismiss run"
+                      : "Clear run"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderSelectionInspectorPanel() {
+    if (selectedNodeIds.length <= 1) return null;
+    return (
+      <div className="sidebar-section compact-panel-section inspector">
+        <div className="section-label">Selection</div>
+        <div className="inspector-summary">
+          <div>{selectedNodeIds.length} nodes selected</div>
+        </div>
+        <button onClick={() => setProgrammaticSelection([])} disabled={workflowEditLocked}>
+          Clear selection
+        </button>
+        <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
+          Select downstream branch
+        </button>
+        <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+          Delete selected nodes
+        </button>
+      </div>
+    );
+  }
+
+  function renderEditableNodeInspectorPanel() {
+    if (!selectedNode) return null;
+    return (
+      <div className="sidebar-section compact-panel-section inspector">
+        <div className="section-label">Inspector</div>
+        <div className="inspector-summary">
+          <div>{selectedNode.type}</div>
+          <div>{selectedNode.id}</div>
+        </div>
+        {selectedNodeDiagnostics.length > 0 ? (
+          <div className="problems-panel">
+            <div className="problems-heading">
+              <span>Problems</span>
+              <span>{selectedNodeDiagnostics.length}</span>
+            </div>
+            <div className="problems-list">
+              {selectedNodeDiagnostics.map((diagnostic, index) => (
+                <div className="problem-item" key={`${diagnostic.code}-${diagnostic.field_path ?? ""}-${diagnostic.reference ?? ""}-${index}`}>
+                  <div className="problem-message">{diagnostic.message}</div>
+                  <div className="problem-meta">
+                    {diagnostic.field_path ? <span>{diagnostic.field_path}</span> : null}
+                    {diagnostic.reference ? <span>{diagnostic.reference}</span> : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
+          Select downstream branch
+        </button>
+        {renderSelectedTriggerToggle()}
+        <label className="inspector-label">
+          <span>Node id</span>
+          <input
+            value={inspectorNodeId}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setInspectorNodeId(nextValue);
+              stageInspectorDraft({ nodeId: nextValue });
+            }}
+            disabled={workflowEditLocked}
+          />
+        </label>
+        <label className="inspector-label">
+          <span>Display name</span>
+          <input
+            value={inspectorDisplayName}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setInspectorDisplayName(nextValue);
+              stageInspectorDraft({ displayName: nextValue });
+            }}
+            disabled={workflowEditLocked}
+          />
+        </label>
+
+        {renderEffectTargetField()}
+        {inspectorConfigurationFields.map((field) => renderField(field))}
+
+        {Object.keys(inspectorUnknownValues).length > 0 ? (
+          <details className="raw-json-panel">
+            <summary>Additional raw JSON</summary>
+            <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
+            <textarea value={rawJsonDraft} rows={8} readOnly />
+          </details>
+        ) : null}
+
+        {inspectorOutputFields.map((field) => renderField(field))}
+
+        {renderSelectedNodeOutputContract()}
+
+        {selectedNodeHasUnsavedChanges ? (
+          <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
+            Reset changes
+          </button>
+        ) : null}
+
+        <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+          Delete node
+        </button>
+      </div>
+    );
+  }
+
+  function renderEditableEdgeInspectorPanel() {
+    if (!selectedEdge) return null;
+    return (
+      <div className="sidebar-section compact-panel-section inspector">
+        <div className="section-label">Edge</div>
+        <div className="inspector-summary">
+          <div>{selectedEdge.source_id}</div>
+          <div>Route: {selectedEdgeRouteLabel}</div>
+          <div>{selectedEdge.target_id}</div>
+          {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
+        </div>
+        <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
+          Delete edge
+        </button>
+      </div>
+    );
+  }
+
+  function renderCompactInspectorPanelContent() {
+    if (isInspectMode) {
+      return (
+        <>
+          {renderInspectedRunPanel()}
+          {renderInspectedNodePanel()}
+          {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
+          {error ? <div className="error-box">{error}</div> : null}
+        </>
+      );
+    }
+    if (selectedNodeIds.length > 1) return renderSelectionInspectorPanel();
+    if (selectedNode) return renderEditableNodeInspectorPanel();
+    if (selectedEdge) return renderEditableEdgeInspectorPanel();
+    return (
+      <div className="sidebar-section compact-panel-section inspector">
+        <div className="section-label">Inspector</div>
+        <div className="inspector-summary">
+          <div>No node or edge selected</div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCompactBottomSheet() {
+    if (!compactActivePanel) return null;
+    const titleByPanel: Record<Exclude<CompactActivePanel, null>, string> = {
+      create: "Create",
+      inspector: "Inspector",
+      runs: "Runs",
+      graphs: "Graphs",
+      save: "Save",
+    };
+    const contentByPanel: Record<Exclude<CompactActivePanel, null>, ReactNode> = {
+      create: (
+        <div className="sidebar-section compact-panel-section">
+          <div className="compact-section-heading">
+            <span className="section-label">Create</span>
+            <span className="collapsible-sidebar-meta">
+              {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
+            </span>
+          </div>
+          {renderCreatePanelBody(true)}
+        </div>
+      ),
+      inspector: renderCompactInspectorPanelContent(),
+      runs: renderRunsPanelContent(),
+      graphs: renderGraphsPanelContent(),
+      save: renderSavePanelContent(),
+    };
+
+    return (
+      <div
+        className="compact-workflow-sheet-backdrop"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            setCompactActivePanel(null);
+          }
+        }}
+      >
+        <section
+          className={`compact-workflow-sheet panel-${compactActivePanel}`}
+          role="dialog"
+          aria-modal="false"
+          aria-label={titleByPanel[compactActivePanel]}
+        >
+          <div className="compact-workflow-sheet-header">
+            <div>
+              <div className="section-label">Workflow</div>
+              <h2>{titleByPanel[compactActivePanel]}</h2>
+            </div>
+            <button type="button" className="subtle-button" onClick={() => setCompactActivePanel(null)}>
+              Close
+            </button>
+          </div>
+          <div className="compact-workflow-sheet-body">
+            {contentByPanel[compactActivePanel]}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="admin-page workflow-embedded-page">
       <div
-        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}${isInspectMode ? " is-inspect-mode" : ""}`}
+        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}${isInspectMode ? " is-inspect-mode" : ""}${isCompactCanvasTouchMode ? ` compact-mode-${compactCanvasMode}` : ""}`}
         ref={appShellRef}
         style={appShellStyle}
         tabIndex={-1}
@@ -10306,6 +11101,8 @@ export default function App() {
             onKeyDown={handleSidebarResizeKeyDown}
           />
 
+          <div className="workflow-canvas-stage">
+            {renderCompactToolbar()}
           <main
             className="canvas-shell"
             ref={canvasShellRef}
@@ -10323,7 +11120,7 @@ export default function App() {
               nodes={displayedFlowNodes}
               edges={displayedFlowEdges}
               nodeTypes={nodeTypes}
-              preventScrolling={!isCompactCanvasTouchMode}
+              preventScrolling={!isCompactCanvasTouchMode || compactCanvasMode === "pan"}
               panOnDrag
               zoomOnPinch
               onInit={handleFlowInit}
@@ -10354,7 +11151,7 @@ export default function App() {
               onConnect={onConnect}
               onEdgesDelete={onEdgesDelete}
               onNodesDelete={onNodesDelete}
-              nodesDraggable={!workflowEditLocked}
+              nodesDraggable={!workflowEditLocked && (!isCompactCanvasTouchMode || compactCanvasMode !== "connect")}
               nodesConnectable={!workflowEditLocked}
               elementsSelectable={!workflowEditLocked}
               fitView
@@ -10493,6 +11290,8 @@ export default function App() {
                 })
               : null}
           </main>
+          {renderCompactBottomSheet()}
+          </div>
         </div>
     </div>
   );

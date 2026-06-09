@@ -348,10 +348,10 @@ def test_admin_service_default_read_falls_back_when_tail_index_is_sparse(
 
     recent_page = service.list_tool_call_audit_entries(limit=10, recent_only=True)
 
-    assert [item.tool_name for item in recent_page.items] == ["old_tool_call"]
-    assert recent_page.counts.scanned == 1_201
-    assert recent_page.counts.skipped_non_tool_call == 1_200
-    assert recent_page.counts.matched == 1
+    assert recent_page.items == []
+    assert recent_page.counts.scanned == 0
+    assert recent_page.counts.matched == 0
+    assert recent_page.has_more is True
 
 
 def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path) -> None:
@@ -572,3 +572,59 @@ def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_miss
         invalid_status_response.json()["error"]
         == "status must be one of: success, pending_approval, denied, or error"
     )
+
+
+def test_admin_web_tool_calls_route_recent_only_uses_bounded_recent_read(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.tool_call_audit_index = None
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": f"old-session-{index}",
+            "directory_path": "root/archive",
+            "tool_name": f"old_tool_{index}",
+            "decision": "allowed",
+            "created_at": f"2026-05-18T09:{index % 60:02d}:00+00:00",
+        }
+        for index in range(3_000)
+    ]
+    entries.extend(
+        {
+            "event_type": "tool_call",
+            "session_id": f"recent-session-{index}",
+            "directory_path": "root/team",
+            "tool_name": f"recent_tool_{index}",
+            "decision": "allowed",
+            "created_at": f"2026-05-18T10:{index % 60:02d}:00+00:00",
+        }
+        for index in range(110)
+    )
+    service.config.audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    recent_response = client.get(
+        "/api/admin/tool-calls?directory_path=root&direct_only=false&limit=100&recent_only=true"
+    )
+    exact_response = client.get(
+        "/api/admin/tool-calls?directory_path=root&direct_only=false&limit=100"
+    )
+
+    assert recent_response.status_code == 200
+    recent_payload = recent_response.json()
+    assert recent_payload["counts"]["scanned"] == 101
+    assert recent_payload["counts"]["matched"] == 101
+    assert recent_payload["counts"]["returned"] == 100
+    assert recent_payload["items"][0]["tool_name"] == "recent_tool_109"
+    assert recent_payload["items"][-1]["tool_name"] == "recent_tool_10"
+    assert recent_payload["has_more"] is True
+
+    assert exact_response.status_code == 200
+    exact_payload = exact_response.json()
+    assert exact_payload["counts"]["scanned"] == len(entries)
+    assert exact_payload["counts"]["matched"] == len(entries)
+    assert exact_payload["counts"]["returned"] == 100

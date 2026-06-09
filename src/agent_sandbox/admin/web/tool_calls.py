@@ -74,7 +74,10 @@ def tool_call_routes(
                 created_before=_parse_datetime(params.get("created_before")),
                 q=_optional_text(params.get("q")),
                 limit=_parse_int(params.get("limit")),
-                recent_only=_dashboard_cache_requested(params.get(DASHBOARD_CACHE_PARAM)),
+                recent_only=_parse_bool(
+                    params.get("recent_only"),
+                    default=_dashboard_cache_requested(params.get(DASHBOARD_CACHE_PARAM)),
+                ),
             )
         except ValueError as exc:
             return json_error(str(exc))

@@ -93,6 +93,7 @@ def agent_routes(
                 include_inactive=include_inactive,
                 reconcile_containers=reconcile_containers,
                 omit_vm_state=omit_vm_state,
+                summary_only=summary_only,
                 backend=backend,
             )
         except ValueError as exc:

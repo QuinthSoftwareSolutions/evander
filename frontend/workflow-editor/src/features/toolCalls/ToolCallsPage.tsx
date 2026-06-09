@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { RefreshIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 
@@ -68,6 +69,7 @@ type ToolCallsResponse = {
   };
   limit?: number | null;
   total?: number | null;
+  has_more?: boolean | null;
 };
 
 type ToolCallFilters = {
@@ -308,6 +310,17 @@ function tabLabel(tab: AdminSectionTab): string {
   }
 }
 
+function usesRecentOnly(filters: ToolCallFilters): boolean {
+  return !(
+    filters.query.trim() ||
+    filters.sessionId.trim() ||
+    filters.toolName.trim() ||
+    filters.status !== "all" ||
+    filters.createdAfter.trim() ||
+    filters.createdBefore.trim()
+  );
+}
+
 function buildQuery(filters: ToolCallFilters, selectedDirectoryPath: string): string {
   const params = new URLSearchParams();
   const query = filters.query.trim();
@@ -338,6 +351,9 @@ function buildQuery(filters: ToolCallFilters, selectedDirectoryPath: string): st
   const createdBefore = toIsoTimestamp(filters.createdBefore);
   if (createdBefore) {
     params.set("created_before", createdBefore);
+  }
+  if (usesRecentOnly(filters)) {
+    params.set("recent_only", "true");
   }
   params.set("limit", String(Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT));
 
@@ -484,6 +500,11 @@ export function ToolCallsPage() {
   const deniedCount = counts?.denied ?? statusCounts.denied ?? 0;
   const errorCount = counts?.error ?? statusCounts.error ?? 0;
   const visibleTotal = counts?.matched ?? counts?.total ?? response?.total ?? items.length;
+  const recentOnly = useMemo(() => usesRecentOnly(filters), [filters]);
+  const hasMore = Boolean(response?.has_more);
+  const showInitialLoader = loading && items.length === 0;
+  const loadingMessage = recentOnly ? "Loading recent audit entries..." : "Loading audit entries...";
+  const historyScopeText = recentOnly ? "recent audit entries" : "the current filters";
 
   useEffect(() => {
     const syncFiltersFromHash = () => {
@@ -576,7 +597,8 @@ export function ToolCallsPage() {
             <div className="eyebrow">Audit trail</div>
             <h1>Tool Calls</h1>
           </div>
-          <button type="button" onClick={() => void loadToolCalls()}>
+          <button className="admin-action-button compact" type="button" onClick={() => void loadToolCalls()}>
+            <RefreshIcon />
             Refresh
           </button>
         </div>
@@ -668,7 +690,8 @@ export function ToolCallsPage() {
           </div>
           <div className="feature-toolbar-actions">
             <span className="panel-meta">{visibleTotal} visible</span>
-            <button type="button" onClick={() => void loadToolCalls()}>
+            <button className="admin-action-button compact" type="button" onClick={() => void loadToolCalls()}>
+              <RefreshIcon />
               Refresh
             </button>
           </div>
@@ -682,72 +705,133 @@ export function ToolCallsPage() {
               <div>
                 <h3>Audit entries</h3>
                 <p className="muted-text">
-                  Showing {items.length} {items.length === 1 ? "entry" : "entries"} from the current filters.
+                  Showing {items.length} {items.length === 1 ? "entry" : "entries"} from {historyScopeText}.
                 </p>
+                {recentOnly && hasMore ? (
+                  <p className="muted-text tool-call-history-note">
+                    Older matching entries may exist. Apply a filter for an exact full-history search.
+                  </p>
+                ) : null}
               </div>
-              <span className="panel-meta">
-                {successCount} success / {pendingApprovalCount} pending approval / {deniedCount} denied / {errorCount} error
-              </span>
+              <div className="tool-call-count-summary">
+                {recentOnly ? <span className="status-pill state-idle">Recent entries</span> : null}
+                <span className="panel-meta">
+                  {successCount} success / {pendingApprovalCount} pending approval / {deniedCount} denied / {errorCount} error
+                </span>
+              </div>
             </div>
-            <div className="table-wrap">
-              <table className="admin-table tool-calls-table">
-                <thead>
-                  <tr>
-                    <th>Timestamp</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                    <th>Session</th>
-                    <th>Role / actor</th>
-                    <th>Directory</th>
-                    <th>Tool</th>
-                    <th>Request / correlation</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
+            {showInitialLoader ? (
+              <div className="empty-state tool-call-loading-state">{loadingMessage}</div>
+            ) : (
+              <>
+                <div className="table-wrap mobile-paired-table">
+                  <table className="admin-table tool-calls-table">
+                    <thead>
+                      <tr>
+                        <th>Timestamp</th>
+                        <th>Status</th>
+                        <th>Duration</th>
+                        <th>Session</th>
+                        <th>Role / actor</th>
+                        <th>Directory</th>
+                        <th>Tool</th>
+                        <th>Request / correlation</th>
+                        <th>Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((item, index) => {
+                        const itemKey = toolCallRowKey(item, index);
+                        const itemStatus = normalizeStatus(item);
+                        return (
+                          <tr
+                            key={itemKey}
+                            className={itemKey === selectedCallKey ? "selected" : ""}
+                            onClick={() => setSelectedCallKey(itemKey)}
+                          >
+                            <td>{formatTimestamp(item.created_at)}</td>
+                            <td>
+                              <span className={`status-pill ${statusClass(itemStatus)}`}>{statusLabel(itemStatus)}</span>
+                            </td>
+                            <td>{formatDurationMs(item.duration_ms)}</td>
+                            <td>{stringField(item, "session_id") ?? "None"}</td>
+                            <td>{normalizeActor(item)}</td>
+                            <td>{stringField(item, "directory_path") ?? "root"}</td>
+                            <td>{item.tool_name}</td>
+                            <td>
+                              <div>{normalizeRequestId(stringField(item, "request_id"))}</div>
+                              <div className="panel-meta">{normalizeRequestId(stringField(item, "correlation_id"))}</div>
+                            </td>
+                            <td>{truncateText(stringField(item, "error_summary", "error"), 88)}</td>
+                          </tr>
+                        );
+                      })}
+                      {!loading && items.length === 0 ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={9}>
+                            No tool calls matched the current filters.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mobile-record-list tool-calls-mobile-record-list" aria-label="Tool call audit entries">
                   {items.map((item, index) => {
                     const itemKey = toolCallRowKey(item, index);
                     const itemStatus = normalizeStatus(item);
                     return (
-                      <tr
+                      <button
                         key={itemKey}
-                        className={itemKey === selectedCallKey ? "selected" : ""}
+                        type="button"
+                        className={`mobile-record-card${itemKey === selectedCallKey ? " selected" : ""}`}
+                        aria-pressed={itemKey === selectedCallKey}
                         onClick={() => setSelectedCallKey(itemKey)}
                       >
-                        <td>{formatTimestamp(item.created_at)}</td>
-                        <td>
+                        <div className="mobile-record-title-row">
+                          <strong>{item.tool_name}</strong>
                           <span className={`status-pill ${statusClass(itemStatus)}`}>{statusLabel(itemStatus)}</span>
-                        </td>
-                        <td>{formatDurationMs(item.duration_ms)}</td>
-                        <td>{stringField(item, "session_id") ?? "None"}</td>
-                        <td>{normalizeActor(item)}</td>
-                        <td>{stringField(item, "directory_path") ?? "root"}</td>
-                        <td>{item.tool_name}</td>
-                        <td>
-                          <div>{normalizeRequestId(stringField(item, "request_id"))}</div>
-                          <div className="panel-meta">{normalizeRequestId(stringField(item, "correlation_id"))}</div>
-                        </td>
-                        <td>{truncateText(stringField(item, "error_summary", "error"), 88)}</td>
-                      </tr>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Timestamp</span>
+                          <span>{formatTimestamp(item.created_at)}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Duration</span>
+                          <span>{formatDurationMs(item.duration_ms)}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Session</span>
+                          <span>{stringField(item, "session_id") ?? "None"}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Directory</span>
+                          <span>{stringField(item, "directory_path") ?? "root"}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Request</span>
+                          <span>{normalizeRequestId(stringField(item, "request_id"))}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Correlation</span>
+                          <span>{normalizeRequestId(stringField(item, "correlation_id"))}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Error</span>
+                          <span>{truncateText(stringField(item, "error_summary", "error"), 88)}</span>
+                        </div>
+                      </button>
                     );
                   })}
                   {loading && items.length === 0 ? (
-                    <tr>
-                      <td className="empty-state-cell" colSpan={9}>
-                        Loading tool call audit entries...
-                      </td>
-                    </tr>
+                    <div className="empty-state mobile-record-empty">Loading tool call audit entries...</div>
                   ) : null}
                   {!loading && items.length === 0 ? (
-                    <tr>
-                      <td className="empty-state-cell" colSpan={9}>
-                        No tool calls matched the current filters.
-                      </td>
-                    </tr>
+                    <div className="empty-state mobile-record-empty">No tool calls matched the current filters.</div>
                   ) : null}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              </>
+            )}
           </article>
 
           <article className="panel detail-panel tool-call-detail-panel">
@@ -771,7 +855,7 @@ export function ToolCallsPage() {
                   <div className="feature-toolbar-actions compact-actions tool-call-relations">
                     {relations.map((link) => (
                       <Tooltip key={`${link.tab}-${link.value}`} content={link.tooltip}>
-                        <button type="button" onClick={() => navigateToTab(link.tab)}>
+                        <button className="admin-action-button compact" type="button" onClick={() => navigateToTab(link.tab)}>
                           {relationButtonLabel(link)}
                         </button>
                       </Tooltip>

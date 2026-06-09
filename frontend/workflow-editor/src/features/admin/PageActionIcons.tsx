@@ -131,6 +131,16 @@ export function SettingsIcon() {
   );
 }
 
+export function AssistantIcon() {
+  return (
+    <ActionIcon>
+      <path d="M6.5 17.5H6A2.5 2.5 0 0 1 3.5 15V7A2.5 2.5 0 0 1 6 4.5h12A2.5 2.5 0 0 1 20.5 7v8a2.5 2.5 0 0 1-2.5 2.5h-5l-4.5 3v-3z" />
+      <path d="M8 9.5h8" />
+      <path d="M8 13h5" />
+    </ActionIcon>
+  );
+}
+
 export function CreateVmIcon() {
   return (
     <ActionIcon>

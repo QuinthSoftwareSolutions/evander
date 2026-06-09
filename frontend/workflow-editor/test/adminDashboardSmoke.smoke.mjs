@@ -74,12 +74,24 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   page.setDefaultTimeout(10000);
 
   const requestedEndpoints = [];
+  const dashboardAgentRequests = [];
   const pageErrors = [];
   const consoleErrors = [];
 
   function assertDashboardCacheParams(url) {
     assert.equal(url.searchParams.get("_dashboard"), "1");
     assert.equal(url.searchParams.has("_dashboard_refresh"), false);
+  }
+
+  function assertDashboardAgentInventoryParams(url) {
+    assert.equal(url.searchParams.get("directory_path"), "root");
+    assert.equal(url.searchParams.get("direct_only"), "false");
+    assert.equal(url.searchParams.get("include_inactive"), "true");
+    assert.equal(url.searchParams.get("backend"), "all");
+    assert.equal(url.searchParams.get("summary_only"), "true");
+    assert.equal(url.searchParams.get("reconcile_containers"), "false");
+    assert.equal(url.searchParams.get("omit_vm_state"), "true");
+    assertDashboardCacheParams(url);
   }
 
   const sessionRecord = {
@@ -880,6 +892,11 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -916,9 +933,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
       if (url.searchParams.has("_dashboard")) {
-        assert.equal(directoryPath, "root");
-        assert.equal(url.searchParams.get("direct_only"), "false");
-        assertDashboardCacheParams(url);
+        dashboardAgentRequests.push(`${pathname}${url.search}`);
+        assertDashboardAgentInventoryParams(url);
         await route.fulfill(jsonResponse(agentsResponse));
       } else {
         assert.equal(directoryPath, "root/team");
@@ -1097,6 +1113,9 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   });
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Capacity and execution" }).waitFor({ state: "visible" }));
+  assert.match(dashboardAgentRequests[0], /summary_only=true/);
+  assert.match(dashboardAgentRequests[0], /reconcile_containers=false/);
+  assert.match(dashboardAgentRequests[0], /omit_vm_state=true/);
   const topLevelPanels = page.locator(".dashboard-panel-grid .dashboard-panel");
   assert.equal(await topLevelPanels.count(), 6);
   const systemHealthPanel = topLevelPanels.filter({ hasText: "System health" });
@@ -1284,7 +1303,16 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workers?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root&direct_only=false&include_inactive=true&backend=all&_dashboard=1"));
+  assert.match(dashboardAgentRequests[0], /summary_only=true/);
+  assert.match(dashboardAgentRequests[0], /reconcile_containers=false/);
+  assert.match(dashboardAgentRequests[0], /omit_vm_state=true/);
+  assert.ok(
+    requestedEndpoints.some(
+      (endpoint) =>
+        endpoint ===
+        "/api/admin/agents?directory_path=root&direct_only=false&include_inactive=true&backend=all&summary_only=true&reconcile_containers=false&omit_vm_state=true&_dashboard=1",
+    ),
+  );
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root%2Fteam&direct_only=true&include_inactive=true&backend=all"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/approvals?statuses=pending&directory_path=root&direct_only=true&_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));

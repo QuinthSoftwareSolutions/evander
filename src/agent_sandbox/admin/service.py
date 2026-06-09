@@ -9659,7 +9659,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "tool_argument_policies": tool_argument_policies,
         }
 
-    def _agent_record_from_vm(self, summary: VmSummary) -> AgentRecord:
+    def _agent_record_from_vm(
+        self,
+        summary: VmSummary,
+        *,
+        include_effective_tool_policy: bool = True,
+    ) -> AgentRecord:
         power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
         status = "running" if power_state == "running" else "stopped"
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
@@ -9670,7 +9675,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             session = self.runtime.session_repository.get_session(summary.session_ids[0])
             if session is not None:
                 session_policy = self._agent_session_policy_payload(session)
-                effective_tool_policy = self.effective_tool_policy_payload(session)
+                if include_effective_tool_policy:
+                    effective_tool_policy = self.effective_tool_policy_payload(session)
                 runtime_image = self.session_runtime_image_payload(session)
         host: dict[str, Any] = {
             "kind": "vm",
@@ -9725,6 +9731,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session: SessionManifest,
         *,
         inventory_error: str | None = None,
+        include_effective_tool_policy: bool = True,
     ) -> AgentRecord:
         vm_name = str(session.vm_id or session.vm_provider_id or session.session_id).strip()
         directory_path = self._agent_record_directory_path(session.directory_path)
@@ -9751,7 +9758,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             status="stale",
             updated_at=session.created_at,
-            effective_tool_policy=self.effective_tool_policy_payload(session),
+            effective_tool_policy=(
+                self.effective_tool_policy_payload(session)
+                if include_effective_tool_policy
+                else None
+            ),
             host=host,
             capabilities={
                 "start": False,
@@ -9928,6 +9939,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         record: Any,
         *,
         reconcile: bool,
+        include_effective_tool_policy: bool = True,
     ) -> AgentRecord:
         status = self._container_agent_status(record.last_status)
         message: str | None = None
@@ -9971,7 +9983,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             started_at=record.started_at,
             finished_at=record.finished_at,
             updated_at=record.updated_at,
-            effective_tool_policy=self.effective_tool_policy_payload(session),
+            effective_tool_policy=(
+                self.effective_tool_policy_payload(session)
+                if include_effective_tool_policy
+                else None
+            ),
             host=host,
             capabilities={
                 "start": False,
@@ -9991,6 +10007,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         *,
         executions: list[Any] | None = None,
         reconcile: bool = False,
+        include_effective_tool_policy: bool = True,
     ) -> AgentRecord:
         metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
         target_name = self._container_session_target_name(session)
@@ -10068,7 +10085,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             updated_at=(
                 latest_execution.updated_at if latest_execution is not None else session.created_at
             ),
-            effective_tool_policy=self.effective_tool_policy_payload(session),
+            effective_tool_policy=(
+                self.effective_tool_policy_payload(session)
+                if include_effective_tool_policy
+                else None
+            ),
             host=host,
             capabilities={
                 "start": False,
@@ -10090,11 +10111,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         include_inactive: bool = True,
         reconcile_containers: bool = True,
         omit_vm_state: bool = False,
+        summary_only: bool = False,
         backend: str | None = None,
         all_directories: bool = False,
     ) -> list[AgentRecord]:
         normalized_directory = self._normalize_directory_path(directory_path)
         selected_backend = self._normalize_agent_backend_filter(backend)
+        include_effective_tool_policy = not summary_only
         records: list[AgentRecord] = []
         vm_inventory_error: str | None = None
         inventoried_vm_names: set[str] = set()
@@ -10115,7 +10138,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 inventoried_session_ids.update(
                     str(session_id or "").strip() for session_id in summary.session_ids
                 )
-                record = self._agent_record_from_vm(summary)
+                record = self._agent_record_from_vm(
+                    summary,
+                    include_effective_tool_policy=include_effective_tool_policy,
+                )
                 if include_inactive or self._agent_status_is_active(record.status):
                     records.append(record)
             for session in sorted(
@@ -10137,6 +10163,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 record = self._agent_record_from_stale_vm_session(
                     session,
                     inventory_error=vm_inventory_error,
+                    include_effective_tool_policy=include_effective_tool_policy,
                 )
                 if include_inactive or self._agent_status_is_active(record.status):
                     records.append(record)
@@ -10190,6 +10217,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 session,
                 executions=container_records_by_session.get(session.session_id, []),
                 reconcile=reconcile_containers,
+                include_effective_tool_policy=include_effective_tool_policy,
             )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
@@ -12648,7 +12676,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             created_after=created_after,
             created_before=created_before,
             q=q,
-            limit=normalized_limit,
         ):
             return self._list_recent_tool_call_audit_entries_from_tail(
                 session_id=session_id,
@@ -12660,6 +12687,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 created_before=created_before,
                 q=q,
                 limit=normalized_limit,
+                max_lines=_tool_call_recent_scan_max_lines(normalized_limit),
             )
         entries: deque[ToolCallAuditEntryPayload] = deque(maxlen=normalized_limit)
         counts = ToolCallAuditCountsPayload()
@@ -12741,6 +12769,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         index = self.tool_call_audit_index
         if index is None:
             return None
+        recent_tail_partial = False
         try:
             full_import_complete = index.import_is_complete(self.config.audit_log_path)
             use_index = full_import_complete
@@ -12762,9 +12791,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ):
                 import_result = index.import_from_jsonl_tail(
                     self.config.audit_log_path,
-                    max_lines=max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, limit * 25)),
+                    max_lines=_tool_call_recent_scan_max_lines(limit),
                 )
-                use_index = full_import_complete or import_result.complete
+                recent_tail_partial = recent_only and not (
+                    full_import_complete or import_result.complete
+                )
+                use_index = full_import_complete or import_result.complete or recent_only
             elif not full_import_complete:
                 index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
                 use_index = index.import_is_complete(self.config.audit_log_path)
@@ -12800,7 +12832,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 status_counts=page.status_counts,
             ),
             limit=limit,
-            has_more=page.has_more,
+            has_more=page.has_more or recent_tail_partial,
         )
 
     def _list_recent_tool_call_audit_entries_from_tail(
@@ -12815,6 +12847,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         created_before: datetime | None,
         q: str | None,
         limit: int,
+        max_lines: int,
     ) -> ToolCallAuditListPayload:
         if not self.config.audit_log_path.exists():
             return ToolCallAuditListPayload(limit=limit)
@@ -12824,6 +12857,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         has_more = False
         try:
             for line in _iter_file_lines_reverse(self.config.audit_log_path):
+                if counts.scanned >= max_lines:
+                    has_more = True
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -19786,13 +19822,14 @@ def _tool_call_audit_tail_scan_supported(
     created_after: datetime | None,
     created_before: datetime | None,
     q: str | None,
-    limit: int,
 ) -> bool:
-    if limit > 50:
-        return False
     if created_after is not None or created_before is not None:
         return False
     return not any(str(value or "").strip() for value in (session_id, tool_name, status, q))
+
+
+def _tool_call_recent_scan_max_lines(limit: int) -> int:
+    return max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, max(1, int(limit)) * 25))
 
 
 def _iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:

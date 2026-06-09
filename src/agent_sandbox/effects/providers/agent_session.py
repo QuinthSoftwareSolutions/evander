@@ -755,6 +755,11 @@ def build_container_session_files(
             ),
         },
         {
+            "destination_path": "/home/agent/.claude/settings.json",
+            "mode": "0600",
+            "content": _claude_settings_content(anthropic_base_url=session_anthropic_base_url),
+        },
+        {
             "destination_path": "/home/agent/.claude/mcp-config.json",
             "mode": "0600",
             "content": _claude_mcp_config_content(gateway_url=session_gateway_url),
@@ -1331,6 +1336,27 @@ def _codex_config_content(
         "\n"
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
+    )
+
+
+def _claude_settings_content(*, anthropic_base_url: str) -> str:
+    return (
+        json.dumps(
+            {
+                "attribution": {
+                    "commit": "",
+                },
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "relay-placeholder",
+                    "ANTHROPIC_BASE_URL": anthropic_base_url,
+                    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+                    "DISABLE_TELEMETRY": "1",
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
 
 

@@ -177,6 +177,8 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
     assert "DISABLE_TELEMETRY" in script
+    assert '"attribution": {' in script
+    assert '"commit": ""' in script
     assert '"type": "http"' in script
     assert '"tools": ["*"]' in script
     assert 'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"' in script
