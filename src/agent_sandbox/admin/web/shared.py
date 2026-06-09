@@ -8,8 +8,9 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Mapping
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
@@ -37,6 +38,9 @@ AZURE_SSO_SCOPES = ("openid", "profile", "email")
 WORKFLOW_EVENT_API_TOKEN_KIND = "workflow_event_api"
 WORKFLOW_EVENT_API_ALLOWED_PREFIX = EXTERNAL_WORKFLOW_EVENT_PREFIX
 WORKFLOW_EVENT_API_TOKEN_TTL_SECONDS = 3600
+ADMIN_WEB_BRANDING_ASSET_BASE_PATH = "/api/admin/branding/assets"
+DEFAULT_ADMIN_WEB_PAGE_TITLE = "evander Control Plane Admin"
+DEFAULT_ADMIN_WEB_HEADER_TITLE = "evander Control Plane"
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -50,6 +54,40 @@ def _env_csv(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
     values = [item.strip() for item in raw.split(",")]
     return tuple(item for item in values if item)
+
+
+def _env_text(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip() or default
+
+
+def _env_optional_text(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip()
+    return normalized or None
+
+
+def _branding_asset_reference(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if (
+        normalized.startswith("/")
+        or lowered.startswith("http://")
+        or lowered.startswith("https://")
+        or lowered.startswith("data:image/")
+    ):
+        return normalized
+    return f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/{quote(normalized.lstrip('/'), safe='/._-~')}"
+
+
+def _env_branding_asset_reference(name: str) -> str | None:
+    return _branding_asset_reference(_env_optional_text(name))
 
 
 def _env_workflow_event_machine_tokens() -> tuple["WorkflowEventMachineToken", ...]:
@@ -93,6 +131,84 @@ class WorkflowEventMachineToken:
 
 
 @dataclass(frozen=True)
+class AdminWebLogoConfig:
+    light_url: str | None
+    dark_url: str | None
+    alt: str
+
+    def to_payload(self) -> dict[str, str | None]:
+        return {
+            "light_url": self.light_url,
+            "dark_url": self.dark_url,
+            "alt": self.alt,
+        }
+
+
+@dataclass(frozen=True)
+class AdminWebBrandingConfig:
+    page_title: str
+    header_title: str
+    header_logo: AdminWebLogoConfig
+    product_logo: AdminWebLogoConfig
+    company_logo: AdminWebLogoConfig
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "page_title": self.page_title,
+            "header_title": self.header_title,
+            "header_logo": self.header_logo.to_payload(),
+            "product_logo": self.product_logo.to_payload(),
+            "company_logo": self.company_logo.to_payload(),
+        }
+
+    @classmethod
+    def from_env(cls) -> "AdminWebBrandingConfig":
+        page_title = _env_text("AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE", DEFAULT_ADMIN_WEB_PAGE_TITLE)
+        header_title = _env_text(
+            "AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE", DEFAULT_ADMIN_WEB_HEADER_TITLE
+        )
+        product_logo = _logo_config_from_env(
+            "AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO",
+            default_alt=f"{header_title} logo",
+        )
+        header_logo = _logo_config_from_env(
+            "AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO",
+            default_alt=product_logo.alt,
+            fallback=product_logo,
+        )
+        company_logo = _logo_config_from_env(
+            "AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO",
+            default_alt="Company logo",
+        )
+        return cls(
+            page_title=page_title,
+            header_title=header_title,
+            header_logo=header_logo,
+            product_logo=product_logo,
+            company_logo=company_logo,
+        )
+
+
+def _logo_config_from_env(
+    prefix: str,
+    *,
+    default_alt: str,
+    fallback: AdminWebLogoConfig | None = None,
+) -> AdminWebLogoConfig:
+    light_url = _env_branding_asset_reference(f"{prefix}_LIGHT_URL")
+    dark_url = _env_branding_asset_reference(f"{prefix}_DARK_URL")
+    alt = _env_text(f"{prefix}_ALT", fallback.alt if fallback else default_alt)
+    if fallback is not None:
+        light_url = light_url if light_url is not None else fallback.light_url
+        dark_url = dark_url if dark_url is not None else fallback.dark_url
+    if light_url is not None and dark_url is None:
+        dark_url = light_url
+    if dark_url is not None and light_url is None:
+        light_url = dark_url
+    return AdminWebLogoConfig(light_url=light_url, dark_url=dark_url, alt=alt)
+
+
+@dataclass(frozen=True)
 class AzureSsoConfig:
     tenant_id: str
     client_id: str
@@ -130,6 +246,8 @@ class AdminWebConfig:
     cookie_secure: bool
     workflow_event_machine_tokens: tuple[WorkflowEventMachineToken, ...]
     azure_sso: AzureSsoConfig | None
+    branding: AdminWebBrandingConfig
+    branding_asset_dir: Path | None
 
     @property
     def auth_required(self) -> bool:
@@ -153,6 +271,7 @@ class AdminWebConfig:
                 "AGENT_SANDBOX_ADMIN_WEB_PASSWORD is required when auth mode is local_password"
             )
         azure_sso = cls._azure_sso_from_env(auth_mode)
+        branding_asset_dir = _env_optional_text("AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR")
         return cls(
             auth_mode=auth_mode,
             username=username,
@@ -170,6 +289,10 @@ class AdminWebConfig:
             cookie_secure=_env_flag("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", default=False),
             workflow_event_machine_tokens=_env_workflow_event_machine_tokens(),
             azure_sso=azure_sso,
+            branding=AdminWebBrandingConfig.from_env(),
+            branding_asset_dir=Path(branding_asset_dir).expanduser()
+            if branding_asset_dir is not None
+            else None,
         )
 
     @classmethod
@@ -283,6 +406,7 @@ class AdminWebAuth:
             "privileged_operations": {
                 "unlocked": bool(session_id and session_id == self._privileged_session_id),
             },
+            "branding": self.config.branding.to_payload(),
         }
 
     def issue_workflow_event_api_token(

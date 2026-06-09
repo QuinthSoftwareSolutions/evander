@@ -5,6 +5,13 @@ import companyLogoLight from "../altlogo-light.png";
 import logoDark from "../logo-dark.png";
 import logoLight from "../logo-light.png";
 import WorkflowEditorApp from "./App";
+import {
+  EMPTY_ADMIN_BRANDING,
+  initialAdminBranding,
+  normalizeAdminBranding,
+  themedLogoUrl,
+  type AdminBrandingConfig,
+} from "./adminBranding";
 import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
@@ -42,6 +49,7 @@ type AdminSession = {
   privileged_operations: {
     unlocked: boolean;
   };
+  branding?: unknown;
 };
 
 type AdminState = {
@@ -112,6 +120,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const DIRECTORY_STORAGE_KEY = "admin-web:selected-directory";
 const THEME_STORAGE_KEY = "admin-web:theme";
+const BOOTSTRAPPED_ADMIN_BRANDING = initialAdminBranding();
 
 const LOGIN_BACKGROUND_NODES = [
   { x: 0.08, y: 0.2, radius: 3.1, hue: "#7ce8ff", phase: 0.2 },
@@ -1017,22 +1026,38 @@ function DirectoryChooserModal({
   );
 }
 
-function LoginBrandBar({ theme, onToggleTheme }: { theme: AdminTheme; onToggleTheme: () => void }) {
+function LoginBrandBar({
+  theme,
+  branding,
+  brandingLoaded,
+  onToggleTheme,
+}: {
+  theme: AdminTheme;
+  branding: AdminBrandingConfig;
+  brandingLoaded: boolean;
+  onToggleTheme: () => void;
+}) {
+  const companyLogoUrl = brandingLoaded
+    ? themedLogoUrl(branding.company_logo, theme, companyLogoLight, companyLogoDark)
+    : null;
+  const productLogoUrl = brandingLoaded
+    ? themedLogoUrl(branding.product_logo, theme, logoLight, logoDark)
+    : null;
   return (
     <div className="admin-login-brandbar">
-      <img
-        className="admin-login-company-logo"
-        src={theme === "dark" ? companyLogoDark : companyLogoLight}
-        alt="Company logo"
-      />
+      {companyLogoUrl ? (
+        <img className="admin-login-company-logo" src={companyLogoUrl} alt={branding.company_logo.alt} />
+      ) : (
+        <span className="admin-login-company-logo admin-login-logo-placeholder" aria-hidden="true" />
+      )}
       <button type="button" className="admin-shell-button admin-shell-button-muted admin-login-theme-toggle" onClick={onToggleTheme}>
         {theme === "dark" ? "Light mode" : "Dark mode"}
       </button>
-      <img
-        className="admin-login-truman-logo"
-        src={theme === "dark" ? logoDark : logoLight}
-        alt="evander Control Plane logo"
-      />
+      {productLogoUrl ? (
+        <img className="admin-login-truman-logo" src={productLogoUrl} alt={branding.product_logo.alt} />
+      ) : (
+        <span className="admin-login-truman-logo admin-login-logo-placeholder" aria-hidden="true" />
+      )}
     </div>
   );
 }
@@ -1040,6 +1065,8 @@ function LoginBrandBar({ theme, onToggleTheme }: { theme: AdminTheme; onToggleTh
 function LoginScreen({
   session,
   theme,
+  branding,
+  brandingLoaded,
   onToggleTheme,
   deploymentStatus,
   error,
@@ -1049,6 +1076,8 @@ function LoginScreen({
 }: {
   session: AdminSession;
   theme: AdminTheme;
+  branding: AdminBrandingConfig;
+  brandingLoaded: boolean;
   onToggleTheme: () => void;
   deploymentStatus: DeploymentStatus | null;
   error: string | null;
@@ -1071,7 +1100,12 @@ function LoginScreen({
         <div className="admin-login-aurora admin-login-aurora-right" />
       </div>
       <div className="admin-login-stage">
-        <LoginBrandBar theme={theme} onToggleTheme={onToggleTheme} />
+        <LoginBrandBar
+          theme={theme}
+          branding={branding}
+          brandingLoaded={brandingLoaded}
+          onToggleTheme={onToggleTheme}
+        />
         <DeploymentStatusBanner status={deploymentStatus} />
         <div className="admin-login-card">
           <h1>Admin Sign In</h1>
@@ -1117,6 +1151,12 @@ function LoginScreen({
 
 export default function AdminRoot() {
   const [theme, setTheme] = useState<AdminTheme>(() => getInitialTheme());
+  const [branding, setBranding] = useState<AdminBrandingConfig>(
+    () => BOOTSTRAPPED_ADMIN_BRANDING ?? EMPTY_ADMIN_BRANDING,
+  );
+  const [brandingLoaded, setBrandingLoaded] = useState(
+    () => BOOTSTRAPPED_ADMIN_BRANDING !== null,
+  );
   const [session, setSession] = useState<AdminSession | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -1139,6 +1179,29 @@ export default function AdminRoot() {
   });
   const suppressNextHashChangeRef = useRef(false);
   const adminExecutionBackend = adminState?.execution_backend ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBranding() {
+      try {
+        const payload = await fetchJson<unknown>("/api/admin/branding");
+        if (!cancelled) {
+          setBranding(normalizeAdminBranding(payload));
+          setBrandingLoaded(true);
+        }
+      } catch {
+        // Keep the bundled defaults, or any branding already received with the session payload.
+      }
+    }
+    void loadBranding();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    document.title = branding.page_title;
+  }, [branding.page_title]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1168,6 +1231,10 @@ export default function AdminRoot() {
       try {
         const payload = await fetchJson<AdminSession>("/api/auth/session", { credentials: "same-origin" });
         if (!cancelled) {
+          if (payload.branding) {
+            setBranding(normalizeAdminBranding(payload.branding));
+            setBrandingLoaded(true);
+          }
           setSession(payload);
           setSessionError(null);
         }
@@ -1339,6 +1406,10 @@ export default function AdminRoot() {
       if (!response.ok) {
         throw new Error(payload.error ?? "Sign in failed.");
       }
+      if (payload.branding) {
+        setBranding(normalizeAdminBranding(payload.branding));
+        setBrandingLoaded(true);
+      }
       setSession(payload);
       setAdminState(null);
     } catch (error) {
@@ -1356,6 +1427,10 @@ export default function AdminRoot() {
         credentials: "same-origin",
       });
       const payload = (await response.json()) as AdminSession;
+      if (payload.branding) {
+        setBranding(normalizeAdminBranding(payload.branding));
+        setBrandingLoaded(true);
+      }
       setSession(payload);
       setAdminState(null);
     } finally {
@@ -1451,6 +1526,9 @@ export default function AdminRoot() {
     || session?.session_id?.trim()
     || "anonymous"
   );
+  const headerLogoUrl = brandingLoaded
+    ? themedLogoUrl(branding.header_logo, theme, logoLight, logoDark)
+    : null;
 
   useEffect(() => {
     function handleHashChange() {
@@ -1525,10 +1603,15 @@ export default function AdminRoot() {
     return (
       <div className="admin-login-shell">
         <div className="admin-login-stage">
-          <LoginBrandBar theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} />
+          <LoginBrandBar
+            theme={theme}
+            branding={branding}
+            brandingLoaded={brandingLoaded}
+            onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+          />
           <DeploymentStatusBanner status={deploymentStatus} />
           <div className="admin-login-card">
-            <div className="eyebrow">Agent Sandbox</div>
+            <div className="eyebrow">{branding.header_title}</div>
             <h1>Loading admin shell</h1>
             <p>{sessionError ?? "Checking authentication and bootstrapping the UI."}</p>
           </div>
@@ -1539,7 +1622,18 @@ export default function AdminRoot() {
 
   if (session.auth_required && !session.authenticated) {
     return (
-      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} deploymentStatus={deploymentStatus} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
+      <LoginScreen
+        session={session}
+        theme={theme}
+        branding={branding}
+        brandingLoaded={brandingLoaded}
+        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+        deploymentStatus={deploymentStatus}
+        error={sessionError}
+        loading={authBusy}
+        onSubmit={signIn}
+        onAzureSignIn={startAzureSignIn}
+      />
     );
   }
 
@@ -1551,12 +1645,12 @@ export default function AdminRoot() {
             <div className="admin-shell-brand-lockup">
               <div className="admin-shell-brand-copy">
                 <div className="admin-shell-title-row">
-                  <img
-                    className="admin-shell-logo"
-                    src={theme === "dark" ? logoDark : logoLight}
-                    alt="evander Control Plane logo"
-                  />
-                  <h1>evander Control Plane</h1>
+                  {headerLogoUrl ? (
+                    <img className="admin-shell-logo" src={headerLogoUrl} alt={branding.header_logo.alt} />
+                  ) : (
+                    <span className="admin-shell-logo admin-shell-logo-placeholder" aria-hidden="true" />
+                  )}
+                  <h1>{branding.header_title}</h1>
                 </div>
                 <p>{activeTab.description}</p>
               </div>

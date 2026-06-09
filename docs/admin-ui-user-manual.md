@@ -36,6 +36,29 @@ If the Admin UI is exposed beyond localhost, put it behind TLS and configure aut
 - `local_password`: username/password sign-in backed by the signed local session cookie.
 - `azure_sso`: Microsoft Entra OIDC sign-in backed by the same local session cookie.
 
+### Branding
+
+Set Admin UI branding in `config/admin-web.env` and restart `agent-sandbox-admin-web.service`.
+The supported environment variables include:
+
+- `AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE` for the browser title.
+- `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE` for the shell header title.
+- `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL` and
+  `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_DARK_URL` for the product logo used in the header and
+  sign-in brand bar.
+- `AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL` and
+  `AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_DARK_URL` for the companion company logo in the sign-in
+  brand bar.
+- `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_LIGHT_URL` and
+  `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_DARK_URL` when the header logo should differ from the
+  product logo.
+- Matching `*_ALT` variables for accessible logo text.
+
+Logo values can be absolute `https://...` URLs, in-app paths such as `/assets/logo.png`,
+`data:image/...` URLs, or paths relative to `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR`.
+Relative asset paths are served by the Admin Web API under `/api/admin/branding/assets/...`, which
+also works when Caddy proxies the HTML entrypoints and serves hashed frontend assets directly.
+
 ## Shared Shell
 
 ![Admin dashboard and navigation](assets/admin-ui/manual-dashboard.png)

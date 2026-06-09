@@ -19,6 +19,10 @@ sequence with Ansible, including the dedicated container-worker VM playbook, see
 
 If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
 service and configure `config/admin-web.env` before exposing it beyond localhost.
+Use the Admin Web branding variables in that env file when a deployment needs a different browser
+title, shell header title, or logo set; relative logo paths can be served from
+`AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied `/api/admin/branding/assets/...`
+route.
 
 ## Bootstrap Flow
 

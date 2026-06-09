@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
+from html import escape
 from pathlib import Path
 
 import uvicorn
@@ -20,6 +23,7 @@ from agent_sandbox.admin.web.chat import chat_routes
 from agent_sandbox.admin.web.operator_steering import operator_steering_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.admin.web.shared import (
+    ADMIN_WEB_BRANDING_ASSET_BASE_PATH,
     AZURE_SSO_START_PATH,
     AdminWebAuth,
     AdminWebConfig,
@@ -44,13 +48,13 @@ def _dist_dir() -> Path:
     return Path(__file__).resolve().parents[4] / "frontend" / "workflow-editor" / "dist"
 
 
-def _fallback_html(dist_dir: Path) -> str:
+def _fallback_html(dist_dir: Path, *, page_title: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Workflow Editor</title>
+    <title>{escape(page_title)}</title>
     <style>
       body {{
         font-family: ui-sans-serif, system-ui, sans-serif;
@@ -85,6 +89,46 @@ def _fallback_html(dist_dir: Path) -> str:
 """
 
 
+def _script_json(payload: object) -> str:
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
+    index_path = dist_dir / "index.html"
+    page_title = str(branding_payload.get("page_title") or "")
+    if not index_path.is_file():
+        return _fallback_html(dist_dir, page_title=page_title)
+    html = index_path.read_text(encoding="utf-8")
+    title = f"<title>{escape(page_title)}</title>"
+    bootstrap_script = (
+        "<script>"
+        f"window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};"
+        "</script>"
+    )
+    if re.search(r"<title>.*?</title>", html, flags=re.IGNORECASE | re.DOTALL):
+        html = re.sub(
+            r"<title>.*?</title>",
+            title,
+            html,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    elif "</head>" in html:
+        html = html.replace("</head>", f"    {title}\n  </head>", 1)
+    if "__ADMIN_WEB_BRANDING__" in html:
+        return html
+    if "</head>" in html:
+        return html.replace("</head>", f"    {bootstrap_script}\n  </head>", 1)
+    return f"{bootstrap_script}\n{html}"
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, auth: AdminWebAuth) -> None:
         super().__init__(app)
@@ -97,6 +141,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if (
             path == "/healthz"
             or path == "/api/admin/deployment-status"
+            or path == "/api/admin/branding"
+            or path.startswith(f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/")
             or path.startswith("/api/auth/")
             or (path == "/api/workflow-events" and request.method == "POST")
             or (path.startswith("/api/workflow-webhooks/") and request.method == "POST")
@@ -162,6 +208,7 @@ def create_app(service: AdminService) -> Starlette:
                 if auth.config.auth_mode == "azure_sso"
                 else None,
                 "privileged_operations": {"unlocked": False},
+                "branding": auth.config.branding.to_payload(),
             }
         )
         auth.attach_session_cookie(response, token)
@@ -250,6 +297,7 @@ def create_app(service: AdminService) -> Starlette:
                 if auth.config.auth_mode == "azure_sso"
                 else None,
                 "privileged_operations": {"unlocked": False},
+                "branding": auth.config.branding.to_payload(),
             }
         )
         auth.clear_session_cookie(response)
@@ -295,6 +343,28 @@ def create_app(service: AdminService) -> Starlette:
 
     async def get_deployment_status(_: Request) -> JSONResponse:
         return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
+
+    async def get_branding(_: Request) -> JSONResponse:
+        return JSONResponse(auth.config.branding.to_payload())
+
+    async def get_branding_asset(request: Request) -> FileResponse | JSONResponse:
+        asset_root = auth.config.branding_asset_dir
+        if asset_root is None:
+            return json_error(
+                "Admin Web branding asset directory is not configured.", status_code=404
+            )
+        relative_path = str(request.path_params.get("asset_path") or "").strip()
+        if not relative_path or "\x00" in relative_path:
+            return json_error("Branding asset not found.", status_code=404)
+        root = asset_root.resolve()
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return json_error("Branding asset not found.", status_code=404)
+        if not candidate.is_file():
+            return json_error("Branding asset not found.", status_code=404)
+        return FileResponse(candidate)
 
     async def get_release_info(request: Request) -> JSONResponse:
         try:
@@ -344,7 +414,9 @@ def create_app(service: AdminService) -> Starlette:
         )
 
     async def index(_: Request) -> Response:
-        return HTMLResponse(_fallback_html(dist_dir))
+        return HTMLResponse(
+            _index_html(dist_dir, branding_payload=auth.config.branding.to_payload())
+        )
 
     routes = [
         Route("/healthz", health, methods=["GET"]),
@@ -354,6 +426,12 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/auth/session", get_session, methods=["GET"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/admin/state", get_admin_state, methods=["GET"]),
+        Route("/api/admin/branding", get_branding, methods=["GET"]),
+        Route(
+            f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}" + "/{asset_path:path}",
+            get_branding_asset,
+            methods=["GET"],
+        ),
         Route(
             "/api/admin/deployment-status",
             dashboard_cache.wrap("admin.deployment_status", get_deployment_status),
@@ -385,9 +463,12 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service))
     if dist_dir.exists():
+        routes.append(Route("/", index, methods=["GET"]))
+        routes.append(Route("/index.html", index, methods=["GET"]))
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
     else:
         routes.append(Route("/", index, methods=["GET"]))
+        routes.append(Route("/index.html", index, methods=["GET"]))
 
     app = Starlette(debug=False, routes=routes)
     app.state.auth = auth
