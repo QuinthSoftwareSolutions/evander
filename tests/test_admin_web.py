@@ -1662,6 +1662,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "git_author_name",
         "git_author_email",
+        "git_committer_name",
+        "git_committer_email",
     ]
     agent_bootstrap_frontend = next(
         node

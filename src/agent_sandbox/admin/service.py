@@ -3266,7 +3266,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Optional git user.name for cloned repositories. "
+                    "Optional author.name for cloned repositories. "
                     "Set together with git_author_email."
                 ),
             ),
@@ -3276,8 +3276,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Optional git user.email for cloned repositories. "
+                    "Optional author.email for cloned repositories. "
                     "Set together with git_author_name."
+                ),
+            ),
+            _field(
+                "git_committer_name",
+                "Git committer name",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional committer.name for cloned repositories. "
+                    "Set together with git_committer_email."
+                ),
+            ),
+            _field(
+                "git_committer_email",
+                "Git committer email",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional committer.email for cloned repositories. "
+                    "Set together with git_committer_name."
                 ),
             ),
         ],
@@ -19275,6 +19295,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         directory_path: str = "root",
         git_author_name: str | None = None,
         git_author_email: str | None = None,
+        git_committer_name: str | None = None,
+        git_committer_email: str | None = None,
     ) -> VmActionResult:
         return self.vm_agent_admin.clone_repo_into_vm(
             vm_name=vm_name,
@@ -19285,6 +19307,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             git_author_name=git_author_name,
             git_author_email=git_author_email,
+            git_committer_name=git_committer_name,
+            git_committer_email=git_committer_email,
         )
 
     def bootstrap_python_in_vm(

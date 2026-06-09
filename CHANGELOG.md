@@ -13,6 +13,13 @@ material. Newer entries are added incrementally as changes land.
 - Added dedicated Azure DevOps work-item and pull-request tag effects that add
   or remove a single tag idempotently.
 
+## 2026-06-09 - Clone Repo Git Committer Identity
+
+- Added optional `git_committer_name` and `git_committer_email` inputs to
+  `effect:agent:clone-repo` so workflows can configure Git author and
+  committer identities separately while preserving existing author-only
+  behavior.
+
 ## 2026-06-08 - Operator Steering Notes
 
 - Added Admin Web operator steering notes for inspected prompt dispatches, with

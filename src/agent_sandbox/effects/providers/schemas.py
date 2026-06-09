@@ -238,6 +238,8 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     git_author_name: ConfigValue | None = None
     git_author_email: ConfigValue | None = None
+    git_committer_name: ConfigValue | None = None
+    git_committer_email: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":

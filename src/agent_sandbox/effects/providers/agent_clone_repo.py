@@ -30,9 +30,13 @@ from .base import EffectProviderBase
 
 
 @dataclass(frozen=True)
-class GitAuthorIdentity:
+class GitIdentity:
     name: str
     email: str
+
+
+GitAuthorIdentity = GitIdentity
+_DEFAULT_GIT_IDENTITY = GitIdentity(name="Truman Bot", email="truman@quinth.se")
 
 
 class AgentCloneRepoEffectProvider(EffectProviderBase):
@@ -49,10 +53,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "directory_path": effect.directory_path,
             "git_author_name": effect.git_author_name,
             "git_author_email": effect.git_author_email,
+            "git_committer_name": effect.git_committer_name,
+            "git_committer_email": effect.git_committer_email,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
-        git_identity = _git_author_identity_from_payload(payload)
+        git_author_identity = _git_author_identity_from_payload(payload)
+        git_committer_identity = _git_committer_identity_from_payload(payload)
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -64,7 +71,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             return self._execute_libvirt(
                 payload,
                 execution_backend=execution_backend,
-                git_identity=git_identity,
+                git_author_identity=git_author_identity,
+                git_committer_identity=git_committer_identity,
             )
         if execution_backend != "container_worker_vm":
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -120,7 +128,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 repo_source=mirror.canonical_repo_source,
                 remote_url=result.remote_url,
                 clone_branch=clone_branch,
-                git_identity=git_identity,
+                git_author_identity=git_author_identity,
+                git_committer_identity=git_committer_identity,
                 timeout_seconds=float(config.container_worker_job_timeout_seconds),
             )
         return {
@@ -182,7 +191,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
-        git_identity: GitAuthorIdentity | None,
+        git_author_identity: GitIdentity | None,
+        git_committer_identity: GitIdentity | None,
         timeout_seconds: float,
     ) -> None:
         execution_id = safe_effect_execution_id("clone-config", session_id)
@@ -192,7 +202,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             repo_source=repo_source,
             remote_url=remote_url,
             clone_branch=clone_branch,
-            git_identity=git_identity,
+            git_author_identity=git_author_identity,
+            git_committer_identity=git_committer_identity,
         )
         handle = backend.start(
             backend.prepare(
@@ -257,13 +268,16 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
-        git_identity: GitAuthorIdentity | None = None,
+        git_identity: GitIdentity | None = None,
+        git_author_identity: GitIdentity | None = None,
+        git_committer_identity: GitIdentity | None = None,
     ) -> str:
+        if git_author_identity is None and git_identity is not None:
+            git_author_identity = git_identity
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         push_remote_url = _container_reachable_git_remote_url(remote_url)
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
-        git_user_name = git_identity.name if git_identity is not None else "Truman Bot"
-        git_user_email = git_identity.email if git_identity is not None else "truman@quinth.se"
+        git_user_identity = git_author_identity or _DEFAULT_GIT_IDENTITY
         lines = [
             container_shell_preamble().rstrip(),
             f"cd {shlex.quote(target_dir)}",
@@ -286,8 +300,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             '  git config --unset-all alias.push-agent >/dev/null 2>&1 || true',
             '  git config agent-sandbox.pushAgentAvailable "false"',
             "fi",
-            f"git config user.name {shlex.quote(git_user_name)}",
-            f"git config user.email {shlex.quote(git_user_email)}",
+            f"git config user.name {shlex.quote(git_user_identity.name)}",
+            f"git config user.email {shlex.quote(git_user_identity.email)}",
             'BASE_BRANCH=${CLONE_BRANCH:-}',
             'if [ -z "$BASE_BRANCH" ]; then BASE_BRANCH=$(git branch --show-current || true); fi',
             'if [ -n "$BASE_BRANCH" ]; then git config agent-sandbox.baseBranch "$BASE_BRANCH"; fi',
@@ -302,11 +316,22 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         ]
         if clone_branch:
             lines.insert(8, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
-        if git_identity is not None:
+        if git_author_identity is not None:
             lines.extend(
                 [
-                    f"git config agent-sandbox.gitAuthorName {shlex.quote(git_identity.name)}",
-                    f"git config agent-sandbox.gitAuthorEmail {shlex.quote(git_identity.email)}",
+                    f"git config author.name {shlex.quote(git_author_identity.name)}",
+                    f"git config author.email {shlex.quote(git_author_identity.email)}",
+                    f"git config agent-sandbox.gitAuthorName {shlex.quote(git_author_identity.name)}",
+                    f"git config agent-sandbox.gitAuthorEmail {shlex.quote(git_author_identity.email)}",
+                ]
+            )
+        if git_committer_identity is not None:
+            lines.extend(
+                [
+                    f"git config committer.name {shlex.quote(git_committer_identity.name)}",
+                    f"git config committer.email {shlex.quote(git_committer_identity.email)}",
+                    f"git config agent-sandbox.gitCommitterName {shlex.quote(git_committer_identity.name)}",
+                    f"git config agent-sandbox.gitCommitterEmail {shlex.quote(git_committer_identity.email)}",
                 ]
             )
         lines.extend(
@@ -328,7 +353,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         payload: dict[str, Any],
         *,
         execution_backend: str,
-        git_identity: GitAuthorIdentity | None,
+        git_author_identity: GitIdentity | None,
+        git_committer_identity: GitIdentity | None,
     ) -> dict[str, Any]:
         context = self._context()
         repo_cloner = getattr(context.vm_repo_cloner, "clone_repo_into_vm", None)
@@ -347,8 +373,14 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             directory_path=normalize_optional_string(payload.get("directory_path"))
             or str(context.metadata.get("directory_path") or "root"),
-            git_author_name=git_identity.name if git_identity is not None else None,
-            git_author_email=git_identity.email if git_identity is not None else None,
+            git_author_name=git_author_identity.name if git_author_identity is not None else None,
+            git_author_email=git_author_identity.email if git_author_identity is not None else None,
+            git_committer_name=(
+                git_committer_identity.name if git_committer_identity is not None else None
+            ),
+            git_committer_email=(
+                git_committer_identity.email if git_committer_identity is not None else None
+            ),
         )
         return {
             "success": bool(result.success),
@@ -443,13 +475,29 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
     )
 
 
-def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitAuthorIdentity | None:
-    name = normalize_optional_string(payload.get("git_author_name"))
-    email = normalize_optional_string(payload.get("git_author_email"))
+def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitIdentity | None:
+    return _git_identity_from_payload(
+        payload,
+        name_key="git_author_name",
+        email_key="git_author_email",
+    )
+
+
+def _git_committer_identity_from_payload(payload: Mapping[str, Any]) -> GitIdentity | None:
+    return _git_identity_from_payload(
+        payload,
+        name_key="git_committer_name",
+        email_key="git_committer_email",
+    )
+
+
+def _git_identity_from_payload(
+    payload: Mapping[str, Any], *, name_key: str, email_key: str
+) -> GitIdentity | None:
+    name = normalize_optional_string(payload.get(name_key))
+    email = normalize_optional_string(payload.get(email_key))
     if name is None and email is None:
         return None
     if name is None or email is None:
-        raise ValueError(
-            "effect:agent:clone-repo git_author_name and git_author_email must both be set"
-        )
-    return GitAuthorIdentity(name=name, email=email)
+        raise ValueError(f"effect:agent:clone-repo {name_key} and {email_key} must both be set")
+    return GitIdentity(name=name, email=email)
