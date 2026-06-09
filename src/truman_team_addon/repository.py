@@ -25,6 +25,7 @@ from .models import (
     PersistentAgent,
     Project,
     ProjectGoal,
+    ProjectStatus,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -712,6 +713,9 @@ class TeamStateRepository:
             "created_deliverable_ids": [],
             "created_task_ids": [],
             "created_status_request_ids": [],
+            "created_review_request_ids": [],
+            "decided_review_request_ids": [],
+            "updated_goal_ids": [],
             "operator_escalation_event_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
@@ -761,6 +765,7 @@ class TeamStateRepository:
                     return state_model
 
             progress = False
+            projects_to_recalc: set[str] = set()
             for update in _list_of_mappings(normalized_action.get("task_updates"), "task_updates"):
                 task_id = _required_text(update.get("task_id"), "task_id")
                 task = _require_present(state_model.tasks, task_id, "task")
@@ -770,6 +775,7 @@ class TeamStateRepository:
                 raw_state = _optional_text(update.get("state"))
                 if raw_state:
                     task.state = TeamTaskState(raw_state)
+                    projects_to_recalc.add(task.project_id)
                     progress = True
                 priority = update.get("priority")
                 if priority is not None:
@@ -797,6 +803,7 @@ class TeamStateRepository:
                 )
                 if created_id is not None:
                     result["created_task_ids"].append(created_id)
+                    projects_to_recalc.add(state_model.tasks[created_id].project_id)
                     progress = True
 
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
@@ -917,6 +924,7 @@ class TeamStateRepository:
                 task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                 task.state = TeamTaskState.WAITING_FOR_REVIEW
                 task.updated_at = utc_now()
+                projects_to_recalc.add(task.project_id)
                 result["created_deliverable_ids"].append(deliverable.id)
                 if agent.reports_to_agent_id is not None:
                     inbox_id = f"inbox-{uuid4().hex}"
@@ -930,6 +938,47 @@ class TeamStateRepository:
                     )
                     result["created_inbox_item_ids"].append(inbox_id)
                 progress = True
+
+            for review_request in _list_of_mappings(
+                normalized_action.get("review_requests"), "review_requests"
+            ):
+                created_id = _apply_review_request(
+                    state_model,
+                    actor=agent,
+                    request=review_request,
+                    result=result,
+                )
+                if created_id is not None:
+                    result["created_review_request_ids"].append(created_id)
+                    progress = True
+
+            for decision in _list_of_mappings(
+                normalized_action.get("review_decisions"), "review_decisions"
+            ):
+                decided_id = _apply_review_decision(
+                    state_model,
+                    actor=agent,
+                    decision=decision,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if decided_id is not None:
+                    result["decided_review_request_ids"].append(decided_id)
+                    progress = True
+
+            for goal_update in _list_of_mappings(
+                normalized_action.get("goal_updates"), "goal_updates"
+            ):
+                updated_id = _apply_goal_update(
+                    state_model,
+                    actor=agent,
+                    update=goal_update,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if updated_id is not None:
+                    result["updated_goal_ids"].append(updated_id)
+                    progress = True
 
             for inbox_item_id in _string_list(
                 normalized_action.get("handled_inbox_item_ids"),
@@ -986,6 +1035,9 @@ class TeamStateRepository:
                 else:
                     result["rejected_ephemeral_assignment_ids"].append(assignment.id)
                 progress = True
+
+            for project_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, project_id)
 
             record = AgentActionRecord(
                 id=action_id,
@@ -1296,6 +1348,259 @@ def _apply_operator_escalation(
     )
     result["operator_escalation_event_ids"].append(escalation_id)
     return True
+
+
+def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
+    """Return True if supervisor_id is an ancestor of agent_id in the reporting chain."""
+
+    seen: set[str] = set()
+    current = state.agents.get(agent_id)
+    while current is not None and current.reports_to_agent_id is not None:
+        superior_id = current.reports_to_agent_id
+        if superior_id in seen:
+            break
+        seen.add(superior_id)
+        if superior_id == supervisor_id:
+            return True
+        current = state.agents.get(superior_id)
+    return False
+
+
+def _apply_review_request(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None:
+        result["errors"].append(f"review request references missing deliverable {deliverable_id}")
+        return None
+    reviewer_id = _required_text(request.get("reviewer_agent_id"), "reviewer_agent_id")
+    reviewer = state.agents.get(reviewer_id)
+    if reviewer is None:
+        result["errors"].append(f"review request references missing reviewer {reviewer_id}")
+        return None
+    if reviewer.team_id != actor.team_id:
+        result["errors"].append(
+            f"reviewer {reviewer_id} is not in the same team as {actor.id}"
+        )
+        return None
+    task = state.tasks.get(deliverable.task_id)
+    project_id = task.project_id if task is not None else None
+    permitted = (
+        actor.id == deliverable.producer_agent_id
+        or _supervises(state, actor.id, deliverable.producer_agent_id)
+        or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
+        or _is_team_manager(state, actor)
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to request review of deliverable {deliverable_id}"
+        )
+        return None
+    review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
+    if review_id in state.review_requests:
+        result["errors"].append(f"review request {review_id} already exists")
+        return None
+    review = ReviewRequest(
+        id=review_id,
+        deliverable_id=deliverable_id,
+        reviewer_agent_id=reviewer_id,
+        state=TeamRecordState.PENDING,
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = _append_unique(
+        deliverable.review_request_ids,
+        review.id,
+    )
+    inbox_id = f"inbox-{uuid4().hex}"
+    state.inbox[inbox_id] = AgentInboxItem(
+        id=inbox_id,
+        recipient_agent_id=reviewer_id,
+        sender_agent_id=actor.id,
+        task_id=deliverable.task_id,
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        payload={
+            "kind": "review_request",
+            "review_request_id": review.id,
+            "deliverable_id": deliverable_id,
+            "instructions": _optional_text(request.get("instructions")) or "",
+        },
+    )
+    result["created_inbox_item_ids"].append(inbox_id)
+    return review.id
+
+
+def _apply_review_decision(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    decision: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    review_request_id = _required_text(
+        decision.get("review_request_id"), "review_request_id"
+    )
+    review = state.review_requests.get(review_request_id)
+    if review is None:
+        result["errors"].append(
+            f"review decision references missing review request {review_request_id}"
+        )
+        return None
+    if review.reviewer_agent_id != actor.id:
+        result["errors"].append(
+            f"agent {actor.id} is not the assigned reviewer for {review_request_id}"
+        )
+        return None
+    raw_state = _required_text(decision.get("state"), "state")
+    try:
+        decision_state = TeamRecordState(raw_state)
+    except ValueError:
+        result["errors"].append(f"review decision has invalid state {raw_state}")
+        return None
+    if decision_state not in {
+        TeamRecordState.ACCEPTED,
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }:
+        result["errors"].append(
+            f"review decision state {raw_state} must be accepted, rejected, or blocked"
+        )
+        return None
+    review.state = decision_state
+    review.findings = _string_list(decision.get("findings"), "findings")
+    review.decision_at = utc_now()
+    deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
+    task = _require_present(state.tasks, deliverable.task_id, "task")
+    now = utc_now()
+    if decision_state == TeamRecordState.ACCEPTED:
+        all_accepted = all(
+            state.review_requests[review_id].state == TeamRecordState.ACCEPTED
+            for review_id in deliverable.review_request_ids
+        )
+        if all_accepted:
+            deliverable.state = TeamRecordState.ACCEPTED
+            task_deliverables = [
+                state.deliverables[deliverable_id]
+                for deliverable_id in task.deliverable_ids
+                if deliverable_id in state.deliverables
+            ]
+            if task_deliverables and all(
+                item.state == TeamRecordState.ACCEPTED for item in task_deliverables
+            ):
+                task.state = TeamTaskState.ACCEPTED
+                task.updated_at = now
+    elif decision_state == TeamRecordState.REJECTED:
+        deliverable.state = TeamRecordState.REJECTED
+        task.state = TeamTaskState.BLOCKED
+        task.updated_at = now
+    else:  # blocked
+        deliverable.state = TeamRecordState.BLOCKED
+        task.state = TeamTaskState.BLOCKED
+        task.updated_at = now
+    projects_to_recalc.add(task.project_id)
+    return review.id
+
+
+def _apply_goal_update(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    update: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    project_id = _required_text(update.get("project_id"), "project_id")
+    goal_id = _required_text(update.get("goal_id"), "goal_id")
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(f"goal update references missing project {project_id}")
+        return None
+    permitted = _is_project_lead_for(state, actor.id, project_id) or (
+        _is_team_manager(state, actor) and project.team_id == actor.team_id
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to update goals on project {project_id}"
+        )
+        return None
+    raw_state = _required_text(update.get("state"), "state")
+    try:
+        goal_state = TeamRecordState(raw_state)
+    except ValueError:
+        result["errors"].append(f"goal update has invalid state {raw_state}")
+        return None
+    goal = next((item for item in project.goals if item.id == goal_id), None)
+    if goal is None:
+        result["errors"].append(
+            f"goal {goal_id} does not exist on project {project_id}"
+        )
+        return None
+    goal.state = goal_state
+    project.updated_at = utc_now()
+    projects_to_recalc.add(project_id)
+    return goal_id
+
+
+def _recalculate_project_status(state: TeamState, project_id: str) -> None:
+    project = state.projects.get(project_id)
+    if project is None or project.status == ProjectStatus.ARCHIVED:
+        return
+    project_tasks = [
+        task for task in state.tasks.values() if task.project_id == project_id
+    ]
+    project_deliverables = [
+        deliverable
+        for deliverable in state.deliverables.values()
+        if (task := state.tasks.get(deliverable.task_id)) is not None
+        and task.project_id == project_id
+    ]
+    deliverable_ids = {deliverable.id for deliverable in project_deliverables}
+    project_reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.deliverable_id in deliverable_ids
+    ]
+    project_releases = [
+        release
+        for release in state.release_packages.values()
+        if release.project_id == project_id
+    ]
+
+    pending_or_blocked = {TeamRecordState.PENDING, TeamRecordState.BLOCKED}
+    blocked = (
+        any(task.state == TeamTaskState.BLOCKED for task in project_tasks)
+        or any(goal.state == TeamRecordState.BLOCKED for goal in project.goals)
+        or any(
+            deliverable.state == TeamRecordState.BLOCKED
+            for deliverable in project_deliverables
+        )
+        or any(review.state == TeamRecordState.BLOCKED for review in project_reviews)
+        or any(release.state == TeamRecordState.BLOCKED for release in project_releases)
+    )
+    completed = (
+        all(goal.state == TeamRecordState.ACCEPTED for goal in project.goals)
+        and not any(task.state in _NON_TERMINAL_TASK_STATES for task in project_tasks)
+        and not any(
+            deliverable.state in pending_or_blocked
+            for deliverable in project_deliverables
+        )
+        and not any(review.state in pending_or_blocked for review in project_reviews)
+        and not any(release.state in pending_or_blocked for release in project_releases)
+    )
+    if completed:
+        new_status = ProjectStatus.COMPLETED
+    elif blocked:
+        new_status = ProjectStatus.BLOCKED
+    else:
+        new_status = ProjectStatus.ACTIVE
+    if new_status != project.status:
+        project.status = new_status
+        project.updated_at = utc_now()
 
 
 def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
