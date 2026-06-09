@@ -7492,7 +7492,18 @@ select {
   max-height: 18rem;
   object-fit: contain;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.72);
+  background: transparent;
+}
+
+.release-news-image-signature {
+  justify-items: start;
+  margin-top: 0.25rem;
+}
+
+.release-news-image-signature img {
+  width: min(100%, 14rem);
+  max-height: 4.75rem;
+  border-radius: 0;
 }
 
 .release-news-image .release-news-image-dark {
@@ -8764,10 +8775,6 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .release-missing-list strong,
 :root[data-theme="dark"] .release-news-title {
   color: #d7e3ea;
-}
-
-:root[data-theme="dark"] .release-news-image img {
-  background: rgba(6, 18, 28, 0.82);
 }
 
 :root[data-theme="dark"] .release-news-image .release-news-image-light {

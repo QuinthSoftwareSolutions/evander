@@ -292,6 +292,13 @@ type ReleaseInfoPayload = {
   missing_reasons: string[];
 };
 
+function releaseNewsImageClassName(block: Extract<ReleaseNewsBlock, { kind: "image" }>): string {
+  const descriptor = `${block.src} ${block.dark_src ?? ""} ${block.alt}`.toLowerCase();
+  return descriptor.includes("signature")
+    ? "release-news-image release-news-image-signature"
+    : "release-news-image";
+}
+
 type TelemetryStatus = "available" | "missing" | "unsupported" | "permission_denied";
 
 type HealthState = "ok" | "warning" | "critical" | "unknown";
@@ -1574,7 +1581,7 @@ function ProductContextPanel({
               <div className="release-news-copy">
                 {releaseInfo.news.blocks.map((block, index) => (
                   block.kind === "image" ? (
-                    <figure className="release-news-image" key={`${releaseInfo.news?.heading ?? "news"}-image-${index}`}>
+                    <figure className={releaseNewsImageClassName(block)} key={`${releaseInfo.news?.heading ?? "news"}-image-${index}`}>
                       <img
                         className={block.dark_src ? "release-news-image-light" : undefined}
                         src={block.src}
