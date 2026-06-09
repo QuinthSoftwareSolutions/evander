@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -274,6 +276,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -489,10 +496,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     "Dispatch agent v2",
   );
 
-  const expandSectionsButton = page.getByRole("button", { name: "Expand sections" });
-  if (await expandSectionsButton.count()) {
-    await expandSectionsButton.click();
-  }
+  await ensureSectionsExpanded(page);
   const usersTab = page.locator(".admin-shell-tab").filter({ hasText: "Users & Groups" });
   await usersTab.click();
   assert.deepEqual(tabConfirmMessages, ["Workflow has unsaved changes. Discard them and continue?"]);

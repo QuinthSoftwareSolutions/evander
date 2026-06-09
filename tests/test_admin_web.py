@@ -10278,6 +10278,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "include_inactive": True,
             "reconcile_containers": False,
             "omit_vm_state": True,
+            "summary_only": True,
             "backend": "all",
         },
         {
@@ -10286,6 +10287,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "include_inactive": True,
             "reconcile_containers": True,
             "omit_vm_state": False,
+            "summary_only": False,
             "backend": "all",
         },
         {
@@ -10294,6 +10296,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "include_inactive": True,
             "reconcile_containers": True,
             "omit_vm_state": False,
+            "summary_only": False,
             "backend": "all",
         },
     ]

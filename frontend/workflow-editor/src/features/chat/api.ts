@@ -1,10 +1,13 @@
 import { fetchJson } from "../admin/api";
 export type CapabilityMode = "read-only" | "full-access";
-export type ChatSession = { user_id: string; thread_id: string; assistant_capability_mode: CapabilityMode };
+export type AssistantSessionStatus = "disabled" | "not_started" | "preparing" | "ready" | "failed";
+export type AssistantSession = { status: AssistantSessionStatus; error: string | null; updated_at: string | null };
+export type ChatSession = { user_id: string; thread_id: string; assistant_capability_mode: CapabilityMode; assistant_session: AssistantSession };
 export type ChatMessageStatus = "queued" | "running" | "failed" | "answered";
 export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; created_at: string; status?: ChatMessageStatus };
-export type ChatTranscript = { thread_id: string; messages: ChatMessage[]; assistant_capability_mode: CapabilityMode; updated_at?: string };
+export type ChatTranscript = { thread_id: string; messages: ChatMessage[]; assistant_capability_mode: CapabilityMode; assistant_session: AssistantSession; updated_at?: string };
 export const startOrGetChatSession = () => fetchJson<ChatSession>("/api/chat/session", { method: "POST" });
 export const startNewChatSession = () => fetchJson<ChatSession>("/api/chat/session/new", { method: "POST" });
-export const postChatMessage = (thread_id: string, content: string) => fetchJson<{ thread_id: string; messages: ChatMessage[]; assistant_capability_mode: CapabilityMode }>("/api/chat/message", { method: "POST", body: JSON.stringify({ thread_id, content }) });
+export const retryChatAssistantPrewarm = (thread_id: string) => fetchJson<ChatSession>("/api/chat/session/prewarm", { method: "POST", body: JSON.stringify({ thread_id }) });
+export const postChatMessage = (thread_id: string, content: string) => fetchJson<{ thread_id: string; messages: ChatMessage[]; assistant_capability_mode: CapabilityMode; assistant_session: AssistantSession }>("/api/chat/message", { method: "POST", body: JSON.stringify({ thread_id, content }) });
 export const fetchTranscript = (thread_id: string) => fetchJson<ChatTranscript>(`/api/chat/transcript/${encodeURIComponent(thread_id)}`);

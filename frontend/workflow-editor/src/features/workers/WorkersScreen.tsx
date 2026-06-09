@@ -425,6 +425,7 @@ export function WorkersScreen() {
             <h1>Workers</h1>
           </div>
           <button
+            className="admin-action-button compact"
             type="button"
             onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
             disabled={!selectedWorkerId || loading || acting !== null || saving}
@@ -482,6 +483,7 @@ export function WorkersScreen() {
             {selectedSummary?.running ? (
               <Tooltip content="Stop the selected background worker service.">
                 <button
+                  className="admin-icon-button"
                   type="button"
                   onClick={() => void handleWorkerAction("stop")}
                   disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
@@ -493,6 +495,7 @@ export function WorkersScreen() {
             ) : (
               <Tooltip content="Start the selected background worker service.">
                 <button
+                  className="admin-icon-button"
                   type="button"
                   onClick={() => void handleWorkerAction("start")}
                   disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
@@ -504,6 +507,7 @@ export function WorkersScreen() {
             )}
             <Tooltip content="Reload the selected worker summary, config, and recent log.">
               <button
+                className="admin-icon-button"
                 type="button"
                 onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
                 disabled={!selectedWorkerId || loading || acting !== null || saving}
@@ -515,7 +519,7 @@ export function WorkersScreen() {
             <Tooltip content="Save the current worker-global settings back to the host config file.">
               <button
                 type="button"
-                className="primary"
+                className="admin-icon-button primary"
                 onClick={() => void handleSaveConfig()}
                 disabled={!selectedWorkerId || saving || acting !== null || loading || !detail?.config_schema || !isDirty || mutationLocked}
                 aria-label={saving ? "Saving worker settings" : "Save worker settings"}
@@ -596,6 +600,7 @@ export function WorkersScreen() {
               <p className="muted-text">Latest journal output for the selected worker unit.</p>
             </div>
             <button
+              className="admin-action-button compact"
               type="button"
               onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
               disabled={!selectedWorkerId || loading || acting !== null || saving}

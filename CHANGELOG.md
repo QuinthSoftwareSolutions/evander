@@ -5,6 +5,58 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Admin Mobile Shell Density
+
+- Made the Admin Web shell use a compact two-row mobile header and horizontal
+  section bar so dashboard content appears in the first mobile viewport even
+  when section navigation was previously collapsed.
+
+## 2026-06-09 - Workflow Mobile Authoring
+
+- Added a compact workflow authoring shell with mobile toolbar controls,
+  bottom-sheet Create, Inspector, Runs, Graphs, and Save panels, plus
+  tap-to-connect edge creation for phone-sized screens.
+- Preserved mobile page scrolling in Select mode while adding explicit
+  one-finger canvas panning in Pan mode and keeping two-finger graph gestures.
+
+## 2026-06-09 - Admin Button Styling
+
+- Standardized Admin Web action and icon buttons across tool calls, users,
+  agents, workers, artifacts, and reports so feature pages no longer expose
+  browser-default button styling.
+
+## 2026-06-09 - Admin Assistant Background Prewarm
+
+- Made Admin Web chat session creation return a lightweight thread immediately
+  while assistant VM/session preparation runs in a deduped background task.
+- Added per-thread assistant preparation status, retry API support, and launcher
+  UI states for Preparing, Ready, and Failed without blocking page load.
+
+## 2026-06-09 - Tool Calls Recent First Load
+
+- Made the Admin Web Tool Calls page request a bounded recent audit slice by
+  default, flag partial recent results in the UI, and keep targeted filters on
+  exact full-history reads.
+
+## 2026-06-09 - Admin Mobile Table Cards
+
+- Added mobile record-card layouts for Admin Web Artifacts, Tool Calls,
+  Reports, and Users tables below 720px while preserving the desktop table
+  markup and selection behavior.
+
+## 2026-06-09 - Admin Web Section Navigation
+
+- Made Admin Web section navigation expanded by default for browsers without
+  a saved collapse preference, while preserving stored collapsed/expanded
+  choices.
+- Kept collapsed navigation usable by rendering compact section buttons instead
+  of an empty rail.
+
+## 2026-06-09 - Dashboard Agent Inventory Polling
+
+- Made the dashboard capacity agent-inventory poll use summary-only agent
+  listing without container reconciliation or VM state refreshes.
+
 ## 2026-06-09 - Remove Legacy Host Script Workflow Effect
 
 - Removed the deprecated host-side script workflow effect and its obsolete

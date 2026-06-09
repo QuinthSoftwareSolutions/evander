@@ -1383,6 +1383,9 @@ function dashboardAgentInventoryUrl(directoryPath: string, refreshKey: number | 
     direct_only: false,
     include_inactive: true,
     backend: "all",
+    summary_only: true,
+    reconcile_containers: false,
+    omit_vm_state: true,
     ...dashboardCacheParams(refreshKey),
   })}`;
 }

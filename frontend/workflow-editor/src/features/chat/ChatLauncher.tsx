@@ -2,14 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchTranscript,
   postChatMessage,
+  retryChatAssistantPrewarm,
   startNewChatSession,
   startOrGetChatSession,
+  type AssistantSession,
   type CapabilityMode,
   type ChatMessage,
   type ChatTranscript,
 } from "./api";
+import {
+  DEFAULT_ASSISTANT_SESSION,
+  canSendChatMessage,
+  capabilityModeLabel,
+  launcherAssistantStatusLabel,
+} from "./status";
+import { AssistantIcon } from "../admin/PageActionIcons";
 
-type LauncherState = "minimized" | "expanded" | "disabled" | "loading" | "error";
+type LauncherState = "minimized" | "expanded" | "disabled" | "error";
 const UI_KEY = "admin-web:chat:ui";
 
 function formatTime(value: string) {
@@ -36,32 +45,51 @@ export function ChatLauncher({
   showWhenDisabled: boolean;
 }) {
   const launcherAllowed = enabled && (assistantEnabled || showWhenDisabled);
-  const [state, setState] = useState<LauncherState>(launcherAllowed ? "loading" : "disabled");
+  const [state, setState] = useState<LauncherState>(launcherAllowed ? "minimized" : "disabled");
   const [threadId, setThreadId] = useState("");
   const [mode, setMode] = useState<CapabilityMode>("read-only");
+  const [assistantSession, setAssistantSession] = useState<AssistantSession>(
+    assistantEnabled
+      ? DEFAULT_ASSISTANT_SESSION
+      : { status: "disabled", error: null, updated_at: null },
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef("");
 
   const expanded = state === "expanded";
   const disabled = !assistantEnabled || state === "disabled";
-  const canSend =
-    assistantEnabled && !sending && !resetting && Boolean(threadId) && draft.trim().length > 0;
-  const statusText = useMemo(() => {
-    if (!assistantEnabled) return "Disabled";
-    return mode === "full-access" ? "Full access" : "Read only";
-  }, [assistantEnabled, mode]);
+  const canSend = canSendChatMessage({
+    assistantEnabled,
+    sending,
+    resetting,
+    threadId,
+    draft,
+  });
+  const modeText = useMemo(() => capabilityModeLabel(mode), [mode]);
+  const statusText = useMemo(
+    () => launcherAssistantStatusLabel(assistantEnabled, assistantSession),
+    [assistantEnabled, assistantSession],
+  );
+  const minimizedStatusText = state === "error" ? "Failed" : statusText;
+  const prewarmFailed = assistantEnabled && assistantSession.status === "failed";
 
   useEffect(() => {
     activeThreadRef.current = threadId;
   }, [threadId]);
 
   useEffect(() => {
-    if (!launcherAllowed || !assistantEnabled) {
+    if (!launcherAllowed) {
+      setState("disabled");
+      return;
+    }
+    if (!assistantEnabled) {
+      setAssistantSession({ status: "disabled", error: null, updated_at: null });
       setState("disabled");
       return;
     }
@@ -71,7 +99,8 @@ export function ChatLauncher({
       window.localStorage.getItem(UI_KEY) === "expanded" ? "expanded" : "minimized";
 
     async function loadChatSession() {
-      setState("loading");
+      setState(preferredState);
+      setAssistantSession(DEFAULT_ASSISTANT_SESSION);
       setError("");
 
       try {
@@ -79,11 +108,13 @@ export function ChatLauncher({
         if (cancelled) return;
         setThreadId(session.thread_id);
         setMode(session.assistant_capability_mode);
+        setAssistantSession(session.assistant_session);
 
         const transcript = await fetchTranscript(session.thread_id);
         if (cancelled) return;
         setMessages(transcript.messages);
         setMode(transcript.assistant_capability_mode);
+        setAssistantSession(transcript.assistant_session);
         setState(preferredState);
       } catch (e) {
         if (cancelled) return;
@@ -100,7 +131,7 @@ export function ChatLauncher({
   }, [launcherAllowed, assistantEnabled]);
 
   useEffect(() => {
-    if (!expanded || !threadId || !assistantEnabled) return;
+    if (!threadId || !assistantEnabled) return;
     let closed = false;
     const stream = new EventSource(`/api/chat/stream/${encodeURIComponent(threadId)}`);
     stream.addEventListener("snapshot", (event) => {
@@ -109,6 +140,7 @@ export function ChatLauncher({
         const transcript = JSON.parse((event as MessageEvent).data) as ChatTranscript;
         setMessages(transcript.messages);
         setMode(transcript.assistant_capability_mode);
+        setAssistantSession(transcript.assistant_session);
       } catch {
         // Ignore malformed stream events; EventSource will keep the connection alive.
       }
@@ -120,6 +152,7 @@ export function ChatLauncher({
           if (closed) return;
           setMessages(transcript.messages);
           setMode(transcript.assistant_capability_mode);
+          setAssistantSession(transcript.assistant_session);
         })
         .catch(() => undefined);
     };
@@ -127,7 +160,7 @@ export function ChatLauncher({
       closed = true;
       stream.close();
     };
-  }, [expanded, threadId, assistantEnabled]);
+  }, [threadId, assistantEnabled]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -146,6 +179,7 @@ export function ChatLauncher({
       if (activeThreadRef.current !== response.thread_id) return;
       setMessages((current) => mergeMessages(current, response.messages));
       setMode(response.assistant_capability_mode);
+      setAssistantSession(response.assistant_session);
       setDraft("");
     } catch (e) {
       if (activeThreadRef.current !== targetThreadId) return;
@@ -165,6 +199,7 @@ export function ChatLauncher({
       activeThreadRef.current = session.thread_id;
       setThreadId(session.thread_id);
       setMode(session.assistant_capability_mode);
+      setAssistantSession(session.assistant_session);
       setMessages([]);
       setDraft("");
       setState("expanded");
@@ -173,6 +208,24 @@ export function ChatLauncher({
       setError(e instanceof Error ? e.message : "Failed to start new chat");
     } finally {
       setResetting(false);
+    }
+  }
+
+  async function retryPrewarm() {
+    if (!threadId || retrying || !assistantEnabled) return;
+    const targetThreadId = threadId;
+    setRetrying(true);
+    setError("");
+    try {
+      const session = await retryChatAssistantPrewarm(targetThreadId);
+      if (activeThreadRef.current !== session.thread_id) return;
+      setMode(session.assistant_capability_mode);
+      setAssistantSession(session.assistant_session);
+    } catch (e) {
+      if (activeThreadRef.current !== targetThreadId) return;
+      setError(e instanceof Error ? e.message : "Failed to retry assistant preparation");
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -192,7 +245,7 @@ export function ChatLauncher({
             <div>
               <h2>Assistant</h2>
               <span className={`chat-mode-badge ${mode === "full-access" ? "is-full" : ""}`}>
-                {statusText}
+                {assistantEnabled ? modeText : "Disabled"}
               </span>
             </div>
             <div className="chat-panel-actions">
@@ -232,6 +285,23 @@ export function ChatLauncher({
           </div>
 
           {error ? <div className="chat-error">{error}</div> : null}
+          {prewarmFailed ? (
+            <div className="chat-error chat-prewarm-warning">
+              <span>
+                {assistantSession.error
+                  ? `Assistant target failed: ${assistantSession.error}`
+                  : "Assistant target failed."}
+              </span>
+              <button
+                type="button"
+                className="chat-new-button"
+                onClick={() => void retryPrewarm()}
+                disabled={retrying}
+              >
+                {retrying ? "Retrying" : "Retry"}
+              </button>
+            </div>
+          ) : null}
 
           <form className="chat-input-row" onSubmit={(event) => void send(event)}>
             <textarea
@@ -256,11 +326,12 @@ export function ChatLauncher({
         <button
           type="button"
           className="chat-pill"
-          disabled={state === "loading"}
           onClick={toggleState}
+          aria-label={`Assistant ${minimizedStatusText}`}
         >
+          <AssistantIcon />
           <span>Assistant</span>
-          <small>{state === "loading" ? "Loading" : statusText}</small>
+          <small>{minimizedStatusText}</small>
         </button>
       )}
     </div>

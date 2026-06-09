@@ -6,12 +6,22 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
     contentType: "application/json",
     body: JSON.stringify(payload),
   };
+}
+
+async function waitForToolCallRequest(page, predicate) {
+  const request = await page.waitForRequest((candidate) => {
+    const url = new URL(candidate.url());
+    return url.pathname === "/api/admin/tool-calls" && predicate(url);
+  });
+  return new URL(request.url());
 }
 
 test("admin shell routes to tool calls and renders redacted audit entries", async (t) => {
@@ -235,6 +245,7 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
       assert.equal(url.searchParams.get("session_id"), "session-1");
       assert.equal(url.searchParams.get("tool_name"), "email_send_approved");
       assert.equal(url.searchParams.get("status"), "success");
+      assert.equal(url.searchParams.get("recent_only"), null);
       toolCallResponses.push(url.search);
       await route.fulfill(jsonResponse(toolCallsResponse));
       return;
@@ -262,7 +273,7 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
     .filter({ hasText: "Tool Calls" });
   const filterSidebar = page.locator(".feature-sidebar");
-  await page.getByRole("button", { name: "Expand sections" }).click();
+  await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Tool Calls" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => filterSidebar.getByLabel("Search").waitFor({ state: "visible" }));
@@ -316,6 +327,238 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   assert.deepEqual(consoleErrors, []);
 });
 
+test("tool calls default load uses recent mode and filtered reads stay exact", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let releaseHeldToolCallResponses = () => {};
+  let resolveFirstToolCallRequest = () => {};
+  const firstToolCallRequest = new Promise((resolve) => {
+    resolveFirstToolCallRequest = resolve;
+  });
+  let holdToolCallResponses = true;
+  const heldToolCallResponses = [];
+  const toolCallRequests = [];
+  const toolCallsResponse = {
+    items: [
+      {
+        tool_name: "prompt_agent",
+        created_at: "2026-05-18T10:03:00Z",
+        status: "success",
+        decision: "allowed",
+        session_id: "session-recent",
+        directory_path: "root",
+        duration_ms: 27,
+        request_id: "request-recent",
+        correlation_id: "correlation-recent",
+        redacted_args: { prompt: "status" },
+        redacted_result: { status: "success" },
+        metadata: {},
+      },
+    ],
+    counts: {
+      scanned: 1,
+      matched: 1,
+      returned: 1,
+      skipped_malformed: 0,
+      skipped_non_tool_call: 0,
+      status_counts: {
+        success: 1,
+        pending_approval: 0,
+        denied: 0,
+        error: 0,
+      },
+    },
+    limit: 100,
+    has_more: true,
+  };
+
+  await t.after(async () => {
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(
+        jsonResponse({
+          auth_mode: "none",
+          auth_required: false,
+          authenticated: true,
+          username: "admin",
+          display_name: "Admin Operator",
+          role: "admin",
+          can_manage_users: true,
+          session_id: "session-123",
+          available_login_methods: [],
+          azure_sso_login_url: null,
+          privileged_operations: { unlocked: false },
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/state") {
+      await route.fulfill(
+        jsonResponse({
+          selected_directory_path: "root",
+          directory_scoped_config_enabled: false,
+          execution_backend: "libvirt_vm",
+          role: "admin",
+          can_manage_users: true,
+          privileged_operations: { unlocked: false },
+          assistant: { enabled: false, show_launcher_when_disabled: false },
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/configuration/state") {
+      await route.fulfill(
+        jsonResponse({
+          directory_scoped_config_enabled: false,
+          selected_directory_path: "root",
+          execution_backend: "libvirt_vm",
+          selected_directory: { path: "root", parent_path: null, can_create: false, can_delete: false },
+          tree: {
+            ok: true,
+            data: {
+              directory: {
+                id: "root",
+                name: "root",
+                parent_id: null,
+                created_at: "2026-05-16T00:00:00Z",
+                metadata: {},
+                path: "root",
+              },
+              config_domains: [],
+              children: [],
+            },
+            errors: [],
+            validation_diagnostics: [],
+          },
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/tool-calls") {
+      toolCallRequests.push(new URL(route.request().url()));
+      if (toolCallRequests.length === 1) {
+        resolveFirstToolCallRequest(toolCallRequests[0]);
+      }
+      if (holdToolCallResponses) {
+        await new Promise((resolve) => {
+          heldToolCallResponses.push(resolve);
+          releaseHeldToolCallResponses = () => {
+            holdToolCallResponses = false;
+            for (const release of heldToolCallResponses.splice(0)) {
+              release();
+            }
+          };
+        });
+      }
+      await route.fulfill(jsonResponse(toolCallsResponse)).catch(() => {});
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#tool-calls`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const firstUrl = await firstToolCallRequest;
+  assert.equal(firstUrl.searchParams.get("directory_path"), "root");
+  assert.equal(firstUrl.searchParams.get("direct_only"), "true");
+  assert.equal(firstUrl.searchParams.get("limit"), "100");
+  assert.equal(firstUrl.searchParams.get("recent_only"), "true");
+  await assert.doesNotReject(() => page.getByText("Loading recent audit entries...", { exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".tool-calls-table").count(), 0);
+
+  releaseHeldToolCallResponses();
+  await assert.doesNotReject(() => page.locator(".tool-calls-table tbody tr").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Recent entries", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Older matching entries may exist.").waitFor({ state: "visible" }));
+
+  const refreshRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true");
+  await page.getByRole("button", { name: "Refresh" }).last().click();
+  const refreshUrl = await refreshRequest;
+  assert.equal(refreshUrl.searchParams.get("q"), null);
+
+  const filterSidebar = page.locator(".feature-sidebar");
+  const searchRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("q") === "request-filter");
+  await filterSidebar.getByLabel("Search").fill("request-filter");
+  assert.equal((await searchRequest).searchParams.get("recent_only"), null);
+
+  const searchClear = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true" && !url.searchParams.has("q"));
+  await filterSidebar.getByLabel("Search").fill("");
+  await searchClear;
+
+  const sessionRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("session_id") === "session-filter");
+  await filterSidebar.getByLabel("Session").fill("session-filter");
+  assert.equal((await sessionRequest).searchParams.get("recent_only"), null);
+
+  const sessionClear = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true" && !url.searchParams.has("session_id"));
+  await filterSidebar.getByLabel("Session").fill("");
+  await sessionClear;
+
+  const toolRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("tool_name") === "prompt_agent");
+  await filterSidebar.getByLabel("Tool").fill("prompt_agent");
+  assert.equal((await toolRequest).searchParams.get("recent_only"), null);
+
+  const toolClear = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true" && !url.searchParams.has("tool_name"));
+  await filterSidebar.getByLabel("Tool").fill("");
+  await toolClear;
+
+  const statusRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("status") === "error");
+  await filterSidebar.getByLabel("Status").selectOption("error");
+  assert.equal((await statusRequest).searchParams.get("recent_only"), null);
+
+  const statusClear = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true" && !url.searchParams.has("status"));
+  await filterSidebar.getByLabel("Status").selectOption("all");
+  await statusClear;
+
+  const dateRequest = waitForToolCallRequest(page, (url) => url.searchParams.has("created_after"));
+  await filterSidebar.getByLabel("Created after").fill("2026-05-18T10:00");
+  assert.equal((await dateRequest).searchParams.get("recent_only"), null);
+});
+
 test("tool calls polling does not overlap while a request is pending", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -337,11 +580,13 @@ test("tool calls polling does not overlap while a request is pending", async (t)
   let toolCallRequests = 0;
   let inFlightToolCallRequests = 0;
   let maxInFlightToolCallRequests = 0;
-  let releaseToolCallResponse = () => {};
-  let resolveFirstToolCallRequest = () => {};
-  const firstToolCallRequest = new Promise((resolve) => {
-    resolveFirstToolCallRequest = resolve;
+  let holdToolCallResponses = false;
+  let releaseHeldToolCallResponses = () => {};
+  let resolveHeldToolCallRequest = () => {};
+  const heldToolCallRequest = new Promise((resolve) => {
+    resolveHeldToolCallRequest = resolve;
   });
+  const heldToolCallReleases = [];
 
   await page.addInitScript(() => {
     const originalSetInterval = window.setInterval.bind(window);
@@ -438,13 +683,21 @@ test("tool calls polling does not overlap while a request is pending", async (t)
     }
     if (pathname === "/api/admin/tool-calls") {
       toolCallRequests += 1;
-      resolveFirstToolCallRequest();
-      inFlightToolCallRequests += 1;
-      maxInFlightToolCallRequests = Math.max(maxInFlightToolCallRequests, inFlightToolCallRequests);
-      await new Promise((resolve) => {
-        releaseToolCallResponse = resolve;
-      });
-      inFlightToolCallRequests -= 1;
+      if (holdToolCallResponses) {
+        resolveHeldToolCallRequest();
+        inFlightToolCallRequests += 1;
+        maxInFlightToolCallRequests = Math.max(maxInFlightToolCallRequests, inFlightToolCallRequests);
+        await new Promise((resolve) => {
+          heldToolCallReleases.push(resolve);
+          releaseHeldToolCallResponses = () => {
+            holdToolCallResponses = false;
+            for (const release of heldToolCallReleases.splice(0)) {
+              release();
+            }
+          };
+        });
+        inFlightToolCallRequests -= 1;
+      }
       await route.fulfill(
         jsonResponse({
           items: [],
@@ -461,11 +714,13 @@ test("tool calls polling does not overlap while a request is pending", async (t)
   await page.goto(`http://127.0.0.1:${address.port}/#tool-calls`, {
     waitUntil: "domcontentloaded",
   });
-  await firstToolCallRequest;
+  await assert.doesNotReject(() => page.locator(".tool-calls-table .empty-state-cell").filter({ hasText: "No tool calls matched the current filters." }).waitFor({ state: "visible" }));
+  holdToolCallResponses = true;
+  await heldToolCallRequest;
   await page.waitForTimeout(80);
 
+  releaseHeldToolCallResponses();
   assert.equal(maxInFlightToolCallRequests, 1);
-  assert.equal(toolCallRequests, 1);
-  releaseToolCallResponse();
+  assert.ok(toolCallRequests >= 1);
   await page.waitForTimeout(50);
 });

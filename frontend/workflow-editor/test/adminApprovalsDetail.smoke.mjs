@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -212,7 +214,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   const navEntry = page
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
     .filter({ hasText: "Approvals" });
-  await page.getByRole("button", { name: "Expand sections" }).click();
+  await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
@@ -497,7 +499,7 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
     waitUntil: "domcontentloaded",
   });
 
-  await page.getByRole("button", { name: "Expand sections" }).click();
+  await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByLabel("Approver").count(), 0);
   await assert.doesNotReject(() =>

@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
-import { DownloadIcon, UploadIcon } from "../admin/PageActionIcons";
+import { DownloadIcon, RefreshIcon, UploadIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 
 type PublishedArtifact = {
@@ -237,7 +237,8 @@ export function ArtifactsPage() {
             <div className="eyebrow">Artifact store</div>
             <h1>Artifacts</h1>
           </div>
-          <button type="button" onClick={() => void loadArtifacts()}>
+          <button className="admin-action-button compact" type="button" onClick={() => void loadArtifacts()}>
+            <RefreshIcon />
             Refresh
           </button>
         </div>
@@ -251,10 +252,10 @@ export function ArtifactsPage() {
           />
         </label>
         <div className="inline-actions artifact-lookup-actions">
-          <button type="button" onClick={() => void resolveKey()} disabled={lookupLoading}>
+          <button className="admin-action-button compact" type="button" onClick={() => void resolveKey()} disabled={lookupLoading}>
             {lookupLoading ? "Resolving..." : "Resolve key"}
           </button>
-          <button type="button" onClick={applyFilters} disabled={loading}>
+          <button className="admin-action-button compact" type="button" onClick={applyFilters} disabled={loading}>
             Apply filters
           </button>
         </div>
@@ -297,11 +298,12 @@ export function ArtifactsPage() {
           <div className="feature-toolbar-actions">
             <span className="panel-meta">{response?.total ?? 0} matched</span>
             <Tooltip content="Upload a local file as a published artifact.">
-              <button type="button" className="toolbar-icon-button" aria-label="Upload artifact" onClick={openUploadDialog}>
+              <button type="button" className="admin-icon-button toolbar-icon-button" aria-label="Upload artifact" onClick={openUploadDialog}>
                 <UploadIcon />
               </button>
             </Tooltip>
-            <button type="button" onClick={() => void loadArtifacts()} disabled={loading}>
+            <button className="admin-action-button compact" type="button" onClick={() => void loadArtifacts()} disabled={loading}>
+              <RefreshIcon />
               Refresh
             </button>
           </div>
@@ -320,15 +322,15 @@ export function ArtifactsPage() {
                 </p>
               </div>
               <div className="feature-toolbar-actions">
-                <button type="button" onClick={previousPage} disabled={previousCursors.length === 0 || loading}>
+                <button className="admin-action-button compact" type="button" onClick={previousPage} disabled={previousCursors.length === 0 || loading}>
                   Previous
                 </button>
-                <button type="button" onClick={nextPage} disabled={!response?.next_cursor || loading}>
+                <button className="admin-action-button compact" type="button" onClick={nextPage} disabled={!response?.next_cursor || loading}>
                   Next
                 </button>
               </div>
             </div>
-            <div className="table-wrap">
+            <div className="table-wrap mobile-paired-table">
               <table className="admin-table artifacts-table">
                 <thead>
                   <tr>
@@ -360,6 +362,7 @@ export function ArtifactsPage() {
                       <td>
                         <div className="feature-toolbar-actions icon-actions artifacts-download-cell">
                           <button
+                            className="admin-icon-button"
                             type="button"
                             aria-label={`Download artifact ${item.key}`}
                             onClick={(event) => {
@@ -386,6 +389,63 @@ export function ArtifactsPage() {
                 </tbody>
               </table>
             </div>
+            <div className="mobile-record-list artifacts-mobile-record-list" aria-label="Published artifacts">
+              {items.map((item) => (
+                <article
+                  key={item.key}
+                  className={`mobile-record-card${item.key === selectedArtifact?.key ? " selected" : ""}`}
+                >
+                  <button
+                    type="button"
+                    className="mobile-record-card-main"
+                    onClick={() => {
+                      setSelectedKey(item.key);
+                      setResolvedArtifact(null);
+                    }}
+                  >
+                    <div className="mobile-record-title-row">
+                      <strong>{item.key}</strong>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Published</span>
+                      <span>{formatTimestamp(item.published_at)}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Session</span>
+                      <span>{item.session_id}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Size</span>
+                      <span>{formatBytes(item.byte_count)}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Files</span>
+                      <span>{item.source_file_count}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>SHA-256</span>
+                      <span>{shortSha(item.sha256)}</span>
+                    </div>
+                  </button>
+                  <div className="mobile-record-actions">
+                    <button
+                      className="admin-icon-button"
+                      type="button"
+                      aria-label={`Download artifact ${item.key}`}
+                      onClick={() => downloadArtifact(item.key)}
+                    >
+                      <DownloadIcon />
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {loading && items.length === 0 ? (
+                <div className="empty-state mobile-record-empty">Loading artifacts...</div>
+              ) : null}
+              {!loading && items.length === 0 ? (
+                <div className="empty-state mobile-record-empty">No artifacts matched the current filters.</div>
+              ) : null}
+            </div>
           </article>
 
           <article className="panel detail-panel artifacts-detail-panel">
@@ -398,7 +458,7 @@ export function ArtifactsPage() {
               </div>
               {selectedArtifact ? (
                 <div className="feature-toolbar-actions icon-actions">
-                  <button type="button" aria-label="Download selected artifact" onClick={() => downloadArtifact(selectedArtifact.key)}>
+                  <button className="admin-icon-button" type="button" aria-label="Download selected artifact" onClick={() => downloadArtifact(selectedArtifact.key)}>
                     <DownloadIcon />
                   </button>
                 </div>
@@ -465,7 +525,7 @@ export function ArtifactsPage() {
                 <div className="eyebrow">Artifact store</div>
                 <h2 id="artifact-upload-modal-title">Upload artifact</h2>
               </div>
-              <button type="button" onClick={closeUploadDialog} disabled={uploading}>
+              <button className="admin-action-button compact" type="button" onClick={closeUploadDialog} disabled={uploading}>
                 Close
               </button>
             </div>
@@ -492,10 +552,10 @@ export function ArtifactsPage() {
                 </label>
                 {uploadError ? <div className="callout error-callout field-span-2">{uploadError}</div> : null}
                 <div className="inline-actions artifact-upload-actions field-span-2">
-                  <button type="button" onClick={closeUploadDialog} disabled={uploading}>
+                  <button className="admin-action-button compact" type="button" onClick={closeUploadDialog} disabled={uploading}>
                     Cancel
                   </button>
-                  <button type="submit" className="primary" disabled={uploading}>
+                  <button type="submit" className="admin-action-button primary compact" disabled={uploading}>
                     <UploadIcon />
                     {uploading ? "Uploading..." : "Upload"}
                   </button>

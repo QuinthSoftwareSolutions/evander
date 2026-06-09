@@ -1435,12 +1435,12 @@ export function AgentsPage() {
             <h1>Agents</h1>
           </div>
           <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
+            <button className="admin-action-button compact" type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
               Refresh
             </button>
             <button
               type="button"
-              className={showCreateForm ? "" : "primary"}
+              className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
               onClick={() => {
                 setCreateForm(emptyCreateForm(selectedDirectoryPath));
                 setShowCreateForm(true);
@@ -1538,7 +1538,7 @@ export function AgentsPage() {
               <Tooltip content="Edit the selected session policy.">
                 <button
                   type="button"
-                  className={showEditForm ? "primary" : ""}
+                  className={`admin-icon-button${showEditForm ? " primary" : ""}`}
                   onClick={openEditForm}
                   disabled={!canMutate || !canEditPolicy}
                   aria-label="Edit policy"
@@ -1549,7 +1549,7 @@ export function AgentsPage() {
               <Tooltip content="Copy managed Codex skills into the selected session.">
                 <button
                   type="button"
-                  className={showSkillInstallForm ? "primary" : ""}
+                  className={`admin-icon-button${showSkillInstallForm ? " primary" : ""}`}
                   onClick={openSkillInstallForm}
                   disabled={!canMutate || !canInstallSkills}
                   aria-label="Install skills"
@@ -1559,7 +1559,7 @@ export function AgentsPage() {
               </Tooltip>
               {showStart ? (
                 <Tooltip content="Start the selected VM.">
-                  <button type="button" onClick={() => void runAgentAction("start")} disabled={!canMutate} aria-label="Start VM">
+                  <button className="admin-icon-button" type="button" onClick={() => void runAgentAction("start")} disabled={!canMutate} aria-label="Start VM">
                     {busyAction === "start" ? "..." : <StartIcon />}
                   </button>
                 </Tooltip>
@@ -1567,6 +1567,7 @@ export function AgentsPage() {
               {showShutdown ? (
                 <Tooltip content="Request a graceful shutdown for the selected VM.">
                   <button
+                    className="admin-icon-button"
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Shut down ${selectedAgent.target_name}?`)) {
@@ -1583,6 +1584,7 @@ export function AgentsPage() {
               {showContainerStop ? (
                 <Tooltip content="Stop the selected worker job.">
                   <button
+                    className="admin-icon-button"
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Stop ${selectedAgent.target_name}?`)) {
@@ -1598,7 +1600,7 @@ export function AgentsPage() {
               ) : null}
               {showEnable ? (
                 <Tooltip content="Enable the guest agent.">
-                  <button type="button" onClick={() => void runAgentAction("enable-agent")} disabled={!canMutate} aria-label="Enable agent">
+                  <button className="admin-icon-button" type="button" onClick={() => void runAgentAction("enable-agent")} disabled={!canMutate} aria-label="Enable agent">
                     <EnableIcon />
                   </button>
                 </Tooltip>
@@ -1606,6 +1608,7 @@ export function AgentsPage() {
               {showDisable ? (
                 <Tooltip content="Disable the guest agent.">
                   <button
+                    className="admin-icon-button"
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Disable the agent for ${selectedAgent.target_name}?`)) {
@@ -1622,6 +1625,7 @@ export function AgentsPage() {
               {showKill ? (
                 <Tooltip content="Force-kill the currently running guest agent process.">
                   <button
+                    className="admin-icon-button"
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Kill the running agent on ${selectedAgent.target_name}?`)) {
@@ -1639,7 +1643,7 @@ export function AgentsPage() {
                 <Tooltip content="Prompt agent">
                   <button
                     type="button"
-                    className={showPromptForm ? "primary" : ""}
+                    className={`admin-icon-button${showPromptForm ? " primary" : ""}`}
                     onClick={() => {
                       if (showPromptForm) {
                         setShowPromptForm(false);
@@ -1658,7 +1662,7 @@ export function AgentsPage() {
                 <Tooltip content={selectedAgent.backend === "container_worker_vm" ? "Delete the worker target and linked session." : "Destroy the VM and remove the linked session."}>
                   <button
                     type="button"
-                    className="danger"
+                    className="admin-icon-button danger"
                     onClick={() => {
                       if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
                         void handleDeleteAgent();
@@ -1685,7 +1689,7 @@ export function AgentsPage() {
                 <div>
                   <h2>Create agent</h2>
                 </div>
-                <button type="button" onClick={() => setShowCreateForm(false)} disabled={busyAction === "create-agent"}>
+                <button className="admin-action-button compact" type="button" onClick={() => setShowCreateForm(false)} disabled={busyAction === "create-agent"}>
                   Close
                 </button>
               </div>
@@ -1907,7 +1911,7 @@ export function AgentsPage() {
                   </div>
                 </div>
                 <div className="inline-actions compact-actions">
-                  <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>
+                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>
                     {busyAction === "create-agent" ? "Creating..." : "Create"}
                   </button>
                 </div>
@@ -1924,7 +1928,7 @@ export function AgentsPage() {
                   <h2>Edit policy</h2>
                   <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
                 </div>
-                <button type="button" onClick={() => setShowEditForm(false)} disabled={busyAction === "edit-agent"}>
+                <button className="admin-action-button compact" type="button" onClick={() => setShowEditForm(false)} disabled={busyAction === "edit-agent"}>
                   Close
                 </button>
               </div>
@@ -2015,7 +2019,7 @@ export function AgentsPage() {
                   </label>
                 </div>
                 <div className="inline-actions compact-actions">
-                  <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
+                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
                     {busyAction === "edit-agent" ? "Saving..." : "Save"}
                   </button>
                 </div>
@@ -2032,7 +2036,7 @@ export function AgentsPage() {
                   <h2>Install skills</h2>
                   <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
                 </div>
-                <button type="button" onClick={() => setShowSkillInstallForm(false)} disabled={busyAction === "install-skills"}>
+                <button className="admin-action-button compact" type="button" onClick={() => setShowSkillInstallForm(false)} disabled={busyAction === "install-skills"}>
                   Close
                 </button>
               </div>
@@ -2056,7 +2060,7 @@ export function AgentsPage() {
                 </div>
                 <div className="inline-actions compact-actions">
                   <button
-                    className="primary"
+                    className="admin-action-button primary compact"
                     type="button"
                     disabled={!privilegedUnlocked || busyAction === "install-skills" || skillInstallForm.codexSkills.length === 0}
                     onClick={() => void handleInstallSkills()}
@@ -2076,7 +2080,7 @@ export function AgentsPage() {
                 <div>
                   <h2>Prompt agent</h2>
                 </div>
-                <button type="button" onClick={() => setShowPromptForm(false)} disabled={busyAction === "prompt-agent"}>
+                <button className="admin-action-button compact" type="button" onClick={() => setShowPromptForm(false)} disabled={busyAction === "prompt-agent"}>
                   Close
                 </button>
               </div>
@@ -2097,7 +2101,7 @@ export function AgentsPage() {
                 </div>
                 <div className="inline-actions compact-actions">
                   <button
-                    className="primary"
+                    className="admin-action-button primary compact"
                     type="button"
                     disabled={!canMutate || !agentPrompt.trim()}
                     onClick={() =>
@@ -2299,7 +2303,7 @@ export function AgentsPage() {
                               <Tooltip content="Stop this running container execution.">
                                 <button
                                   type="button"
-                                  className="agent-execution-stop-button"
+                                  className="admin-icon-button danger agent-execution-stop-button"
                                   onClick={() => {
                                     if (window.confirm(`Stop container execution ${execution.execution_id}?`)) {
                                       void runContainerExecutionAction(execution, "stop");
@@ -2361,11 +2365,12 @@ export function AgentsPage() {
                     placeholder="Search logs"
                     aria-label="Search logs"
                   />
-                  <button type="submit" disabled={agentLog.loading}>
+                  <button className="admin-action-button compact" type="submit" disabled={agentLog.loading}>
                     Search
                   </button>
                   {agentLog.appliedQuery ? (
                     <button
+                      className="admin-action-button compact"
                       type="button"
                       onClick={() => {
                         setLogSearchInput("");
@@ -2380,6 +2385,7 @@ export function AgentsPage() {
               </div>
               <div className="agent-log-controls">
                 <button
+                  className="admin-action-button compact"
                   type="button"
                   onClick={() => void loadOlderLogLines()}
                   disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
@@ -2387,6 +2393,7 @@ export function AgentsPage() {
                   {agentLog.loadingOlder ? "Loading..." : activeLogView === "threads" ? "Load more" : "Load older"}
                 </button>
                 <button
+                  className="admin-action-button compact"
                   type="button"
                   onClick={() => {
                     setLogSearchInput("");

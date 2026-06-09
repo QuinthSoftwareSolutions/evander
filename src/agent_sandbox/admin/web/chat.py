@@ -6,11 +6,10 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread, current_thread
 from typing import Any
 from uuid import uuid4
 
-from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -29,6 +28,46 @@ def admin_chat_store_path(runtime_dir: Path) -> Path:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+_ASSISTANT_SESSION_STATUSES = {
+    "disabled",
+    "not_started",
+    "preparing",
+    "ready",
+    "failed",
+}
+_PREWARM_LOCK = Lock()
+_PREWARM_TASKS: dict[tuple[str, str, str, str, str], Thread] = {}
+
+
+def _default_assistant_session() -> dict[str, str | None]:
+    return {"status": "not_started", "error": None, "updated_at": None}
+
+
+def _normalize_assistant_session(value: Any) -> dict[str, str | None]:
+    if not isinstance(value, dict):
+        return _default_assistant_session()
+    status = str(value.get("status") or "").strip()
+    if status not in _ASSISTANT_SESSION_STATUSES:
+        status = "not_started"
+    error_value = value.get("error")
+    error = str(error_value).strip() if error_value is not None else None
+    updated_at_value = value.get("updated_at")
+    updated_at = str(updated_at_value).strip() if updated_at_value is not None else None
+    return {
+        "status": status,
+        "error": error or None,
+        "updated_at": updated_at or None,
+    }
+
+
+def _concise_error(exc: BaseException) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    first_line = message.splitlines()[0].strip() or exc.__class__.__name__
+    if len(first_line) > 300:
+        return f"{first_line[:297]}..."
+    return first_line
 
 
 @dataclass
@@ -104,6 +143,7 @@ class ChatStore:
         return {
             "user_id": user_id,
             "messages": [],
+            "assistant_session": _default_assistant_session(),
             "created_at": now,
             "updated_at": now,
         }
@@ -125,8 +165,14 @@ class ChatStore:
                 except ValueError:
                     pass
                 else:
+                    changed = False
                     if not str(thread.get("user_id") or "").strip():
                         thread["user_id"] = normalized_user_id
+                        changed = True
+                    if "assistant_session" not in thread:
+                        thread["assistant_session"] = _default_assistant_session()
+                        changed = True
+                    if changed:
                         self._write(payload)
                     return thread_id
             thread_id = f"thread-{uuid4().hex[:16]}"
@@ -240,8 +286,47 @@ class ChatStore:
             return {
                 "thread_id": thread_id,
                 "messages": messages,
+                "assistant_session": _normalize_assistant_session(
+                    thread.get("assistant_session")
+                ),
                 "updated_at": thread.get("updated_at"),
             }
+
+    def get_assistant_session(self, *, user_id: str, thread_id: str) -> dict[str, str | None]:
+        normalized_user_id = str(user_id or "").strip() or "anonymous"
+        with self.lock:
+            payload = self._read()
+            thread = self._thread_for_user(
+                payload,
+                user_id=normalized_user_id,
+                thread_id=thread_id,
+            )
+            return _normalize_assistant_session(thread.get("assistant_session"))
+
+    def set_assistant_session(
+        self,
+        *,
+        thread_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> dict[str, str | None]:
+        normalized_status = str(status or "").strip()
+        if normalized_status not in _ASSISTANT_SESSION_STATUSES:
+            raise ValueError("Unknown assistant session status")
+        with self.lock:
+            payload = self._read()
+            thread = payload["threads"].get(thread_id)
+            if not isinstance(thread, dict) or self._thread_owner(payload, thread_id) is None:
+                raise ValueError("Unknown chat thread")
+            assistant_session: dict[str, str | None] = {
+                "status": normalized_status,
+                "error": str(error).strip() if error else None,
+                "updated_at": _utc_now(),
+            }
+            thread["assistant_session"] = assistant_session
+            thread["updated_at"] = assistant_session["updated_at"]
+            self._write(payload)
+            return dict(assistant_session)
 
     def append_assistant_reply(
         self,
@@ -288,6 +373,95 @@ class ChatStore:
             return message
 
 
+def _prewarm_key(
+    *,
+    user_id: str,
+    backend: str,
+    assistant_scope: str,
+    thread_id: str,
+    capability_mode: str,
+) -> tuple[str, str, str, str, str]:
+    return (user_id, backend, assistant_scope, thread_id, capability_mode)
+
+
+def _run_chat_assistant_prewarm(
+    *,
+    key: tuple[str, str, str, str, str],
+    service: AdminService,
+    store: ChatStore,
+    user_id: str,
+    backend: str,
+    assistant_scope: str,
+    settings: dict[str, Any],
+    thread_id: str,
+) -> None:
+    try:
+        service.vm_agent_admin.resolve_chat_assistant_session(
+            user_id=user_id,
+            backend=backend,
+            assistant_scope=assistant_scope,
+            settings=settings,
+            thread_id=thread_id,
+            user_message_id=None,
+        )
+    except Exception as exc:
+        store.set_assistant_session(
+            thread_id=thread_id,
+            status="failed",
+            error=_concise_error(exc),
+        )
+    else:
+        store.set_assistant_session(thread_id=thread_id, status="ready")
+    finally:
+        current = current_thread()
+        with _PREWARM_LOCK:
+            active = _PREWARM_TASKS.get(key)
+            if active is current:
+                _PREWARM_TASKS.pop(key, None)
+
+
+def _schedule_chat_assistant_prewarm(
+    *,
+    service: AdminService,
+    store: ChatStore,
+    user_id: str,
+    backend: str,
+    assistant_scope: str,
+    capability_mode: str,
+    settings: dict[str, Any],
+    thread_id: str,
+) -> bool:
+    key = _prewarm_key(
+        user_id=user_id,
+        backend=backend,
+        assistant_scope=assistant_scope,
+        thread_id=thread_id,
+        capability_mode=capability_mode,
+    )
+    with _PREWARM_LOCK:
+        active = _PREWARM_TASKS.get(key)
+        if active is not None and active.is_alive():
+            return False
+        worker = Thread(
+            target=_run_chat_assistant_prewarm,
+            kwargs={
+                "key": key,
+                "service": service,
+                "store": store,
+                "user_id": user_id,
+                "backend": backend,
+                "assistant_scope": assistant_scope,
+                "settings": dict(settings),
+                "thread_id": thread_id,
+            },
+            name=f"admin-chat-prewarm-{thread_id}",
+            daemon=True,
+        )
+        _PREWARM_TASKS[key] = worker
+        worker.start()
+        return True
+
+
 def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
     store = ChatStore(admin_chat_store_path(service.config.runtime_dir))
 
@@ -314,38 +488,79 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             settings["default_profile"] = "read-only"
         return settings
 
-    async def start_or_get_session(request: Request) -> JSONResponse:
-        auth.require(request)
+    def session_payload(
+        *,
+        user_id: str,
+        thread_id: str,
+        assistant_capability_mode: str,
+        assistant_session: dict[str, str | None],
+    ) -> dict[str, Any]:
+        return {
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "assistant_capability_mode": assistant_capability_mode,
+            "assistant_session": assistant_session,
+        }
+
+    def prepare_assistant_session(
+        *,
+        request: Request,
+        user_id: str,
+        thread_id: str,
+        force: bool = False,
+    ) -> tuple[str, dict[str, str | None]]:
         settings = service.read_assistant_settings()
+        effective_capability_mode = (
+            "read-only" if bool(settings.get("read_only")) else capability_mode(request)
+        )
         if not bool(settings.get("enabled")):
-            return json_error("Assistant is disabled by admin settings.", status_code=403)
-        user_id = user_id_for_request(request)
-        thread_id = store.get_or_create_thread(user_id)
+            return effective_capability_mode, store.set_assistant_session(
+                thread_id=thread_id,
+                status="disabled",
+            )
+
+        assistant_session = store.get_assistant_session(user_id=user_id, thread_id=thread_id)
+        should_schedule = force or assistant_session["status"] in {"not_started", "preparing"}
+        if not should_schedule:
+            return effective_capability_mode, assistant_session
+
+        assistant_session = store.set_assistant_session(
+            thread_id=thread_id,
+            status="preparing",
+        )
         backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
-        await run_in_threadpool(
-            service.vm_agent_admin.resolve_chat_assistant_session,
+        _schedule_chat_assistant_prewarm(
+            service=service,
+            store=store,
             user_id=user_id,
             backend=backend,
             assistant_scope="admin_chat",
+            capability_mode=effective_capability_mode,
             settings=effective_assistant_settings(request),
             thread_id=thread_id,
-            user_message_id=None,
+        )
+        return effective_capability_mode, assistant_session
+
+    async def start_or_get_session(request: Request) -> JSONResponse:
+        auth.require(request)
+        user_id = user_id_for_request(request)
+        thread_id = store.get_or_create_thread(user_id)
+        effective_capability_mode, assistant_session = prepare_assistant_session(
+            request=request,
+            user_id=user_id,
+            thread_id=thread_id,
         )
         return JSONResponse(
-            {
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "assistant_capability_mode": "read-only"
-                if bool(settings.get("read_only"))
-                else capability_mode(request),
-            }
+            session_payload(
+                user_id=user_id,
+                thread_id=thread_id,
+                assistant_capability_mode=effective_capability_mode,
+                assistant_session=assistant_session,
+            )
         )
 
     async def start_new_session(request: Request) -> JSONResponse:
         auth.require(request)
-        settings = service.read_assistant_settings()
-        if not bool(settings.get("enabled")):
-            return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
         thread_id = store.start_new_thread(user_id)
         backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
@@ -357,23 +572,49 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
                 assistant_scope="admin_chat",
                 thread_id=thread_id,
             )
-        await run_in_threadpool(
-            service.vm_agent_admin.resolve_chat_assistant_session,
+        effective_capability_mode, assistant_session = prepare_assistant_session(
+            request=request,
             user_id=user_id,
-            backend=backend,
-            assistant_scope="admin_chat",
-            settings=effective_assistant_settings(request),
             thread_id=thread_id,
-            user_message_id=None,
         )
         return JSONResponse(
-            {
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "assistant_capability_mode": "read-only"
-                if bool(settings.get("read_only"))
-                else capability_mode(request),
-            }
+            session_payload(
+                user_id=user_id,
+                thread_id=thread_id,
+                assistant_capability_mode=effective_capability_mode,
+                assistant_session=assistant_session,
+            )
+        )
+
+    async def prewarm_session(request: Request) -> JSONResponse:
+        auth.require(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object")
+        thread_id = str(payload.get("thread_id") or "").strip()
+        if not thread_id:
+            return json_error("thread_id is required")
+        user_id = user_id_for_request(request)
+        try:
+            store.get_assistant_session(user_id=user_id, thread_id=thread_id)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404)
+        effective_capability_mode, assistant_session = prepare_assistant_session(
+            request=request,
+            user_id=user_id,
+            thread_id=thread_id,
+            force=True,
+        )
+        return JSONResponse(
+            session_payload(
+                user_id=user_id,
+                thread_id=thread_id,
+                assistant_capability_mode=effective_capability_mode,
+                assistant_session=assistant_session,
+            )
         )
 
     async def post_message(request: Request) -> JSONResponse:
@@ -424,6 +665,10 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             {
                 "thread_id": thread_id,
                 "assistant_capability_mode": effective_capability_mode,
+                "assistant_session": store.get_assistant_session(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                ),
                 "messages": [user_message],
             }
         )
@@ -503,6 +748,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
     return [
         Route("/api/chat/session", start_or_get_session, methods=["GET", "POST"]),
         Route("/api/chat/session/new", start_new_session, methods=["POST"]),
+        Route("/api/chat/session/prewarm", prewarm_session, methods=["POST"]),
         Route("/api/chat/message", post_message, methods=["POST"]),
         Route("/api/chat/transcript/{thread_id}", get_transcript, methods=["GET"]),
         Route("/api/chat/stream/{thread_id}", stream_transcript, methods=["GET"]),

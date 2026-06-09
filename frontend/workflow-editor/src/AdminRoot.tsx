@@ -1174,8 +1174,8 @@ export default function AdminRoot() {
   const [directoryStateError, setDirectoryStateError] = useState<string | null>(null);
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
   const [workflowSidebarCollapsed, setWorkflowSidebarCollapsed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY) !== "false";
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY) === "true";
   });
   const suppressNextHashChangeRef = useRef(false);
   const adminExecutionBackend = adminState?.execution_backend ?? null;
@@ -1652,21 +1652,23 @@ export default function AdminRoot() {
                   )}
                   <h1>{branding.header_title}</h1>
                 </div>
-                <p>{activeTab.description}</p>
+                <p className="admin-shell-active-description">{activeTab.description}</p>
               </div>
             </div>
           </div>
           <div className="admin-shell-actions">
             <div className="admin-shell-action-group">
               <button
-                className="admin-shell-button admin-shell-button-muted"
+                type="button"
+                className="admin-shell-button admin-shell-button-muted admin-theme-toggle-button"
                 onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
                 disabled={authBusy}
               >
                 {theme === "dark" ? "Light mode" : "Dark mode"}
               </button>
               <button
-                className="admin-shell-button admin-shell-button-muted"
+                type="button"
+                className="admin-shell-button admin-shell-button-muted admin-directory-picker-button"
                 onClick={() => setDirectoryPickerOpen(true)}
                 disabled={authBusy}
               >
@@ -1687,18 +1689,29 @@ export default function AdminRoot() {
             </div>
             <div className="admin-shell-action-group">
               <button
-                className="admin-shell-button"
+                type="button"
+                className="admin-shell-button admin-privilege-toggle-button"
                 onClick={() => void setPrivilegeLock(!privilegeUnlocked)}
                 disabled={authBusy || adminState === null}
               >
                 {privilegeUnlocked ? "Lock" : "Unlock"}
               </button>
               {session.auth_mode !== "none" ? (
-                <button className="admin-shell-button admin-shell-button-muted" onClick={() => void signOut()} disabled={authBusy}>
+                <button
+                  type="button"
+                  className="admin-shell-button admin-shell-button-muted admin-signout-button"
+                  onClick={() => void signOut()}
+                  disabled={authBusy}
+                >
                   Sign out
                 </button>
               ) : null}
             </div>
+            <ChatLauncher
+              enabled={Boolean(session.authenticated || !session.auth_required)}
+              assistantEnabled={Boolean(adminState?.assistant?.enabled)}
+              showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
+            />
           </div>
         </header>
 
@@ -1735,7 +1748,8 @@ export default function AdminRoot() {
                   navigateToTab(tab.key);
                 }}
               >
-                <span>{workflowSidebarCollapsed ? tab.shortLabel : tab.label}</span>
+                <span className="admin-shell-tab-label admin-shell-tab-label-full">{tab.label}</span>
+                <span className="admin-shell-tab-label admin-shell-tab-label-short">{tab.shortLabel}</span>
                 <small>{tab.description}</small>
               </button>
             ))}
@@ -1781,11 +1795,6 @@ export default function AdminRoot() {
           </main>
         </div>
       </div>
-      <ChatLauncher
-        enabled={Boolean(session.authenticated || !session.auth_required)}
-        assistantEnabled={Boolean(adminState?.assistant?.enabled)}
-        showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
-      />
       <DirectoryChooserModal
         open={directoryPickerOpen}
         loading={directoryStateLoading}

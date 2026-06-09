@@ -529,12 +529,12 @@ export function UsersPage() {
             <h1>Users &amp; Groups</h1>
           </div>
           <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
+            <button className="admin-action-button compact" type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
               Refresh
             </button>
             <button
               type="button"
-              className="primary"
+              className="admin-action-button primary compact"
               onClick={isUsersMode ? beginNewUser : beginNewGroup}
               disabled={!canManageUsers}
             >
@@ -662,7 +662,7 @@ export function UsersPage() {
                   </span>
                   <button
                     type="button"
-                    className="danger"
+                    className="admin-action-button danger compact"
                     onClick={() => void deleteUser(selectedUser.login)}
                     disabled={actionDisabled}
                   >
@@ -733,7 +733,7 @@ export function UsersPage() {
                 </label>
               </div>
               <div className="inline-actions">
-                <button type="button" className="primary" onClick={() => void saveUser()} disabled={actionDisabled}>
+                <button type="button" className="admin-action-button primary compact" onClick={() => void saveUser()} disabled={actionDisabled}>
                   {saving ? "Saving..." : "Save"}
                 </button>
               </div>
@@ -781,6 +781,7 @@ export function UsersPage() {
                           "Group assignment directory",
                         )}
                         <button
+                          className="admin-action-button compact"
                           type="button"
                           onClick={() =>
                             setForm((current) => ({
@@ -795,6 +796,7 @@ export function UsersPage() {
                       </div>
                     ))}
                     <button
+                      className="admin-action-button compact"
                       type="button"
                       onClick={() =>
                         setForm((current) => ({
@@ -845,6 +847,7 @@ export function UsersPage() {
                           "Workflow grant directory",
                         )}
                         <button
+                          className="admin-action-button compact"
                           type="button"
                           onClick={() =>
                             setForm((current) => ({
@@ -859,6 +862,7 @@ export function UsersPage() {
                       </div>
                     ))}
                     <button
+                      className="admin-action-button compact"
                       type="button"
                       onClick={() =>
                         setForm((current) => ({
@@ -899,7 +903,7 @@ export function UsersPage() {
                 <h3>User records</h3>
                 <span className="panel-meta">{users.length} total</span>
               </div>
-              <div className="table-wrap">
+              <div className="table-wrap mobile-paired-table">
                 <table className="admin-table">
                   <thead>
                     <tr>
@@ -940,6 +944,51 @@ export function UsersPage() {
                   </tbody>
                 </table>
               </div>
+              <div className="mobile-record-list users-mobile-record-list" aria-label="User records">
+                {sortedUsers.map((user) => (
+                  <button
+                    key={user.login}
+                    type="button"
+                    className={`mobile-record-card${selectedLogin === user.login ? " selected" : ""}`}
+                    aria-pressed={selectedLogin === user.login}
+                    onClick={() => setSelectedLogin(user.login)}
+                  >
+                    <div className="mobile-record-title-row">
+                      <strong>{userLabel(user)}</strong>
+                      <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
+                        {user.role}
+                      </span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Login</span>
+                      <span>{user.login}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Display</span>
+                      <span>{user.display_name || "None"}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Role</span>
+                      <span>{user.role}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Contact</span>
+                      <span>{user.contact ? user.contact.name : "None"}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Last login</span>
+                      <span>{formatTimestamp(user.last_login_at)}</span>
+                    </div>
+                    <div className="mobile-record-row">
+                      <span>Updated</span>
+                      <span>{formatTimestamp(user.updated_at)}</span>
+                    </div>
+                  </button>
+                ))}
+                {sortedUsers.length === 0 ? (
+                  <div className="empty-state mobile-record-empty">No user records.</div>
+                ) : null}
+              </div>
             </article>
             </>
           ) : null}
@@ -967,7 +1016,7 @@ export function UsersPage() {
                   <span className="status-pill state-idle">custom</span>
                   <button
                     type="button"
-                    className="danger"
+                    className="admin-action-button danger compact"
                     onClick={() => void deleteGroup(selectedGroup.group_id)}
                     disabled={actionDisabled}
                   >
@@ -1036,7 +1085,7 @@ export function UsersPage() {
                 ))}
               </div>
               <div className="inline-actions">
-                <button type="button" className="primary" onClick={() => void saveGroup()} disabled={actionDisabled}>
+                <button type="button" className="admin-action-button primary compact" onClick={() => void saveGroup()} disabled={actionDisabled}>
                   {saving ? "Saving..." : "Save group"}
                 </button>
               </div>

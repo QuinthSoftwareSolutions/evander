@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -191,7 +193,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   const navEntry = page
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
     .filter({ hasText: "Approvals" });
-  await page.getByRole("button", { name: "Expand sections" }).click();
+  await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByLabel("Direct directory only").isChecked(), false);

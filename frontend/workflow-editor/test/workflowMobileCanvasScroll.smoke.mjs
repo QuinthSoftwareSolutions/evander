@@ -238,11 +238,17 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     node_activity: {},
   };
   let savedWorkflowPayload = null;
+  let validatedWorkflowPayload = null;
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
+
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
 
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
@@ -270,6 +276,14 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
+
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
@@ -292,6 +306,22 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
           layout: savedWorkflowPayload.layout,
           graphs: savedWorkflowPayload.graphs,
           revision: "rev-2",
+          validation_diagnostics: [],
+          output_schemas: {},
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/validate") {
+      assert.equal(route.request().method(), "POST");
+      validatedWorkflowPayload = route.request().postDataJSON();
+      assert.ok(validatedWorkflowPayload, "expected a workflow validation payload");
+      await route.fulfill(
+        jsonResponse({
+          config: validatedWorkflowPayload.config,
+          layout: validatedWorkflowPayload.layout,
+          graphs: validatedWorkflowPayload.graphs,
           validation_diagnostics: [],
           output_schemas: {},
         }),
@@ -341,6 +371,9 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     if (message.text().includes("Ignored attempt to cancel a touchmove event with cancelable=false")) {
       return;
     }
+    if (message.text().includes("Failed to load resource: the server responded with a status of 404")) {
+      return;
+    }
     if (message.type() === "error") {
       consoleErrors.push(message.text());
     }
@@ -357,6 +390,12 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
 
   const canvasPane = page.locator(".canvas-shell .react-flow__pane");
   await assert.doesNotReject(() => canvasPane.waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".compact-workflow-toolbar").waitFor({ state: "visible" }));
+  assert.equal(
+    await page.locator(".sidebar").evaluate((element) => getComputedStyle(element).display),
+    "none",
+    "compact workflow layout should hide the desktop sidebar instead of stacking it above the canvas",
+  );
   await positionCanvasForTouch(page);
 
   const canvasBox = await page.locator(".canvas-shell").boundingBox();
@@ -395,6 +434,45 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "one-finger touch should not change the ReactFlow viewport transform",
   );
 
+  await page.getByRole("button", { name: "Pan" }).click();
+  await positionCanvasForTouch(page);
+  const panModeBox = await page.locator(".canvas-shell").boundingBox();
+  assert.ok(panModeBox, "expected canvas shell bounds for pan mode");
+  const panModeStart = {
+    x: panModeBox.x + panModeBox.width * 0.66,
+    y: panModeBox.y + panModeBox.height * 0.56,
+  };
+  const panModeBefore = await readCanvasState(page);
+  await dragTouch(
+    cdp,
+    [
+      {
+        id: 1,
+        x: panModeStart.x,
+        y: panModeStart.y,
+      },
+    ],
+    { x: -130, y: 0 },
+  );
+  await page.waitForFunction(
+    (beforeTransform) => {
+      const viewport = document.querySelector(".react-flow__viewport");
+      return Boolean(viewport) && getComputedStyle(viewport).transform !== beforeTransform;
+    },
+    panModeBefore.transform,
+  );
+  const panModeAfter = await readCanvasState(page);
+  assert.ok(
+    Math.abs(panModeAfter.scrollY - panModeBefore.scrollY) <= 24,
+    `expected page scroll to stay stable in pan mode, before=${panModeBefore.scrollY}, after=${panModeAfter.scrollY}`,
+  );
+  assert.notEqual(
+    panModeAfter.transform,
+    panModeBefore.transform,
+    "one-finger touch should pan the graph when Pan mode is active",
+  );
+
+  await page.getByRole("button", { name: "Select" }).click();
   await positionCanvasForTouch(page);
   const twoFingerBox = await page.locator(".canvas-shell").boundingBox();
   assert.ok(twoFingerBox, "expected canvas shell bounds for two-finger gesture");
@@ -501,12 +579,46 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "single-touch drag on an unlocked node should move that node",
   );
 
+  await page.getByRole("button", { name: "Create" }).click();
+  const createSheet = page.locator(".compact-workflow-sheet.panel-create");
+  await assert.doesNotReject(() => createSheet.waitFor({ state: "visible" }));
+  await createSheet.getByLabel("Search nodes").fill("notify");
+  await createSheet.getByRole("button", { name: "Notify" }).click();
+  const createdNode = page.locator(".react-flow__node", { hasText: "effect-notify-1" });
+  await assert.doesNotReject(() => createdNode.waitFor({ state: "visible" }));
+
+  await page.getByRole("button", { name: "Inspector" }).click();
+  const inspectorSheet = page.locator(".compact-workflow-sheet.panel-inspector");
+  await assert.doesNotReject(() => inspectorSheet.waitFor({ state: "visible" }));
+  await inspectorSheet.getByLabel("Display name").fill("Mobile notify");
+  await assert.doesNotReject(() => page.locator(".react-flow__node", { hasText: "Mobile notify" }).waitFor({ state: "visible" }));
+  await inspectorSheet.getByRole("button", { name: "Close" }).click();
+  await assert.doesNotReject(() => inspectorSheet.waitFor({ state: "hidden" }));
+
+  await page.getByRole("button", { name: "Connect" }).click();
+  await page.locator(".react-flow__node", { hasText: "Incoming command" }).click();
+  await assert.doesNotReject(() => page.locator(".pending-connection-layer line").waitFor({ state: "attached" }));
+  await page.locator(".react-flow__node", { hasText: "Mobile notify" }).click();
+  await page.waitForFunction(() => !document.querySelector(".pending-connection-layer line"));
+
+  await page.getByRole("button", { name: "Save" }).click();
+  const saveSheet = page.locator(".compact-workflow-sheet.panel-save");
+  await assert.doesNotReject(() => saveSheet.waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => saveSheet.getByText("Unsaved workflow changes").waitFor({ state: "visible" }));
+
+  const validateRequest = page.waitForRequest(
+    (request) => request.url().includes("/api/workflow-editor/validate") && request.method() === "POST",
+  );
+  await saveSheet.getByRole("button", { name: "Validate" }).click();
+  await validateRequest;
+
   const saveRequest = page.waitForRequest(
     (request) => request.url().includes("/api/workflow-editor/document") && request.method() === "PUT",
   );
-  await page.getByRole("button", { name: "Save workflow" }).click();
+  await saveSheet.getByRole("button", { name: "Save workflow" }).click();
   await saveRequest;
 
+  assert.ok(validatedWorkflowPayload, "expected workflow validation request to be captured");
   assert.ok(savedWorkflowPayload, "expected workflow save request to be captured");
   assert.notDeepEqual(
     savedWorkflowPayload.layout.nodes["trigger-1"],
@@ -515,15 +627,37 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   );
   assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].x, "number");
   assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].y, "number");
+  assert.ok(savedWorkflowPayload.layout.nodes["effect-notify-1"], "expected the created node layout to be saved");
+  assert.ok(
+    savedWorkflowPayload.config.effects.some(
+      (effect) =>
+        effect.id === "effect-notify-1" &&
+        effect.type === "effect:notify" &&
+        effect.display_name === "Mobile notify",
+    ),
+    "expected the inspector edit for the created node to be saved",
+  );
+  assert.ok(
+    savedWorkflowPayload.config.edges.some(
+      (edge) =>
+        edge.source_id === "trigger-1" &&
+        edge.target_id === "effect-notify-1" &&
+        edge.source_port === "completed",
+    ),
+    "expected compact Connect mode to save an edge from the trigger to the created node",
+  );
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(notFoundResponses, []);
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/branding"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/user-preferences/workflow-tutorial-progress"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/validate"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs/stream"));
