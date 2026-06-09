@@ -5,6 +5,38 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Team Add-on Hierarchy, Reviews, and Git Releases
+
+- Extended the Team Add-on agent action protocol with `task_creations`,
+  `status_requests`, `operator_escalations`, `review_requests`,
+  `review_decisions`, and `goal_updates`, enforcing hierarchy permissions for
+  task delegation, downward status requests, direct-superior-only questions and
+  status reports, and manager-only operator escalation.
+- Added action-driven reviews with a deterministic decision cascade across
+  deliverable, task, and project state, plus project-status recalculation after
+  goal updates, review decisions, task changes, and releases.
+- Added a Git-first delivery flow with deterministic branch naming
+  (`agents/<session>/<assignment>`, `team/<team>/reviews/<assignment>`,
+  `team/<team>/features/<task>-<agent>`, `team/<team>/releases/<release>`, and
+  canonical `releases/<project>/<release>`), `GitPromotionRecord` lifecycle, and
+  `team.git.promotion_requested` events for review, feature, release, and
+  canonical-push promotions.
+- Captured ephemeral worker `agent_branch`/`commit_sha`, validated agent
+  branches against the deterministic ephemeral namespace, and kept non-Git
+  deliverables supported through `artifact_refs`.
+- Added the `effect:team:record-git-promotion`,
+  `effect:team:mark-release-published`, and `effect:team:consolidate-git-branches`
+  effect providers, and extended the `effect:team:apply-agent-action` output
+  schema with the new id/event result keys.
+- Routed `team.operator.escalation_requested` to
+  `effect:communication:send-message` and `team.git.promotion_requested` to the
+  matching Git effects in the packaged `TEAM_RUNTIME_V1` workflow, keeping the
+  only `effect:git:push-branch` node on the canonical-push path so internal
+  branches never reach the canonical remote.
+- Extended the Team Add-on Admin API and UI to manage the operator
+  communication target, project Git config, review decisions, release packages,
+  and Git promotion records.
+
 ## 2026-06-09 - Team Runtime Failure Handling
 
 - Made Team runtime wake effects treat normal `resume_agent` failure results as
