@@ -6,12 +6,22 @@ import pytest
 from pydantic import ValidationError
 
 from agent_sandbox.models import SessionManifest
+from truman_team_addon.git_naming import (
+    canonical_release_branch,
+    ephemeral_agent_branch,
+    feature_branch,
+    release_branch,
+    review_branch,
+    validate_branch_name,
+)
 from truman_team_addon.models import (
     AgentTask,
     Deliverable,
     EphemeralAssignment,
+    GitPromotionRecord,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
@@ -233,3 +243,139 @@ def test_session_manifest_has_no_team_addon_fields() -> None:
     assert "team_id" not in SessionManifest.model_fields
     assert "project_id" not in SessionManifest.model_fields
     assert "agent_id" not in SessionManifest.model_fields
+
+
+def test_project_git_config_requires_exactly_one_bare_repo() -> None:
+    config = ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git")
+    assert config.bare_repo_name == "repo.git"
+    assert config.base_branch == "main"
+    assert config.canonical_release_branch_prefix == "releases/<project-id>/"
+
+    path_config = ProjectGitConfig(
+        host_repo_path="/srv/repo", bare_repo_path="/srv/bare/repo.git"
+    )
+    assert path_config.bare_repo_path == "/srv/bare/repo.git"
+
+    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
+        ProjectGitConfig(host_repo_path="/srv/repo")
+
+    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
+        ProjectGitConfig(
+            host_repo_path="/srv/repo",
+            bare_repo_name="repo.git",
+            bare_repo_path="/srv/bare/repo.git",
+        )
+
+
+def test_project_accepts_git_config() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["projects"]["project"]["git"] = {
+        "host_repo_path": "/srv/repo",
+        "bare_repo_name": "repo.git",
+    }
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.projects["project"].git is not None
+    assert validated.projects["project"].git.host_repo_path == "/srv/repo"
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [":", "/x", "a..b", "refs/heads/x", "feature branch", "ctrl\x01char", ""],
+)
+def test_validate_branch_name_rejects_bad_names(bad_name: str) -> None:
+    with pytest.raises(ValueError):
+        validate_branch_name(bad_name)
+
+
+def test_validate_branch_name_accepts_plain_names() -> None:
+    assert validate_branch_name("main") == "main"
+    assert validate_branch_name("team/team-1/features/task-1-ui") == (
+        "team/team-1/features/task-1-ui"
+    )
+
+
+def test_deterministic_branch_name_builders() -> None:
+    assert ephemeral_agent_branch("session-1", "assignment-1") == (
+        "agents/session-1/assignment-1"
+    )
+    assert review_branch("team-1", "assignment-1") == (
+        "team/team-1/reviews/assignment-1"
+    )
+    assert feature_branch("team-1", "task-1", "ui") == (
+        "team/team-1/features/task-1-ui"
+    )
+    assert release_branch("team-1", "release-1") == "team/team-1/releases/release-1"
+
+
+def test_canonical_release_branch_honors_project_prefix() -> None:
+    default_project = Project(
+        id="project", team_id="team", name="Project", lead_agent_id="lead"
+    )
+    assert canonical_release_branch(default_project, "release-1") == (
+        "releases/project/release-1"
+    )
+
+    custom_project = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        git=ProjectGitConfig(
+            host_repo_path="/srv/repo",
+            bare_repo_name="repo.git",
+            canonical_release_branch_prefix="ship/",
+        ),
+    )
+    assert canonical_release_branch(custom_project, "release-1") == "ship/release-1"
+
+
+def test_git_promotion_and_release_round_trip_through_team_state() -> None:
+    state = _valid_state()
+    state.deliverables["deliverable"].git_refs.feature_branch = (
+        "team/team/features/task-ui"
+    )
+    state.release_packages["release"].feature_branches = ["team/team/features/task-ui"]
+    state.release_packages["release"].release_branch = "team/team/releases/release"
+    state.release_packages["release"].canonical_branch = "releases/project/release"
+    state.git_promotions = {
+        "promotion-1": GitPromotionRecord(
+            id="promotion-1",
+            project_id="project",
+            deliverable_id="deliverable",
+            actor_agent_id="lead",
+            source_branch="agents/session-ui/assignment",
+            target_branch="team/team/reviews/assignment",
+            promotion_kind="review",
+        )
+    }
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    promotion = validated.git_promotions["promotion-1"]
+    assert promotion.state == "pending"
+    assert promotion.promotion_kind == "review"
+    assert validated.deliverables["deliverable"].git_refs.feature_branch == (
+        "team/team/features/task-ui"
+    )
+    assert validated.release_packages["release"].canonical_branch == (
+        "releases/project/release"
+    )
+
+
+def test_git_promotion_rejects_missing_project() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["git_promotions"] = {
+        "promotion-1": {
+            "id": "promotion-1",
+            "project_id": "missing-project",
+            "actor_agent_id": "lead",
+            "source_branch": "agents/session-ui/assignment",
+            "target_branch": "team/team/reviews/assignment",
+            "promotion_kind": "review",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="missing project missing-project"):
+        TeamState.model_validate(state)
