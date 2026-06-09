@@ -30,6 +30,21 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-apply-ephemeral-action",
                 "team-destroy-ephemeral-agent",
                 "team-mark-ephemeral-cleaned-up",
+                "team-operator-escalation",
+                "team-notify-operator",
+                "team-git-promotion-requested",
+                "team-git-promotion-review",
+                "team-git-promote-review-branch",
+                "team-record-review-promotion",
+                "team-git-promotion-feature",
+                "team-consolidate-feature-branches",
+                "team-record-feature-promotion",
+                "team-git-promotion-release",
+                "team-consolidate-release-branches",
+                "team-record-release-promotion",
+                "team-git-promotion-canonical",
+                "team-push-canonical-branch",
+                "team-mark-release-published",
             ],
         }
     ],
@@ -51,6 +66,18 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "display_name": "Team ephemeral assignment requested",
                 "type": "trigger:event",
                 "event_type": "team.ephemeral.requested",
+            },
+            {
+                "id": "team-operator-escalation",
+                "display_name": "Team operator escalation requested",
+                "type": "trigger:event",
+                "event_type": "team.operator.escalation_requested",
+            },
+            {
+                "id": "team-git-promotion-requested",
+                "display_name": "Team Git promotion requested",
+                "type": "trigger:event",
+                "event_type": "team.git.promotion_requested",
             },
         ],
         "gates": [
@@ -89,6 +116,58 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                         {
                             "equals": True,
                             "left": "${{team-mark-ephemeral-spawned.success}}",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "team-git-promotion-review",
+                "display_name": "Git promotion is a review promotion",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": "review",
+                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "team-git-promotion-feature",
+                "display_name": "Git promotion is a feature consolidation",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": "feature",
+                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "team-git-promotion-release",
+                "display_name": "Git promotion is a release consolidation",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": "release",
+                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "team-git-promotion-canonical",
+                "display_name": "Git promotion is a canonical push",
+                "type": "gate:filter",
+                "when": {
+                    "all": [
+                        {
+                            "equals": "canonical_push",
+                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
                         }
                     ]
                 },
@@ -201,6 +280,138 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "status": "${{team-destroy-ephemeral-agent.status ?? null}}",
                 },
             },
+            {
+                "id": "team-notify-operator",
+                "display_name": "Notify operator of escalation",
+                "type": "effect:communication:send-message",
+                "communication_target_id": (
+                    "${{team-operator-escalation.payload.communication_target_id}}"
+                ),
+                "message": (
+                    "[Escalation: ${{team-operator-escalation.payload.urgency}}] "
+                    "${{team-operator-escalation.payload.title}}\n\n"
+                    "${{team-operator-escalation.payload.message}}"
+                ),
+            },
+            {
+                "id": "team-git-promote-review-branch",
+                "display_name": "Promote agent branch to review branch",
+                "type": "effect:git:promote-agent-branch",
+                "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
+                "bare_repo_name": (
+                    "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+                ),
+                "bare_repo_path": (
+                    "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+                ),
+                "agent_branch": "${{team-git-promotion-requested.payload.source_branch}}",
+                "review_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+            },
+            {
+                "id": "team-record-review-promotion",
+                "display_name": "Record review promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                "success": "${{team-git-promote-review-branch.success}}",
+                "commit_sha": "${{team-git-promote-review-branch.commit_sha ?? null}}",
+                "error": "${{team-git-promote-review-branch.error ?? null}}",
+                "outputs": {
+                    "review_branch": (
+                        "${{team-git-promote-review-branch.review_branch ?? null}}"
+                    ),
+                    "host_repo_path": (
+                        "${{team-git-promote-review-branch.host_repo_path ?? null}}"
+                    ),
+                    "message": "${{team-git-promote-review-branch.message ?? null}}",
+                },
+            },
+            {
+                "id": "team-consolidate-feature-branches",
+                "display_name": "Consolidate review branches into feature branch",
+                "type": "effect:team:consolidate-git-branches",
+                "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
+                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+            },
+            {
+                "id": "team-record-feature-promotion",
+                "display_name": "Record feature promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                "success": "${{team-consolidate-feature-branches.success}}",
+                "commit_sha": "${{team-consolidate-feature-branches.commit_sha ?? null}}",
+                "error": "${{team-consolidate-feature-branches.error ?? null}}",
+                "outputs": {
+                    "merged_branches": (
+                        "${{team-consolidate-feature-branches.merged_branches ?? null}}"
+                    ),
+                    "conflict_branch": (
+                        "${{team-consolidate-feature-branches.conflict_branch ?? null}}"
+                    ),
+                    "output": "${{team-consolidate-feature-branches.output ?? null}}",
+                },
+            },
+            {
+                "id": "team-consolidate-release-branches",
+                "display_name": "Consolidate feature branches into release branch",
+                "type": "effect:team:consolidate-git-branches",
+                "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
+                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+            },
+            {
+                "id": "team-record-release-promotion",
+                "display_name": "Record release promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                "success": "${{team-consolidate-release-branches.success}}",
+                "commit_sha": "${{team-consolidate-release-branches.commit_sha ?? null}}",
+                "error": "${{team-consolidate-release-branches.error ?? null}}",
+                "outputs": {
+                    "merged_branches": (
+                        "${{team-consolidate-release-branches.merged_branches ?? null}}"
+                    ),
+                    "conflict_branch": (
+                        "${{team-consolidate-release-branches.conflict_branch ?? null}}"
+                    ),
+                    "output": "${{team-consolidate-release-branches.output ?? null}}",
+                },
+            },
+            {
+                "id": "team-push-canonical-branch",
+                "display_name": "Push release branch to canonical remote",
+                "type": "effect:git:push-branch",
+                "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
+                "local_branch": "${{team-git-promotion-requested.payload.source_branch}}",
+                "origin_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "canonical_origin_url": (
+                    "${{team-git-promotion-requested.payload.canonical_origin_url ?? null}}"
+                ),
+                "provider": "${{team-git-promotion-requested.payload.provider ?? null}}",
+                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
+            },
+            {
+                "id": "team-mark-release-published",
+                "display_name": "Mark release package published",
+                "type": "effect:team:mark-release-published",
+                "release_package_id": (
+                    "${{team-git-promotion-requested.payload.release_package_id}}"
+                ),
+                "success": "${{team-push-canonical-branch.success}}",
+                "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "published_commit_sha": (
+                    "${{team-push-canonical-branch.commit_sha ?? null}}"
+                ),
+                "error": "${{team-push-canonical-branch.error ?? null}}",
+                "outputs": {
+                    "origin_branch": (
+                        "${{team-push-canonical-branch.origin_branch ?? null}}"
+                    ),
+                    "message": "${{team-push-canonical-branch.message ?? null}}",
+                },
+            },
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
@@ -217,6 +428,19 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             {"source_id": "team-read-ephemeral-action", "target_id": "team-apply-ephemeral-action"},
             {"source_id": "team-apply-ephemeral-action", "target_id": "team-destroy-ephemeral-agent"},
             {"source_id": "team-destroy-ephemeral-agent", "target_id": "team-mark-ephemeral-cleaned-up"},
+            {"source_id": "team-operator-escalation", "target_id": "team-notify-operator"},
+            {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-review"},
+            {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-feature"},
+            {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-release"},
+            {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-canonical"},
+            {"source_id": "team-git-promotion-review", "target_id": "team-git-promote-review-branch"},
+            {"source_id": "team-git-promote-review-branch", "target_id": "team-record-review-promotion"},
+            {"source_id": "team-git-promotion-feature", "target_id": "team-consolidate-feature-branches"},
+            {"source_id": "team-consolidate-feature-branches", "target_id": "team-record-feature-promotion"},
+            {"source_id": "team-git-promotion-release", "target_id": "team-consolidate-release-branches"},
+            {"source_id": "team-consolidate-release-branches", "target_id": "team-record-release-promotion"},
+            {"source_id": "team-git-promotion-canonical", "target_id": "team-push-canonical-branch"},
+            {"source_id": "team-push-canonical-branch", "target_id": "team-mark-release-published"},
         ],
     },
 }

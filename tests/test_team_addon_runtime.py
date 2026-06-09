@@ -702,6 +702,131 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
+def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
+    pack = team_runtime_v1()["config"]
+    triggers = {node["id"]: node for node in pack["triggers"]}
+    effects = {node["id"]: node for node in pack["effects"]}
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert triggers["team-operator-escalation"]["type"] == "trigger:event"
+    assert triggers["team-operator-escalation"]["event_type"] == (
+        "team.operator.escalation_requested"
+    )
+
+    notify = effects["team-notify-operator"]
+    assert notify["type"] == "effect:communication:send-message"
+    assert notify["communication_target_id"] == (
+        "${{team-operator-escalation.payload.communication_target_id}}"
+    )
+    assert "${{team-operator-escalation.payload.title}}" in notify["message"]
+    assert "${{team-operator-escalation.payload.message}}" in notify["message"]
+    assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
+    assert ("team-operator-escalation", "team-notify-operator") in edges
+
+
+def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
+    pack = team_runtime_v1()["config"]
+    triggers = {node["id"]: node for node in pack["triggers"]}
+    effects = {node["id"]: node for node in pack["effects"]}
+    gates = {node["id"]: node for node in pack["gates"]}
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert triggers["team-git-promotion-requested"]["type"] == "trigger:event"
+    assert triggers["team-git-promotion-requested"]["event_type"] == (
+        "team.git.promotion_requested"
+    )
+
+    # Each promotion_kind is split off the trigger with its own filter gate.
+    kind_gates = {
+        "review": "team-git-promotion-review",
+        "feature": "team-git-promotion-feature",
+        "release": "team-git-promotion-release",
+        "canonical_push": "team-git-promotion-canonical",
+    }
+    for kind, gate_id in kind_gates.items():
+        assert gates[gate_id]["type"] == "gate:filter"
+        assert gates[gate_id]["when"]["all"][0] == {
+            "equals": kind,
+            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+        }
+        assert ("team-git-promotion-requested", gate_id) in edges
+
+    # review -> promote-agent-branch -> record-git-promotion
+    promote = effects["team-git-promote-review-branch"]
+    assert promote["type"] == "effect:git:promote-agent-branch"
+    assert promote["agent_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert promote["review_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
+    assert effects["team-record-review-promotion"]["promotion_id"] == (
+        "${{team-git-promotion-requested.payload.promotion_id}}"
+    )
+    assert effects["team-record-review-promotion"]["success"] == (
+        "${{team-git-promote-review-branch.success}}"
+    )
+    assert ("team-git-promotion-review", "team-git-promote-review-branch") in edges
+    assert ("team-git-promote-review-branch", "team-record-review-promotion") in edges
+
+    # feature -> consolidate -> record-git-promotion
+    assert effects["team-consolidate-feature-branches"]["type"] == (
+        "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-consolidate-feature-branches"]["source_branches"] == (
+        "${{team-git-promotion-requested.payload.source_branches}}"
+    )
+    assert effects["team-record-feature-promotion"]["type"] == (
+        "effect:team:record-git-promotion"
+    )
+    assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
+    assert ("team-consolidate-feature-branches", "team-record-feature-promotion") in edges
+
+    # release -> consolidate -> record-git-promotion
+    assert effects["team-consolidate-release-branches"]["type"] == (
+        "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-record-release-promotion"]["type"] == (
+        "effect:team:record-git-promotion"
+    )
+    assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
+    assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
+
+    # canonical_push -> push-branch -> mark-release-published
+    push = effects["team-push-canonical-branch"]
+    assert push["type"] == "effect:git:push-branch"
+    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert effects["team-mark-release-published"]["type"] == (
+        "effect:team:mark-release-published"
+    )
+    assert effects["team-mark-release-published"]["release_package_id"] == (
+        "${{team-git-promotion-requested.payload.release_package_id}}"
+    )
+    assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
+    assert ("team-push-canonical-branch", "team-mark-release-published") in edges
+
+
+def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
+    pack = team_runtime_v1()["config"]
+    push_nodes = [
+        node for node in pack["effects"] if node["type"] == "effect:git:push-branch"
+    ]
+    # The release/canonical path is the ONLY route allowed to push to a canonical remote;
+    # ephemeral/review/feature branches must never reach effect:git:push-branch.
+    assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
+    push = push_nodes[0]
+    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+    assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
+    # No other promotion gate feeds the push-branch node.
+    for source in (
+        "team-git-promotion-review",
+        "team-git-promotion-feature",
+        "team-git-promotion-release",
+    ):
+        assert (source, "team-push-canonical-branch") not in edges
+
+
 def _multi_team_state() -> TeamState:
     return TeamState(
         revision=7,
