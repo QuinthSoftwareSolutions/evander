@@ -39,6 +39,15 @@ STATE_FILE = "state.json"
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 
+_NON_TERMINAL_TASK_STATES = frozenset(
+    {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+    }
+)
+
 
 class TeamStateConflictError(RuntimeError):
     def __init__(self, *, expected_revision: int, current_revision: int) -> None:
@@ -700,6 +709,8 @@ class TeamStateRepository:
             "errors": [],
             "created_inbox_item_ids": [],
             "created_deliverable_ids": [],
+            "created_task_ids": [],
+            "created_status_request_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
             "created_ephemeral_assignment_ids": [],
@@ -772,12 +783,27 @@ class TeamStateRepository:
                 task.updated_at = utc_now()
                 result["updated_task_ids"].append(task.id)
 
+            for creation in _list_of_mappings(
+                normalized_action.get("task_creations"), "task_creations"
+            ):
+                created_id = _apply_task_creation(
+                    state_model,
+                    actor=agent,
+                    creation=creation,
+                    result=result,
+                )
+                if created_id is not None:
+                    result["created_task_ids"].append(created_id)
+                    progress = True
+
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
-                recipient_id = _optional_text(question.get("recipient_agent_id")) or agent.reports_to_agent_id
-                if recipient_id != agent.reports_to_agent_id or recipient_id is None:
-                    result["errors"].append(
-                        f"agent {agent.id} can only send questions to its direct superior"
-                    )
+                recipient_id = (
+                    _optional_text(question.get("recipient_agent_id"))
+                    or agent.reports_to_agent_id
+                )
+                upward_error = _upward_recipient_error(agent, recipient_id, "questions")
+                if upward_error is not None:
+                    result["errors"].append(upward_error)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -799,9 +825,13 @@ class TeamStateRepository:
             for report in _list_of_mappings(
                 normalized_action.get("status_reports"), "status_reports"
             ):
-                recipient_id = _optional_text(report.get("recipient_agent_id")) or agent.reports_to_agent_id
-                if recipient_id is None:
-                    result["errors"].append(f"agent {agent.id} has no superior for status report")
+                recipient_id = (
+                    _optional_text(report.get("recipient_agent_id"))
+                    or agent.reports_to_agent_id
+                )
+                upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
+                if upward_error is not None:
+                    result["errors"].append(upward_error)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -818,6 +848,34 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
+                progress = True
+
+            for status_request in _list_of_mappings(
+                normalized_action.get("status_requests"), "status_requests"
+            ):
+                recipient_id = _required_text(
+                    status_request.get("recipient_agent_id"), "recipient_agent_id"
+                )
+                if not _is_direct_subordinate(agent, recipient_id):
+                    result["errors"].append(
+                        f"agent {agent.id} can only request status from a direct subordinate"
+                    )
+                    continue
+                inbox_id = f"inbox-{uuid4().hex}"
+                item = AgentInboxItem(
+                    id=inbox_id,
+                    recipient_agent_id=recipient_id,
+                    sender_agent_id=agent.id,
+                    task_id=_optional_text(status_request.get("task_id")),
+                    item_type=TeamInboxItemType.STATUS_REQUEST,
+                    payload={
+                        key: value
+                        for key, value in status_request.items()
+                        if key not in {"recipient_agent_id", "task_id"}
+                    },
+                )
+                state_model.inbox[item.id] = item
+                result["created_status_request_ids"].append(item.id)
                 progress = True
 
             for deliverable_payload in _list_of_mappings(
@@ -1043,6 +1101,124 @@ def _mark_action_failure(
         error=error,
     )
     result["errors"].append(error)
+
+
+def _is_direct_subordinate(actor: PersistentAgent, agent_id: str) -> bool:
+    return agent_id in actor.subordinate_agent_ids
+
+
+def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
+    if actor.reports_to_agent_id is not None:
+        return False
+    team = state.teams.get(actor.team_id)
+    return team is not None and team.manager_agent_id == actor.id
+
+
+def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
+    project = state.projects.get(project_id)
+    return project is not None and project.lead_agent_id == agent_id
+
+
+def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
+    agent = state.agents.get(agent_id)
+    return agent is not None and agent.project_id == project_id
+
+
+def _upward_recipient_error(
+    agent: PersistentAgent,
+    recipient_id: str | None,
+    kind: str,
+) -> str | None:
+    if agent.reports_to_agent_id is None:
+        return (
+            f"agent {agent.id} is a top-level manager and must use operator_escalations "
+            f"instead of {kind}"
+        )
+    if recipient_id != agent.reports_to_agent_id:
+        return (
+            f"agent {agent.id} can only send {kind} to its direct superior "
+            f"{agent.reports_to_agent_id}"
+        )
+    return None
+
+
+def _apply_task_creation(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    creation: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    owner_id = _required_text(creation.get("owner_agent_id"), "owner_agent_id")
+    project_id = _required_text(creation.get("project_id"), "project_id")
+    owner = state.agents.get(owner_id)
+    if owner is None:
+        result["errors"].append(f"task creation references missing owner {owner_id}")
+        return None
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(f"task creation references missing project {project_id}")
+        return None
+    if owner.team_id != actor.team_id or project.team_id != actor.team_id:
+        result["errors"].append(
+            f"agent {actor.id} cannot create tasks outside its team"
+        )
+        return None
+    if owner.id != actor.id and owner.project_id != project_id:
+        result["errors"].append(
+            f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
+        )
+        return None
+    permitted = (
+        owner.id == actor.id
+        or _is_direct_subordinate(actor, owner.id)
+        or (
+            _is_project_lead_for(state, actor.id, project_id)
+            and _agent_in_project_hierarchy(state, owner.id, project_id)
+        )
+        or (
+            _is_team_manager(state, actor)
+            and _is_project_lead_for(state, owner.id, project_id)
+        )
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to create tasks for {owner_id}"
+        )
+        return None
+    raw_state = _optional_text(creation.get("state"))
+    if raw_state is not None:
+        try:
+            task_state = TeamTaskState(raw_state)
+        except ValueError:
+            result["errors"].append(f"task creation has invalid state {raw_state}")
+            return None
+        if task_state not in _NON_TERMINAL_TASK_STATES:
+            result["errors"].append(
+                f"task creation cannot start in terminal state {raw_state}"
+            )
+            return None
+    else:
+        task_state = TeamTaskState.PENDING
+    task_id = _optional_text(creation.get("id")) or f"task-{uuid4().hex}"
+    if task_id in state.tasks:
+        result["errors"].append(f"task {task_id} already exists")
+        return None
+    priority = creation.get("priority")
+    now = utc_now()
+    state.tasks[task_id] = AgentTask(
+        id=task_id,
+        owner_agent_id=owner_id,
+        project_id=project_id,
+        priority=int(priority) if priority is not None else 0,
+        state=task_state,
+        title=_required_text(creation.get("title"), "title"),
+        description=_required_text(creation.get("description"), "description"),
+        created_by_agent_id=actor.id,
+        created_at=now,
+        updated_at=now,
+    )
+    return task_id
 
 
 def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
