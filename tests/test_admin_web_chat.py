@@ -391,3 +391,29 @@ def test_chat_session_disabled_status_does_not_schedule_prewarm(tmp_path: Path) 
     session = response.json()
     assert session["assistant_session"]["status"] == "disabled"
     assert service.vm_agent_admin.resolve_calls == []
+
+
+def test_chat_session_reenabled_disabled_thread_schedules_prewarm(tmp_path: Path) -> None:
+    service = FakeAdminService(tmp_path)
+    service.assistant_enabled = False
+    alice = _client_for_user(service, {"username": "alice"})
+
+    disabled_session = alice.post("/api/chat/session").json()
+
+    assert disabled_session["assistant_session"]["status"] == "disabled"
+    assert service.vm_agent_admin.resolve_calls == []
+
+    service.assistant_enabled = True
+    response = alice.post("/api/chat/session")
+
+    assert response.status_code == 200
+    session = response.json()
+    assert session["thread_id"] == disabled_session["thread_id"]
+    assert session["assistant_session"]["status"] == "preparing"
+    _wait_for(lambda: _assistant_session(alice, session["thread_id"])["status"] == "ready")
+    assert service.vm_agent_admin.resolve_calls == [
+        _expected_chat_session_resolve_call(
+            user_id="alice",
+            thread_id=session["thread_id"],
+        )
+    ]

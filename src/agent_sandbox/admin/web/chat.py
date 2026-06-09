@@ -520,7 +520,11 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             )
 
         assistant_session = store.get_assistant_session(user_id=user_id, thread_id=thread_id)
-        should_schedule = force or assistant_session["status"] in {"not_started", "preparing"}
+        should_schedule = force or assistant_session["status"] in {
+            "disabled",
+            "not_started",
+            "preparing",
+        }
         if not should_schedule:
             return effective_capability_mode, assistant_session
 

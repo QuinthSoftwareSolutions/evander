@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-09 - Admin Chat Reenable Prewarm
+
+- Made Admin Web chat sessions that were marked disabled while the assistant
+  was off schedule assistant prewarm again after the assistant is re-enabled.
+
 ## 2026-06-09 - Admin Mobile Shell Density
 
 - Made the Admin Web shell use a compact two-row mobile header and horizontal
