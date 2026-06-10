@@ -7,6 +7,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-09 - Team Add-on Hierarchy, Reviews, and Git Releases
 
+- Tightened Team Add-on task creation and Git review promotion validation so
+  agents cannot self-create tasks into unrelated projects or attach review
+  branches to deliverables outside the assignment task/project.
 - Added an Agents-page Operator steering panel that loads the selected
   session's active dispatch, queues steering notes, and lists/cancels pending
   notes without requiring operators to open Workflow inspect mode first.

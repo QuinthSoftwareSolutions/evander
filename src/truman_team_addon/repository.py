@@ -1594,7 +1594,10 @@ def _apply_task_creation(
             f"agent {actor.id} cannot create tasks outside its team"
         )
         return None
-    if owner.id != actor.id and owner.project_id != project_id:
+    actor_can_target_project = _is_project_lead_for(
+        state, actor.id, project_id
+    ) or _is_team_manager(state, actor)
+    if owner.project_id != project_id and not actor_can_target_project:
         result["errors"].append(
             f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
         )
@@ -2004,11 +2007,23 @@ def _apply_git_review_promotion(
         )
         return None
     deliverable_id = _optional_text(request.get("deliverable_id"))
-    if deliverable_id is not None and deliverable_id not in state.deliverables:
-        result["errors"].append(
-            f"git review promotion references missing deliverable {deliverable_id}"
-        )
-        return None
+    if deliverable_id is not None:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            result["errors"].append(
+                f"git review promotion references missing deliverable {deliverable_id}"
+            )
+            return None
+        deliverable_task = state.tasks.get(deliverable.task_id)
+        if (
+            deliverable_task is None
+            or deliverable_task.id != assignment.task_id
+            or deliverable_task.project_id != assignment.project_id
+        ):
+            result["errors"].append(
+                f"deliverable {deliverable_id} does not belong to ephemeral assignment {assignment_id}"
+            )
+            return None
     project = state.projects.get(assignment.project_id)
     if project is None:
         result["errors"].append(

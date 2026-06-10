@@ -357,6 +357,40 @@ def test_apply_agent_action_rejects_cross_project_task_creation(tmp_path: Path) 
     assert state.tasks == {}
 
 
+def test_apply_agent_action_rejects_cross_project_self_task_creation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_project(
+        project_id="project-2",
+        team_id="team",
+        name="Second Project",
+        lead_agent_id="lead-2",
+        lead_session_id="session-lead-2",
+        expected_revision=4,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "owner_agent_id": "backend",
+                    "project_id": "project-2",
+                    "priority": 1,
+                    "title": "Cross project self",
+                    "description": "Backend cannot assign itself into project-2.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("outside project" in error for error in result["errors"])
+    assert state.tasks == {}
+
+
 def test_apply_agent_action_rejects_terminal_task_creation_state(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
@@ -1211,6 +1245,37 @@ def test_apply_agent_action_git_review_promotion_parent_only(tmp_path: Path) -> 
     assert event["payload"]["bare_repo_name"] == "Truman.git"
     assert event["payload"]["source_branch"] == "agents/eph-1/ephemeral-1"
     assert event["payload"]["target_branch"] == "team/team/reviews/ephemeral-1"
+
+
+def test_apply_agent_action_git_review_promotion_rejects_unrelated_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_completed_ephemeral(repo)
+    _seed_task(repo, task_id="other-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="other-deliverable",
+        task_id="other-task",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_review_promotions": [
+                {
+                    "assignment_id": "ephemeral-1",
+                    "deliverable_id": "other-deliverable",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("does not belong" in error for error in result["errors"])
+    assert result["git_promotion_event_ids"] == []
+    assert state.git_promotions == {}
 
 
 def test_apply_agent_action_git_review_promotion_requires_git_config(tmp_path: Path) -> None:
