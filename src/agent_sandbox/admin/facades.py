@@ -623,6 +623,15 @@ class SessionAdminFacade:
             target, self._sessions_by_id()
         )
         update = admin_service_module._session_policy_update_from_payload(manifest, payload)
+        if "approval_notification_target_ids" in update:
+            update["approval_notification_target_ids"] = (
+                admin_service_module._resolve_session_approval_notification_target_ids(
+                    self._deps.runtime,
+                    self._deps.config,
+                    manifest,
+                    update["approval_notification_target_ids"],
+                )
+            )
         if update:
             manifest = manifest.model_copy(update=update)
             self._session_repository().upsert_session(manifest)

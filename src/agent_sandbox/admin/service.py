@@ -92,6 +92,10 @@ from agent_sandbox.operator_steering import (
     operator_steering_note_store,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.approval_notification_targets import (
+    normalize_approval_notification_target_ids,
+    resolve_approval_notification_target_ids_for_directory,
+)
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
@@ -6686,6 +6690,7 @@ def _session_policy_update_from_payload(
     allowed_fields = {
         "approval_required_tools",
         "approval_tool_settings",
+        "approval_notification_target_ids",
         "tool_argument_policies",
         "allowed_script_names",
         "discord_channel_allowlist",
@@ -6725,6 +6730,11 @@ def _session_policy_update_from_payload(
             tool_name: ApprovalGrantSettings.model_validate(settings)
             for tool_name, settings in normalized_settings.items()
         }
+    if "approval_notification_target_ids" in payload:
+        update["approval_notification_target_ids"] = normalize_approval_notification_target_ids(
+            payload.get("approval_notification_target_ids"),
+            field_name="approval_notification_target_ids",
+        )
     if "tool_argument_policies" in payload:
         update["tool_argument_policies"] = _session_tool_argument_policies_from_payload(
             session,
@@ -6783,6 +6793,20 @@ def _session_policy_update_from_payload(
         update["metadata"] = dict(metadata)
 
     return update
+
+
+def _resolve_session_approval_notification_target_ids(
+    runtime: RuntimeContext,
+    config: GatewayConfig,
+    session: SessionManifest,
+    target_ids: object,
+) -> list[str]:
+    return resolve_approval_notification_target_ids_for_directory(
+        runtime_dir=config.runtime_dir,
+        directory_store=runtime.directories,
+        directory_path=session.directory_path,
+        target_ids=target_ids,
+    )
 
 
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
@@ -9596,8 +9620,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
         )
 
-    @staticmethod
-    def _agent_session_policy_payload(session: SessionManifest | None) -> dict[str, Any] | None:
+    def _agent_session_policy_payload(self, session: SessionManifest | None) -> dict[str, Any] | None:
         if session is None:
             return None
         labels = _normalize_session_labels(session.metadata.get("labels"))
@@ -9617,6 +9640,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_name: settings.model_dump(mode="json")
                 for tool_name, settings in session.approval_tool_settings.items()
             },
+            "approval_notification_target_ids": list(session.approval_notification_target_ids),
+            "approval_notification_target_options": [
+                option.model_dump(mode="json") for option in self._approval_notification_target_options(session)
+            ],
             "tool_argument_policies": {
                 tool_name: [rule.model_dump(mode="json") for rule in rules]
                 for tool_name, rules in session.tool_argument_policies.items()
@@ -9648,6 +9675,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "metadata": dict(session.metadata),
             "labels": labels,
         }
+
+    def _approval_notification_target_options(
+        self, session: SessionManifest | None
+    ) -> list[WorkflowEditorFieldOption]:
+        if session is None:
+            return []
+        try:
+            return self._communication_notification_target_options(session.directory_path)
+        except Exception:
+            return []
 
     def effective_tool_policy_payload(
         self, session: SessionManifest | None
@@ -10836,6 +10873,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "allowed_tools",
             "approval_required_tools",
             "approval_tool_settings",
+            "approval_notification_target_ids",
             "tool_argument_policies",
             "allowed_script_names",
             "discord_channels",
@@ -10880,6 +10918,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             for key in (
                 "approval_required_tools",
                 "approval_tool_settings",
+                "approval_notification_target_ids",
                 "tool_argument_policies",
                 "allowed_script_names",
                 "discord_channels",
@@ -10896,6 +10935,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         }
         if session_policy_fields:
             update.update(_session_policy_update_from_payload(session, session_policy_fields))
+        if "approval_notification_target_ids" in update:
+            update["approval_notification_target_ids"] = _resolve_session_approval_notification_target_ids(
+                self.runtime,
+                self.config,
+                session,
+                update["approval_notification_target_ids"],
+            )
         if "email_mailboxes" in body:
             update["email_mailbox_allowlist"] = (
                 self._agent_string_list(body, "email_mailboxes") or []

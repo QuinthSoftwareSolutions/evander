@@ -165,6 +165,7 @@ export type AgentPolicyUpdateRequest = {
   web_search_enabled?: boolean;
   allowed_tools?: string[];
   approval_required_tools?: string[];
+  approval_notification_target_ids?: string[];
   allowed_script_names?: string[];
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
@@ -180,6 +181,8 @@ export type AgentSessionPolicy = {
   expires_at: string | null;
   allowed_tools: string[];
   approval_required_tools?: string[];
+  approval_notification_target_ids: string[];
+  approval_notification_target_options: Array<{ value: string; label: string }>;
   allowed_script_names: string[];
   discord_channels: string[];
   discord_channel_allowlist: string[];

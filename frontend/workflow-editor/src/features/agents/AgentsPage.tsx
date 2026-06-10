@@ -116,6 +116,7 @@ type AgentPolicyFormState = {
   webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
+  approvalNotificationTargetIds: string[];
   discordChannels: string;
   teamsChannels: string;
   emailMailboxes: string;
@@ -202,6 +203,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
+    approvalNotificationTargetIds: [],
     discordChannels: "",
     teamsChannels: "",
     emailMailboxes: "",
@@ -230,6 +232,27 @@ function parseList(value: string): string[] {
 function formatList(value: unknown): string {
   if (!Array.isArray(value)) return "";
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function formatNotificationTargetOptionLabel(option: { value: string; label: string }): string {
+  const label = option.label.trim();
+  const value = option.value.trim();
+  if (!label || label === value) {
+    return value;
+  }
+  return `${label} (${value})`;
 }
 
 function parseLabels(value: string): Record<string, string> {
@@ -625,6 +648,18 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    approval_notification_target_ids: hostStringList(rawPolicy, "approval_notification_target_ids"),
+    approval_notification_target_options: Array.isArray(rawPolicy.approval_notification_target_options)
+      ? rawPolicy.approval_notification_target_options.filter(
+          (option): option is { value: string; label: string } => {
+            if (!option || typeof option !== "object") {
+              return false;
+            }
+            const candidate = option as Record<string, unknown>;
+            return typeof candidate.value === "string" && typeof candidate.label === "string";
+          },
+        )
+      : [],
     web_search_enabled: Boolean(rawPolicy.web_search_enabled),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
@@ -652,6 +687,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
+    approvalNotificationTargetIds: dedupeStrings(policy?.approval_notification_target_ids ?? []),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
     teamsChannels: formatList(policy?.teams_channel_allowlist),
     emailMailboxes: formatList(policy?.email_mailboxes),
@@ -703,6 +739,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
     web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
+    approval_notification_target_ids: dedupeStrings(form.approvalNotificationTargetIds),
     discord_channels: parseList(form.discordChannels),
     teams_channel_allowlist: parseList(form.teamsChannels),
     email_mailboxes: parseList(form.emailMailboxes),
@@ -1006,6 +1043,8 @@ export function AgentsPage() {
     [filteredItems, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+  const selectedAgentPolicy = selectedAgent ? sessionPolicyForAgent(selectedAgent) : null;
+  const selectedAgentApprovalNotificationTargetOptions = selectedAgentPolicy?.approval_notification_target_options ?? [];
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
   const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
 
@@ -1669,7 +1708,7 @@ export function AgentsPage() {
     (selectedAgent.backend === "container_worker_vm" || selectedAgent.capabilities.resume);
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
-  const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
+  const canEditPolicy = Boolean(selectedAgentPolicy);
   const canInstallSkills = canEditPolicy && skillOptions.length > 0;
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
@@ -2249,6 +2288,117 @@ export function AgentsPage() {
                       onChange={(event) => setEditForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
                     />
                   </label>
+                  <div className="field-stack">
+                    <span>Approval notifications</span>
+                    <p className="field-description">
+                      Notification-only host targets that receive approval requests for this session.
+                      These IDs must resolve to notify-capable communication targets in the selected directory.
+                    </p>
+                    <div className="string-list-selector">
+                      <div className="contacts-editor-header">
+                        <p className="muted-text">
+                          Select notify-capable communication targets from the selected session&apos;s directory.
+                        </p>
+                        <div className="inline-actions contacts-editor-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditForm((current) => {
+                                const nextAvailable = selectedAgentApprovalNotificationTargetOptions.find(
+                                  (option) => !current.approvalNotificationTargetIds.includes(option.value),
+                                );
+                                if (!nextAvailable) {
+                                  return current;
+                                }
+                                return {
+                                  ...current,
+                                  approvalNotificationTargetIds: dedupeStrings([
+                                    ...current.approvalNotificationTargetIds,
+                                    nextAvailable.value,
+                                  ]),
+                                };
+                              })
+                            }
+                            disabled={!selectedAgentApprovalNotificationTargetOptions.length}
+                          >
+                            Add notification target
+                          </button>
+                        </div>
+                      </div>
+                      {editForm.approvalNotificationTargetIds.length === 0 ? (
+                        <div className="empty-state">
+                          {selectedAgentApprovalNotificationTargetOptions.length
+                            ? "No approval notification targets selected."
+                            : "No notify-capable communication targets are currently available for this session."}
+                        </div>
+                      ) : null}
+                      {editForm.approvalNotificationTargetIds.map((entry, index) => {
+                        const rowOptions = dedupeStrings([
+                          entry,
+                          ...selectedAgentApprovalNotificationTargetOptions
+                            .map((option) => option.value)
+                            .filter((option) => option === entry || !editForm.approvalNotificationTargetIds.includes(option)),
+                        ]);
+                        const knownTarget =
+                          selectedAgentApprovalNotificationTargetOptions.find((option) => option.value === entry) ?? null;
+                        const isUnknownTarget = knownTarget == null;
+                        return (
+                          <div key={`agent-approval-notification-target-${index}-${entry}`} className="string-list-selector-row">
+                            <label className="field-stack">
+                              <span>Notification target</span>
+                              <select
+                                value={entry}
+                                onChange={(event) =>
+                                  setEditForm((current) => {
+                                    const nextEntries = [...current.approvalNotificationTargetIds];
+                                    nextEntries[index] = event.target.value;
+                                    return {
+                                      ...current,
+                                      approvalNotificationTargetIds: dedupeStrings(nextEntries),
+                                    };
+                                  })
+                                }
+                              >
+                                {rowOptions.map((option) => {
+                                  const optionLabel =
+                                    selectedAgentApprovalNotificationTargetOptions.find(
+                                      (knownOption) => knownOption.value === option,
+                                    ) ?? null;
+                                  return (
+                                    <option key={option} value={option}>
+                                      {option === entry && isUnknownTarget
+                                        ? `${option} (unknown target)`
+                                        : optionLabel
+                                          ? formatNotificationTargetOptionLabel(optionLabel)
+                                          : option}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </label>
+                            <div className="inline-actions compact-actions">
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={() =>
+                                  setEditForm((current) => ({
+                                    ...current,
+                                    approvalNotificationTargetIds: dedupeStrings(
+                                      current.approvalNotificationTargetIds.filter(
+                                        (_, itemIndex) => itemIndex !== index,
+                                      ),
+                                    ),
+                                  }))
+                                }
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <label className="field-stack">
                     <span>Discord channels or targets</span>
                     <textarea
