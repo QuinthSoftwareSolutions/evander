@@ -957,28 +957,70 @@ class TeamStateRepository:
             for update in _list_of_mappings(normalized_action.get("task_updates"), "task_updates"):
                 task_id = _required_text(update.get("task_id"), "task_id")
                 task = _require_present(state_model.tasks, task_id, "task")
-                if task.owner_agent_id != agent.id:
+                is_owner = task.owner_agent_id == agent.id
+                raw_state = _optional_text(update.get("state"))
+                priority = update.get("priority")
+                title = _optional_text(update.get("title"))
+                description = _optional_text(update.get("description"))
+                has_owner_only_edit = (
+                    raw_state is not None
+                    or priority is not None
+                    or title is not None
+                    or description is not None
+                )
+                has_dependency_edit = "dependency_task_ids" in update
+                # State, priority, title, and description remain owner-only.
+                if has_owner_only_edit and not is_owner:
                     result["errors"].append(f"agent {agent.id} cannot update task {task_id}")
                     continue
-                raw_state = _optional_text(update.get("state"))
-                if raw_state:
+                new_dependency_task_ids: list[str] | None = None
+                if has_dependency_edit:
+                    graph_permitted = (
+                        is_owner
+                        or _supervises(state_model, agent.id, task.owner_agent_id)
+                        or _is_project_lead_for(state_model, agent.id, task.project_id)
+                        or _is_team_manager(state_model, agent)
+                    )
+                    if not graph_permitted:
+                        result["errors"].append(
+                            f"agent {agent.id} is not permitted to edit the task graph "
+                            f"for task {task_id}"
+                        )
+                        continue
+                    new_dependency_task_ids = _string_list(
+                        update.get("dependency_task_ids"), "dependency_task_ids"
+                    )
+                    graph_error = _task_graph_edit_error(
+                        state_model,
+                        task_id=task.id,
+                        project_id=task.project_id,
+                        parent_task_id=task.parent_task_id,
+                        dependency_task_ids=new_dependency_task_ids,
+                    )
+                    if graph_error is not None:
+                        result["errors"].append(graph_error)
+                        continue
+                changed = False
+                if raw_state is not None:
                     task.state = TeamTaskState(raw_state)
                     projects_to_recalc.add(task.project_id)
-                    progress = True
-                priority = update.get("priority")
+                    changed = True
                 if priority is not None:
                     task.priority = int(priority)
-                    progress = True
-                title = _optional_text(update.get("title"))
+                    changed = True
                 if title is not None:
                     task.title = title
-                    progress = True
-                description = _optional_text(update.get("description"))
+                    changed = True
                 if description is not None:
                     task.description = description
+                    changed = True
+                if new_dependency_task_ids is not None:
+                    task.dependency_task_ids = new_dependency_task_ids
+                    changed = True
+                if changed:
+                    task.updated_at = utc_now()
                     progress = True
-                task.updated_at = utc_now()
-                result["updated_task_ids"].append(task.id)
+                    result["updated_task_ids"].append(task.id)
 
             for creation in _list_of_mappings(
                 normalized_action.get("task_creations"), "task_creations"
@@ -1634,6 +1676,20 @@ def _apply_task_creation(
     if task_id in state.tasks:
         result["errors"].append(f"task {task_id} already exists")
         return None
+    parent_task_id = _optional_text(creation.get("parent_task_id"))
+    dependency_task_ids = _string_list(
+        creation.get("dependency_task_ids"), "dependency_task_ids"
+    )
+    graph_error = _task_graph_edit_error(
+        state,
+        task_id=None,
+        project_id=project_id,
+        parent_task_id=parent_task_id,
+        dependency_task_ids=dependency_task_ids,
+    )
+    if graph_error is not None:
+        result["errors"].append(graph_error)
+        return None
     priority = creation.get("priority")
     now = utc_now()
     state.tasks[task_id] = AgentTask(
@@ -1645,6 +1701,8 @@ def _apply_task_creation(
         title=_required_text(creation.get("title"), "title"),
         description=_required_text(creation.get("description"), "description"),
         created_by_agent_id=actor.id,
+        parent_task_id=parent_task_id,
+        dependency_task_ids=dependency_task_ids,
         created_at=now,
         updated_at=now,
     )
@@ -1728,6 +1786,97 @@ def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
             return True
         current = state.agents.get(superior_id)
     return False
+
+
+def _has_dependency_cycle(dependency_map: dict[str, list[str]]) -> bool:
+    """Iterative DFS mirroring TeamState._validate_no_dependency_cycle."""
+
+    visited: set[str] = set()
+    visiting: set[str] = set()
+    for start in dependency_map:
+        if start in visited:
+            continue
+        stack: list[str] = [start]
+        while stack:
+            node = stack[-1]
+            visiting.add(node)
+            advanced = False
+            for dependency_id in dependency_map.get(node, []):
+                if dependency_id not in dependency_map:
+                    continue
+                if dependency_id in visited:
+                    continue
+                if dependency_id in visiting:
+                    return True
+                stack.append(dependency_id)
+                advanced = True
+                break
+            if not advanced:
+                visiting.discard(node)
+                visited.add(node)
+                stack.pop()
+    return False
+
+
+def _task_graph_edit_error(
+    state: TeamState,
+    *,
+    task_id: str | None,
+    project_id: str,
+    parent_task_id: str | None,
+    dependency_task_ids: list[str],
+) -> str | None:
+    """Pre-check the Step 1 task-graph invariants for a proposed create/edit.
+
+    Mirrors TeamState._validate_task_graph but simulates the proposed edge(s) so
+    apply_agent_action can reject the item instead of letting the post-mutation
+    re-validation abort the whole action. ``task_id`` is None for a new task.
+    """
+
+    if task_id is not None:
+        if parent_task_id == task_id:
+            return "task cannot be its own parent"
+        if task_id in dependency_task_ids:
+            return "task cannot depend on itself"
+    if parent_task_id is not None:
+        parent = state.tasks.get(parent_task_id)
+        if parent is None:
+            return f"task references missing parent {parent_task_id}"
+        if parent.project_id != project_id:
+            return (
+                f"task parent {parent_task_id} belongs to project {parent.project_id}"
+            )
+    for dependency_id in dependency_task_ids:
+        dependency = state.tasks.get(dependency_id)
+        if dependency is None:
+            return f"task references missing dependency {dependency_id}"
+        if dependency.project_id != project_id:
+            return (
+                f"task dependency {dependency_id} belongs to project "
+                f"{dependency.project_id}"
+            )
+    # Walk up the parent chain from the proposed parent; reaching task_id is a cycle.
+    if task_id is not None and parent_task_id is not None:
+        seen: set[str] = set()
+        current: str | None = parent_task_id
+        while current is not None:
+            if current == task_id:
+                return f"task parent cycle includes {task_id}"
+            if current in seen:
+                break
+            seen.add(current)
+            current_task = state.tasks.get(current)
+            current = current_task.parent_task_id if current_task is not None else None
+    # Simulate the dependency graph with the proposed edges and look for a cycle.
+    if task_id is not None:
+        dependency_map = {
+            existing_id: list(task.dependency_task_ids)
+            for existing_id, task in state.tasks.items()
+        }
+        dependency_map[task_id] = list(dependency_task_ids)
+        if _has_dependency_cycle(dependency_map):
+            return f"task dependency cycle includes {task_id}"
+    return None
 
 
 def _apply_review_request(

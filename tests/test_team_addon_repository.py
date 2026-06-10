@@ -1486,3 +1486,224 @@ def test_apply_agent_action_git_release_request_requires_lead_or_manager(
     assert result["success"] is False
     assert any("not permitted" in error for error in result["errors"])
     assert state.release_packages == {}
+
+
+def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="parent", owner_agent_id="backend")
+    _seed_task(repo, task_id="dep", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "child",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Child task",
+                    "description": "Decomposed work.",
+                    "parent_task_id": "parent",
+                    "dependency_task_ids": ["dep"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert "child" in result["created_task_ids"]
+    child = state.tasks["child"]
+    assert child.parent_task_id == "parent"
+    assert child.dependency_task_ids == ["dep"]
+    assert state.child_task_ids("parent") == ["child"]
+
+
+def test_apply_agent_action_task_creation_rejects_missing_parent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "child",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Child",
+                    "description": "Refers to a missing parent.",
+                    "parent_task_id": "ghost",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("missing parent" in error for error in result["errors"])
+    assert "child" not in state.tasks
+
+
+def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_project(
+        project_id="project-2",
+        team_id="team",
+        name="Second Project",
+        lead_agent_id="lead-2",
+        lead_session_id="session-lead-2",
+        expected_revision=4,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="other",
+        owner_agent_id="lead-2",
+        project_id="project-2",
+        priority=1,
+        title="Other project task",
+        description="Lives in project-2.",
+        created_by_agent_id="lead-2",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "child",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Child",
+                    "description": "Depends across projects.",
+                    "dependency_task_ids": ["other"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("belongs to project" in error for error in result["errors"])
+    assert "child" not in state.tasks
+
+
+def test_apply_agent_action_owner_edits_dependencies(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="a", owner_agent_id="backend")
+    _seed_task(repo, task_id="b", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "a", "dependency_task_ids": ["b"]}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["a"].dependency_task_ids == ["b"]
+    assert "a" in result["updated_task_ids"]
+
+
+def test_apply_agent_action_task_update_rejects_dependency_cycle(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="a", owner_agent_id="backend")
+    _seed_task(repo, task_id="b", owner_agent_id="backend")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "a", "dependency_task_ids": ["b"]}],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "b", "dependency_task_ids": ["a"]}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("cycle" in error for error in result["errors"])
+    assert state.tasks["b"].dependency_task_ids == []
+    assert state.tasks["a"].dependency_task_ids == ["b"]
+
+
+def test_apply_agent_action_supervisor_edits_dependencies(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="w1", owner_agent_id="worker")
+    _seed_task(repo, task_id="w2", owner_agent_id="worker")
+
+    # backend supervises worker but is neither project lead nor team manager.
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "w1", "dependency_task_ids": ["w2"]}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["w1"].dependency_task_ids == ["w2"]
+
+
+def test_apply_agent_action_lead_and_manager_edit_dependencies(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="t1", owner_agent_id="backend")
+    _seed_task(repo, task_id="t2", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_updates": [{"task_id": "t1", "dependency_task_ids": ["t2"]}],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["t1"].dependency_task_ids == ["t2"]
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "task_updates": [{"task_id": "t1", "dependency_task_ids": []}],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["t1"].dependency_task_ids == []
+
+
+def test_apply_agent_action_unrelated_agent_cannot_edit_dependencies(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="b1", owner_agent_id="backend")
+    _seed_task(repo, task_id="b2", owner_agent_id="backend")
+
+    # worker reports to backend; it does not supervise backend and is not a lead/manager.
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "task_updates": [{"task_id": "b1", "dependency_task_ids": ["b2"]}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("not permitted" in error for error in result["errors"])
+    assert state.tasks["b1"].dependency_task_ids == []
+
+
+def test_apply_agent_action_non_owner_state_change_still_rejected(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="b1", owner_agent_id="backend")
+
+    # lead supervises backend and leads the project, but state edits remain owner-only.
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_updates": [{"task_id": "b1", "state": "in_progress"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("cannot update task" in error for error in result["errors"])
+    assert state.tasks["b1"].state == TeamTaskState.PENDING
