@@ -1436,6 +1436,7 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert result["success"] is True
     release = state.release_packages["rel-1"]
     assert release.feature_branches == []
+    assert release.artifact_refs == ["artifact-space:/teams/team/result"]
     assert release.git_promotion_record_ids == []
     assert result["git_promotion_event_ids"] == []
     assert state.git_promotions == {}

@@ -44,6 +44,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-record-release-promotion",
                 "team-git-promotion-canonical",
                 "team-push-canonical-branch",
+                "team-record-canonical-promotion",
                 "team-mark-release-published",
             ],
         }
@@ -393,6 +394,21 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
             },
             {
+                "id": "team-record-canonical-promotion",
+                "display_name": "Record canonical promotion result",
+                "type": "effect:team:record-git-promotion",
+                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                "success": "${{team-push-canonical-branch.success}}",
+                "commit_sha": "${{team-push-canonical-branch.commit_sha ?? null}}",
+                "error": "${{team-push-canonical-branch.error ?? null}}",
+                "outputs": {
+                    "origin_branch": (
+                        "${{team-push-canonical-branch.origin_branch ?? null}}"
+                    ),
+                    "message": "${{team-push-canonical-branch.message ?? null}}",
+                },
+            },
+            {
                 "id": "team-mark-release-published",
                 "display_name": "Mark release package published",
                 "type": "effect:team:mark-release-published",
@@ -440,7 +456,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             {"source_id": "team-git-promotion-release", "target_id": "team-consolidate-release-branches"},
             {"source_id": "team-consolidate-release-branches", "target_id": "team-record-release-promotion"},
             {"source_id": "team-git-promotion-canonical", "target_id": "team-push-canonical-branch"},
-            {"source_id": "team-push-canonical-branch", "target_id": "team-mark-release-published"},
+            {"source_id": "team-push-canonical-branch", "target_id": "team-record-canonical-promotion"},
+            {"source_id": "team-record-canonical-promotion", "target_id": "team-mark-release-published"},
         ],
     },
 }

@@ -225,6 +225,92 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["provider"] == "azure_devops"
 
 
+def test_record_canonical_promotion_success_updates_record(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        state.git_promotions["canonical-promotion"] = GitPromotionRecord(
+            id="canonical-promotion",
+            project_id="project",
+            release_package_id="release-1",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/release-1",
+            target_branch="releases/project/release-1",
+            promotion_kind="canonical_push",
+        )
+        state.release_packages["release-1"].git_promotion_record_ids = [
+            "canonical-promotion"
+        ]
+        return state
+
+    repo.update(_mutate)
+
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="canonical-promotion",
+        success=True,
+        commit_sha="cafef00d",
+        outputs={"origin_branch": "releases/project/release-1"},
+    )
+
+    assert result["success"] is True
+    assert result["promotion_state"] == "succeeded"
+    state = repo.read()
+    promotion = state.git_promotions["canonical-promotion"]
+    assert promotion.state == "succeeded"
+    assert promotion.commit_sha == "cafef00d"
+    assert promotion.outputs == {"origin_branch": "releases/project/release-1"}
+    release = state.release_packages["release-1"]
+    assert release.canonical_branch == "releases/project/release-1"
+    assert release.git_promotion_record_ids == ["canonical-promotion"]
+
+
+def test_record_canonical_promotion_failure_blocks_release(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        state.git_promotions["canonical-promotion"] = GitPromotionRecord(
+            id="canonical-promotion",
+            project_id="project",
+            release_package_id="release-1",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/release-1",
+            target_branch="releases/project/release-1",
+            promotion_kind="canonical_push",
+        )
+        state.release_packages["release-1"].git_promotion_record_ids = [
+            "canonical-promotion"
+        ]
+        return state
+
+    repo.update(_mutate)
+
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="canonical-promotion",
+        success=False,
+        error="push rejected",
+    )
+
+    assert result["success"] is True
+    assert result["promotion_state"] == "failed"
+    state = repo.read()
+    assert state.git_promotions["canonical-promotion"].state == "failed"
+    release = state.release_packages["release-1"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.error == "push rejected"
+    notice = state.inbox[result["created_inbox_item_ids"][0]]
+    assert notice.recipient_agent_id == "manager"
+    assert notice.payload["kind"] == "git_promotion_failed"
+    assert notice.payload["promotion_kind"] == "canonical_push"
+
+
 def _seed_release(repo: TeamStateRepository) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(

@@ -15,6 +15,7 @@ from truman_team_addon.models import (
     Deliverable,
     EphemeralAgentPolicy,
     EphemeralAssignment,
+    GitPromotionRecord,
     PersistentAgent,
     Project,
     ProjectGoal,
@@ -645,6 +646,13 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["inbox"]) == {"alpha-inbox"}
     assert set(project_state["action_records"]) == {"alpha-action"}
     assert set(project_state["release_packages"]) == {"alpha-release"}
+    assert set(project_state["git_promotions"]) == {
+        "alpha-promotion",
+        "alpha-release-promotion",
+    }
+    assert project_state["release_packages"]["alpha-release"][
+        "git_promotion_record_ids"
+    ] == ["alpha-release-promotion"]
     assert set(project_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
 
     agent_query = TeamStateQueryProvider()
@@ -670,6 +678,13 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["inbox"]) == {"alpha-inbox"}
     assert set(agent_state["action_records"]) == {"alpha-action"}
     assert set(agent_state["release_packages"]) == {"alpha-release"}
+    assert set(agent_state["git_promotions"]) == {
+        "alpha-promotion",
+        "alpha-release-promotion",
+    }
+    assert agent_state["release_packages"]["alpha-release"][
+        "git_promotion_record_ids"
+    ] == ["alpha-release-promotion"]
     assert set(agent_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
 
 
@@ -804,11 +819,17 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
     assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
 
-    # canonical_push -> push-branch -> mark-release-published
+    # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]
     assert push["type"] == "effect:git:push-branch"
     assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    record_canonical = effects["team-record-canonical-promotion"]
+    assert record_canonical["type"] == "effect:team:record-git-promotion"
+    assert record_canonical["promotion_id"] == (
+        "${{team-git-promotion-requested.payload.promotion_id}}"
+    )
+    assert record_canonical["success"] == "${{team-push-canonical-branch.success}}"
     assert effects["team-mark-release-published"]["type"] == (
         "effect:team:mark-release-published"
     )
@@ -816,7 +837,11 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "${{team-git-promotion-requested.payload.release_package_id}}"
     )
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
-    assert ("team-push-canonical-branch", "team-mark-release-published") in edges
+    assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
+    assert (
+        "team-record-canonical-promotion",
+        "team-mark-release-published",
+    ) in edges
 
 
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
@@ -833,6 +858,7 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
 
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
+    assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
     # No other promotion gate feeds the push-branch node.
     for source in (
         "team-git-promotion-review",
@@ -1030,11 +1056,53 @@ def _multi_team_state() -> TeamState:
                 id="alpha-release",
                 project_id="alpha-project",
                 deliverable_ids=["alpha-deliverable"],
+                git_promotion_record_ids=["alpha-release-promotion"],
             ),
             "beta-release": ReleasePackage(
                 id="beta-release",
                 project_id="beta-project",
                 deliverable_ids=["beta-deliverable"],
+                git_promotion_record_ids=["beta-release-promotion"],
+            ),
+        },
+        git_promotions={
+            "alpha-promotion": GitPromotionRecord(
+                id="alpha-promotion",
+                project_id="alpha-project",
+                task_id="alpha-task",
+                deliverable_id="alpha-deliverable",
+                actor_agent_id="alpha-dev",
+                source_branch="agents/alpha/review",
+                target_branch="team/alpha/reviews/alpha-task",
+                promotion_kind="review",
+            ),
+            "alpha-release-promotion": GitPromotionRecord(
+                id="alpha-release-promotion",
+                project_id="alpha-project",
+                release_package_id="alpha-release",
+                actor_agent_id="alpha-lead",
+                source_branch="team/alpha/features/alpha-task",
+                target_branch="team/alpha/releases/alpha-release",
+                promotion_kind="release",
+            ),
+            "beta-promotion": GitPromotionRecord(
+                id="beta-promotion",
+                project_id="beta-project",
+                task_id="beta-task",
+                deliverable_id="beta-deliverable",
+                actor_agent_id="beta-dev",
+                source_branch="agents/beta/review",
+                target_branch="team/beta/reviews/beta-task",
+                promotion_kind="review",
+            ),
+            "beta-release-promotion": GitPromotionRecord(
+                id="beta-release-promotion",
+                project_id="beta-project",
+                release_package_id="beta-release",
+                actor_agent_id="beta-lead",
+                source_branch="team/beta/features/beta-task",
+                target_branch="team/beta/releases/beta-release",
+                promotion_kind="release",
             ),
         },
         ephemeral_assignments={

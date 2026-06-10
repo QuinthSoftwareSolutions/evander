@@ -1027,6 +1027,39 @@ def _filtered_team_state_payload(
             for deliverable_id in _string_items(value.get("deliverable_ids"))
         )
     }
+    visible_release_ids = set(filtered["release_packages"])
+    filtered["git_promotions"] = {
+        key: value
+        for key, value in filtered.get("git_promotions", {}).items()
+        if value.get("project_id") in visible_project_ids
+        and (
+            value.get("task_id") is None
+            or value.get("task_id") in visible_task_ids
+        )
+        and (
+            value.get("deliverable_id") is None
+            or value.get("deliverable_id") in visible_deliverable_ids
+        )
+        and (
+            value.get("release_package_id") is None
+            or value.get("release_package_id") in visible_release_ids
+        )
+    }
+    visible_git_promotion_ids = set(filtered["git_promotions"])
+    filtered["deliverables"] = {
+        key: _filter_deliverable_git_refs(value, visible_git_promotion_ids)
+        for key, value in filtered["deliverables"].items()
+    }
+    filtered["release_packages"] = {
+        key: {
+            **value,
+            "git_promotion_record_ids": _filter_ids(
+                value.get("git_promotion_record_ids"),
+                visible_git_promotion_ids,
+            ),
+        }
+        for key, value in filtered["release_packages"].items()
+    }
     filtered["ephemeral_assignments"] = {
         key: value
         for key, value in filtered.get("ephemeral_assignments", {}).items()
@@ -1039,6 +1072,22 @@ def _filtered_team_state_payload(
 
 def _filter_ids(value: object, allowed: set[str]) -> list[str]:
     return [item for item in _string_items(value) if item in allowed]
+
+
+def _filter_deliverable_git_refs(value: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    git_refs = value.get("git_refs")
+    if not isinstance(git_refs, dict):
+        return value
+    return {
+        **value,
+        "git_refs": {
+            **git_refs,
+            "promotion_record_ids": _filter_ids(
+                git_refs.get("promotion_record_ids"),
+                allowed,
+            ),
+        },
+    }
 
 
 def _string_items(value: object) -> list[str]:

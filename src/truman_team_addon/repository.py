@@ -2178,6 +2178,7 @@ def _build_release_package(
             f"git release request for project {project_id} requires deliverable_ids"
         )
         return None
+    artifact_refs: list[str] = []
     feature_branches: list[str] = []
     valid = True
     for deliverable_id in deliverable_ids:
@@ -2209,6 +2210,8 @@ def _build_release_package(
                 f"deliverable {deliverable_id} has neither a feature branch nor artifact refs"
             )
             valid = False
+        for artifact_ref in deliverable.artifact_refs:
+            artifact_refs = _append_unique(artifact_refs, artifact_ref)
     if not valid:
         return None
     release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
@@ -2244,6 +2247,7 @@ def _build_release_package(
         id=release_id,
         project_id=project.id,
         deliverable_ids=deliverable_ids,
+        artifact_refs=artifact_refs,
         feature_branches=feature_branches,
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
