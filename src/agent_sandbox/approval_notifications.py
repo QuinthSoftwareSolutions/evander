@@ -24,10 +24,13 @@ class ApprovalNotificationDispatcher:
     def dispatch(self, request: ApprovalRequest) -> ApprovalRequest:
         review_command = self._review_command(request.request_id)
         try:
-            effective_policy = self.runtime.policy_config.resolve_for_directory(
-                request.directory_path
-            )
-            target_ids = list(effective_policy.approval_notification_target_ids)
+            target_ids = list(request.notification_target_ids)
+            if not target_ids and request.notification_status == ApprovalNotificationStatus.QUEUED:
+                effective_policy = self.runtime.policy_config.resolve_for_directory(
+                    request.directory_path
+                )
+                target_ids = list(effective_policy.approval_notification_target_ids)
+                request.notification_target_ids = target_ids
         except Exception as exc:  # pragma: no cover - exercised via tests
             error = str(exc).strip() or exc.__class__.__name__
             request.notification_status = ApprovalNotificationStatus.FAILED

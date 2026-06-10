@@ -20,6 +20,7 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.models import (
     ApprovalGrantSettings,
+    ApprovalNotificationStatus,
     ApprovalPayloadMode,
     ApprovalRequest,
     ApprovalStatus,
@@ -995,6 +996,250 @@ def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
     assert approval.payload["authorization"] == "<redacted>"
     assert approval.payload["nested"]["token"] == "<redacted>"
     assert approval.payload["nested"]["safe"] == "ok"
+
+
+def test_create_approval_persists_directory_session_and_run_scoped_notification_targets(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    write_root_policy_overlay(
+        engine.config,
+        {"approval_notification_target_ids": [" OPS-Root ", "ops-shared"]},
+    )
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "ops-root",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-session",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-lease",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-3",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-shared",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-4",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            approval_notification_target_ids=[" Ops-Session ", "ops-shared"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_notification_target_ids=[" OPS-Lease ", "ops-shared"],
+    )
+    token = set_tool_approval_context(
+        session_id="s1",
+        workflow_run_id="run-1",
+        lease_id=lease.lease_id,
+    )
+    try:
+        approval = engine.create_approval(
+            "s1",
+            "email_send_approved",
+            {"body": "secret body"},
+            "send email",
+        )
+    finally:
+        reset_tool_approval_context(token)
+
+    assert approval.notification_target_ids == [
+        "ops-root",
+        "ops-shared",
+        "ops-session",
+        "ops-lease",
+    ]
+    assert approval.notification_status == ApprovalNotificationStatus.QUEUED
+    assert approval.notification_attempted_at is not None
+
+
+@pytest.mark.parametrize(
+    ("context_session_id", "context_workflow_run_id", "lease_state"),
+    [
+        ("other-session", "run-1", "active"),
+        ("s1", "other-run", "active"),
+        ("s1", "run-1", "revoked"),
+        ("s1", "run-1", "expired"),
+    ],
+)
+def test_create_approval_ignores_nonmatching_or_inactive_run_scoped_notification_targets(
+    tmp_path: Path,
+    context_session_id: str,
+    context_workflow_run_id: str,
+    lease_state: str,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    write_root_policy_overlay(
+        engine.config,
+        {"approval_notification_target_ids": ["ops-root"]},
+    )
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "ops-root",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-session",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-lease",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-3",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            approval_notification_target_ids=["ops-session"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_notification_target_ids=["ops-lease"],
+    )
+    if lease_state == "revoked":
+        assert engine.tool_approval_leases.revoke_lease(lease.lease_id)
+    elif lease_state == "expired":
+        engine.tool_approval_leases.upsert_lease(
+            session_id="s1",
+            workflow_run_id="run-1",
+            tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            approval_notification_target_ids=["ops-lease"],
+        )
+        lease = engine.tool_approval_leases.get_lease(lease.lease_id) or lease
+
+    token = set_tool_approval_context(
+        session_id=context_session_id,
+        workflow_run_id=context_workflow_run_id,
+        lease_id=lease.lease_id,
+    )
+    try:
+        approval = engine.create_approval(
+            "s1",
+            "email_send_approved",
+            {"body": "secret body"},
+            "send email",
+        )
+    finally:
+        reset_tool_approval_context(token)
+
+    assert approval.notification_target_ids == ["ops-root", "ops-session"]
+    assert approval.notification_status == ApprovalNotificationStatus.QUEUED
+    assert approval.notification_attempted_at is not None
+
+
+def test_create_approval_refreshes_notification_targets_on_stale_submission(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    write_root_policy_overlay(
+        engine.config,
+        {"approval_notification_target_ids": ["ops-root"]},
+    )
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "ops-root",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-session",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    first = engine.create_approval(
+        "s1",
+        "email_send_approved",
+        {"body": "secret body"},
+        "send email",
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            approval_notification_target_ids=["ops-session"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    first.status = ApprovalStatus.DENIED
+    first.approver = "alice"
+    first.decision_at = datetime.now(UTC)
+    first.decision_reason = "stale"
+    engine.approval_store.put(first.request_id, first)
+
+    second = engine.create_approval(
+        "s1",
+        "email_send_approved",
+        {"body": "secret body"},
+        "send email",
+    )
+
+    assert second.request_id == first.request_id
+    assert second.notification_target_ids == ["ops-root", "ops-session"]
+    assert second.notification_status == ApprovalNotificationStatus.QUEUED
+    assert second.notification_attempted_at is not None
 
 
 def test_get_approval_redacts_legacy_stored_payload(tmp_path: Path) -> None:

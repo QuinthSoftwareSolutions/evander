@@ -8,6 +8,9 @@ from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.approval_notification_targets import (
+    resolve_approval_notification_target_ids_for_directory,
+)
 from agent_sandbox.models import (
     ApprovalGrantSettings,
     ApprovalNotificationStatus,
@@ -1202,6 +1205,41 @@ class PolicyEngine:
     def effective_policy_for_session_id(self, session_id: str) -> EffectivePolicyConfig:
         return self.policy_config.resolve_for_session_id(session_id)
 
+    def _approval_notification_target_ids_for_session(
+        self,
+        *,
+        session: SessionManifest,
+        effective_policy: EffectivePolicyConfig,
+        now: datetime,
+    ) -> list[str]:
+        target_ids = list(effective_policy.approval_notification_target_ids)
+        target_ids.extend(session.approval_notification_target_ids)
+
+        context = _TOOL_APPROVAL_CONTEXT.get()
+        if (
+            self.tool_approval_leases is not None
+            and context is not None
+            and context.session_id == session.session_id
+            and context.workflow_run_id
+            and context.lease_id
+        ):
+            lease = self.tool_approval_leases.get_lease(context.lease_id)
+            if (
+                lease is not None
+                and lease.session_id == session.session_id
+                and lease.workflow_run_id == context.workflow_run_id
+                and lease.revoked_at is None
+                and lease.expires_at > now
+            ):
+                target_ids.extend(lease.approval_notification_target_ids)
+
+        return resolve_approval_notification_target_ids_for_directory(
+            runtime_dir=self.config.runtime_dir,
+            directory_store=self.policy_config.directory_store,
+            directory_path=session.directory_path,
+            target_ids=target_ids,
+        )
+
     def create_approval(
         self,
         session_id: str,
@@ -1236,7 +1274,11 @@ class PolicyEngine:
             if tool_enum is not None:
                 self.require_tool_not_denied(session, tool_enum)
         redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
-        notification_target_ids = list(effective_policy.approval_notification_target_ids)
+        notification_target_ids = self._approval_notification_target_ids_for_session(
+            session=session,
+            effective_policy=effective_policy,
+            now=now,
+        )
         notification_status = (
             ApprovalNotificationStatus.QUEUED
             if notification_target_ids

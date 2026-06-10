@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.approval_notifications import ApprovalNotificationDispatcher
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.messaging.targets import (
@@ -16,6 +17,7 @@ from agent_sandbox.messaging.targets import (
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
+    ApprovalRequest,
     ApprovalStatus,
     SessionManifest,
     ToolName,
@@ -250,10 +252,152 @@ def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypa
     assert approval.notification_target_ids == ["ops-approvals"]
 
 
+def test_approval_notification_dispatch_uses_persisted_target_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-policy",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-request",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-policy"])
+    runtime.session_repository.upsert_session(_session_manifest())
+    dispatcher = ApprovalNotificationDispatcher(runtime=runtime, project_dir=tmp_path)
+    request = ApprovalRequest(
+        request_id="apr-1",
+        session_id="session-1",
+        action_type="email_send_approved",
+        tool_name="email_send_approved",
+        payload_digest="digest",
+        human_summary="send email",
+        payload={"body": "<redacted>"},
+        directory_path="root",
+        notification_status=ApprovalNotificationStatus.QUEUED,
+        notification_target_ids=["ops-request"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        send_calls.append(kwargs)
+        return {
+            "success": True,
+            "provider": "teams",
+            "communication_target_id": kwargs["communication_target_id"],
+            "message_id": "msg-123",
+            "status": "stubbed",
+        }
+
+    with (
+        patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send),
+        patch.object(
+            runtime.policy_config,
+            "resolve_for_directory",
+            side_effect=AssertionError("dispatcher should not resolve policy targets"),
+        ),
+    ):
+        approval = dispatcher.dispatch(request)
+
+    assert approval is not None
+    assert [call["communication_target_id"] for call in send_calls] == ["ops-request"]
+    assert approval.notification_target_ids == ["ops-request"]
+    assert approval.notification_status == ApprovalNotificationStatus.DELIVERED
+
+
+def test_approval_notification_dispatch_records_failure_for_persisted_target_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "stale-target",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["stale-target"])
+    runtime.session_repository.upsert_session(_session_manifest())
+    dispatcher = ApprovalNotificationDispatcher(runtime=runtime, project_dir=tmp_path)
+    request = ApprovalRequest(
+        request_id="apr-2",
+        session_id="session-1",
+        action_type="email_send_approved",
+        tool_name="email_send_approved",
+        payload_digest="digest",
+        human_summary="send email",
+        payload={"body": "<redacted>"},
+        directory_path="root",
+        notification_status=ApprovalNotificationStatus.QUEUED,
+        notification_target_ids=["stale-target"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError(f"unknown communication target: {kwargs['communication_target_id']}")
+
+    with (
+        patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send),
+        patch.object(
+            runtime.policy_config,
+            "resolve_for_directory",
+            side_effect=AssertionError("dispatcher should not resolve policy targets"),
+        ),
+    ):
+        approval = dispatcher.dispatch(request)
+
+    assert approval.status == ApprovalStatus.PENDING
+    assert approval.notification_status == ApprovalNotificationStatus.FAILED
+    assert approval.notification_target_ids == ["stale-target"]
+    assert approval.notification_error == "stale-target: unknown communication target: stale-target"
+    assert len(approval.notification_deliveries) == 1
+    assert approval.notification_deliveries[0].target_id == "stale-target"
+    assert approval.notification_deliveries[0].status == ApprovalNotificationDeliveryStatus.FAILED
+
+
 def test_duplicate_approval_submission_does_not_resend_notifications(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-refresh",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
     runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
     runtime.session_repository.upsert_session(_session_manifest())
 
@@ -298,6 +442,25 @@ def test_stale_approval_submission_refreshes_and_resends_notifications(
     expires_delta: timedelta,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-refresh",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
     runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
     runtime.session_repository.upsert_session(_session_manifest())
 
@@ -314,6 +477,24 @@ def test_stale_approval_submission_refreshes_and_resends_notifications(
             {"subject": "hello", "body": "secret"},
             "send email",
         )
+        runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id="session-1",
+                vm_id="vm-42",
+                allowed_tools=[ToolName.APPROVAL_SUBMIT],
+                approval_notification_target_ids=["ops-refresh"],
+                discord_channel_allowlist=[],
+                teams_channel_allowlist=[],
+                teams_chat_allowlist=[],
+                teams_user_allowlist=[],
+                email_folder_allowlist=[],
+                email_mailbox_allowlist=[],
+                email_draft_recipient_allowlist=[],
+                email_draft_domain_allowlist=[],
+                email_send_enabled=False,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        )
         first.status = stale_status
         first.expires_at = datetime.now(UTC) + expires_delta
         first.approver = "alice"
@@ -329,21 +510,40 @@ def test_stale_approval_submission_refreshes_and_resends_notifications(
         )
 
     assert first.request_id == second.request_id
-    assert len(send_calls) == 2
+    assert len(send_calls) == 3
     assert second.status == ApprovalStatus.PENDING
     assert second.expires_at > datetime.now(UTC)
     assert second.approver is None
     assert second.decision_at is None
     assert second.decision_reason is None
     assert second.notification_status == ApprovalNotificationStatus.DELIVERED
-    assert second.notification_target_ids == ["ops-approvals"]
-    assert len(second.notification_deliveries) == 1
+    assert second.notification_target_ids == ["ops-approvals", "ops-refresh"]
+    assert len(second.notification_deliveries) == 2
 
 
 def test_approval_notification_failures_are_recorded_per_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-primary",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            },
+            {
+                "id": "ops-backup",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-2",
+                "policy": {"capabilities": ["notify"]},
+            },
+        ],
+    )
     runtime = _runtime(
         tmp_path,
         approval_notification_target_ids=["ops-primary", "ops-backup"],
@@ -367,8 +567,7 @@ def test_approval_notification_failures_are_recorded_per_target(
     assert approval.status == ApprovalStatus.PENDING
     assert approval.notification_status == ApprovalNotificationStatus.PARTIAL
     assert approval.notification_target_ids == ["ops-primary", "ops-backup"]
-    assert approval.notification_error is not None
-    assert "notification relay unavailable" in approval.notification_error
+    assert approval.notification_error == "ops-backup: notification relay unavailable"
     assert len(approval.notification_deliveries) == 2
     assert approval.notification_deliveries[0].status == ApprovalNotificationDeliveryStatus.SENT
     assert approval.notification_deliveries[1].status == ApprovalNotificationDeliveryStatus.FAILED
