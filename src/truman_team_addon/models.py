@@ -1034,5 +1034,19 @@ def _ensure_unique(values: list[str], field_name: str) -> None:
         raise ValueError(f"{field_name} contains duplicate ids: {', '.join(sorted(set(duplicates)))}")
 
 
+def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, Any]:
+    payload = task.model_dump(mode="json")
+    payload["child_task_ids"] = state.child_task_ids(task.id)
+    payload["dependency_status"] = state.dependency_status(task.id)
+    payload["blocked_by_task_ids"] = state.blocked_by_task_ids(task.id)
+    payload["subtask_counts"] = state.subtask_counts(task.id)
+    return payload
+
+
 def team_state_payload(state: TeamState) -> dict[str, Any]:
-    return state.model_dump(mode="json")
+    payload = state.model_dump(mode="json")
+    payload["tasks"] = {
+        task_id: task_payload_with_derived(state, task)
+        for task_id, task in state.tasks.items()
+    }
+    return payload

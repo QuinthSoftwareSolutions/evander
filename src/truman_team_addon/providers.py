@@ -998,6 +998,20 @@ def _filtered_team_state_payload(
         key: {
             **value,
             "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+            # Keep the graph self-consistent within the scoped view: drop edges that
+            # point at tasks the caller cannot see. dependency_status and
+            # subtask_counts are intentionally left as computed from the full state
+            # so they reflect global truth even when some edges are hidden here.
+            "parent_task_id": value.get("parent_task_id")
+            if value.get("parent_task_id") in visible_task_ids
+            else None,
+            "dependency_task_ids": _filter_ids(
+                value.get("dependency_task_ids"), visible_task_ids
+            ),
+            "child_task_ids": _filter_ids(value.get("child_task_ids"), visible_task_ids),
+            "blocked_by_task_ids": _filter_ids(
+                value.get("blocked_by_task_ids"), visible_task_ids
+            ),
         }
         for key, value in filtered["tasks"].items()
     }

@@ -29,6 +29,7 @@ from truman_team_addon.models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    team_state_payload,
 )
 
 
@@ -537,6 +538,37 @@ def test_task_graph_derived_helpers() -> None:
 
     counts = validated.subtask_counts("parent")
     assert counts == {
+        "total": 1,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 1,
+    }
+
+
+def test_team_state_payload_includes_derived_task_fields() -> None:
+    state = TeamState.model_validate(_state_with_task_graph())
+
+    payload = team_state_payload(state)
+
+    task = payload["tasks"]["task"]
+    assert task["parent_task_id"] == "parent"
+    assert task["dependency_task_ids"] == ["dep-a", "dep-b"]
+    assert task["child_task_ids"] == []
+    assert task["dependency_status"] == "waiting"
+    assert task["blocked_by_task_ids"] == ["dep-b"]
+    assert task["subtask_counts"] == {
+        "total": 0,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 0,
+    }
+
+    parent = payload["tasks"]["parent"]
+    assert parent["child_task_ids"] == ["task"]
+    assert parent["dependency_status"] == "satisfied"
+    assert parent["subtask_counts"] == {
         "total": 1,
         "accepted": 0,
         "finished": 0,

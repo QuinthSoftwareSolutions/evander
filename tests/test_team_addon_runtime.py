@@ -640,7 +640,11 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["projects"]) == {"alpha-project"}
     assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
     assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
-    assert set(project_state["tasks"]) == {"alpha-task"}
+    assert set(project_state["tasks"]) == {"alpha-task", "alpha-helper"}
+    # Parent/dependency stay intact when both tasks are within scope.
+    assert project_state["tasks"]["alpha-task"]["parent_task_id"] == "alpha-helper"
+    assert project_state["tasks"]["alpha-task"]["dependency_task_ids"] == ["alpha-helper"]
+    assert project_state["tasks"]["alpha-helper"]["child_task_ids"] == ["alpha-task"]
     assert set(project_state["deliverables"]) == {"alpha-deliverable"}
     assert set(project_state["review_requests"]) == {"alpha-review"}
     assert set(project_state["inbox"]) == {"alpha-inbox"}
@@ -673,6 +677,14 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["agents"]) == {"alpha-dev"}
     assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
     assert set(agent_state["tasks"]) == {"alpha-task"}
+    # alpha-helper is out of this agent's scope, so its edges are filtered out,
+    # but dependency_status still reflects global truth (alpha-helper is pending).
+    scoped_task = agent_state["tasks"]["alpha-task"]
+    assert scoped_task["parent_task_id"] is None
+    assert scoped_task["dependency_task_ids"] == []
+    assert scoped_task["blocked_by_task_ids"] == []
+    assert scoped_task["child_task_ids"] == []
+    assert scoped_task["dependency_status"] == "waiting"
     assert set(agent_state["deliverables"]) == {"alpha-deliverable"}
     assert set(agent_state["review_requests"]) == set()
     assert set(agent_state["inbox"]) == {"alpha-inbox"}
@@ -970,6 +982,15 @@ def _multi_team_state() -> TeamState:
             "beta-dev": AgentRuntime(agent_id="beta-dev", active_dispatch_id="beta-dispatch"),
         },
         tasks={
+            "alpha-helper": AgentTask(
+                id="alpha-helper",
+                owner_agent_id="alpha-lead",
+                project_id="alpha-project",
+                priority=2,
+                title="Alpha helper",
+                description="Alpha groundwork",
+                created_by_agent_id="alpha-lead",
+            ),
             "alpha-task": AgentTask(
                 id="alpha-task",
                 owner_agent_id="alpha-dev",
@@ -979,6 +1000,8 @@ def _multi_team_state() -> TeamState:
                 description="Alpha work",
                 created_by_agent_id="alpha-lead",
                 deliverable_ids=["alpha-deliverable"],
+                parent_task_id="alpha-helper",
+                dependency_task_ids=["alpha-helper"],
             ),
             "beta-task": AgentTask(
                 id="beta-task",
