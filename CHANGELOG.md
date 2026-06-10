@@ -7,6 +7,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-10 - Agents Page Create Modal Immutable Configuration
 
+- The Sessions page now hides past one-time wake schedules by default, shows how
+  many were hidden, and keeps an explicit toggle for inspecting older one-time
+  wake history without making long-lived sessions overly tall.
 - `POST /api/admin/agents` with `backend=libvirt_vm` now accepts an optional
   `vm_image` template alias. `AdminService.create_admin_agent` resolves it against
   the directory's approved libvirt template catalog via
