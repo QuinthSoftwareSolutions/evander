@@ -776,12 +776,22 @@ class OpenAIRelay:
             messages = payload.get("messages")
             if not isinstance(messages, list):
                 raise ValueError("Anthropic steering delivery requires a messages array")
+            steering_message = {
+                "role": "user",
+                "content": [{"type": "text", "text": steering_text}],
+            }
+            insertion_index = len(messages)
+            while insertion_index > 0:
+                previous = messages[insertion_index - 1]
+                if not isinstance(previous, dict):
+                    break
+                if str(previous.get("role") or "").strip().lower() != "system":
+                    break
+                insertion_index -= 1
             injected["messages"] = [
-                *messages,
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": steering_text}],
-                },
+                *messages[:insertion_index],
+                steering_message,
+                *messages[insertion_index:],
             ]
             return injected
 

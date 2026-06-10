@@ -814,6 +814,86 @@ def test_openai_relay_delivers_operator_steering_note_on_next_anthropic_message_
     assert delivered.delivery_attempts == 1
 
 
+def test_openai_relay_inserts_anthropic_operator_steering_before_trailing_system_messages(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    register_model_usage_correlation_context(
+        runtime_dir=runtime_dir,
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        workflow_run_id="workflow-anthropic",
+        effect_id="effect-anthropic",
+        execution_backend="container_worker_vm",
+        directory_path="root/team-a",
+        model="claude-sonnet-4-6",
+        agent_harness="claude",
+    )
+    steering_store = operator_steering_note_store(runtime_dir)
+    note = steering_store.create_note(
+        session_id="session-anthropic",
+        dispatch_id="dispatch-anthropic",
+        message="Do the smallest safe fix now.",
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-steered",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 6, "output_tokens": 7},
+            },
+        )
+
+    monkeypatch.setenv("ANTHROPIC_TEST_KEY", "anthropic-key")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": "secret prompt text"},
+                {"role": "assistant", "content": "I will inspect it."},
+                {"role": "system", "content": "Runtime reminder that must stay last."},
+            ],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert isinstance(payload["messages"], list)
+    roles = [message["role"] for message in payload["messages"]]
+    assert roles == ["user", "assistant", "user", "system"]
+    steering_message = payload["messages"][-2]
+    assert "Do the smallest safe fix now." in steering_message["content"][0]["text"]
+    assert payload["messages"][-1]["content"] == "Runtime reminder that must stay last."
+    delivered = steering_store.get_note(note.note_id)
+    assert delivered is not None
+    assert delivered.status == "delivered"
+    assert delivered.provider == "anthropic"
+    assert delivered.provider_endpoint == "messages"
+
+
 def test_openai_relay_does_not_deliver_operator_steering_note_to_anthropic_count_tokens(
     tmp_path: Path, monkeypatch
 ) -> None:

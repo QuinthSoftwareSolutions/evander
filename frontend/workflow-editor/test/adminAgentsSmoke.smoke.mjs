@@ -117,7 +117,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     available_login_methods: [],
     azure_sso_login_url: null,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
   };
   const adminStateResponse = {
@@ -127,7 +127,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     role: "admin",
     can_manage_users: true,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
     assistant: {
       enabled: false,
@@ -327,7 +327,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
   await assert.match(await page.locator(".feature-content").innerText(), /Operator steering/);
-  await assert.doesNotReject(() => page.getByText("dispatch-1").waitFor({ state: "visible", timeout: 5000 }));
+  await assert.doesNotReject(() => page.locator(".agent-steering-panel").getByText("dispatch-1").first().waitFor({ state: "visible", timeout: 5000 }));
   await assert.match(await page.locator(".feature-content").innerText(), /dispatch-1/);
 
   await assert.match(
@@ -340,6 +340,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
 
   await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+
+  const steeringDraft = "Please keep the current fix focused.";
+  const steeringTextarea = page.locator(".agent-steering-panel textarea");
+  await steeringTextarea.fill(steeringDraft);
 
   manualRefreshRequested = true;
   const liveRefreshRequest = page.waitForRequest((request) => {
@@ -371,6 +375,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
+  assert.equal(await steeringTextarea.inputValue(), steeringDraft);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/agents?")));
   assert.ok(agentListRequests.length >= 1);
   assert.match(agentListRequests[0], /summary_only=true/);
