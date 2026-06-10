@@ -15,6 +15,7 @@ from truman_team_addon.models import (
     Deliverable,
     EphemeralAgentPolicy,
     EphemeralAssignment,
+    GitPromotionRecord,
     PersistentAgent,
     Project,
     ProjectGoal,
@@ -170,7 +171,22 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert result["leased_count"] == 1
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
-    assert "team-action.json" in str(resumer.calls[0]["prompt"])
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "team-action.json" in prompt
+    for field_name in (
+        "task_creations",
+        "status_requests",
+        "operator_escalations",
+        "review_requests",
+        "review_decisions",
+        "goal_updates",
+        "git_review_promotions",
+        "git_feature_updates",
+        "git_release_requests",
+        "ephemeral_requests",
+        "ephemeral_acceptances",
+    ):
+        assert field_name in prompt
     assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
@@ -352,6 +368,122 @@ def test_apply_agent_action_requests_ephemeral_assignment_and_publishes_event(
     assert events[0].payload["metadata"]["team_addon"]["ephemeral_assignment_id"] == "ephemeral-1"
 
 
+def test_apply_agent_action_publishes_operator_escalation_event(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_target(state):
+        state.teams["team"].operator_communication_target_id = "operator:ops-channel"
+        return state
+
+    repo.update(_set_target)
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-manager",
+            action={
+                "agent_id": "manager",
+                "operator_escalations": [
+                    {
+                        "title": "Need a decision",
+                        "message": "Operator input required.",
+                        "urgency": "high",
+                    }
+                ],
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["operator_escalation_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == "team.operator.escalation_requested"
+    assert events[0].payload == {
+        "team_id": "team",
+        "manager_agent_id": "manager",
+        "communication_target_id": "operator:ops-channel",
+        "title": "Need a decision",
+        "message": "Operator input required.",
+        "urgency": "high",
+    }
+
+
+def test_apply_agent_action_publishes_git_promotion_event(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path, max_ephemeral=1)
+
+    def _set_git(state):
+        from truman_team_addon.models import ProjectGitConfig
+
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+        )
+        return state
+
+    repo.update(_set_git)
+    repo.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-1",
+                "task_id": "task",
+                "session_id": "eph-1",
+                "title": "Slice",
+                "prompt": "Implement a slice.",
+            }
+        ],
+    )
+    repo.apply_ephemeral_action(
+        session_id="eph-1",
+        action={
+            "ephemeral_assignment_id": "ephemeral-1",
+            "summary": "Done.",
+            "agent_branch": "agents/eph-1/ephemeral-1",
+            "commit_sha": "abc1234",
+        },
+    )
+
+    provider = TeamApplyAgentActionEffectProvider()
+    provider.initialize(
+        TeamApplyAgentActionEffectDefinition(
+            id="apply",
+            display_name="Apply",
+            type="effect:team:apply-agent-action",
+            session_id="session-backend",
+            action={
+                "agent_id": "backend",
+                "git_review_promotions": [{"assignment_id": "ephemeral-1"}],
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["git_promotion_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    git_events = [
+        event for event in events if event.event_type == "team.git.promotion_requested"
+    ]
+    assert len(git_events) == 1
+    payload = git_events[0].payload
+    assert payload["promotion_kind"] == "review"
+    assert payload["source_branch"] == "agents/eph-1/ephemeral-1"
+    assert payload["target_branch"] == "team/team/reviews/ephemeral-1"
+    assert payload["host_repo_path"] == "/opt/repos/Truman"
+    assert payload["bare_repo_name"] == "Truman.git"
+
+
 def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     tmp_path: Path,
 ) -> None:
@@ -514,6 +646,13 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["inbox"]) == {"alpha-inbox"}
     assert set(project_state["action_records"]) == {"alpha-action"}
     assert set(project_state["release_packages"]) == {"alpha-release"}
+    assert set(project_state["git_promotions"]) == {
+        "alpha-promotion",
+        "alpha-release-promotion",
+    }
+    assert project_state["release_packages"]["alpha-release"][
+        "git_promotion_record_ids"
+    ] == ["alpha-release-promotion"]
     assert set(project_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
 
     agent_query = TeamStateQueryProvider()
@@ -539,6 +678,13 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["inbox"]) == {"alpha-inbox"}
     assert set(agent_state["action_records"]) == {"alpha-action"}
     assert set(agent_state["release_packages"]) == {"alpha-release"}
+    assert set(agent_state["git_promotions"]) == {
+        "alpha-promotion",
+        "alpha-release-promotion",
+    }
+    assert agent_state["release_packages"]["alpha-release"][
+        "git_promotion_record_ids"
+    ] == ["alpha-release-promotion"]
     assert set(agent_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
 
 
@@ -584,6 +730,142 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-mark-ephemeral-spawned", "team-prompt-ephemeral-agent") not in edges
     assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") in edges
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
+
+
+def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
+    pack = team_runtime_v1()["config"]
+    triggers = {node["id"]: node for node in pack["triggers"]}
+    effects = {node["id"]: node for node in pack["effects"]}
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert triggers["team-operator-escalation"]["type"] == "trigger:event"
+    assert triggers["team-operator-escalation"]["event_type"] == (
+        "team.operator.escalation_requested"
+    )
+
+    notify = effects["team-notify-operator"]
+    assert notify["type"] == "effect:communication:send-message"
+    assert notify["communication_target_id"] == (
+        "${{team-operator-escalation.payload.communication_target_id}}"
+    )
+    assert "${{team-operator-escalation.payload.title}}" in notify["message"]
+    assert "${{team-operator-escalation.payload.message}}" in notify["message"]
+    assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
+    assert ("team-operator-escalation", "team-notify-operator") in edges
+
+
+def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
+    pack = team_runtime_v1()["config"]
+    triggers = {node["id"]: node for node in pack["triggers"]}
+    effects = {node["id"]: node for node in pack["effects"]}
+    gates = {node["id"]: node for node in pack["gates"]}
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert triggers["team-git-promotion-requested"]["type"] == "trigger:event"
+    assert triggers["team-git-promotion-requested"]["event_type"] == (
+        "team.git.promotion_requested"
+    )
+
+    # Each promotion_kind is split off the trigger with its own filter gate.
+    kind_gates = {
+        "review": "team-git-promotion-review",
+        "feature": "team-git-promotion-feature",
+        "release": "team-git-promotion-release",
+        "canonical_push": "team-git-promotion-canonical",
+    }
+    for kind, gate_id in kind_gates.items():
+        assert gates[gate_id]["type"] == "gate:filter"
+        assert gates[gate_id]["when"]["all"][0] == {
+            "equals": kind,
+            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+        }
+        assert ("team-git-promotion-requested", gate_id) in edges
+
+    # review -> promote-agent-branch -> record-git-promotion
+    promote = effects["team-git-promote-review-branch"]
+    assert promote["type"] == "effect:git:promote-agent-branch"
+    assert promote["agent_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert promote["review_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
+    assert effects["team-record-review-promotion"]["promotion_id"] == (
+        "${{team-git-promotion-requested.payload.promotion_id}}"
+    )
+    assert effects["team-record-review-promotion"]["success"] == (
+        "${{team-git-promote-review-branch.success}}"
+    )
+    assert ("team-git-promotion-review", "team-git-promote-review-branch") in edges
+    assert ("team-git-promote-review-branch", "team-record-review-promotion") in edges
+
+    # feature -> consolidate -> record-git-promotion
+    assert effects["team-consolidate-feature-branches"]["type"] == (
+        "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-consolidate-feature-branches"]["source_branches"] == (
+        "${{team-git-promotion-requested.payload.source_branches}}"
+    )
+    assert effects["team-record-feature-promotion"]["type"] == (
+        "effect:team:record-git-promotion"
+    )
+    assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
+    assert ("team-consolidate-feature-branches", "team-record-feature-promotion") in edges
+
+    # release -> consolidate -> record-git-promotion
+    assert effects["team-consolidate-release-branches"]["type"] == (
+        "effect:team:consolidate-git-branches"
+    )
+    assert effects["team-record-release-promotion"]["type"] == (
+        "effect:team:record-git-promotion"
+    )
+    assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
+    assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
+
+    # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
+    push = effects["team-push-canonical-branch"]
+    assert push["type"] == "effect:git:push-branch"
+    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    record_canonical = effects["team-record-canonical-promotion"]
+    assert record_canonical["type"] == "effect:team:record-git-promotion"
+    assert record_canonical["promotion_id"] == (
+        "${{team-git-promotion-requested.payload.promotion_id}}"
+    )
+    assert record_canonical["success"] == "${{team-push-canonical-branch.success}}"
+    assert effects["team-mark-release-published"]["type"] == (
+        "effect:team:mark-release-published"
+    )
+    assert effects["team-mark-release-published"]["release_package_id"] == (
+        "${{team-git-promotion-requested.payload.release_package_id}}"
+    )
+    assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
+    assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
+    assert (
+        "team-record-canonical-promotion",
+        "team-mark-release-published",
+    ) in edges
+
+
+def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
+    pack = team_runtime_v1()["config"]
+    push_nodes = [
+        node for node in pack["effects"] if node["type"] == "effect:git:push-branch"
+    ]
+    # The release/canonical path is the ONLY route allowed to push to a canonical remote;
+    # ephemeral/review/feature branches must never reach effect:git:push-branch.
+    assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
+    push = push_nodes[0]
+    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+    assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
+    assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
+    # No other promotion gate feeds the push-branch node.
+    for source in (
+        "team-git-promotion-review",
+        "team-git-promotion-feature",
+        "team-git-promotion-release",
+    ):
+        assert (source, "team-push-canonical-branch") not in edges
 
 
 def _multi_team_state() -> TeamState:
@@ -774,11 +1056,53 @@ def _multi_team_state() -> TeamState:
                 id="alpha-release",
                 project_id="alpha-project",
                 deliverable_ids=["alpha-deliverable"],
+                git_promotion_record_ids=["alpha-release-promotion"],
             ),
             "beta-release": ReleasePackage(
                 id="beta-release",
                 project_id="beta-project",
                 deliverable_ids=["beta-deliverable"],
+                git_promotion_record_ids=["beta-release-promotion"],
+            ),
+        },
+        git_promotions={
+            "alpha-promotion": GitPromotionRecord(
+                id="alpha-promotion",
+                project_id="alpha-project",
+                task_id="alpha-task",
+                deliverable_id="alpha-deliverable",
+                actor_agent_id="alpha-dev",
+                source_branch="agents/alpha/review",
+                target_branch="team/alpha/reviews/alpha-task",
+                promotion_kind="review",
+            ),
+            "alpha-release-promotion": GitPromotionRecord(
+                id="alpha-release-promotion",
+                project_id="alpha-project",
+                release_package_id="alpha-release",
+                actor_agent_id="alpha-lead",
+                source_branch="team/alpha/features/alpha-task",
+                target_branch="team/alpha/releases/alpha-release",
+                promotion_kind="release",
+            ),
+            "beta-promotion": GitPromotionRecord(
+                id="beta-promotion",
+                project_id="beta-project",
+                task_id="beta-task",
+                deliverable_id="beta-deliverable",
+                actor_agent_id="beta-dev",
+                source_branch="agents/beta/review",
+                target_branch="team/beta/reviews/beta-task",
+                promotion_kind="review",
+            ),
+            "beta-release-promotion": GitPromotionRecord(
+                id="beta-release-promotion",
+                project_id="beta-project",
+                release_package_id="beta-release",
+                actor_agent_id="beta-lead",
+                source_branch="team/beta/features/beta-task",
+                target_branch="team/beta/releases/beta-release",
+                promotion_kind="release",
             ),
         },
         ephemeral_assignments={

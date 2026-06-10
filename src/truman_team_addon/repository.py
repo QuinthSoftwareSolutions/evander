@@ -12,19 +12,32 @@ from agent_sandbox.addons import addon_json_object_store
 from agent_sandbox.models import utc_now
 from agent_sandbox.storage import JsonObjectStore
 
+from .git_naming import (
+    canonical_release_branch,
+    ephemeral_agent_branch,
+    feature_branch,
+    release_branch,
+    review_branch,
+    validate_branch_name,
+)
 from .models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
     AgentTask,
     Deliverable,
+    DeliverableGitRefs,
     EphemeralAssignment,
     EphemeralAssignmentState,
     EphemeralAgentPolicy,
     AgentStatus,
+    GitPromotionRecord,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ProjectGoal,
+    ProjectStatus,
+    ReleasePackage,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -38,6 +51,17 @@ ADDON_ID = "team-addon"
 STATE_FILE = "state.json"
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
+OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
+GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
+
+_NON_TERMINAL_TASK_STATES = frozenset(
+    {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+    }
+)
 
 
 class TeamStateConflictError(RuntimeError):
@@ -97,6 +121,7 @@ class TeamStateRepository:
         manager_agent_id: str,
         manager_session_id: str,
         manager_role: str = "manager",
+        operator_communication_target_id: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
@@ -115,9 +140,25 @@ class TeamStateRepository:
                 id=team_id,
                 name=name,
                 manager_agent_id=manager.id,
+                operator_communication_target_id=operator_communication_target_id,
                 created_at=now,
                 updated_at=now,
             )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_team(
+        self,
+        *,
+        team_id: str,
+        operator_communication_target_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            team = _require_present(state.teams, team_id, "team")
+            team.operator_communication_target_id = operator_communication_target_id
+            team.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -131,6 +172,7 @@ class TeamStateRepository:
         lead_agent_id: str,
         lead_session_id: str,
         goals: list[ProjectGoal] | None = None,
+        git: ProjectGitConfig | None = None,
         lead_role: str = "project_lead",
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -156,11 +198,32 @@ class TeamStateRepository:
                 name=name,
                 lead_agent_id=lead.id,
                 goals=goals or [],
+                git=git,
                 created_at=now,
                 updated_at=now,
             )
             team.project_ids = _append_unique(team.project_ids, project_id)
             team.updated_at = now
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_project(
+        self,
+        *,
+        project_id: str,
+        git: ProjectGitConfig | None = None,
+        set_git: bool = False,
+        goals: list[ProjectGoal] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            project = _require_present(state.projects, project_id, "project")
+            if set_git:
+                project.git = git
+            if goals is not None:
+                project.goals = goals
+            project.updated_at = utc_now()
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -324,6 +387,113 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def record_review_decision(
+        self,
+        *,
+        review_request_id: str,
+        state: TeamRecordState,
+        findings: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_id = _required_text(review_request_id, "review_request_id")
+        if not _is_review_decision_state(state):
+            raise ValueError(
+                f"review decision state {state.value} must be accepted, rejected, or blocked"
+            )
+        findings_list = list(findings or [])
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            review = _require_present(
+                state_model.review_requests, normalized_id, "review request"
+            )
+            projects_to_recalc: set[str] = set()
+            _cascade_review_decision(
+                state_model,
+                review=review,
+                decision_state=state,
+                findings=findings_list,
+                projects_to_recalc=projects_to_recalc,
+            )
+            for project_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, project_id)
+            return state_model
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def create_release_package(
+        self,
+        *,
+        project_id: str,
+        deliverable_ids: list[str],
+        release_id: str | None = None,
+        release_branch: str | None = None,
+        canonical_branch: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        state, _result = self.create_release_package_with_result(
+            project_id=project_id,
+            deliverable_ids=deliverable_ids,
+            release_id=release_id,
+            release_branch=release_branch,
+            canonical_branch=canonical_branch,
+            expected_revision=expected_revision,
+        )
+        return state
+
+    def create_release_package_with_result(
+        self,
+        *,
+        project_id: str,
+        deliverable_ids: list[str],
+        release_id: str | None = None,
+        release_branch: str | None = None,
+        canonical_branch: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_project_id = _required_text(project_id, "project_id")
+        request = {
+            "id": _optional_text(release_id),
+            "project_id": normalized_project_id,
+            "deliverable_ids": list(deliverable_ids),
+            "release_branch": _optional_text(release_branch),
+            "canonical_branch": _optional_text(canonical_branch),
+        }
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_ids": [],
+            "errors": [],
+            "events": [],
+            "git_promotion_event_ids": [],
+            "created_deliverable_ids": [],
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            project = _require_present(
+                state_model.projects, normalized_project_id, "project"
+            )
+            projects_to_recalc: set[str] = set()
+            created_id = _build_release_package(
+                state_model,
+                project=project,
+                request=request,
+                result=result,
+                projects_to_recalc=projects_to_recalc,
+                actor_agent_id=project.lead_agent_id,
+                team_id=project.team_id,
+            )
+            if created_id is not None:
+                result["release_package_ids"].append(created_id)
+            if result["errors"]:
+                raise ValueError("; ".join(result["errors"]))
+            for recalc_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, recalc_id)
+            result["success"] = True
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
+
     def request_ephemeral_assignments(
         self,
         *,
@@ -451,6 +621,26 @@ class TeamStateRepository:
                 normalized_action.get("artifact_refs"),
                 "artifact_refs",
             )
+            agent_branch = _optional_text(normalized_action.get("agent_branch"))
+            commit_sha = _optional_text(normalized_action.get("commit_sha"))
+            if agent_branch is not None:
+                expected_branch = ephemeral_agent_branch(
+                    assignment.session_id, assignment.id
+                )
+                if agent_branch != expected_branch:
+                    assignment.state = EphemeralAssignmentState.FAILED
+                    assignment.error = (
+                        f"agent_branch {agent_branch!r} does not match expected "
+                        f"ephemeral branch {expected_branch!r}"
+                    )
+                    assignment.updated_at = utc_now()
+                    result["error"] = assignment.error
+                    result["state"] = assignment.state.value
+                    result["success"] = False
+                    return state_model
+                assignment.agent_branch = agent_branch
+            if commit_sha is not None:
+                assignment.commit_sha = commit_sha
             assignment.error = _optional_text(normalized_action.get("error"))
             assignment.state = (
                 EphemeralAssignmentState.FAILED
@@ -707,10 +897,19 @@ class TeamStateRepository:
             "errors": [],
             "created_inbox_item_ids": [],
             "created_deliverable_ids": [],
+            "created_task_ids": [],
+            "created_status_request_ids": [],
+            "created_review_request_ids": [],
+            "decided_review_request_ids": [],
+            "updated_goal_ids": [],
+            "operator_escalation_event_ids": [],
+            "git_promotion_event_ids": [],
+            "release_package_ids": [],
             "updated_task_ids": [],
             "handled_inbox_item_ids": [],
             "created_ephemeral_assignment_ids": [],
             "ephemeral_events": [],
+            "events": [],
             "accepted_ephemeral_assignment_ids": [],
             "rejected_ephemeral_assignment_ids": [],
         }
@@ -754,6 +953,7 @@ class TeamStateRepository:
                     return state_model
 
             progress = False
+            projects_to_recalc: set[str] = set()
             for update in _list_of_mappings(normalized_action.get("task_updates"), "task_updates"):
                 task_id = _required_text(update.get("task_id"), "task_id")
                 task = _require_present(state_model.tasks, task_id, "task")
@@ -763,6 +963,7 @@ class TeamStateRepository:
                 raw_state = _optional_text(update.get("state"))
                 if raw_state:
                     task.state = TeamTaskState(raw_state)
+                    projects_to_recalc.add(task.project_id)
                     progress = True
                 priority = update.get("priority")
                 if priority is not None:
@@ -779,12 +980,28 @@ class TeamStateRepository:
                 task.updated_at = utc_now()
                 result["updated_task_ids"].append(task.id)
 
+            for creation in _list_of_mappings(
+                normalized_action.get("task_creations"), "task_creations"
+            ):
+                created_id = _apply_task_creation(
+                    state_model,
+                    actor=agent,
+                    creation=creation,
+                    result=result,
+                )
+                if created_id is not None:
+                    result["created_task_ids"].append(created_id)
+                    projects_to_recalc.add(state_model.tasks[created_id].project_id)
+                    progress = True
+
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
-                recipient_id = _optional_text(question.get("recipient_agent_id")) or agent.reports_to_agent_id
-                if recipient_id != agent.reports_to_agent_id or recipient_id is None:
-                    result["errors"].append(
-                        f"agent {agent.id} can only send questions to its direct superior"
-                    )
+                recipient_id = (
+                    _optional_text(question.get("recipient_agent_id"))
+                    or agent.reports_to_agent_id
+                )
+                upward_error = _upward_recipient_error(agent, recipient_id, "questions")
+                if upward_error is not None:
+                    result["errors"].append(upward_error)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -806,9 +1023,13 @@ class TeamStateRepository:
             for report in _list_of_mappings(
                 normalized_action.get("status_reports"), "status_reports"
             ):
-                recipient_id = _optional_text(report.get("recipient_agent_id")) or agent.reports_to_agent_id
-                if recipient_id is None:
-                    result["errors"].append(f"agent {agent.id} has no superior for status report")
+                recipient_id = (
+                    _optional_text(report.get("recipient_agent_id"))
+                    or agent.reports_to_agent_id
+                )
+                upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
+                if upward_error is not None:
+                    result["errors"].append(upward_error)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -826,6 +1047,45 @@ class TeamStateRepository:
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
                 progress = True
+
+            for status_request in _list_of_mappings(
+                normalized_action.get("status_requests"), "status_requests"
+            ):
+                recipient_id = _required_text(
+                    status_request.get("recipient_agent_id"), "recipient_agent_id"
+                )
+                if not _is_direct_subordinate(agent, recipient_id):
+                    result["errors"].append(
+                        f"agent {agent.id} can only request status from a direct subordinate"
+                    )
+                    continue
+                inbox_id = f"inbox-{uuid4().hex}"
+                item = AgentInboxItem(
+                    id=inbox_id,
+                    recipient_agent_id=recipient_id,
+                    sender_agent_id=agent.id,
+                    task_id=_optional_text(status_request.get("task_id")),
+                    item_type=TeamInboxItemType.STATUS_REQUEST,
+                    payload={
+                        key: value
+                        for key, value in status_request.items()
+                        if key not in {"recipient_agent_id", "task_id"}
+                    },
+                )
+                state_model.inbox[item.id] = item
+                result["created_status_request_ids"].append(item.id)
+                progress = True
+
+            for escalation in _list_of_mappings(
+                normalized_action.get("operator_escalations"), "operator_escalations"
+            ):
+                if _apply_operator_escalation(
+                    state_model,
+                    actor=agent,
+                    escalation=escalation,
+                    result=result,
+                ):
+                    progress = True
 
             for deliverable_payload in _list_of_mappings(
                 normalized_action.get("deliverables"), "deliverables"
@@ -852,6 +1112,7 @@ class TeamStateRepository:
                 task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
                 task.state = TeamTaskState.WAITING_FOR_REVIEW
                 task.updated_at = utc_now()
+                projects_to_recalc.add(task.project_id)
                 result["created_deliverable_ids"].append(deliverable.id)
                 if agent.reports_to_agent_id is not None:
                     inbox_id = f"inbox-{uuid4().hex}"
@@ -865,6 +1126,87 @@ class TeamStateRepository:
                     )
                     result["created_inbox_item_ids"].append(inbox_id)
                 progress = True
+
+            for review_request in _list_of_mappings(
+                normalized_action.get("review_requests"), "review_requests"
+            ):
+                created_id = _apply_review_request(
+                    state_model,
+                    actor=agent,
+                    request=review_request,
+                    result=result,
+                )
+                if created_id is not None:
+                    result["created_review_request_ids"].append(created_id)
+                    progress = True
+
+            for decision in _list_of_mappings(
+                normalized_action.get("review_decisions"), "review_decisions"
+            ):
+                decided_id = _apply_review_decision(
+                    state_model,
+                    actor=agent,
+                    decision=decision,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if decided_id is not None:
+                    result["decided_review_request_ids"].append(decided_id)
+                    progress = True
+
+            for goal_update in _list_of_mappings(
+                normalized_action.get("goal_updates"), "goal_updates"
+            ):
+                updated_id = _apply_goal_update(
+                    state_model,
+                    actor=agent,
+                    update=goal_update,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if updated_id is not None:
+                    result["updated_goal_ids"].append(updated_id)
+                    progress = True
+
+            for promotion in _list_of_mappings(
+                normalized_action.get("git_review_promotions"), "git_review_promotions"
+            ):
+                promotion_id = _apply_git_review_promotion(
+                    state_model,
+                    actor=agent,
+                    request=promotion,
+                    result=result,
+                )
+                if promotion_id is not None:
+                    result["git_promotion_event_ids"].append(promotion_id)
+                    progress = True
+
+            for feature_update in _list_of_mappings(
+                normalized_action.get("git_feature_updates"), "git_feature_updates"
+            ):
+                promotion_id = _apply_git_feature_update(
+                    state_model,
+                    actor=agent,
+                    update=feature_update,
+                    result=result,
+                )
+                if promotion_id is not None:
+                    result["git_promotion_event_ids"].append(promotion_id)
+                    progress = True
+
+            for release_request in _list_of_mappings(
+                normalized_action.get("git_release_requests"), "git_release_requests"
+            ):
+                release_id = _apply_git_release_request(
+                    state_model,
+                    actor=agent,
+                    request=release_request,
+                    result=result,
+                    projects_to_recalc=projects_to_recalc,
+                )
+                if release_id is not None:
+                    result["release_package_ids"].append(release_id)
+                    progress = True
 
             for inbox_item_id in _string_list(
                 normalized_action.get("handled_inbox_item_ids"),
@@ -922,6 +1264,9 @@ class TeamStateRepository:
                     result["rejected_ephemeral_assignment_ids"].append(assignment.id)
                 progress = True
 
+            for project_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state_model, project_id)
+
             record = AgentActionRecord(
                 id=action_id,
                 agent_id=agent.id,
@@ -948,6 +1293,142 @@ class TeamStateRepository:
             _ephemeral_assignment_event_payload(state, assignment_id)
             for assignment_id in result["created_ephemeral_assignment_ids"]
         ]
+        return state, result
+
+    def record_git_promotion_result(
+        self,
+        *,
+        promotion_id: str,
+        success: bool = True,
+        outputs: dict[str, Any] | None = None,
+        error: str | None = None,
+        commit_sha: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_promotion_id = _required_text(promotion_id, "promotion_id")
+        normalized_outputs = dict(outputs or {})
+        normalized_error = _optional_text(error)
+        normalized_commit_sha = _optional_text(commit_sha)
+        result: dict[str, Any] = {
+            "success": False,
+            "promotion_id": normalized_promotion_id,
+            "promotion_state": None,
+            "deliverable_id": None,
+            "release_package_id": None,
+            "created_deliverable_ids": [],
+            "created_inbox_item_ids": [],
+            "events": [],
+            "git_promotion_event_ids": [],
+            "error": None,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            promotion = _require_present(
+                state_model.git_promotions,
+                normalized_promotion_id,
+                "git promotion",
+            )
+            promotion.outputs = normalized_outputs
+            if normalized_commit_sha is not None:
+                promotion.commit_sha = normalized_commit_sha
+            if success:
+                promotion.state = "succeeded"
+                promotion.error = None
+                _attach_promotion_success(
+                    state_model,
+                    promotion=promotion,
+                    commit_sha=normalized_commit_sha,
+                    result=result,
+                )
+            else:
+                promotion.state = "failed"
+                promotion.error = normalized_error or "git promotion failed"
+                result["error"] = promotion.error
+                _attach_promotion_failure(
+                    state_model,
+                    promotion=promotion,
+                    result=result,
+                )
+            promotion.updated_at = utc_now()
+            _recalculate_project_status(state_model, promotion.project_id)
+            result["promotion_state"] = promotion.state
+            result["deliverable_id"] = promotion.deliverable_id
+            result["release_package_id"] = promotion.release_package_id
+            result["success"] = True
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
+
+    def mark_release_published(
+        self,
+        *,
+        release_package_id: str,
+        success: bool = True,
+        canonical_branch: str | None = None,
+        published_commit_sha: str | None = None,
+        outputs: dict[str, Any] | None = None,
+        error: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_id = _required_text(release_package_id, "release_package_id")
+        normalized_canonical = _optional_text(canonical_branch)
+        normalized_commit = _optional_text(published_commit_sha)
+        normalized_error = _optional_text(error)
+        # outputs are accepted for parity with the git effect contract; they are
+        # not persisted on the release package today.
+        _ = dict(outputs or {})
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_id": normalized_id,
+            "state": None,
+            "created_inbox_item_ids": [],
+            "error": None,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            release = _require_present(
+                state_model.release_packages,
+                normalized_id,
+                "release package",
+            )
+            now = utc_now()
+            if success:
+                release.state = TeamRecordState.ACCEPTED
+                if normalized_canonical is not None:
+                    release.canonical_branch = normalized_canonical
+                if normalized_commit is not None:
+                    release.published_commit_sha = normalized_commit
+                release.published_at = now
+                release.error = None
+            else:
+                release.state = TeamRecordState.BLOCKED
+                release.error = normalized_error or "release publication failed"
+                result["error"] = release.error
+                recipient_id = _release_failure_recipient(state_model, release)
+                if recipient_id is not None and recipient_id in state_model.agents:
+                    inbox_id = f"inbox-{uuid4().hex}"
+                    state_model.inbox[inbox_id] = AgentInboxItem(
+                        id=inbox_id,
+                        recipient_agent_id=recipient_id,
+                        sender_agent_id=None,
+                        item_type=TeamInboxItemType.PROGRESS_REPORT,
+                        payload={
+                            "kind": "release_publish_failed",
+                            "release_package_id": release.id,
+                            "project_id": release.project_id,
+                            "error": release.error,
+                        },
+                    )
+                    result["created_inbox_item_ids"].append(inbox_id)
+            _recalculate_project_status(state_model, release.project_id)
+            result["state"] = release.state.value
+            result["success"] = True
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
         return state, result
 
 
@@ -1050,6 +1531,1015 @@ def _mark_action_failure(
         error=error,
     )
     result["errors"].append(error)
+
+
+def _is_direct_subordinate(actor: PersistentAgent, agent_id: str) -> bool:
+    return agent_id in actor.subordinate_agent_ids
+
+
+def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
+    if actor.reports_to_agent_id is not None:
+        return False
+    team = state.teams.get(actor.team_id)
+    return team is not None and team.manager_agent_id == actor.id
+
+
+def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
+    project = state.projects.get(project_id)
+    return project is not None and project.lead_agent_id == agent_id
+
+
+def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
+    agent = state.agents.get(agent_id)
+    return agent is not None and agent.project_id == project_id
+
+
+def _upward_recipient_error(
+    agent: PersistentAgent,
+    recipient_id: str | None,
+    kind: str,
+) -> str | None:
+    if agent.reports_to_agent_id is None:
+        return (
+            f"agent {agent.id} is a top-level manager and must use operator_escalations "
+            f"instead of {kind}"
+        )
+    if recipient_id != agent.reports_to_agent_id:
+        return (
+            f"agent {agent.id} can only send {kind} to its direct superior "
+            f"{agent.reports_to_agent_id}"
+        )
+    return None
+
+
+def _apply_task_creation(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    creation: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    owner_id = _required_text(creation.get("owner_agent_id"), "owner_agent_id")
+    project_id = _required_text(creation.get("project_id"), "project_id")
+    owner = state.agents.get(owner_id)
+    if owner is None:
+        result["errors"].append(f"task creation references missing owner {owner_id}")
+        return None
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(f"task creation references missing project {project_id}")
+        return None
+    if owner.team_id != actor.team_id or project.team_id != actor.team_id:
+        result["errors"].append(
+            f"agent {actor.id} cannot create tasks outside its team"
+        )
+        return None
+    if owner.id != actor.id and owner.project_id != project_id:
+        result["errors"].append(
+            f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
+        )
+        return None
+    permitted = (
+        owner.id == actor.id
+        or _is_direct_subordinate(actor, owner.id)
+        or (
+            _is_project_lead_for(state, actor.id, project_id)
+            and _agent_in_project_hierarchy(state, owner.id, project_id)
+        )
+        or (
+            _is_team_manager(state, actor)
+            and _is_project_lead_for(state, owner.id, project_id)
+        )
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to create tasks for {owner_id}"
+        )
+        return None
+    raw_state = _optional_text(creation.get("state"))
+    if raw_state is not None:
+        try:
+            task_state = TeamTaskState(raw_state)
+        except ValueError:
+            result["errors"].append(f"task creation has invalid state {raw_state}")
+            return None
+        if task_state not in _NON_TERMINAL_TASK_STATES:
+            result["errors"].append(
+                f"task creation cannot start in terminal state {raw_state}"
+            )
+            return None
+    else:
+        task_state = TeamTaskState.PENDING
+    task_id = _optional_text(creation.get("id")) or f"task-{uuid4().hex}"
+    if task_id in state.tasks:
+        result["errors"].append(f"task {task_id} already exists")
+        return None
+    priority = creation.get("priority")
+    now = utc_now()
+    state.tasks[task_id] = AgentTask(
+        id=task_id,
+        owner_agent_id=owner_id,
+        project_id=project_id,
+        priority=int(priority) if priority is not None else 0,
+        state=task_state,
+        title=_required_text(creation.get("title"), "title"),
+        description=_required_text(creation.get("description"), "description"),
+        created_by_agent_id=actor.id,
+        created_at=now,
+        updated_at=now,
+    )
+    return task_id
+
+
+def _apply_operator_escalation(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    escalation: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    if not _is_team_manager(state, actor):
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to send operator escalations"
+        )
+        return False
+    title = _required_text(escalation.get("title"), "title")
+    message = _required_text(escalation.get("message"), "message")
+    urgency = _optional_text(escalation.get("urgency")) or "normal"
+    project_id = _optional_text(escalation.get("project_id"))
+    task_id = _optional_text(escalation.get("task_id"))
+    team = state.teams.get(actor.team_id)
+    target = (
+        _optional_text(team.operator_communication_target_id) if team is not None else None
+    )
+    if not target:
+        result["errors"].append(
+            f"team {actor.team_id} has no operator_communication_target_id for escalations"
+        )
+        return False
+    escalation_id = f"escalation-{uuid4().hex}"
+    payload: dict[str, Any] = {
+        "team_id": actor.team_id,
+        "manager_agent_id": actor.id,
+        "communication_target_id": target,
+        "title": title,
+        "message": message,
+        "urgency": urgency,
+    }
+    if project_id is not None:
+        payload["project_id"] = project_id
+    if task_id is not None:
+        payload["task_id"] = task_id
+    inbox_id = f"inbox-{uuid4().hex}"
+    state.inbox[inbox_id] = AgentInboxItem(
+        id=inbox_id,
+        recipient_agent_id=actor.id,
+        sender_agent_id=actor.id,
+        task_id=task_id,
+        item_type=TeamInboxItemType.ESCALATION,
+        payload={"escalation_id": escalation_id, **payload},
+    )
+    result["created_inbox_item_ids"].append(inbox_id)
+    result["events"].append(
+        {
+            "event_type": OPERATOR_ESCALATION_EVENT_TYPE,
+            "correlation_key": escalation_id,
+            "idempotency_key": (
+                f"team-addon:{OPERATOR_ESCALATION_EVENT_TYPE}:{escalation_id}"
+            ),
+            "payload": payload,
+        }
+    )
+    result["operator_escalation_event_ids"].append(escalation_id)
+    return True
+
+
+def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
+    """Return True if supervisor_id is an ancestor of agent_id in the reporting chain."""
+
+    seen: set[str] = set()
+    current = state.agents.get(agent_id)
+    while current is not None and current.reports_to_agent_id is not None:
+        superior_id = current.reports_to_agent_id
+        if superior_id in seen:
+            break
+        seen.add(superior_id)
+        if superior_id == supervisor_id:
+            return True
+        current = state.agents.get(superior_id)
+    return False
+
+
+def _apply_review_request(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None:
+        result["errors"].append(f"review request references missing deliverable {deliverable_id}")
+        return None
+    reviewer_id = _required_text(request.get("reviewer_agent_id"), "reviewer_agent_id")
+    reviewer = state.agents.get(reviewer_id)
+    if reviewer is None:
+        result["errors"].append(f"review request references missing reviewer {reviewer_id}")
+        return None
+    if reviewer.team_id != actor.team_id:
+        result["errors"].append(
+            f"reviewer {reviewer_id} is not in the same team as {actor.id}"
+        )
+        return None
+    task = state.tasks.get(deliverable.task_id)
+    project_id = task.project_id if task is not None else None
+    permitted = (
+        actor.id == deliverable.producer_agent_id
+        or _supervises(state, actor.id, deliverable.producer_agent_id)
+        or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
+        or _is_team_manager(state, actor)
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to request review of deliverable {deliverable_id}"
+        )
+        return None
+    review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
+    if review_id in state.review_requests:
+        result["errors"].append(f"review request {review_id} already exists")
+        return None
+    review = ReviewRequest(
+        id=review_id,
+        deliverable_id=deliverable_id,
+        reviewer_agent_id=reviewer_id,
+        state=TeamRecordState.PENDING,
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = _append_unique(
+        deliverable.review_request_ids,
+        review.id,
+    )
+    inbox_id = f"inbox-{uuid4().hex}"
+    state.inbox[inbox_id] = AgentInboxItem(
+        id=inbox_id,
+        recipient_agent_id=reviewer_id,
+        sender_agent_id=actor.id,
+        task_id=deliverable.task_id,
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        payload={
+            "kind": "review_request",
+            "review_request_id": review.id,
+            "deliverable_id": deliverable_id,
+            "instructions": _optional_text(request.get("instructions")) or "",
+        },
+    )
+    result["created_inbox_item_ids"].append(inbox_id)
+    return review.id
+
+
+def _apply_review_decision(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    decision: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    review_request_id = _required_text(
+        decision.get("review_request_id"), "review_request_id"
+    )
+    review = state.review_requests.get(review_request_id)
+    if review is None:
+        result["errors"].append(
+            f"review decision references missing review request {review_request_id}"
+        )
+        return None
+    if review.reviewer_agent_id != actor.id:
+        result["errors"].append(
+            f"agent {actor.id} is not the assigned reviewer for {review_request_id}"
+        )
+        return None
+    raw_state = _required_text(decision.get("state"), "state")
+    try:
+        decision_state = TeamRecordState(raw_state)
+    except ValueError:
+        result["errors"].append(f"review decision has invalid state {raw_state}")
+        return None
+    if not _is_review_decision_state(decision_state):
+        result["errors"].append(
+            f"review decision state {raw_state} must be accepted, rejected, or blocked"
+        )
+        return None
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=decision_state,
+        findings=_string_list(decision.get("findings"), "findings"),
+        projects_to_recalc=projects_to_recalc,
+    )
+    return review.id
+
+
+def _is_review_decision_state(decision_state: TeamRecordState) -> bool:
+    return decision_state in {
+        TeamRecordState.ACCEPTED,
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    }
+
+
+def _cascade_review_decision(
+    state: TeamState,
+    *,
+    review: ReviewRequest,
+    decision_state: TeamRecordState,
+    findings: list[str],
+    projects_to_recalc: set[str],
+) -> None:
+    """Apply a review decision and cascade it to the deliverable, task, and project.
+
+    This is the single source of truth for review decision cascade rules, shared by
+    the ``review_decisions`` agent action and the Admin API decision endpoint.
+    """
+
+    review.state = decision_state
+    review.findings = findings
+    review.decision_at = utc_now()
+    deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
+    task = _require_present(state.tasks, deliverable.task_id, "task")
+    now = utc_now()
+    if decision_state == TeamRecordState.ACCEPTED:
+        all_accepted = all(
+            state.review_requests[review_id].state == TeamRecordState.ACCEPTED
+            for review_id in deliverable.review_request_ids
+        )
+        if all_accepted:
+            deliverable.state = TeamRecordState.ACCEPTED
+            task_deliverables = [
+                state.deliverables[deliverable_id]
+                for deliverable_id in task.deliverable_ids
+                if deliverable_id in state.deliverables
+            ]
+            if task_deliverables and all(
+                item.state == TeamRecordState.ACCEPTED for item in task_deliverables
+            ):
+                task.state = TeamTaskState.ACCEPTED
+                task.updated_at = now
+    elif decision_state == TeamRecordState.REJECTED:
+        deliverable.state = TeamRecordState.REJECTED
+        task.state = TeamTaskState.BLOCKED
+        task.updated_at = now
+    else:  # blocked
+        deliverable.state = TeamRecordState.BLOCKED
+        task.state = TeamTaskState.BLOCKED
+        task.updated_at = now
+    projects_to_recalc.add(task.project_id)
+
+
+def _apply_goal_update(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    update: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    project_id = _required_text(update.get("project_id"), "project_id")
+    goal_id = _required_text(update.get("goal_id"), "goal_id")
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(f"goal update references missing project {project_id}")
+        return None
+    permitted = _is_project_lead_for(state, actor.id, project_id) or (
+        _is_team_manager(state, actor) and project.team_id == actor.team_id
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to update goals on project {project_id}"
+        )
+        return None
+    raw_state = _required_text(update.get("state"), "state")
+    try:
+        goal_state = TeamRecordState(raw_state)
+    except ValueError:
+        result["errors"].append(f"goal update has invalid state {raw_state}")
+        return None
+    goal = next((item for item in project.goals if item.id == goal_id), None)
+    if goal is None:
+        result["errors"].append(
+            f"goal {goal_id} does not exist on project {project_id}"
+        )
+        return None
+    goal.state = goal_state
+    project.updated_at = utc_now()
+    projects_to_recalc.add(project_id)
+    return goal_id
+
+
+def _project_git_or_error(
+    project: Project,
+    result: dict[str, Any],
+) -> Any:
+    if project.git is None:
+        result["errors"].append(
+            f"project {project.id} has no git configuration for promotions"
+        )
+        return None
+    return project.git
+
+
+def _bare_repo_fields(git: Any) -> dict[str, str]:
+    if git.bare_repo_name:
+        return {"bare_repo_name": git.bare_repo_name}
+    return {"bare_repo_path": git.bare_repo_path}
+
+
+def _emit_git_promotion_event(
+    result: dict[str, Any],
+    *,
+    promotion_id: str,
+    payload: dict[str, Any],
+) -> None:
+    result["events"].append(
+        {
+            "event_type": GIT_PROMOTION_EVENT_TYPE,
+            "correlation_key": promotion_id,
+            "idempotency_key": f"team-addon:{GIT_PROMOTION_EVENT_TYPE}:{promotion_id}",
+            "payload": payload,
+        }
+    )
+
+
+def _apply_git_review_promotion(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    assignment_id = _required_text(request.get("assignment_id"), "assignment_id")
+    assignment = state.ephemeral_assignments.get(assignment_id)
+    if assignment is None:
+        result["errors"].append(
+            f"git review promotion references missing ephemeral assignment {assignment_id}"
+        )
+        return None
+    if assignment.parent_agent_id != actor.id:
+        result["errors"].append(
+            f"agent {actor.id} cannot promote ephemeral assignment {assignment_id}"
+        )
+        return None
+    if assignment.state not in {
+        EphemeralAssignmentState.COMPLETED,
+        EphemeralAssignmentState.ACCEPTED,
+    }:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} is not completed or accepted"
+        )
+        return None
+    if not assignment.agent_branch:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} has no agent_branch to promote"
+        )
+        return None
+    deliverable_id = _optional_text(request.get("deliverable_id"))
+    if deliverable_id is not None and deliverable_id not in state.deliverables:
+        result["errors"].append(
+            f"git review promotion references missing deliverable {deliverable_id}"
+        )
+        return None
+    project = state.projects.get(assignment.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git review promotion references missing project {assignment.project_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    source_branch = assignment.agent_branch
+    target_branch = review_branch(actor.team_id, assignment_id)
+    promotion_id = f"promotion-{uuid4().hex}"
+    state.git_promotions[promotion_id] = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        task_id=assignment.task_id,
+        deliverable_id=deliverable_id,
+        actor_agent_id=actor.id,
+        source_branch=source_branch,
+        target_branch=target_branch,
+        promotion_kind="review",
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_kind": "review",
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "assignment_id": assignment_id,
+    }
+    payload.update(_bare_repo_fields(git))
+    if deliverable_id is not None:
+        payload["deliverable_id"] = deliverable_id
+    _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
+    return promotion_id
+
+
+def _apply_git_feature_update(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    update: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    task_id = _required_text(update.get("task_id"), "task_id")
+    task = state.tasks.get(task_id)
+    if task is None:
+        result["errors"].append(
+            f"git feature update references missing task {task_id}"
+        )
+        return None
+    if task.owner_agent_id != actor.id and not _supervises(
+        state, actor.id, task.owner_agent_id
+    ):
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to consolidate task {task_id}"
+        )
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git feature update references missing project {task.project_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    raw_sources = _string_list(
+        update.get("source_review_branches"), "source_review_branches"
+    )
+    if not raw_sources:
+        result["errors"].append(
+            f"git feature update for task {task_id} requires source_review_branches"
+        )
+        return None
+    try:
+        source_branches = [validate_branch_name(branch) for branch in raw_sources]
+        target_branch = validate_branch_name(
+            _optional_text(update.get("feature_branch"))
+            or feature_branch(actor.team_id, task_id, actor.id)
+        )
+    except ValueError as exc:
+        result["errors"].append(f"git feature update has invalid branch name: {exc}")
+        return None
+    promotion_id = f"promotion-{uuid4().hex}"
+    state.git_promotions[promotion_id] = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        task_id=task_id,
+        actor_agent_id=actor.id,
+        source_branch=source_branches[0],
+        target_branch=target_branch,
+        promotion_kind="feature",
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_kind": "feature",
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "base_branch": git.base_branch,
+        "source_branches": source_branches,
+        "target_branch": target_branch,
+        "task_id": task_id,
+    }
+    _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
+    return promotion_id
+
+
+def _apply_git_release_request(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+) -> str | None:
+    project_id = _required_text(request.get("project_id"), "project_id")
+    project = state.projects.get(project_id)
+    if project is None:
+        result["errors"].append(
+            f"git release request references missing project {project_id}"
+        )
+        return None
+    permitted = _is_project_lead_for(state, actor.id, project_id) or (
+        _is_team_manager(state, actor) and project.team_id == actor.team_id
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to request releases on project {project_id}"
+        )
+        return None
+    return _build_release_package(
+        state,
+        project=project,
+        request=request,
+        result=result,
+        projects_to_recalc=projects_to_recalc,
+        actor_agent_id=actor.id,
+        team_id=actor.team_id,
+    )
+
+
+def _build_release_package(
+    state: TeamState,
+    *,
+    project: Project,
+    request: dict[str, Any],
+    result: dict[str, Any],
+    projects_to_recalc: set[str],
+    actor_agent_id: str,
+    team_id: str,
+) -> str | None:
+    """Validate deliverables and build a pending ReleasePackage with git promotions.
+
+    Shared by the ``git_release_requests`` agent action and the Admin API manual
+    release-package endpoint so both enforce identical validation and branch naming.
+    """
+
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+    project_id = project.id
+    deliverable_ids = _string_list(request.get("deliverable_ids"), "deliverable_ids")
+    if not deliverable_ids:
+        result["errors"].append(
+            f"git release request for project {project_id} requires deliverable_ids"
+        )
+        return None
+    artifact_refs: list[str] = []
+    feature_branches: list[str] = []
+    valid = True
+    for deliverable_id in deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        if deliverable is None:
+            result["errors"].append(
+                f"git release request references missing deliverable {deliverable_id}"
+            )
+            valid = False
+            continue
+        task = state.tasks.get(deliverable.task_id)
+        if task is None or task.project_id != project_id:
+            result["errors"].append(
+                f"deliverable {deliverable_id} does not belong to project {project_id}"
+            )
+            valid = False
+            continue
+        if deliverable.state != TeamRecordState.ACCEPTED:
+            result["errors"].append(
+                f"deliverable {deliverable_id} is not accepted and cannot be released"
+            )
+            valid = False
+            continue
+        feature = deliverable.git_refs.feature_branch
+        if feature:
+            feature_branches = _append_unique(feature_branches, feature)
+        elif not deliverable.artifact_refs:
+            result["errors"].append(
+                f"deliverable {deliverable_id} has neither a feature branch nor artifact refs"
+            )
+            valid = False
+        for artifact_ref in deliverable.artifact_refs:
+            artifact_refs = _append_unique(artifact_refs, artifact_ref)
+    if not valid:
+        return None
+    release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
+    if release_id in state.release_packages:
+        result["errors"].append(f"release package {release_id} already exists")
+        return None
+    target_release_branch = validate_branch_name(
+        _optional_text(request.get("release_branch"))
+        or release_branch(team_id, release_id)
+    )
+    target_canonical_branch = validate_branch_name(
+        _optional_text(request.get("canonical_branch"))
+        or canonical_release_branch(project, release_id)
+    )
+    promotion_ids: list[str] = []
+    # Internal feature branches are consolidated into a release branch, which is then
+    # pushed to the canonical remote after consolidation succeeds. Only create git
+    # promotions when there is at least one feature branch to consolidate; pure
+    # artifact deliverables need no push.
+    if feature_branches:
+        release_promotion_id = f"promotion-{uuid4().hex}"
+        state.git_promotions[release_promotion_id] = GitPromotionRecord(
+            id=release_promotion_id,
+            project_id=project.id,
+            release_package_id=release_id,
+            actor_agent_id=actor_agent_id,
+            source_branch=feature_branches[0],
+            target_branch=target_release_branch,
+            promotion_kind="release",
+        )
+        promotion_ids.append(release_promotion_id)
+    state.release_packages[release_id] = ReleasePackage(
+        id=release_id,
+        project_id=project.id,
+        deliverable_ids=deliverable_ids,
+        artifact_refs=artifact_refs,
+        feature_branches=feature_branches,
+        release_branch=target_release_branch,
+        canonical_branch=target_canonical_branch,
+        git_promotion_record_ids=promotion_ids,
+        state=TeamRecordState.PENDING,
+    )
+    if feature_branches:
+        _emit_git_promotion_event(
+            result,
+            promotion_id=promotion_ids[0],
+            payload={
+                "promotion_id": promotion_ids[0],
+                "promotion_kind": "release",
+                "project_id": project.id,
+                "release_package_id": release_id,
+                "host_repo_path": git.host_repo_path,
+                "base_branch": git.base_branch,
+                "source_branches": list(feature_branches),
+                "target_branch": target_release_branch,
+            },
+        )
+        result["git_promotion_event_ids"].extend(promotion_ids)
+    projects_to_recalc.add(project_id)
+    return release_id
+
+
+def _attach_promotion_success(
+    state: TeamState,
+    *,
+    promotion: GitPromotionRecord,
+    commit_sha: str | None,
+    result: dict[str, Any],
+) -> None:
+    """Attach a succeeded promotion's branch + record id to its linked records."""
+
+    kind = promotion.promotion_kind
+    deliverable = (
+        state.deliverables.get(promotion.deliverable_id)
+        if promotion.deliverable_id is not None
+        else None
+    )
+    if deliverable is not None:
+        refs = deliverable.git_refs
+        if kind == "review":
+            refs.review_branch = promotion.target_branch
+            refs.agent_branch = refs.agent_branch or promotion.source_branch
+        elif kind == "feature":
+            refs.feature_branch = promotion.target_branch
+        elif kind == "release":
+            refs.release_branch = promotion.target_branch
+        if commit_sha is not None:
+            refs.commit_sha = commit_sha
+        refs.promotion_record_ids = _append_unique(refs.promotion_record_ids, promotion.id)
+    elif kind == "feature" and promotion.task_id is not None and promotion.task_id in state.tasks:
+        # A feature consolidation has no deliverable yet; capture the consolidated
+        # branch on a new deliverable so later release requests can find it.
+        task = state.tasks[promotion.task_id]
+        deliverable_id = f"deliverable-{uuid4().hex}"
+        new_deliverable = Deliverable(
+            id=deliverable_id,
+            task_id=task.id,
+            producer_agent_id=promotion.actor_agent_id,
+            summary=f"Consolidated feature branch {promotion.target_branch}",
+            state=TeamRecordState.PENDING,
+            git_refs=DeliverableGitRefs(
+                feature_branch=promotion.target_branch,
+                commit_sha=commit_sha,
+                promotion_record_ids=[promotion.id],
+            ),
+        )
+        state.deliverables[deliverable_id] = new_deliverable
+        task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable_id)
+        task.updated_at = utc_now()
+        promotion.deliverable_id = deliverable_id
+        result["created_deliverable_ids"].append(deliverable_id)
+
+    release = (
+        state.release_packages.get(promotion.release_package_id)
+        if promotion.release_package_id is not None
+        else None
+    )
+    if release is not None:
+        release.git_promotion_record_ids = _append_unique(
+            release.git_promotion_record_ids,
+            promotion.id,
+        )
+        if kind == "release":
+            release.release_branch = release.release_branch or promotion.target_branch
+            _queue_canonical_push_after_release_success(
+                state,
+                release=release,
+                release_promotion=promotion,
+                result=result,
+            )
+        elif kind == "canonical_push":
+            release.canonical_branch = release.canonical_branch or promotion.target_branch
+
+
+def _queue_canonical_push_after_release_success(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    release_promotion: GitPromotionRecord,
+    result: dict[str, Any],
+) -> None:
+    project = state.projects.get(release_promotion.project_id)
+    git = project.git if project is not None else None
+    if project is None or git is None:
+        release.state = TeamRecordState.BLOCKED
+        release.error = (
+            f"project {release_promotion.project_id} has no git configuration "
+            "for canonical release push"
+        )
+        result["error"] = release.error
+        return
+
+    source_branch = release.release_branch or release_promotion.target_branch
+    target_branch = release.canonical_branch or canonical_release_branch(project, release.id)
+    existing = next(
+        (
+            state.git_promotions[promotion_id]
+            for promotion_id in release.git_promotion_record_ids
+            if promotion_id in state.git_promotions
+            and state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+        ),
+        None,
+    )
+    if existing is None:
+        existing = GitPromotionRecord(
+            id=f"promotion-{uuid4().hex}",
+            project_id=project.id,
+            release_package_id=release.id,
+            actor_agent_id=release_promotion.actor_agent_id,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            promotion_kind="canonical_push",
+        )
+        state.git_promotions[existing.id] = existing
+        release.git_promotion_record_ids = _append_unique(
+            release.git_promotion_record_ids,
+            existing.id,
+        )
+    release.canonical_branch = target_branch
+
+    if existing.state != "pending":
+        return
+
+    payload: dict[str, Any] = {
+        "promotion_id": existing.id,
+        "promotion_kind": "canonical_push",
+        "project_id": project.id,
+        "release_package_id": release.id,
+        "host_repo_path": git.host_repo_path,
+        "base_branch": git.base_branch,
+        "source_branch": existing.source_branch,
+        "target_branch": existing.target_branch,
+    }
+    if git.canonical_origin_url is not None:
+        payload["canonical_origin_url"] = git.canonical_origin_url
+    if git.provider is not None:
+        payload["provider"] = git.provider
+    _emit_git_promotion_event(result, promotion_id=existing.id, payload=payload)
+    result["git_promotion_event_ids"].append(existing.id)
+
+
+def _attach_promotion_failure(
+    state: TeamState,
+    *,
+    promotion: GitPromotionRecord,
+    result: dict[str, Any],
+) -> None:
+    """Block linked records and notify the actor's superior or project lead."""
+
+    deliverable = (
+        state.deliverables.get(promotion.deliverable_id)
+        if promotion.deliverable_id is not None
+        else None
+    )
+    if deliverable is not None:
+        deliverable.state = TeamRecordState.BLOCKED
+    release = (
+        state.release_packages.get(promotion.release_package_id)
+        if promotion.release_package_id is not None
+        else None
+    )
+    if release is not None:
+        release.state = TeamRecordState.BLOCKED
+        release.error = promotion.error
+    recipient_id = _promotion_failure_recipient(state, promotion)
+    if recipient_id is not None and recipient_id in state.agents:
+        inbox_id = f"inbox-{uuid4().hex}"
+        state.inbox[inbox_id] = AgentInboxItem(
+            id=inbox_id,
+            recipient_agent_id=recipient_id,
+            sender_agent_id=None,
+            task_id=(
+                promotion.task_id
+                if promotion.task_id is not None and promotion.task_id in state.tasks
+                else None
+            ),
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            payload={
+                "kind": "git_promotion_failed",
+                "promotion_id": promotion.id,
+                "promotion_kind": promotion.promotion_kind,
+                "project_id": promotion.project_id,
+                "source_branch": promotion.source_branch,
+                "target_branch": promotion.target_branch,
+                "error": promotion.error,
+            },
+        )
+        result["created_inbox_item_ids"].append(inbox_id)
+
+
+def _promotion_failure_recipient(
+    state: TeamState,
+    promotion: GitPromotionRecord,
+) -> str | None:
+    actor = state.agents.get(promotion.actor_agent_id)
+    if actor is not None and actor.reports_to_agent_id is not None:
+        return actor.reports_to_agent_id
+    project = state.projects.get(promotion.project_id)
+    if project is not None:
+        return project.lead_agent_id
+    return None
+
+
+def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str | None:
+    project = state.projects.get(release.project_id)
+    if project is None:
+        return None
+    if project.lead_agent_id in state.agents:
+        return project.lead_agent_id
+    team = state.teams.get(project.team_id)
+    return team.manager_agent_id if team is not None else None
+
+
+def _recalculate_project_status(state: TeamState, project_id: str) -> None:
+    project = state.projects.get(project_id)
+    if project is None or project.status == ProjectStatus.ARCHIVED:
+        return
+    project_tasks = [
+        task for task in state.tasks.values() if task.project_id == project_id
+    ]
+    project_deliverables = [
+        deliverable
+        for deliverable in state.deliverables.values()
+        if (task := state.tasks.get(deliverable.task_id)) is not None
+        and task.project_id == project_id
+    ]
+    deliverable_ids = {deliverable.id for deliverable in project_deliverables}
+    project_reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.deliverable_id in deliverable_ids
+    ]
+    project_releases = [
+        release
+        for release in state.release_packages.values()
+        if release.project_id == project_id
+    ]
+
+    pending_or_blocked = {TeamRecordState.PENDING, TeamRecordState.BLOCKED}
+    blocked = (
+        any(task.state == TeamTaskState.BLOCKED for task in project_tasks)
+        or any(goal.state == TeamRecordState.BLOCKED for goal in project.goals)
+        or any(
+            deliverable.state == TeamRecordState.BLOCKED
+            for deliverable in project_deliverables
+        )
+        or any(review.state == TeamRecordState.BLOCKED for review in project_reviews)
+        or any(release.state == TeamRecordState.BLOCKED for release in project_releases)
+    )
+    completed = (
+        all(goal.state == TeamRecordState.ACCEPTED for goal in project.goals)
+        and not any(task.state in _NON_TERMINAL_TASK_STATES for task in project_tasks)
+        and not any(
+            deliverable.state in pending_or_blocked
+            for deliverable in project_deliverables
+        )
+        and not any(review.state in pending_or_blocked for review in project_reviews)
+        and not any(release.state in pending_or_blocked for release in project_releases)
+    )
+    if completed:
+        new_status = ProjectStatus.COMPLETED
+    elif blocked:
+        new_status = ProjectStatus.BLOCKED
+    else:
+        new_status = ProjectStatus.ACTIVE
+    if new_status != project.status:
+        project.status = new_status
+        project.updated_at = utc_now()
 
 
 def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
@@ -1353,6 +2843,8 @@ __all__ = [
     "ADDON_ID",
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
+    "GIT_PROMOTION_EVENT_TYPE",
+    "OPERATOR_ESCALATION_EVENT_TYPE",
     "STATE_FILE",
     "TeamStateConflictError",
     "TeamStateRepository",

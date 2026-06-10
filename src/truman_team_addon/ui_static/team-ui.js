@@ -22,6 +22,7 @@ const elements = {
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
   projectsView: document.querySelector("#projects-view"),
+  releasesView: document.querySelector("#releases-view"),
   refreshButton: document.querySelector("#refresh-button"),
 };
 
@@ -47,8 +48,18 @@ function emptyState() {
     action_records: {},
     release_packages: {},
     ephemeral_assignments: {},
+    git_promotions: {},
   };
 }
+
+const decisionStates = ["accepted", "rejected", "blocked"];
+const inboxItemLabels = {
+  question: "Question",
+  status_request: "Status request",
+  progress_report: "Progress report",
+  deliverable_notice: "Deliverable notice",
+  escalation: "Escalation",
+};
 
 function bindForms() {
   document.querySelectorAll("form[data-endpoint]").forEach((form) => {
@@ -65,6 +76,12 @@ function bindForms() {
   });
   updateTaskForm?.elements.task_id?.addEventListener("change", () => {
     syncTaskUpdateForm(updateTaskForm);
+  });
+
+  const decideReviewForm = document.querySelector("#decide-review-form");
+  decideReviewForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitReviewDecision(decideReviewForm);
   });
 }
 
@@ -99,6 +116,7 @@ function render() {
   renderHierarchy();
   renderAgents();
   renderProjects();
+  renderReleases();
   refreshSelects();
 }
 
@@ -201,12 +219,66 @@ function renderAgents() {
               </div>
               <div class="meta-line">${escapeHtml(agent.role)} - ${escapeHtml(agent.session_id)}</div>
               <div class="meta-line">Reports to ${escapeHtml(agent.reports_to_agent_id || "operator")} - ${openTasks.length} open task(s) - max ephemeral ${maxConcurrent}</div>
+              ${renderAgentOpenTasks(openTasks)}
+              ${renderAgentInbox(agent.id)}
             </li>
           `;
         })
         .join("")}
     </ul>
   `;
+}
+
+function renderAgentOpenTasks(openTasks) {
+  if (!openTasks.length) {
+    return "";
+  }
+  return `
+    <div class="meta-line">Open tasks:</div>
+    <ul class="inline-list">
+      ${openTasks
+        .map((task) => {
+          return `<li>${escapeHtml(task.title)} <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function pendingInboxForAgent(agentId) {
+  return values(state.inbox)
+    .filter((item) => item.recipient_agent_id === agentId && item.state !== "handled")
+    .sort(byId);
+}
+
+function renderAgentInbox(agentId) {
+  const items = pendingInboxForAgent(agentId);
+  if (!items.length) {
+    return "";
+  }
+  return `
+    <div class="meta-line">Inbox:</div>
+    <ul class="inline-list">
+      ${items
+        .map((item) => {
+          const label = inboxItemLabels[item.item_type] || item.item_type;
+          const detail = inboxItemDetail(item);
+          const sender = item.sender_agent_id ? ` from ${escapeHtml(item.sender_agent_id)}` : "";
+          return `
+            <li>
+              <span class="state-pill ${escapeHtml(item.item_type)}">${escapeHtml(label)}</span>
+              ${detail ? `<span> ${escapeHtml(detail)}</span>` : ""}${sender}
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function inboxItemDetail(item) {
+  const payload = item.payload || {};
+  return text(payload.question || payload.message || payload.title || payload.summary || "");
 }
 
 function renderProjects() {
@@ -231,6 +303,7 @@ function renderProjects() {
             <div>
               <strong>${escapeHtml(project.name)}</strong>
               <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+              ${renderProjectGit(project.git)}
             </div>
             <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
           </div>
@@ -250,6 +323,18 @@ function renderProjects() {
       `;
     })
     .join("");
+}
+
+function renderProjectGit(git) {
+  if (!git || !git.host_repo_path) {
+    return "";
+  }
+  const bare = git.bare_repo_name || git.bare_repo_path || "";
+  const parts = [`host ${git.host_repo_path}`];
+  if (bare) parts.push(`bare ${bare}`);
+  if (git.base_branch) parts.push(`base ${git.base_branch}`);
+  if (git.provider) parts.push(`provider ${git.provider}`);
+  return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
 function renderGoals(goals) {
@@ -316,6 +401,7 @@ function renderDeliverables(deliverables) {
               <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
               ${renderReviewSummary(deliverable.review_request_ids || [])}
               ${renderArtifactRefs(deliverable.artifact_refs || [])}
+              ${renderGitRefs(deliverable.git_refs)}
             </li>
           `;
         })
@@ -342,7 +428,8 @@ function renderReviewSummary(reviewIds) {
                 <strong>${escapeHtml(review.id)}</strong>
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
-              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}</div>
+              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
             </li>
           `;
         })
@@ -358,20 +445,99 @@ function renderArtifactRefs(refs) {
   return `<div class="meta-line">Artifacts: ${refs.map((ref) => escapeHtml(ref)).join(", ")}</div>`;
 }
 
+function renderGitRefs(gitRefs) {
+  if (!gitRefs) {
+    return "";
+  }
+  const branchLabels = [
+    ["agent_branch", "agent"],
+    ["review_branch", "review"],
+    ["feature_branch", "feature"],
+    ["release_branch", "release"],
+  ];
+  const parts = branchLabels
+    .filter(([key]) => gitRefs[key])
+    .map(([key, label]) => `${label} ${gitRefs[key]}`);
+  if (gitRefs.commit_sha) {
+    parts.push(`commit ${gitRefs.commit_sha}`);
+  }
+  const promotionIds = gitRefs.promotion_record_ids || [];
+  const promotions = promotionIds
+    .map((promotionId) => state.git_promotions[promotionId])
+    .filter(Boolean);
+  if (!parts.length && !promotions.length) {
+    return "";
+  }
+  const branchLine = parts.length
+    ? `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`
+    : "";
+  const promotionLine = promotions.length
+    ? `<div class="meta-line">Promotions: ${promotions
+        .map((promotion) => `${escapeHtml(promotion.promotion_kind)}:${escapeHtml(promotion.state)}`)
+        .join(", ")}</div>`
+    : "";
+  return `${branchLine}${promotionLine}`;
+}
+
+function renderReleases() {
+  if (!elements.releasesView) {
+    return;
+  }
+  const releases = values(state.release_packages).sort(byId);
+  if (!releases.length) {
+    elements.releasesView.innerHTML = `<p class="empty-state">No release packages.</p>`;
+    return;
+  }
+  elements.releasesView.innerHTML = `
+    <ul class="release-list">
+      ${releases
+        .map((release) => {
+          const deliverables = (release.deliverable_ids || []).join(", ");
+          const lines = [];
+          if (release.release_branch) lines.push(`release ${release.release_branch}`);
+          if (release.canonical_branch) lines.push(`canonical ${release.canonical_branch}`);
+          if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(release.id)}</strong>
+                <span class="state-pill ${escapeHtml(release.state)}">${escapeHtml(release.state)}</span>
+              </div>
+              <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
+              ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
+              ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
+              ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
 function refreshSelects() {
   const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
   const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
   const agents = values(state.agents).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
+  const reviewRequests = values(state.review_requests)
+    .sort(byId)
+    .map((review) => [review.id, `${review.id} - ${review.state}`]);
+  const releasePackages = values(state.release_packages)
+    .sort(byId)
+    .map((release) => [release.id, `${release.id} - ${release.state}`]);
   const options = {
     teams,
     projects,
     agents,
     tasks,
     deliverables,
+    "review-requests": reviewRequests,
+    "release-packages": releasePackages,
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
+    "decision-states": decisionStates.map((item) => [item, item]),
   };
 
   document.querySelectorAll("select[data-options]").forEach((select) => {
@@ -469,13 +635,18 @@ function payloadForForm(form) {
   const formId = formIdentifier(form);
   const data = formData(form);
   if (formId === "create-team-form") {
-    return {
+    const payload = {
       id: text(data.id),
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       manager_session_id: text(data.manager_session_id),
       manager_role: text(data.manager_role) || "manager",
     };
+    const operatorTarget = text(data.operator_communication_target_id);
+    if (operatorTarget) {
+      payload.operator_communication_target_id = operatorTarget;
+    }
+    return payload;
   }
   if (formId === "create-project-form") {
     const goals = [];
@@ -486,7 +657,7 @@ function payloadForForm(form) {
         description: goalDescription,
       });
     }
-    return {
+    const payload = {
       id: text(data.id),
       team_id: text(data.team_id),
       name: text(data.name),
@@ -495,6 +666,11 @@ function payloadForForm(form) {
       lead_role: text(data.lead_role) || "project_lead",
       goals,
     };
+    const git = gitConfigForForm(data);
+    if (git) {
+      payload.git = git;
+    }
+    return payload;
   }
   if (formId === "register-agent-form") {
     return {
@@ -548,6 +724,51 @@ function payloadForForm(form) {
     return payload;
   }
   return {};
+}
+
+function gitConfigForForm(data) {
+  const hostRepoPath = text(data.host_repo_path);
+  if (!hostRepoPath) {
+    return null;
+  }
+  const git = { host_repo_path: hostRepoPath };
+  const optionalFields = [
+    "bare_repo_name",
+    "bare_repo_path",
+    "base_branch",
+    "canonical_origin_url",
+    "provider",
+    "canonical_release_branch_prefix",
+  ];
+  optionalFields.forEach((field) => {
+    const value = text(data[field]);
+    if (value) {
+      git[field] = value;
+    }
+  });
+  return git;
+}
+
+async function submitReviewDecision(form) {
+  const data = formData(form);
+  const reviewId = text(data.review_request_id);
+  if (!reviewId) {
+    setStatus("Review is required.", "error");
+    return;
+  }
+  const stateValue = text(data.state);
+  if (!stateValue) {
+    setStatus("Decision is required.", "error");
+    return;
+  }
+  const payload = { state: stateValue, findings: splitList(data.findings) };
+  await submitMutation(
+    form,
+    `/review-requests/${encodeURIComponent(reviewId)}/decision`,
+    "POST",
+    payload,
+    { resetOnSuccess: false },
+  );
 }
 
 function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {

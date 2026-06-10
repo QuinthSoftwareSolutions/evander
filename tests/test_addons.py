@@ -218,6 +218,9 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
         include_builtin=False,
     )
     assert "effect:team:wake-due-agents" not in disabled.effect_providers
+    assert "effect:team:record-git-promotion" not in disabled.effect_providers
+    assert "effect:team:mark-release-published" not in disabled.effect_providers
+    assert "effect:team:consolidate-git-branches" not in disabled.effect_providers
     assert "query:team:state" not in disabled.query_providers
     assert "effect:team:wake-due-agents" not in disabled.node_definition_resolvers
 
@@ -235,6 +238,10 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "effect:team:wake-due-agents" in enabled.effect_providers
     assert "effect:team:apply-agent-action" in enabled.effect_providers
     assert "effect:team:mark-ephemeral-cleaned-up" in enabled.effect_providers
+    assert "effect:team:record-git-promotion" in enabled.effect_providers
+    assert "effect:team:mark-release-published" in enabled.effect_providers
+    assert "effect:team:consolidate-git-branches" in enabled.effect_providers
+    assert "effect:team:record-git-promotion" in enabled.node_definition_resolvers
     assert "query:team:agent-action-artifact" in enabled.query_providers
     assert "query:team:session-routing" in enabled.query_providers
     assert "effect:team:wake-due-agents" in enabled.node_definition_resolvers

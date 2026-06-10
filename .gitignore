@@ -6,6 +6,8 @@ runtime/
 *.egg-info/
 .codex
 .worktrees/
+AGENT_TASK.yaml
+/.agent-sandbox/
 /.agent-sandbox/review-context.env
 git-remotes/
 /azure-pipelines.yml

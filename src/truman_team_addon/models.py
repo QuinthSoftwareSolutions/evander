@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agent_sandbox.models import utc_now
+from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
 SCHEMA_VERSION = 1
 
@@ -97,6 +98,7 @@ class Team(TeamModel):
     id: str
     name: str
     manager_agent_id: str
+    operator_communication_target_id: str | None = None
     project_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -107,10 +109,57 @@ class Team(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
+    @field_validator("operator_communication_target_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
     @field_validator("project_ids", mode="before")
     @classmethod
     def _project_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "project_ids")
+
+
+class ProjectGitConfig(TeamModel):
+    host_repo_path: str
+    bare_repo_name: str | None = None
+    bare_repo_path: str | None = None
+    base_branch: str = "main"
+    canonical_origin_url: str | None = None
+    provider: str | None = None
+    canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
+
+    @field_validator("host_repo_path", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("base_branch", "canonical_release_branch_prefix", mode="before")
+    @classmethod
+    def _required_with_default(cls, value: object, info) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields[info.field_name].default
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "bare_repo_name",
+        "bare_repo_path",
+        "canonical_origin_url",
+        "provider",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_bare_repo(self) -> "ProjectGitConfig":
+        provided = [value for value in (self.bare_repo_name, self.bare_repo_path) if value]
+        if len(provided) != 1:
+            raise ValueError(
+                "exactly one of bare_repo_name or bare_repo_path must be set"
+            )
+        return self
 
 
 class Project(TeamModel):
@@ -119,6 +168,7 @@ class Project(TeamModel):
     name: str
     lead_agent_id: str
     goals: list[ProjectGoal] = Field(default_factory=list)
+    git: ProjectGitConfig | None = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -223,6 +273,32 @@ class AgentTask(TeamModel):
         return _unique_text_list(value, "deliverable_ids")
 
 
+class DeliverableGitRefs(TeamModel):
+    agent_branch: str | None = None
+    review_branch: str | None = None
+    feature_branch: str | None = None
+    release_branch: str | None = None
+    commit_sha: str | None = None
+    promotion_record_ids: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "agent_branch",
+        "review_branch",
+        "feature_branch",
+        "release_branch",
+        "commit_sha",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("promotion_record_ids", mode="before")
+    @classmethod
+    def _promotion_record_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "promotion_record_ids")
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -231,6 +307,7 @@ class Deliverable(TeamModel):
     summary: str
     state: TeamRecordState = TeamRecordState.PENDING
     review_request_ids: list[str] = Field(default_factory=list)
+    git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "task_id", "producer_agent_id", "summary", mode="before")
@@ -310,7 +387,14 @@ class ReleasePackage(TeamModel):
     project_id: str
     deliverable_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    feature_branches: list[str] = Field(default_factory=list)
+    release_branch: str | None = None
+    canonical_branch: str | None = None
+    published_commit_sha: str | None = None
+    git_promotion_record_ids: list[str] = Field(default_factory=list)
     state: TeamRecordState = TeamRecordState.PENDING
+    published_at: datetime | None = None
+    error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("id", "project_id", mode="before")
@@ -318,10 +402,27 @@ class ReleasePackage(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("deliverable_ids", "artifact_refs", mode="before")
+    @field_validator(
+        "deliverable_ids",
+        "artifact_refs",
+        "feature_branches",
+        "git_promotion_record_ids",
+        mode="before",
+    )
     @classmethod
     def _text_lists(cls, value: object, info) -> list[str]:
         return _unique_text_list(value, info.field_name)
+
+    @field_validator(
+        "release_branch",
+        "canonical_branch",
+        "published_commit_sha",
+        "error",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class EphemeralAssignment(TeamModel):
@@ -334,6 +435,8 @@ class EphemeralAssignment(TeamModel):
     prompt: str
     state: EphemeralAssignmentState = EphemeralAssignmentState.REQUESTED
     artifact_refs: list[str] = Field(default_factory=list)
+    agent_branch: str | None = None
+    commit_sha: str | None = None
     summary: str | None = None
     error: str | None = None
     model: str | None = None
@@ -362,6 +465,8 @@ class EphemeralAssignment(TeamModel):
         return _required_text(value, info.field_name)
 
     @field_validator(
+        "agent_branch",
+        "commit_sha",
         "summary",
         "error",
         "model",
@@ -390,6 +495,57 @@ class EphemeralAssignment(TeamModel):
         return dict(value)
 
 
+class GitPromotionRecord(TeamModel):
+    id: str
+    project_id: str
+    actor_agent_id: str
+    source_branch: str
+    target_branch: str
+    promotion_kind: Literal["review", "feature", "release", "canonical_push"]
+    task_id: str | None = None
+    deliverable_id: str | None = None
+    release_package_id: str | None = None
+    state: Literal["pending", "succeeded", "failed"] = "pending"
+    commit_sha: str | None = None
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "project_id",
+        "actor_agent_id",
+        "source_branch",
+        "target_branch",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "task_id",
+        "deliverable_id",
+        "release_package_id",
+        "commit_sha",
+        "error",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("outputs", mode="before")
+    @classmethod
+    def _outputs(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("outputs must be a JSON object")
+        return dict(value)
+
+
 class TeamState(TeamModel):
     schema_version: int = SCHEMA_VERSION
     revision: int = Field(default=0, ge=0)
@@ -404,6 +560,7 @@ class TeamState(TeamModel):
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
+    git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
     @classmethod
@@ -425,6 +582,7 @@ class TeamState(TeamModel):
         self._validate_action_records(errors)
         self._validate_releases(errors)
         self._validate_ephemeral_assignments(errors)
+        self._validate_git_promotions(errors)
         if errors:
             raise ValueError("; ".join(errors))
         return self
@@ -448,6 +606,7 @@ class TeamState(TeamModel):
             "action_records",
             "release_packages",
             "ephemeral_assignments",
+            "git_promotions",
         ):
             collection = getattr(self, collection_name)
             for key, record in collection.items():
@@ -648,6 +807,34 @@ class TeamState(TeamModel):
                 errors.append(
                     f"ephemeral assignment {assignment.id} task {task.id} "
                     f"is owned by {task.owner_agent_id}"
+                )
+
+    def _validate_git_promotions(self, errors: list[str]) -> None:
+        for promotion in self.git_promotions.values():
+            if promotion.project_id not in self.projects:
+                errors.append(
+                    f"git promotion {promotion.id} references missing project "
+                    f"{promotion.project_id}"
+                )
+            if promotion.task_id is not None and promotion.task_id not in self.tasks:
+                errors.append(
+                    f"git promotion {promotion.id} references missing task {promotion.task_id}"
+                )
+            if (
+                promotion.deliverable_id is not None
+                and promotion.deliverable_id not in self.deliverables
+            ):
+                errors.append(
+                    f"git promotion {promotion.id} references missing deliverable "
+                    f"{promotion.deliverable_id}"
+                )
+            if (
+                promotion.release_package_id is not None
+                and promotion.release_package_id not in self.release_packages
+            ):
+                errors.append(
+                    f"git promotion {promotion.id} references missing release "
+                    f"{promotion.release_package_id}"
                 )
 
 

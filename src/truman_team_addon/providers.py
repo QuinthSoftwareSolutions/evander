@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.contracts import register_node_output_schema
 from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
+from .git_naming import validate_branch_name
 from .models import team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -19,8 +21,11 @@ from .provider_schemas import (
     TeamAcceptEphemeralDeliverableEffectDefinition,
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
+    TeamConsolidateGitBranchesEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
+    TeamMarkReleasePublishedEffectDefinition,
+    TeamRecordGitPromotionEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
@@ -171,6 +176,10 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         published_event_ids = _publish_team_events(
             self.runtime_context,
             result.get("ephemeral_events"),
+        )
+        published_event_ids += _publish_team_events(
+            self.runtime_context,
+            result.get("events"),
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
@@ -362,6 +371,134 @@ class TeamMarkEphemeralCleanedUpEffectProvider(EffectProviderBase):
         return result
 
 
+class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamRecordGitPromotionEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "promotion_id",
+            "success",
+            "outputs",
+            "error",
+            "commit_sha",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        try:
+            _state, result = repo.record_git_promotion_result(
+                promotion_id=_required_text(payload.get("promotion_id"), "promotion_id"),
+                success=_optional_bool(payload.get("success"), default=True),
+                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                error=_optional_text(payload.get("error")),
+                commit_sha=_optional_text(payload.get("commit_sha")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
+            }
+        published_event_ids = _publish_team_events(
+            self.runtime_context,
+            result.get("events"),
+        )
+        if published_event_ids:
+            result["published_event_ids"] = published_event_ids
+        return result
+
+
+class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamMarkReleasePublishedEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "release_package_id",
+            "success",
+            "canonical_branch",
+            "published_commit_sha",
+            "outputs",
+            "error",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        try:
+            _state, result = repo.mark_release_published(
+                release_package_id=_required_text(
+                    payload.get("release_package_id"), "release_package_id"
+                ),
+                success=_optional_bool(payload.get("success"), default=True),
+                canonical_branch=_optional_text(payload.get("canonical_branch")),
+                published_commit_sha=_optional_text(payload.get("published_commit_sha")),
+                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                error=_optional_text(payload.get("error")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
+            }
+        return result
+
+
+class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamConsolidateGitBranchesEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "host_repo_path",
+            "source_branches",
+            "target_branch",
+            "base_branch",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
+        try:
+            source_branches = [
+                validate_branch_name(branch)
+                for branch in _string_list(payload.get("source_branches"), "source_branches")
+            ]
+            target_branch = validate_branch_name(
+                _required_text(payload.get("target_branch"), "target_branch")
+            )
+            base_value = _optional_text(payload.get("base_branch"))
+            base_branch = validate_branch_name(base_value) if base_value else None
+        except ValueError as exc:
+            return _consolidation_failure(None, str(exc))
+        if not source_branches:
+            return _consolidation_failure(target_branch, "source_branches is required")
+        return _consolidate_git_branches(
+            host_repo_path=host_repo_path,
+            source_branches=source_branches,
+            target_branch=target_branch,
+            base_branch=base_branch,
+        )
+
+
 class TeamAgentActionArtifactQueryProvider(QueryProviderBase):
     @classmethod
     def validate_definition(cls, query_definition):
@@ -505,6 +642,11 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:mark-ephemeral-cleaned-up": (
                 TeamMarkEphemeralCleanedUpEffectProvider
             ),
+            "effect:team:record-git-promotion": TeamRecordGitPromotionEffectProvider,
+            "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
+            "effect:team:consolidate-git-branches": (
+                TeamConsolidateGitBranchesEffectProvider
+            ),
         },
         query_providers={
             "query:team:agent-action-artifact": TeamAgentActionArtifactQueryProvider,
@@ -533,6 +675,15 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:mark-ephemeral-cleaned-up": (
                 lambda node: _materialize(TeamMarkEphemeralCleanedUpEffectDefinition, node)
             ),
+            "effect:team:record-git-promotion": (
+                lambda node: _materialize(TeamRecordGitPromotionEffectDefinition, node)
+            ),
+            "effect:team:mark-release-published": (
+                lambda node: _materialize(TeamMarkReleasePublishedEffectDefinition, node)
+            ),
+            "effect:team:consolidate-git-branches": (
+                lambda node: _materialize(TeamConsolidateGitBranchesEffectDefinition, node)
+            ),
             "query:team:agent-action-artifact": (
                 lambda node: _materialize(TeamAgentActionArtifactQueryDefinition, node)
             ),
@@ -560,17 +711,32 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
         "task_updates": [],
+        "task_creations": [],
+        "status_requests": [],
         "questions": [],
         "status_reports": [],
         "deliverables": [],
+        "review_requests": [],
+        "review_decisions": [],
+        "goal_updates": [],
+        "operator_escalations": [],
+        "git_review_promotions": [],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
         "handled_inbox_item_ids": [],
         "notes": "",
     }
     return (
         "Continue your assigned team-agent work.\n"
         "Use the provided team context and update only your own assigned tasks. "
-        "Questions must go to your direct superior. Progress reports and deliverables "
-        "will be routed by the team runtime.\n\n"
+        "Questions and progress reports must go to your direct superior; top-level "
+        "managers use operator_escalations. Use task_creations only for yourself, "
+        "subordinates, or project/team scopes you lead. Use status_requests only "
+        "for direct subordinates. Use review_requests/review_decisions for deliverable "
+        "review, goal_updates for project goals, git_* actions for review/feature/release "
+        "branch promotion, and ephemeral_* actions for scoped worker delegation.\n\n"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
@@ -861,6 +1027,39 @@ def _filtered_team_state_payload(
             for deliverable_id in _string_items(value.get("deliverable_ids"))
         )
     }
+    visible_release_ids = set(filtered["release_packages"])
+    filtered["git_promotions"] = {
+        key: value
+        for key, value in filtered.get("git_promotions", {}).items()
+        if value.get("project_id") in visible_project_ids
+        and (
+            value.get("task_id") is None
+            or value.get("task_id") in visible_task_ids
+        )
+        and (
+            value.get("deliverable_id") is None
+            or value.get("deliverable_id") in visible_deliverable_ids
+        )
+        and (
+            value.get("release_package_id") is None
+            or value.get("release_package_id") in visible_release_ids
+        )
+    }
+    visible_git_promotion_ids = set(filtered["git_promotions"])
+    filtered["deliverables"] = {
+        key: _filter_deliverable_git_refs(value, visible_git_promotion_ids)
+        for key, value in filtered["deliverables"].items()
+    }
+    filtered["release_packages"] = {
+        key: {
+            **value,
+            "git_promotion_record_ids": _filter_ids(
+                value.get("git_promotion_record_ids"),
+                visible_git_promotion_ids,
+            ),
+        }
+        for key, value in filtered["release_packages"].items()
+    }
     filtered["ephemeral_assignments"] = {
         key: value
         for key, value in filtered.get("ephemeral_assignments", {}).items()
@@ -873,6 +1072,22 @@ def _filtered_team_state_payload(
 
 def _filter_ids(value: object, allowed: set[str]) -> list[str]:
     return [item for item in _string_items(value) if item in allowed]
+
+
+def _filter_deliverable_git_refs(value: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    git_refs = value.get("git_refs")
+    if not isinstance(git_refs, dict):
+        return value
+    return {
+        **value,
+        "git_refs": {
+            **git_refs,
+            "promotion_record_ids": _filter_ids(
+                git_refs.get("promotion_record_ids"),
+                allowed,
+            ),
+        },
+    }
 
 
 def _string_items(value: object) -> list[str]:
@@ -935,3 +1150,118 @@ def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
             raise ValueError(f"{field_name} must contain JSON objects")
         records.append(dict(item))
     return records
+
+
+def _string_list(value: object, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "target_branch": target_branch,
+        "merged_branches": [],
+        "commit_sha": None,
+        "conflict_branch": None,
+        "output": None,
+        "error": error,
+    }
+
+
+def _git_text(proc: subprocess.CompletedProcess[str]) -> str:
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def _consolidate_git_branches(
+    *,
+    host_repo_path: str,
+    source_branches: list[str],
+    target_branch: str,
+    base_branch: str | None,
+) -> dict[str, Any]:
+    """Merge ``source_branches`` into ``target_branch`` inside ``host_repo_path``.
+
+    Branch names are validated by the caller. Merges run in the listed order and
+    produce deterministic merge commits. A merge conflict aborts the merge and
+    returns ``success=False`` with the conflict output; nothing is auto-resolved.
+    """
+
+    repo_path = Path(host_repo_path)
+    git_marker = repo_path / ".git"
+    if not git_marker.exists():
+        return _consolidation_failure(
+            target_branch, f"{host_repo_path} is not a git repository"
+        )
+
+    def _git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    # A linked worktree (``.git`` is a file pointing at the gitdir) is already an
+    # isolated checkout, so a dirty tree there is acceptable; a primary worktree
+    # must be clean before we move HEAD around.
+    isolated_worktree = git_marker.is_file()
+    status = _git("status", "--porcelain")
+    if status.returncode != 0:
+        return _consolidation_failure(target_branch, _git_text(status))
+    if status.stdout.strip() and not isolated_worktree:
+        failure = _consolidation_failure(
+            target_branch, "refusing to merge into a dirty worktree"
+        )
+        failure["output"] = status.stdout
+        return failure
+
+    target_ref = f"refs/heads/{target_branch}"
+    target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
+    if target_exists:
+        checkout = _git("checkout", target_branch)
+    elif base_branch is not None:
+        checkout = _git("checkout", "-B", target_branch, base_branch)
+    else:
+        checkout = _git("checkout", "-B", target_branch)
+    if checkout.returncode != 0:
+        return _consolidation_failure(target_branch, _git_text(checkout))
+
+    merged: list[str] = []
+    for source in source_branches:
+        merge = _git(
+            "merge",
+            "--no-ff",
+            "-m",
+            f"Merge {source} into {target_branch}",
+            source,
+        )
+        if merge.returncode != 0:
+            _git("merge", "--abort")
+            failure = _consolidation_failure(
+                target_branch,
+                f"merge conflict while merging {source} into {target_branch}",
+            )
+            failure["merged_branches"] = merged
+            failure["conflict_branch"] = source
+            failure["output"] = _git_text(merge)
+            return failure
+        merged.append(source)
+
+    head = _git("rev-parse", "HEAD")
+    commit_sha = head.stdout.strip() if head.returncode == 0 else None
+    return {
+        "success": True,
+        "target_branch": target_branch,
+        "merged_branches": merged,
+        "commit_sha": commit_sha,
+        "conflict_branch": None,
+        "output": None,
+        "error": None,
+    }

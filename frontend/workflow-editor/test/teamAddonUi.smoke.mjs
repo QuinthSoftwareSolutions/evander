@@ -25,6 +25,7 @@ function emptyState() {
     action_records: {},
     release_packages: {},
     ephemeral_assignments: {},
+    git_promotions: {},
   };
 }
 
@@ -49,8 +50,8 @@ async function serveStatic(response, assetName, contentType) {
   response.end(body);
 }
 
-async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false } = {}) {
-  const state = emptyState();
+async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, initialState = null } = {}) {
+  const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
   let conflictSent = false;
 
@@ -143,11 +144,25 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false } = 
 
 function applyMutation(state, pathname, payload) {
   state.revision += 1;
+  const decisionMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/review-requests\/(.+)\/decision$/,
+  );
+  if (decisionMatch) {
+    const reviewId = decodeURIComponent(decisionMatch[1]);
+    const review = state.review_requests[reviewId];
+    if (review) {
+      review.state = payload.state;
+      review.findings = payload.findings || [];
+      review.decision_at = "2026-06-09T00:00:00Z";
+    }
+    return;
+  }
   if (pathname === "/api/addons/team-addon/teams") {
     state.teams[payload.id] = {
       id: payload.id,
       name: payload.name,
       manager_agent_id: payload.manager_agent_id,
+      operator_communication_target_id: payload.operator_communication_target_id ?? null,
       project_ids: [],
       archived: false,
     };
@@ -171,6 +186,7 @@ function applyMutation(state, pathname, payload) {
       name: payload.name,
       lead_agent_id: payload.lead_agent_id,
       goals: payload.goals || [],
+      git: payload.git || null,
       status: "active",
     };
     state.teams[payload.team_id].project_ids.push(payload.id);
@@ -286,6 +302,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await teamForm.locator('[name="name"]').fill("Team");
   await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
+  await teamForm.locator('[name="operator_communication_target_id"]').fill("ops-channel");
   await teamForm.getByRole("button", { name: "Create team" }).click();
   await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
 
@@ -299,6 +316,9 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await projectForm.locator('[name="lead_session_id"]').fill("session-lead");
   await projectForm.locator('[name="goal_id"]').fill("goal");
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
+  await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
+  await projectForm.locator('[name="bare_repo_name"]').fill("project.git");
+  await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
 
@@ -362,6 +382,12 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   );
   assert.equal(requests[2].payload.ephemeral_policy.max_concurrent, 2);
   assert.deepEqual(requests[5].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
+  assert.equal(requests[0].payload.operator_communication_target_id, "ops-channel");
+  assert.deepEqual(requests[1].payload.git, {
+    host_repo_path: "/srv/git/project",
+    bare_repo_name: "project.git",
+    base_branch: "main",
+  });
 });
 
 test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
@@ -379,4 +405,184 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(await teamForm.locator('[name="id"]').inputValue(), "team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
   await page.locator(".hierarchy-team h3", { hasText: "Existing" }).waitFor({ state: "visible" });
+});
+
+function seededGitState() {
+  return {
+    revision: 4,
+    teams: {
+      team: {
+        id: "team",
+        name: "Team",
+        manager_agent_id: "manager",
+        operator_communication_target_id: "ops-channel",
+        project_ids: ["project"],
+        archived: false,
+      },
+    },
+    projects: {
+      project: {
+        id: "project",
+        team_id: "team",
+        name: "Project",
+        lead_agent_id: "lead",
+        goals: [],
+        git: {
+          host_repo_path: "/srv/git/project",
+          bare_repo_name: "project.git",
+          base_branch: "main",
+        },
+        status: "active",
+      },
+    },
+    agents: {
+      manager: {
+        id: "manager",
+        team_id: "team",
+        project_id: null,
+        role: "manager",
+        session_id: "session-manager",
+        reports_to_agent_id: null,
+        subordinate_agent_ids: ["lead"],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "active",
+      },
+      lead: {
+        id: "lead",
+        team_id: "team",
+        project_id: "project",
+        role: "project_lead",
+        session_id: "session-lead",
+        reports_to_agent_id: "manager",
+        subordinate_agent_ids: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "active",
+      },
+    },
+    tasks: {
+      task: {
+        id: "task",
+        owner_agent_id: "lead",
+        project_id: "project",
+        priority: 5,
+        state: "waiting_for_review",
+        title: "Build backend",
+        description: "Implement backend work.",
+        created_by_agent_id: "manager",
+        deliverable_ids: ["deliverable"],
+        created_at: "2026-06-09T00:00:00Z",
+        updated_at: "2026-06-09T00:00:00Z",
+      },
+    },
+    deliverables: {
+      deliverable: {
+        id: "deliverable",
+        task_id: "task",
+        producer_agent_id: "lead",
+        artifact_refs: [],
+        summary: "Backend task is ready.",
+        state: "pending",
+        review_request_ids: ["review"],
+        git_refs: {
+          agent_branch: "agents/session-lead/assignment",
+          review_branch: "team/team/reviews/assignment",
+          feature_branch: null,
+          release_branch: null,
+          commit_sha: "abc123",
+          promotion_record_ids: ["promo"],
+        },
+      },
+    },
+    review_requests: {
+      review: {
+        id: "review",
+        deliverable_id: "deliverable",
+        reviewer_agent_id: "lead",
+        state: "pending",
+        findings: [],
+        decision_at: null,
+      },
+    },
+    git_promotions: {
+      promo: {
+        id: "promo",
+        project_id: "project",
+        actor_agent_id: "lead",
+        source_branch: "agents/session-lead/assignment",
+        target_branch: "team/team/reviews/assignment",
+        promotion_kind: "review",
+        state: "succeeded",
+        commit_sha: "abc123",
+        outputs: {},
+        error: null,
+      },
+    },
+    release_packages: {
+      release: {
+        id: "release",
+        project_id: "project",
+        deliverable_ids: ["deliverable"],
+        artifact_refs: [],
+        feature_branches: ["team/team/features/task-lead"],
+        release_branch: "team/team/releases/release",
+        canonical_branch: "releases/project/release",
+        published_commit_sha: "def456",
+        git_promotion_record_ids: [],
+        state: "accepted",
+        published_at: "2026-06-09T00:00:00Z",
+        error: null,
+      },
+    },
+    inbox: {
+      "inbox-1": {
+        id: "inbox-1",
+        recipient_agent_id: "lead",
+        item_type: "status_request",
+        sender_agent_id: "manager",
+        task_id: "task",
+        payload: { question: "What is the status?" },
+        state: "pending",
+      },
+    },
+  };
+}
+
+test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
+  const { port, requests, state } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
+
+  // (d) git refs and promotion state render on the deliverable.
+  await page.getByText(/team\/team\/reviews\/assignment/).first().waitFor({ state: "visible" });
+  await page.getByText(/review:succeeded/).first().waitFor({ state: "visible" });
+  // (d) release package state renders in the Releases panel.
+  await page.getByText(/team\/team\/releases\/release/).first().waitFor({ state: "visible" });
+  await page.locator(".release-list .state-pill", { hasText: "accepted" }).first().waitFor({
+    state: "visible",
+  });
+  // Pending downward status-request inbox item renders for the agent.
+  await page.getByText("What is the status?").first().waitFor({ state: "visible" });
+
+  // (c) a review decision submission posts to /review-requests/{id}/decision.
+  await openDetails(page, "Decide review");
+  await waitForSelectOption(page, '#decide-review-form [name="review_request_id"]', "review");
+  const decideForm = page.locator("#decide-review-form");
+  await decideForm.locator('[name="review_request_id"]').selectOption("review");
+  await decideForm.locator('[name="state"]').selectOption("accepted");
+  await decideForm.locator('[name="findings"]').fill("Looks good");
+  await decideForm.getByRole("button", { name: "Submit decision" }).click();
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+
+  const decisionRequest = requests.find((request) =>
+    request.pathname === "/api/addons/team-addon/review-requests/review/decision",
+  );
+  assert.ok(decisionRequest, "expected a review decision request");
+  assert.equal(decisionRequest.method, "POST");
+  assert.equal(decisionRequest.payload.state, "accepted");
+  assert.deepEqual(decisionRequest.payload.findings, ["Looks good"]);
+  assert.equal(decisionRequest.payload.expected_revision, 4);
+  assert.equal(state.review_requests.review.state, "accepted");
 });

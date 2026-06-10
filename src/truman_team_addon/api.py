@@ -10,9 +10,15 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
+from agent_sandbox.events.internal import (
+    InternalEventBus,
+    InternalEventSource,
+    internal_event_store_path,
+)
 
 from .models import (
     EphemeralAgentPolicy,
+    ProjectGitConfig,
     ProjectGoal,
     TeamRecordState,
     TeamTaskState,
@@ -35,9 +41,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             manager_agent_id=_required(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
             manager_role=_optional(payload, "manager_role") or "manager",
+            operator_communication_target_id=_optional(
+                payload, "operator_communication_target_id"
+            ),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_team(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.update_team(
+            team_id=request.path_params["team_id"],
+            operator_communication_target_id=_optional(
+                payload, "operator_communication_target_id"
+            ),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
 
     async def create_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -50,9 +70,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             lead_session_id=_required(payload, "lead_session_id"),
             lead_role=_optional(payload, "lead_role") or "project_lead",
             goals=goals,
+            git=_optional_git_config(payload),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_project(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        has_git = "git" in payload
+        has_goals = "goals" in payload
+        goals = (
+            [ProjectGoal.model_validate(item) for item in _optional_list(payload, "goals")]
+            if has_goals
+            else None
+        )
+        state = repository.update_project(
+            project_id=request.path_params["project_id"],
+            git=_optional_git_config(payload),
+            set_git=has_git,
+            goals=goals,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
 
     async def register_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -131,15 +170,99 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state), status_code=201)
 
+    async def decide_review_request(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.record_review_decision(
+            review_request_id=request.path_params["review_request_id"],
+            state=TeamRecordState(_required(payload, "state")),
+            findings=_optional_string_list(payload, "findings"),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def create_release_package(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state, result = repository.create_release_package_with_result(
+            project_id=_required(payload, "project_id"),
+            deliverable_ids=_optional_string_list(payload, "deliverable_ids") or [],
+            release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
+            release_branch=_optional(payload, "release_branch"),
+            canonical_branch=_optional(payload, "canonical_branch"),
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = team_state_payload(state)
+        published_event_ids = _publish_team_events(context, result.get("events"))
+        if published_event_ids:
+            response_payload["published_event_ids"] = published_event_ids
+        return JSONResponse(response_payload, status_code=201)
+
+    async def list_release_packages(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "release_packages": [
+                    release.model_dump(mode="json")
+                    for release in state.release_packages.values()
+                ],
+            }
+        )
+
+    async def get_release_package(request: Request) -> JSONResponse:
+        state = repository.read()
+        release = state.release_packages.get(request.path_params["release_package_id"])
+        if release is None:
+            return JSONResponse({"error": "release package not found"}, status_code=404)
+        return JSONResponse(release.model_dump(mode="json"))
+
+    async def list_git_promotions(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "git_promotions": [
+                    promotion.model_dump(mode="json")
+                    for promotion in state.git_promotions.values()
+                ],
+            }
+        )
+
+    async def get_git_promotion(request: Request) -> JSONResponse:
+        state = repository.read()
+        promotion = state.git_promotions.get(request.path_params["promotion_id"])
+        if promotion is None:
+            return JSONResponse({"error": "git promotion not found"}, status_code=404)
+        return JSONResponse(promotion.model_dump(mode="json"))
+
     return [
         Route("/state", _with_errors(get_state), methods=["GET"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
+        Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
+        Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
         Route("/review-requests", _with_errors(record_review_request), methods=["POST"]),
+        Route(
+            "/review-requests/{review_request_id}/decision",
+            _with_errors(decide_review_request),
+            methods=["POST"],
+        ),
+        Route("/release-packages", _with_errors(create_release_package), methods=["POST"]),
+        Route("/release-packages", _with_errors(list_release_packages), methods=["GET"]),
+        Route(
+            "/release-packages/{release_package_id}",
+            _with_errors(get_release_package),
+            methods=["GET"],
+        ),
+        Route("/git-promotions", _with_errors(list_git_promotions), methods=["GET"]),
+        Route(
+            "/git-promotions/{promotion_id}",
+            _with_errors(get_git_promotion),
+            methods=["GET"],
+        ),
     ]
 
 
@@ -160,6 +283,42 @@ def _with_errors(handler):
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     return _wrapped
+
+
+def _publish_team_events(context: AddonContext, events: object) -> list[str]:
+    if not isinstance(events, list):
+        return []
+    bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    published_ids: list[str] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            payload = {}
+        published = bus.publish(
+            event_type=_required_event_text(event.get("event_type"), "event_type"),
+            payload=dict(payload),
+            correlation_key=_optional_event_text(event.get("correlation_key")),
+            idempotency_key=_optional_event_text(event.get("idempotency_key")),
+            source=InternalEventSource(source_type="team-addon", source_name="team-addon"),
+        )
+        published_ids.append(published.event_id)
+    return published_ids
+
+
+def _required_event_text(value: object, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_event_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:
@@ -187,6 +346,15 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
+    git_payload = payload.get("git")
+    if git_payload is None:
+        return None
+    if not isinstance(git_payload, Mapping):
+        raise ValueError("git must be a JSON object")
+    return ProjectGitConfig.model_validate(dict(git_payload))
 
 
 def _expected_revision(payload: Mapping[str, Any]) -> int | None:

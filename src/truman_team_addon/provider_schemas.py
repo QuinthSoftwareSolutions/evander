@@ -110,6 +110,58 @@ class TeamMarkEphemeralCleanedUpEffectDefinition(EffectDefinition):
         )
 
 
+class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-git-promotion"]
+    promotion_id: ConfigValue
+    success: ConfigValue | None = None
+    outputs: ConfigValue | None = None
+    error: ConfigValue | None = None
+    commit_sha: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("outputs")
+    @classmethod
+    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:record-git-promotion outputs must be a JSON object")
+
+
+class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:mark-release-published"]
+    release_package_id: ConfigValue
+    success: ConfigValue | None = None
+    canonical_branch: ConfigValue | None = None
+    published_commit_sha: ConfigValue | None = None
+    outputs: ConfigValue | None = None
+    error: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("outputs")
+    @classmethod
+    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError("effect:team:mark-release-published outputs must be a JSON object")
+
+
+class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:consolidate-git-branches"]
+    host_repo_path: ConfigValue
+    source_branches: ConfigValue
+    target_branch: ConfigValue
+    base_branch: ConfigValue | None = None
+
+    @field_validator("source_branches")
+    @classmethod
+    def validate_source_branches(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, (list, str)):
+            return value
+        raise ValueError(
+            "effect:team:consolidate-git-branches source_branches must be a JSON array"
+        )
+
+
 class TeamStateQueryDefinition(QueryDefinition):
     type: Literal["query:team:state"]
     team_id: ConfigValue | None = None
@@ -147,6 +199,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "errors": {"type": "array"},
         "created_inbox_item_ids": {"type": "array"},
         "created_deliverable_ids": {"type": "array"},
+        "created_task_ids": {"type": "array"},
+        "created_status_request_ids": {"type": "array"},
+        "created_review_request_ids": {"type": "array"},
+        "decided_review_request_ids": {"type": "array"},
+        "updated_goal_ids": {"type": "array"},
+        "operator_escalation_event_ids": {"type": "array"},
+        "git_promotion_event_ids": {"type": "array"},
+        "release_package_ids": {"type": "array"},
         "created_ephemeral_assignment_ids": {"type": "array"},
         "ephemeral_events": {"type": "array"},
         "accepted_ephemeral_assignment_ids": {"type": "array"},
@@ -192,6 +252,34 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "assignment_id": {"type": ["string", "null"]},
         "session_id": {"type": ["string", "null"]},
         "state": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:record-git-promotion": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "promotion_id": {"type": "string"},
+        "promotion_state": {"type": ["string", "null"]},
+        "deliverable_id": {"type": ["string", "null"]},
+        "release_package_id": {"type": ["string", "null"]},
+        "created_deliverable_ids": {"type": "array"},
+        "created_inbox_item_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:mark-release-published": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "release_package_id": {"type": "string"},
+        "state": {"type": ["string", "null"]},
+        "created_inbox_item_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:consolidate-git-branches": {
+        "success": {"type": "boolean"},
+        "target_branch": {"type": ["string", "null"]},
+        "merged_branches": {"type": "array"},
+        "commit_sha": {"type": ["string", "null"]},
+        "conflict_branch": {"type": ["string", "null"]},
+        "output": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "query:team:state": {
