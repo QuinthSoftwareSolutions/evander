@@ -4271,6 +4271,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 options=_tool_field_options(),
             ),
             _field(
+                "approval_notification_target_ids",
+                "Approval notification target IDs",
+                "string_list",
+                bindable=True,
+                description=(
+                    "Optional host-side communication target IDs that should receive "
+                    "approval notifications for this run-scoped lease."
+                ),
+            ),
+            _field(
                 "expires_in_seconds",
                 "Expires in seconds",
                 "number",
@@ -14831,6 +14841,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node.fields = [
                     field.model_copy(update={"options": communication_notification_target_options})
                     if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "effect:session:approve-mcp-tools-for-run":
+                node.fields = [
+                    field.model_copy(update={"options": communication_notification_target_options})
+                    if field.key == "approval_notification_target_ids"
                     else field
                     for field in node.fields
                 ]

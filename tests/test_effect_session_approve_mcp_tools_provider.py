@@ -15,6 +15,10 @@ from agent_sandbox.effects.providers.session_approve_mcp_tools import (
 )
 from agent_sandbox.events.provider_models import SessionApproveMcpToolsForRunEffectDefinition
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
@@ -41,8 +45,12 @@ def _build_provider(
     config = GatewayConfig(runtime_dir=tmp_path)
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     lease_repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
     admin_service = SimpleNamespace(
         runtime=SimpleNamespace(
+            config=config,
+            directories=directory_store,
             session_repository=session_repository,
             tool_approval_leases=lease_repository,
             provider_config=_ProviderConfigResolver(config),
@@ -58,6 +66,11 @@ def _build_provider(
         ),
     )
     return provider, session_repository, lease_repository
+
+
+def _write_notification_targets(tmp_path: Path, targets: list[dict[str, object]]) -> None:
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(tmp_path))
+    repository.write_overlay("root", {"targets": targets})
 
 
 def _write_root_policy(tmp_path: Path, payload: dict[str, object]) -> None:
@@ -225,6 +238,112 @@ def test_approve_mcp_tools_for_run_resolves_vm_name_and_caps_expiry(
     assert output["session_id"] == "session-1"
     assert lease is not None
     assert lease.expires_at == session_expires_at
+
+
+def test_approve_mcp_tools_for_run_persists_notification_target_ids(
+    tmp_path: Path,
+) -> None:
+    _write_notification_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+    provider, sessions, leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["run_script"],
+            approval_notification_target_ids=[" OPS-Approvals ", "ops-approvals"],
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    output = provider.execute(execution_context={"workflow_run_id": "run-1"})
+    lease = leases.get_lease(output["lease_id"])
+
+    assert output["approval_notification_target_ids"] == ["ops-approvals"]
+    assert lease is not None
+    assert lease.approval_notification_target_ids == ["ops-approvals"]
+
+
+def test_approve_mcp_tools_for_run_rejects_unknown_notification_target(
+    tmp_path: Path,
+) -> None:
+    provider, sessions, _leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["run_script"],
+            approval_notification_target_ids=["missing-target"],
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="unknown communication target\\(s\\): missing-target"):
+        provider.execute(execution_context={"workflow_run_id": "run-1"})
+
+
+def test_approve_mcp_tools_for_run_rejects_non_notify_notification_target(
+    tmp_path: Path,
+) -> None:
+    _write_notification_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-read",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    provider, sessions, _leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["run_script"],
+            approval_notification_target_ids=["ops-read"],
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="without notify capability: ops-read"):
+        provider.execute(execution_context={"workflow_run_id": "run-1"})
 
 
 def test_approve_mcp_tools_for_run_requires_workflow_run_id(tmp_path: Path) -> None:

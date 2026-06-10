@@ -1122,6 +1122,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "session_id": {"type": "string"},
         "workflow_run_id": {"type": "string"},
         "tools": {"type": "array"},
+        "approval_notification_target_ids": {"type": "array"},
         "expires_at": {"type": "string"},
     },
     "effect:session:revoke-mcp-tool-approval-lease": {

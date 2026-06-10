@@ -841,12 +841,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "tools",
+        "approval_notification_target_ids",
         "expires_in_seconds",
     ]
     assert any(
         field["key"] == "tools" and field["required"] and field["bindable"]
         for field in tool_approval["fields"]
     )
+    approval_notification_target_ids = next(
+        field
+        for field in tool_approval["fields"]
+        if field["key"] == "approval_notification_target_ids"
+    )
+    assert approval_notification_target_ids["kind"] == "string_list"
+    assert approval_notification_target_ids["options"] == []
     ado_pipeline = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:ado:pipeline-run"
     )
@@ -1908,6 +1916,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     send_ops = get_options(ops_payload, "effect:communication:send-message")
     notify_root = get_options(root_payload, "effect:notification:send")
     notify_ops = get_options(ops_payload, "effect:notification:send")
+    tool_approval_root = get_options(
+        root_payload,
+        "effect:session:approve-mcp-tools-for-run",
+        "approval_notification_target_ids",
+    )
+    tool_approval_ops = get_options(
+        ops_payload,
+        "effect:session:approve-mcp-tools-for-run",
+        "approval_notification_target_ids",
+    )
     message_read_root = get_options(root_payload, "query:communication:messages")
     message_read_ops = get_options(ops_payload, "query:communication:messages")
     trigger_read_root = get_options(
@@ -1953,6 +1971,12 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(send_ops) == {"ops-chat", "ops-discord"}
     assert set(notify_root) == {"root-notify", "root-email-notify"}
     assert set(notify_ops) == {"root-notify", "root-email-notify", "ops-email-notify"}
+    assert set(tool_approval_root) == {"root-notify", "root-email-notify"}
+    assert set(tool_approval_ops) == {
+        "root-notify",
+        "root-email-notify",
+        "ops-email-notify",
+    }
     assert set(message_read_root) == {
         "root-chat",
         "root-discord-reply-only",

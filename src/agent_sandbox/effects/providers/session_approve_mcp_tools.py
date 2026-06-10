@@ -4,6 +4,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agent_sandbox.approval_notification_targets import (
+    resolve_approval_notification_target_ids_for_directory,
+)
 from agent_sandbox.models import SessionToolApprovalLease, ToolName, normalize_tool_names
 from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.repositories.session_tool_approval_leases import (
@@ -33,6 +36,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             "vm_name",
             "tools",
             "expires_in_seconds",
+            "approval_notification_target_ids",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)
@@ -45,6 +49,9 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             raise ValueError("effect:session:approve-mcp-tools-for-run requires at least one tool")
         workflow_run_id = self._workflow_run_id(execution_context)
         approval_settings = self._approval_settings_for_tools(session=session, tools=tools)
+        approval_notification_target_ids = self._approval_notification_target_ids(
+            session=session, payload=payload
+        )
         expires_at = self._expires_at(
             payload=payload,
             session=session,
@@ -58,6 +65,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             expires_at=expires_at,
             effect_execution_id=self._effect_execution_id(execution_context),
             approval_settings=approval_settings,
+            approval_notification_target_ids=approval_notification_target_ids,
         )
         return self._result_payload(lease)
 
@@ -166,6 +174,29 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
                 )
         return settings
 
+    def _approval_notification_target_ids(self, *, session: Any, payload: Mapping[str, Any]) -> list[str]:
+        target_ids = payload.get("approval_notification_target_ids")
+        if target_ids is None:
+            return []
+        context = self._context()
+        runtime = getattr(context.admin_service, "runtime", None)
+        if runtime is None:
+            raise RuntimeError(
+                "effect:session:approve-mcp-tools-for-run requires runtime for notification target validation"
+            )
+        runtime_dir = getattr(getattr(runtime, "config", None), "runtime_dir", None)
+        directory_store = getattr(runtime, "directories", None)
+        if runtime_dir is None or directory_store is None:
+            raise RuntimeError(
+                "effect:session:approve-mcp-tools-for-run requires directory configuration for notification target validation"
+            )
+        return resolve_approval_notification_target_ids_for_directory(
+            runtime_dir=runtime_dir,
+            directory_store=directory_store,
+            directory_path=getattr(session, "directory_path", "root"),
+            target_ids=target_ids,
+        )
+
     def _policy_resolver(self) -> PolicyConfigResolver:
         context = self._context()
         runtime = getattr(context.admin_service, "runtime", None)
@@ -260,6 +291,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
             "session_id": lease.session_id,
             "workflow_run_id": lease.workflow_run_id,
             "tools": [tool.value if isinstance(tool, ToolName) else str(tool) for tool in lease.tools],
+            "approval_notification_target_ids": list(lease.approval_notification_target_ids),
             "expires_at": lease.expires_at.astimezone(UTC).isoformat(),
             "approval_settings": {
                 tool_name: settings.model_dump(mode="json")
