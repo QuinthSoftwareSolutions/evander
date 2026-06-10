@@ -7,6 +7,7 @@ import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import type { RuntimeImageInfo } from "../admin/types";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
+import { visibleWakeSchedules as filterVisibleWakeSchedules } from "./wakeScheduleVisibility";
 
 type ApprovalPayloadMode = "exact" | "any";
 
@@ -906,6 +907,8 @@ export function SessionsScreen() {
   const [wakeMode, setWakeMode] = useState("same_context");
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [editingWakeRequestId, setEditingWakeRequestId] = useState("");
+  const [showPastOneTimeWakeSchedules, setShowPastOneTimeWakeSchedules] = useState(false);
+  const [wakeVisibilityNowMs, setWakeVisibilityNowMs] = useState(() => Date.now());
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -999,6 +1002,11 @@ export function SessionsScreen() {
   }, [activeTab, deepLinkSessionId, response?.active_items, response?.expired_items, selectedSessionId]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setWakeVisibilityNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!selectedSessionId) {
       setDetail(null);
       setDetailError(null);
@@ -1036,22 +1044,16 @@ export function SessionsScreen() {
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
         }
-        if (!editingWakeRequestId || !payload.wake_schedules.some((item) => item.request_id === editingWakeRequestId)) {
-          const firstSchedule = payload.wake_schedules[0];
+        const visibleSchedules = filterVisibleWakeSchedules(payload.wake_schedules, {
+          showPastOneTime: showPastOneTimeWakeSchedules,
+          nowMs: Date.now(),
+        });
+        if (!editingWakeRequestId || !visibleSchedules.some((item) => item.request_id === editingWakeRequestId)) {
+          const firstSchedule = visibleSchedules[0];
           if (firstSchedule) {
-            setEditingWakeRequestId(firstSchedule.request_id);
-            setWakePrompt(firstSchedule.prompt);
-            setWakeCron(firstSchedule.cron ?? "");
-            setWakeResumeAt(toDatetimeLocalValue(firstSchedule.resume_at));
-            setWakeMode(firstSchedule.resume_mode);
-            setWakeEnabled(firstSchedule.enabled);
+            applyWakeScheduleToEditor(firstSchedule);
           } else {
-            setEditingWakeRequestId("");
-            setWakePrompt("");
-            setWakeCron("");
-            setWakeResumeAt("");
-            setWakeMode("same_context");
-            setWakeEnabled(true);
+            resetWakeEditor();
           }
         }
       })
@@ -1086,9 +1088,21 @@ export function SessionsScreen() {
     [detail?.session, response?.items, selectedSessionId],
   );
 
+  const visibleWakeScheduleItems = useMemo(
+    () => filterVisibleWakeSchedules(detail?.wake_schedules ?? [], {
+      showPastOneTime: showPastOneTimeWakeSchedules,
+      nowMs: wakeVisibilityNowMs,
+    }),
+    [detail?.wake_schedules, showPastOneTimeWakeSchedules, wakeVisibilityNowMs],
+  );
+  const hiddenPastOneTimeWakeScheduleCount = (detail?.wake_schedules.length ?? 0) - visibleWakeScheduleItems.length;
+  const wakeScheduleCountLabel = hiddenPastOneTimeWakeScheduleCount > 0 && !showPastOneTimeWakeSchedules
+    ? `${visibleWakeScheduleItems.length} shown, ${hiddenPastOneTimeWakeScheduleCount} hidden`
+    : `${detail?.wake_schedules.length ?? 0} configured`;
+
   const selectedWakeSchedule = useMemo(
-    () => detail?.wake_schedules.find((item) => item.request_id === editingWakeRequestId) ?? null,
-    [detail?.wake_schedules, editingWakeRequestId],
+    () => visibleWakeScheduleItems.find((item) => item.request_id === editingWakeRequestId) ?? null,
+    [editingWakeRequestId, visibleWakeScheduleItems],
   );
   const mutationLocked = !privilegedUnlocked;
   const groupedToolOptions = useMemo(() => groupTools(catalog?.tool_options ?? []), [catalog?.tool_options]);
@@ -1156,6 +1170,16 @@ export function SessionsScreen() {
     setWakeEnabled(true);
   }
 
+  function applyWakeScheduleToEditor(item: WakeSchedule) {
+    setEditingWakeRequestId(item.request_id);
+    setWakePrompt(item.prompt);
+    setWakeCron(item.cron ?? "");
+    setWakeResumeAt(toDatetimeLocalValue(item.resume_at));
+    setWakeScheduleKind(item.schedule_kind === "resume_at" ? "resume_at" : "cron");
+    setWakeMode(item.resume_mode);
+    setWakeEnabled(item.enabled);
+  }
+
   function setScheduleKind(kind: WakeScheduleKind) {
     setWakeScheduleKind(kind);
     if (kind === "cron") {
@@ -1165,16 +1189,10 @@ export function SessionsScreen() {
     }
   }
 
-  function bindWakeSchedule(requestId: string) {
-    const item = detail?.wake_schedules.find((schedule) => schedule.request_id === requestId);
+  function bindWakeSchedule(requestId: string, schedules = detail?.wake_schedules ?? []) {
+    const item = schedules.find((schedule) => schedule.request_id === requestId);
     if (!item) return;
-    setEditingWakeRequestId(item.request_id);
-    setWakePrompt(item.prompt);
-    setWakeCron(item.cron ?? "");
-    setWakeResumeAt(toDatetimeLocalValue(item.resume_at));
-    setWakeScheduleKind(item.schedule_kind === "resume_at" ? "resume_at" : "cron");
-    setWakeMode(item.resume_mode);
-    setWakeEnabled(item.enabled);
+    applyWakeScheduleToEditor(item);
   }
 
   async function refreshSelectedSessionDetail(sessionId: string) {
@@ -1567,8 +1585,7 @@ export function SessionsScreen() {
       );
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(selectedSession.session_id);
-      bindWakeSchedule(payload.item.request_id);
-      setDetail(refreshed);
+      bindWakeSchedule(payload.item.request_id, refreshed.wake_schedules);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1586,8 +1603,7 @@ export function SessionsScreen() {
       setStatus(`${!item.enabled ? "Enabled" : "Disabled"} wake schedule ${item.request_id}.`);
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(item.session_id);
-      setDetail(refreshed);
-      bindWakeSchedule(item.request_id);
+      bindWakeSchedule(item.request_id, refreshed.wake_schedules);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2100,7 +2116,17 @@ export function SessionsScreen() {
                 <div className="panel-header">
                   <h3>Wake schedules</h3>
                   <div className="feature-toolbar-actions session-wake-actions">
-                    <span className="panel-meta">{detail?.wake_schedules.length ?? 0} configured</span>
+                    <span className="panel-meta">{wakeScheduleCountLabel}</span>
+                    {hiddenPastOneTimeWakeScheduleCount > 0 || showPastOneTimeWakeSchedules ? (
+                      <label className="checkbox-row session-wake-history-toggle">
+                        <input
+                          type="checkbox"
+                          checked={showPastOneTimeWakeSchedules}
+                          onChange={(event) => setShowPastOneTimeWakeSchedules(event.target.checked)}
+                        />
+                        <span>Show past one-time</span>
+                      </label>
+                    ) : null}
                     <button type="button" onClick={resetWakeEditor} disabled={mutationLocked || (!editingWakeRequestId && !wakePrompt && !wakeCron && !wakeResumeAt && wakeMode === "same_context" && wakeEnabled)}>
                       Create new
                     </button>
@@ -2181,7 +2207,7 @@ export function SessionsScreen() {
                     ) : null}
                   </div>
                   <div className="feature-list compact-list">
-                    {(detail?.wake_schedules ?? []).map((item) => (
+                    {visibleWakeScheduleItems.map((item) => (
                       <button
                         key={item.request_id}
                         type="button"
@@ -2197,6 +2223,7 @@ export function SessionsScreen() {
                       </button>
                     ))}
                     {detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
+                    {(detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
                   </div>
                 </div>
               </article>

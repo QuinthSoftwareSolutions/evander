@@ -10760,7 +10760,8 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
 
 
 def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
     service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
     captured: dict[str, object] = {}
 
@@ -10805,6 +10806,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "mssql_init_root": "/tmp/init",
             "playwright": True,
             "codex_skills": ["exampleindustry-app-demo"],
+            "vm_image": "default",
         },
     )
 
@@ -10836,7 +10838,127 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "playwright": True,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
+        "metadata": {
+            "libvirt_vm_template": {
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "template_alias": "default",
+            }
+        },
     }
+
+
+def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/agents/create-options")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["directory_path"] == "root"
+    assert body["backends"] == ["libvirt_vm", "container_worker_vm"]
+    providers = {provider["value"]: provider for provider in body["agent_providers"]}
+    assert providers["codex"]["execution_backends"] == [
+        "libvirt_vm",
+        "container_worker_vm",
+    ]
+    assert providers["claude"]["execution_backends"] == [
+        "libvirt_vm",
+        "container_worker_vm",
+    ]
+    assert providers["copilot"]["execution_backends"] == ["libvirt_vm"]
+    assert body["libvirt"]["default_template"] == "default"
+    assert body["libvirt"]["templates"] == [
+        {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"}
+    ]
+    assert body["container_worker"]["default_image"] == "agent-sandbox-runner:latest"
+    assert body["container_worker"]["images"] == []
+
+
+def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    providers_write = service.write_directory_domain_config(
+        team_path,
+        "providers",
+        {
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": "runner-base:latest",
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        },
+    )
+    assert providers_write.ok is True
+    vm_write = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "libvirt_vm_default_template": "ubuntu",
+            "libvirt_vm_templates": {
+                "ubuntu": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "fedora": "fedora-40-cloud.img",
+            },
+        },
+    )
+    assert vm_write.ok is True
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/agents/create-options",
+        params={"directory_path": team_path},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["directory_path"] == team_path
+    assert body["libvirt"]["default_template"] == "ubuntu"
+    assert body["libvirt"]["templates"] == [
+        {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"},
+        {"alias": "fedora", "image_ref": "fedora-40-cloud.img"},
+        {"alias": "ubuntu", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"},
+    ]
+    assert body["container_worker"]["default_image"] == "runner-base:latest"
+    assert body["container_worker"]["images"] == [
+        {"alias": "default", "image_ref": "runner-base:latest"},
+        {
+            "alias": "dotnet-playwright",
+            "image_ref": "runner-dotnet-playwright:2026-06-05",
+        },
+    ]
+
+
+def test_admin_web_agents_create_vm_duplicate_session_returns_409(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def create_vm(self, **payload):
+        return VmActionResult(
+            success=False,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="Session already exists: lab-session",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "session_id": "lab-session",
+        },
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["success"] is False
+    assert body["message"] == "Session already exists: lab-session"
 
 
 def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
@@ -10993,6 +11115,53 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     assert payload["items"][0]["capabilities"]["logs"] is False
     assert payload["items"][0]["host"]["image"] == "runner-dotnet-playwright:2026-06-05"
     assert payload["items"][0]["host"]["image_alias"] == "dotnet-playwright"
+
+
+def test_admin_web_agents_create_container_duplicate_session_returns_400(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory("root")
+
+        def prepare_session(
+            self, *, session_id: str, metadata: dict[str, object] | None = None
+        ) -> WorkerSessionRecord:
+            return WorkerSessionRecord(
+                session_id=session_id,
+                root_path=f"/worker/{session_id}",
+                agent_home_path=f"/worker/{session_id}/agent_home",
+                repo_root_path=f"/worker/{session_id}/agent_home/repos",
+                artifacts_path=f"/worker/{session_id}/artifacts",
+                logs_path=f"/worker/{session_id}/logs",
+                metadata_path=f"/worker/{session_id}/metadata.json",
+                metadata=dict(metadata or {}),
+            )
+
+        def write_files(self, *, session_id: str, files: list[dict[str, object]]) -> object:
+            return object()
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+    client = TestClient(create_app(service))
+
+    payload = {
+        "backend": "container_worker_vm",
+        "session_id": "container-session",
+        "target_name": "container-target",
+    }
+    first_response = client.post("/api/admin/agents", json=payload)
+    assert first_response.status_code == 201
+
+    duplicate_response = client.post("/api/admin/agents", json=payload)
+    assert duplicate_response.status_code == 400
+    assert "Session already exists: container-session" in duplicate_response.json()["error"]
 
 
 def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(

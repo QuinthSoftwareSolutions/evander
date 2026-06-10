@@ -5,6 +5,34 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-10 - Agents Page Create Modal Immutable Configuration
+
+- The Sessions page now hides past one-time wake schedules by default, shows how
+  many were hidden, and keeps an explicit toggle for inspecting older one-time
+  wake history without making long-lived sessions overly tall.
+- `POST /api/admin/agents` with `backend=libvirt_vm` now accepts an optional
+  `vm_image` template alias. `AdminService.create_admin_agent` resolves it against
+  the directory's approved libvirt template catalog via
+  `resolve_libvirt_vm_template_selector` and records the selection in
+  `metadata["libvirt_vm_template"]` so VM creation sets `LIBVIRT_BASE_IMAGE`.
+  Omitting `vm_image` records the directory default template, and an unknown alias
+  raises `ValueError` (HTTP 400) listing the configured aliases.
+- Added read-only `GET /api/admin/agents/create-options?directory_path=<path>`
+  returning supported execution backends, agent provider options with
+  per-backend constraints (Codex/Claude on both backends, Copilot on
+  `libvirt_vm` only), the directory's libvirt VM template catalog, and the
+  container worker image catalog.
+- The Agents page direct-create modal now exposes an agent provider select
+  (filtered to the selected backend) and backend-aware runtime image
+  selection: a VM image template-alias dropdown on the libvirt path and an
+  approved-alias dropdown for the container image selector on the container
+  worker path. Direct create keeps failing clearly on duplicate VM names or
+  session ids; the modal adds no upsert/no-op mode and no raw metadata JSON.
+- The Agents page direct-create modal now always creates in the current page
+  directory, removes the editable directory field, and reloads directory-scoped
+  provider/image options from that selected directory without changing tracked
+  dist asset hashes.
+
 ## 2026-06-10 - Operator Steering Stability
 
 - Preserved Agents-page Operator steering drafts across live refreshes unless the

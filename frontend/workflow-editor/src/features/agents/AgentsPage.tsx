@@ -9,6 +9,7 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateRequest,
+  AgentCreateOptionsResponse,
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
@@ -88,7 +89,6 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
-  directoryPath: string;
   model: string;
   ttlHours: string;
   labels: string;
@@ -100,6 +100,8 @@ type AgentCreateFormState = {
   emailFolders: string;
   provider: string;
   vmUser: string;
+  agentProvider: string;
+  vmImage: string;
   containerImage: string;
   dotnet: boolean;
   nuget: boolean;
@@ -167,13 +169,12 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
   };
 }
 
-function emptyCreateForm(directoryPath: string): AgentCreateFormState {
+function emptyCreateForm(): AgentCreateFormState {
   return {
     backend: "libvirt_vm",
     vmName: "",
     targetName: "",
     sessionId: "",
-    directoryPath,
     model: "",
     ttlHours: "",
     labels: "",
@@ -185,6 +186,8 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     emailFolders: "",
     provider: "",
     vmUser: "agent",
+    agentProvider: "",
+    vmImage: "",
     containerImage: "",
     dotnet: false,
     nuget: false,
@@ -339,6 +342,18 @@ async function loadAgentList(
 async function loadSkillList(): Promise<SkillLibraryItem[]> {
   const payload = await fetchJson<SkillListResponse>("/api/admin/skills");
   return payload.items;
+}
+
+async function loadAgentCreateOptions(
+  directoryPath: string,
+): Promise<AgentCreateOptionsResponse> {
+  const query = new URLSearchParams();
+  const trimmed = directoryPath.trim();
+  if (trimmed) query.set("directory_path", trimmed);
+  const suffix = query.toString();
+  return fetchJson<AgentCreateOptionsResponse>(
+    `/api/admin/agents/create-options${suffix ? `?${suffix}` : ""}`,
+  );
 }
 
 async function loadAgentLogPage(
@@ -695,12 +710,12 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   };
 }
 
-function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
+function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {
   const labels = parseLabels(form.labels);
   const payload: AgentCreateRequest = {
     backend: form.backend,
     session_id: optionalText(form.sessionId),
-    directory_path: optionalText(form.directoryPath),
+    directory_path: optionalText(directoryPath),
     model: optionalText(form.model),
     ttl_hours: optionalNumber(form.ttlHours),
     labels,
@@ -711,11 +726,15 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     email_mailboxes: parseList(form.emailMailboxes),
     email_folders: parseList(form.emailFolders),
   };
+  const agentProvider = optionalText(form.agentProvider);
+  if (agentProvider) payload.agent_provider = agentProvider;
   if (form.backend === "libvirt_vm") {
     const provider = optionalText(form.provider);
     payload.vm_name = optionalText(form.vmName);
     if (provider) payload.provider = provider;
     payload.vm_user = optionalText(form.vmUser) ?? "agent";
+    const vmImage = optionalText(form.vmImage);
+    if (vmImage) payload.vm_image = vmImage;
     payload.dotnet = form.dotnet;
     payload.nuget = form.nuget;
     payload.mssql = form.mssql;
@@ -907,9 +926,10 @@ export function AgentsPage() {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
-    emptyCreateForm(selectedDirectoryPath),
+    emptyCreateForm(),
   );
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
+  const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
@@ -979,9 +999,18 @@ export function AgentsPage() {
 
   useEffect(() => {
     if (!showCreateForm) {
-      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+      setCreateForm(emptyCreateForm());
     }
-  }, [selectedDirectoryPath, showCreateForm]);
+  }, [showCreateForm]);
+
+  useEffect(() => {
+    setCreateForm((current) => ({
+      ...current,
+      agentProvider: "",
+      vmImage: "",
+      containerImage: "",
+    }));
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -998,6 +1027,23 @@ export function AgentsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      setCreateOptions(null);
+      try {
+        const options = await loadAgentCreateOptions(selectedDirectoryPath);
+        if (!cancelled) setCreateOptions(options);
+      } catch {
+        if (!cancelled) setCreateOptions(null);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDirectoryPath]);
 
   const filteredItems = useMemo(() => {
     return [...items]
@@ -1534,14 +1580,14 @@ export function AgentsPage() {
     try {
       const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
         method: "POST",
-        body: JSON.stringify(buildCreatePayload(createForm)),
+        body: JSON.stringify(buildCreatePayload(createForm, selectedDirectoryPath)),
       });
       const message = `${payload.target_name}: ${payload.message}`;
       setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
       setStatus(payload.message);
       setError(null);
       setShowCreateForm(false);
-      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+      setCreateForm(emptyCreateForm());
       await refreshLiveAgents();
       setSelectedKey(`${payload.backend}:${payload.agent_id}`);
     } catch (reason: unknown) {
@@ -1710,6 +1756,9 @@ export function AgentsPage() {
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgentPolicy);
   const canInstallSkills = canEditPolicy && skillOptions.length > 0;
+  const createProviderOptions = (createOptions?.agent_providers ?? []).filter((option) =>
+    option.execution_backends.includes(createForm.backend),
+  );
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
     canControlWorkflowRuns &&
@@ -1747,7 +1796,7 @@ export function AgentsPage() {
               type="button"
               className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
               onClick={() => {
-                setCreateForm(emptyCreateForm(selectedDirectoryPath));
+                setCreateForm(emptyCreateForm());
                 setShowCreateForm(true);
                 setShowEditForm(false);
                 setShowSkillInstallForm(false);
@@ -2005,23 +2054,42 @@ export function AgentsPage() {
                     <span>Backend</span>
                     <select
                       value={createForm.backend}
-                      onChange={(event) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          backend: event.target.value as AgentBackend,
-                        }))
-                      }
+                      onChange={(event) => {
+                        const nextBackend = event.target.value as AgentBackend;
+                        setCreateForm((current) => {
+                          const stillValid = (createOptions?.agent_providers ?? []).some(
+                            (option) =>
+                              option.value === current.agentProvider &&
+                              option.execution_backends.includes(nextBackend),
+                          );
+                          return {
+                            ...current,
+                            backend: nextBackend,
+                            agentProvider:
+                              current.agentProvider && stillValid ? current.agentProvider : "",
+                          };
+                        });
+                      }}
                     >
                       <option value="libvirt_vm">VM agent</option>
                       <option value="container_worker_vm">Container worker</option>
                     </select>
                   </label>
                   <label className="field-stack">
-                    <span>Directory</span>
-                    <input
-                      value={createForm.directoryPath}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))}
-                    />
+                    <span>Agent provider</span>
+                    <select
+                      value={createForm.agentProvider}
+                      onChange={(event) =>
+                        setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
+                      }
+                    >
+                      <option value="">Directory default</option>
+                      {createProviderOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label className="field-stack">
                     <span>Session</span>
@@ -2072,6 +2140,24 @@ export function AgentsPage() {
                           onChange={(event) => setCreateForm((current) => ({ ...current, vmUser: event.target.value }))}
                         />
                       </label>
+                      <label className="field-stack">
+                        <span>VM image</span>
+                        <select
+                          value={createForm.vmImage}
+                          onChange={(event) =>
+                            setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
+                          }
+                        >
+                          <option value="">
+                            {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
+                          </option>
+                          {(createOptions?.libvirt.templates ?? []).map((template) => (
+                            <option key={template.alias} value={template.alias}>
+                              {template.alias}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </>
                   ) : (
                     <>
@@ -2087,13 +2173,31 @@ export function AgentsPage() {
                       </label>
                       <label className="field-stack">
                         <span>Container image selector</span>
-                        <input
-                          value={createForm.containerImage}
-                          onChange={(event) =>
-                            setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
-                          }
-                          placeholder="Alias or default image"
-                        />
+                        {createOptions ? (
+                          <select
+                            value={createForm.containerImage}
+                            onChange={(event) =>
+                              setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
+                            }
+                          >
+                            <option value="">
+                              {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
+                            </option>
+                            {createOptions.container_worker.images.map((image) => (
+                              <option key={image.alias} value={image.alias}>
+                                {image.alias}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            value={createForm.containerImage}
+                            onChange={(event) =>
+                              setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
+                            }
+                            placeholder="Alias or default image"
+                          />
+                        )}
                       </label>
                     </>
                   )}

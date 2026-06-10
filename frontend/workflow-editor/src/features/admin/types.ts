@@ -156,6 +156,33 @@ export type AgentCreateRequest = {
   codex_skills?: string[];
   target_name?: string | null;
   container_image?: string | null;
+  agent_provider?: string | null;
+  vm_image?: string | null;
+};
+
+export type AgentCreateProviderOption = {
+  value: string;
+  label: string;
+  execution_backends: AgentBackend[];
+};
+
+export type AgentCreateImageOption = {
+  alias: string;
+  image_ref: string;
+};
+
+export type AgentCreateOptionsResponse = {
+  directory_path: string;
+  backends: AgentBackend[];
+  agent_providers: AgentCreateProviderOption[];
+  libvirt: {
+    default_template: string | null;
+    templates: AgentCreateImageOption[];
+  };
+  container_worker: {
+    default_image: string | null;
+    images: AgentCreateImageOption[];
+  };
 };
 
 export type AgentPolicyUpdateRequest = {
