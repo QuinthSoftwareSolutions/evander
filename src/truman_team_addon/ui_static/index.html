@@ -46,6 +46,11 @@
             <div id="projects-view" class="projects-view"></div>
           </section>
 
+          <section class="content-panel" aria-labelledby="review-profiles-heading">
+            <h2 id="review-profiles-heading">Review profiles</h2>
+            <div id="review-profiles-view" class="review-profiles-view"></div>
+          </section>
+
           <section class="content-panel" aria-labelledby="releases-heading">
             <h2 id="releases-heading">Releases</h2>
             <div id="releases-view" class="releases-view"></div>
@@ -116,6 +121,8 @@
                 <label>Description <textarea name="description" rows="3" required></textarea></label>
                 <label>Created by <select name="created_by_agent_id" required data-options="agents"></select></label>
                 <label>State <select name="state" data-options="task-states"></select></label>
+                <label>Parent task <select name="parent_task_id" data-options="tasks"></select></label>
+                <label>Dependency tasks <textarea name="dependency_task_ids" rows="2"></textarea></label>
                 <button type="submit">Create task</button>
               </form>
             </details>
@@ -128,7 +135,23 @@
                 <label>Priority <input name="priority" type="number" min="0" /></label>
                 <label>Title <input name="title" /></label>
                 <label>Description <textarea name="description" rows="3"></textarea></label>
+                <label>Parent task <select name="parent_task_id" data-options="tasks"></select></label>
+                <label>Dependency tasks <textarea name="dependency_task_ids" rows="2"></textarea></label>
                 <button type="submit">Update task</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Create review profile</summary>
+              <form id="create-review-profile-form" data-endpoint="/review-profiles" data-method="POST">
+                <label>Profile ID <input name="id" required /></label>
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Project <select name="project_id" data-options="projects"></select></label>
+                <label>Name <input name="name" required /></label>
+                <label>Description <textarea name="description" rows="3"></textarea></label>
+                <label>Applicable roles <textarea name="applicable_roles" rows="2"></textarea></label>
+                <label>Criteria <textarea name="criteria" rows="4" placeholder="id | label | description | required"></textarea></label>
+                <button type="submit">Create profile</button>
               </form>
             </details>
 
@@ -151,6 +174,8 @@
                 <label>Review ID <input name="id" required /></label>
                 <label>Deliverable <select name="deliverable_id" required data-options="deliverables"></select></label>
                 <label>Reviewer <select name="reviewer_agent_id" required data-options="agents"></select></label>
+                <label>Review profile <select name="review_profile_id" data-options="review-profiles"></select></label>
+                <label>Instructions <textarea name="instructions" rows="3"></textarea></label>
                 <label>Findings <textarea name="findings" rows="3"></textarea></label>
                 <label>State <select name="state" data-options="record-states"></select></label>
                 <button type="submit">Request review</button>
@@ -163,6 +188,7 @@
                 <label>Review <select name="review_request_id" required data-options="review-requests"></select></label>
                 <label>Decision <select name="state" required data-options="decision-states"></select></label>
                 <label>Findings <textarea name="findings" rows="3"></textarea></label>
+                <label>Criteria results <textarea name="criteria" rows="4" placeholder="criterion_id | passed | finding"></textarea></label>
                 <button type="submit">Submit decision</button>
               </form>
             </details>

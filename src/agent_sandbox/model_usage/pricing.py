@@ -36,6 +36,8 @@ class ModelPricingRule:
     currency: str
     input_per_1m_tokens: Decimal
     cached_input_per_1m_tokens: Decimal | None
+    cache_write_5m_per_1m_tokens: Decimal | None
+    cache_write_1h_per_1m_tokens: Decimal | None
     output_per_1m_tokens: Decimal
     batch_multiplier: Decimal | None = None
     service_tier: str | None = None
@@ -78,12 +80,14 @@ class ModelCostEstimate:
     estimated_total: Decimal | None
     input_cost: Decimal | None
     cached_input_cost: Decimal | None
+    cache_write_cost: Decimal | None
     output_cost: Decimal | None
     status: ModelCostStatus
     pricing_rule_id: str | None = None
     pricing_version: str | None = None
     explanation: str | None = None
     cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return {
@@ -91,12 +95,14 @@ class ModelCostEstimate:
             "estimated_total": _decimal_to_float(self.estimated_total),
             "input_cost": _decimal_to_float(self.input_cost),
             "cached_input_cost": _decimal_to_float(self.cached_input_cost),
+            "cache_write_cost": _decimal_to_float(self.cache_write_cost),
             "output_cost": _decimal_to_float(self.output_cost),
             "status": self.status,
             "pricing_rule_id": self.pricing_rule_id,
             "pricing_version": self.pricing_version,
             "explanation": self.explanation,
             "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_input_tokens": self.cache_write_input_tokens,
         }
 
 
@@ -270,14 +276,28 @@ def estimate_model_usage_cost(
         )
 
     cached_input_tokens = extract_cached_input_tokens(event)
+    cache_write_tokens = extract_cache_write_input_tokens(event)
     billable_cached_input_tokens = cached_input_tokens or 0
-    billable_input_tokens = max(int(event.input_tokens) - billable_cached_input_tokens, 0)
+    if _uses_separate_prompt_cache_counters(event):
+        billable_input_tokens = int(event.input_tokens)
+    else:
+        billable_input_tokens = max(int(event.input_tokens) - billable_cached_input_tokens, 0)
     output_tokens = int(event.output_tokens)
 
     input_rate = rule.input_per_1m_tokens
     cached_input_rate = (
         rule.cached_input_per_1m_tokens
         if rule.cached_input_per_1m_tokens is not None
+        else rule.input_per_1m_tokens
+    )
+    cache_write_5m_rate = (
+        rule.cache_write_5m_per_1m_tokens
+        if rule.cache_write_5m_per_1m_tokens is not None
+        else rule.input_per_1m_tokens
+    )
+    cache_write_1h_rate = (
+        rule.cache_write_1h_per_1m_tokens
+        if rule.cache_write_1h_per_1m_tokens is not None
         else rule.input_per_1m_tokens
     )
     output_rate = rule.output_per_1m_tokens
@@ -289,21 +309,27 @@ def estimate_model_usage_cost(
         if rule.long_context_input_multiplier is not None:
             input_rate *= rule.long_context_input_multiplier
             cached_input_rate *= rule.long_context_input_multiplier
+            cache_write_5m_rate *= rule.long_context_input_multiplier
+            cache_write_1h_rate *= rule.long_context_input_multiplier
         if rule.long_context_output_multiplier is not None:
             output_rate *= rule.long_context_output_multiplier
 
     if _is_batch_event(event) and rule.batch_multiplier is not None:
         input_rate *= rule.batch_multiplier
         cached_input_rate *= rule.batch_multiplier
+        cache_write_5m_rate *= rule.batch_multiplier
+        cache_write_1h_rate *= rule.batch_multiplier
         output_rate *= rule.batch_multiplier
 
     input_cost = _token_cost(billable_input_tokens, input_rate)
     cached_input_cost = _token_cost(billable_cached_input_tokens, cached_input_rate)
+    cache_write_cost = _token_cost(cache_write_tokens.ephemeral_5m, cache_write_5m_rate)
+    cache_write_cost += _token_cost(cache_write_tokens.ephemeral_1h, cache_write_1h_rate)
     output_cost = _token_cost(output_tokens, output_rate)
-    total = input_cost + cached_input_cost + output_cost
+    total = input_cost + cached_input_cost + cache_write_cost + output_cost
 
     explanation = None
-    if cached_input_tokens is None:
+    if cached_input_tokens is None and not cache_write_tokens.total:
         explanation = (
             "No cached input token breakdown recorded; all input tokens priced at the "
             "standard input rate."
@@ -314,12 +340,14 @@ def estimate_model_usage_cost(
         estimated_total=total,
         input_cost=input_cost,
         cached_input_cost=cached_input_cost,
+        cache_write_cost=cache_write_cost,
         output_cost=output_cost,
         status="estimated",
         pricing_rule_id=rule.id,
         pricing_version=catalog.version,
         explanation=explanation,
         cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_tokens.total,
     )
 
 
@@ -340,6 +368,47 @@ def extract_cached_input_tokens(event: ModelInferenceUsageEvent) -> int | None:
         if number is not None:
             return number
     return None
+
+
+@dataclass(frozen=True)
+class CacheWriteInputTokens:
+    ephemeral_5m: int = 0
+    ephemeral_1h: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.ephemeral_5m + self.ephemeral_1h
+
+
+def extract_cache_write_input_tokens(event: ModelInferenceUsageEvent) -> CacheWriteInputTokens:
+    usage = event.raw_usage_metadata.get("usage")
+    if not isinstance(usage, dict):
+        return CacheWriteInputTokens()
+    cache_creation = usage.get("cache_creation")
+    cache_creation_payload = cache_creation if isinstance(cache_creation, dict) else {}
+    ephemeral_5m = _optional_non_negative_int(
+        cache_creation_payload.get("ephemeral_5m_input_tokens")
+    )
+    ephemeral_1h = _optional_non_negative_int(
+        cache_creation_payload.get("ephemeral_1h_input_tokens")
+    )
+    total = _optional_non_negative_int(usage.get("cache_creation_input_tokens"))
+    billable_5m = ephemeral_5m or 0
+    billable_1h = ephemeral_1h or 0
+    if total is not None and total > billable_5m + billable_1h:
+        billable_5m += total - billable_5m - billable_1h
+    return CacheWriteInputTokens(ephemeral_5m=billable_5m, ephemeral_1h=billable_1h)
+
+
+def _uses_separate_prompt_cache_counters(event: ModelInferenceUsageEvent) -> bool:
+    usage = event.raw_usage_metadata.get("usage")
+    if not isinstance(usage, dict):
+        return False
+    if _optional_non_negative_int(usage.get("cache_read_input_tokens")) is not None:
+        return True
+    if _optional_non_negative_int(usage.get("cache_creation_input_tokens")) is not None:
+        return True
+    return isinstance(usage.get("cache_creation"), dict)
 
 
 def _parse_pricing_rule(payload: Any, *, default_currency: str) -> ModelPricingRule:
@@ -366,6 +435,8 @@ def _parse_pricing_rule(payload: Any, *, default_currency: str) -> ModelPricingR
         currency=(_optional_text(payload.get("currency")) or default_currency).lower(),
         input_per_1m_tokens=_required_decimal(rates.get("input"), field_name="input"),
         cached_input_per_1m_tokens=_optional_decimal(rates.get("cached_input")),
+        cache_write_5m_per_1m_tokens=_optional_decimal(rates.get("cache_write_5m")),
+        cache_write_1h_per_1m_tokens=_optional_decimal(rates.get("cache_write_1h")),
         output_per_1m_tokens=_required_decimal(rates.get("output"), field_name="output"),
         batch_multiplier=_optional_decimal(payload.get("batch_multiplier")),
         service_tier=_optional_text(payload.get("service_tier")),
@@ -429,6 +500,16 @@ def _pricing_rule_payload(rule: ModelPricingRule) -> dict[str, Any]:
                 if rule.cached_input_per_1m_tokens is not None
                 else None
             ),
+            "cache_write_5m": (
+                str(rule.cache_write_5m_per_1m_tokens)
+                if rule.cache_write_5m_per_1m_tokens is not None
+                else None
+            ),
+            "cache_write_1h": (
+                str(rule.cache_write_1h_per_1m_tokens)
+                if rule.cache_write_1h_per_1m_tokens is not None
+                else None
+            ),
             "output": str(rule.output_per_1m_tokens),
         },
         "batch_multiplier": (
@@ -485,6 +566,7 @@ def _unavailable_estimate(
         estimated_total=None,
         input_cost=None,
         cached_input_cost=None,
+        cache_write_cost=None,
         output_cost=None,
         status=status,
         explanation=explanation,
@@ -591,6 +673,7 @@ __all__ = [
     "default_model_pricing_catalog",
     "default_model_pricing_catalog_path",
     "estimate_model_usage_cost",
+    "extract_cache_write_input_tokens",
     "extract_cached_input_tokens",
     "load_model_pricing_catalog",
     "load_model_pricing_catalog_payload",

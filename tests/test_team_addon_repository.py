@@ -1780,6 +1780,7 @@ def _seed_review_profile(
     *,
     profile_id: str = "profile",
     project_id: str | None = None,
+    applicable_roles: list[str] | None = None,
     criteria: list[ReviewProfileCriterion] | None = None,
 ) -> None:
     repo.create_review_profile(
@@ -1788,7 +1789,7 @@ def _seed_review_profile(
         project_id=project_id,
         name="Backend review",
         description="Checklist for backend deliverables.",
-        applicable_roles=["backend", "worker"],
+        applicable_roles=applicable_roles or ["backend", "worker"],
         criteria=criteria
         or [
             ReviewProfileCriterion(id="tests", label="Tests pass", required=True),
@@ -1929,6 +1930,30 @@ def test_apply_agent_action_review_request_cross_project_profile_errors(
 
     assert result["success"] is False
     assert any("does not apply to project" in error for error in result["errors"])
+    assert state.review_requests == {}
+
+
+def test_apply_agent_action_review_request_role_profile_errors(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo, applicable_roles=["backend"])
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("reviewer role worker" in error for error in result["errors"])
     assert state.review_requests == {}
 
 

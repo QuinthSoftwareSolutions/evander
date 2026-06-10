@@ -235,6 +235,7 @@ textarea {
   padding: 0;
 }
 
+.review-profiles-view,
 .releases-view {
   margin-top: 0.85rem;
 }
@@ -333,6 +334,7 @@ textarea {
 .state-pill.pending,
 .state-pill.in_progress,
 .state-pill.waiting_for_review,
+.state-pill.waiting,
 .state-pill.requested,
 .state-pill.spawn_pending,
 .state-pill.running {
@@ -343,6 +345,7 @@ textarea {
 .state-pill.accepted,
 .state-pill.finished,
 .state-pill.completed,
+.state-pill.satisfied,
 .state-pill.cleaned_up {
   background: rgba(36, 112, 75, 0.12);
   color: var(--green);

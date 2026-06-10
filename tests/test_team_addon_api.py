@@ -69,10 +69,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
+    assert 'name="parent_task_id"' in ui.text
+    assert 'name="review_profile_id"' in ui.text
+    assert 'id="create-review-profile-form"' in ui.text
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "dependency_task_ids" in script.text
+    assert "review_profile_id" in script.text
+    assert "parseCriterionResults" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -368,6 +374,16 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     assert child["dependency_task_ids"] == []
     assert child["dependency_status"] == "satisfied"
 
+    # PATCH can clear a parent link with explicit null.
+    response = client.patch(
+        "/api/addons/team-addon/tasks/child",
+        json={"parent_task_id": None},
+    )
+    assert response.status_code == 200
+    state = response.json()
+    assert state["tasks"]["child"]["parent_task_id"] is None
+    assert state["tasks"]["parent"]["child_task_ids"] == []
+
     # Cross-project parent is rejected with a 400.
     client.post(
         "/api/addons/team-addon/tasks",
@@ -606,7 +622,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "project_id": "project",
             "name": "Security review",
             "description": "Checklist for security-sensitive work.",
-            "applicable_roles": ["reviewer", "lead"],
+            "applicable_roles": ["reviewer", "project_lead"],
             "criteria": [
                 {"id": "authz", "label": "Authorization", "required": True},
                 {"id": "logging", "label": "Logging", "description": "No secrets", "required": False},
@@ -641,6 +657,19 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     profile = response.json()
     assert profile["name"] == "Security review v2"
     assert profile["archived"] is True
+
+    # Archived profiles cannot be assigned through the Admin API.
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review-archived",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+            "review_profile_id": "profile",
+        },
+    )
+    assert response.status_code == 400
+    assert "archived" in response.json()["error"]
 
     # Un-archive so the profile can be attached to a review request.
     client.patch(

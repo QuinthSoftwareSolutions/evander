@@ -280,6 +280,7 @@ class TeamStateRepository:
         created_by_agent_id: str,
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
+        set_parent_task_id: bool = False,
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -290,7 +291,7 @@ class TeamStateRepository:
                 task.priority = priority
                 task.title = title
                 task.description = description
-                if parent_task_id is not None:
+                if set_parent_task_id or parent_task_id is not None:
                     task.parent_task_id = parent_task_id
                 if dependency_task_ids is not None:
                     task.dependency_task_ids = dependency_task_ids
@@ -323,6 +324,7 @@ class TeamStateRepository:
         title: str | None = None,
         description: str | None = None,
         parent_task_id: str | None = None,
+        set_parent_task_id: bool = False,
         dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -336,7 +338,7 @@ class TeamStateRepository:
                 task.title = title
             if description is not None:
                 task.description = description
-            if parent_task_id is not None:
+            if set_parent_task_id:
                 task.parent_task_id = parent_task_id
             if dependency_task_ids is not None:
                 task.dependency_task_ids = dependency_task_ids
@@ -455,6 +457,23 @@ class TeamStateRepository:
         def _mutate(state_model: TeamState) -> TeamState:
             _require_absent(state_model.review_requests, review_request_id, "review request")
             deliverable = _require_present(state_model.deliverables, deliverable_id, "deliverable")
+            reviewer = _require_present(state_model.agents, reviewer_agent_id, "reviewer")
+            task = _require_present(state_model.tasks, deliverable.task_id, "task")
+            project = _require_present(state_model.projects, task.project_id, "project")
+            if reviewer.team_id != project.team_id:
+                raise ValueError(
+                    f"reviewer {reviewer_agent_id} is not in the same team as deliverable "
+                    f"{deliverable_id}"
+                )
+            _profile, profile_error = _review_profile_for_request(
+                state_model,
+                profile_id=review_profile_id,
+                expected_team_id=reviewer.team_id,
+                project_id=task.project_id,
+                reviewer=reviewer,
+            )
+            if profile_error is not None:
+                raise ValueError(profile_error)
             review = ReviewRequest(
                 id=review_request_id,
                 deliverable_id=deliverable_id,
@@ -1991,6 +2010,30 @@ def _task_graph_edit_error(
     return None
 
 
+def _review_profile_for_request(
+    state: TeamState,
+    *,
+    profile_id: str | None,
+    expected_team_id: str,
+    project_id: str | None,
+    reviewer: PersistentAgent,
+) -> tuple[ReviewProfile | None, str | None]:
+    if profile_id is None:
+        return None, None
+    profile = state.review_profiles.get(profile_id)
+    if profile is None:
+        return None, f"review request references missing review profile {profile_id}"
+    if profile.archived:
+        return None, f"review profile {profile_id} is archived"
+    if profile.team_id != expected_team_id:
+        return None, f"review profile {profile_id} is not in the same team as reviewer {reviewer.id}"
+    if profile.project_id is not None and profile.project_id != project_id:
+        return None, f"review profile {profile_id} does not apply to project {project_id}"
+    if profile.applicable_roles and reviewer.role not in profile.applicable_roles:
+        return None, f"review profile {profile_id} does not apply to reviewer role {reviewer.role}"
+    return profile, None
+
+
 def _apply_review_request(
     state: TeamState,
     *,
@@ -2028,27 +2071,16 @@ def _apply_review_request(
         return None
     instructions = _optional_text(request.get("instructions"))
     profile_id = _optional_text(request.get("review_profile_id"))
-    profile: ReviewProfile | None = None
-    if profile_id is not None:
-        profile = state.review_profiles.get(profile_id)
-        if profile is None:
-            result["errors"].append(
-                f"review request references missing review profile {profile_id}"
-            )
-            return None
-        if profile.archived:
-            result["errors"].append(f"review profile {profile_id} is archived")
-            return None
-        if profile.team_id != actor.team_id:
-            result["errors"].append(
-                f"review profile {profile_id} is not in the same team as {actor.id}"
-            )
-            return None
-        if profile.project_id is not None and profile.project_id != project_id:
-            result["errors"].append(
-                f"review profile {profile_id} does not apply to project {project_id}"
-            )
-            return None
+    profile, profile_error = _review_profile_for_request(
+        state,
+        profile_id=profile_id,
+        expected_team_id=actor.team_id,
+        project_id=project_id,
+        reviewer=reviewer,
+    )
+    if profile_error is not None:
+        result["errors"].append(profile_error)
+        return None
     review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")

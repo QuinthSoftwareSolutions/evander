@@ -11,6 +11,7 @@ from agent_sandbox.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
     estimate_model_usage_cost,
+    extract_cache_write_input_tokens,
     extract_cached_input_tokens,
     load_model_pricing_catalog_payload,
 )
@@ -279,3 +280,59 @@ def test_model_pricing_estimates_anthropic_catalog_rules() -> None:
     assert estimate.status == "estimated"
     assert estimate.pricing_rule_id == "anthropic:claude-sonnet-4-6"
     assert estimate.estimated_total == Decimal("0.0045")
+
+
+def test_anthropic_pricing_estimates_cache_reads_and_writes() -> None:
+    catalog = load_model_pricing_catalog_payload(
+        {
+            "version": "test-anthropic-cache",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "anthropic:claude-sonnet-4-6",
+                    "provider": "anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                    "rates_per_1m_tokens": {
+                        "input": "3.00",
+                        "cached_input": "0.30",
+                        "cache_write_5m": "3.75",
+                        "cache_write_1h": "6.00",
+                        "output": "15.00",
+                    },
+                }
+            ],
+        }
+    )
+    event = _event(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        input_tokens=1000,
+        output_tokens=100,
+        total_tokens=None,
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens": 1000,
+                "cache_read_input_tokens": 200000,
+                "cache_creation_input_tokens": 7000,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 3000,
+                    "ephemeral_1h_input_tokens": 4000,
+                },
+                "output_tokens": 100,
+            },
+            "request_metadata": {"path": "/v1/messages"},
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, catalog)
+
+    assert estimate.status == "estimated"
+    assert estimate.input_cost == Decimal("0.003")
+    assert estimate.cached_input_cost == Decimal("0.060")
+    assert estimate.cache_write_cost == Decimal("0.03525")
+    assert estimate.output_cost == Decimal("0.0015")
+    assert estimate.estimated_total == Decimal("0.09975")
+    assert estimate.cached_input_tokens == 200000
+    assert estimate.cache_write_input_tokens == 7000
+    assert extract_cached_input_tokens(event) == 200000
+    assert extract_cache_write_input_tokens(event).total == 7000
