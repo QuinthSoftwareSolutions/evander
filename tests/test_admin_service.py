@@ -1832,6 +1832,205 @@ def test_create_container_agent_rejects_unknown_container_image_selector_before_
         )
 
 
+def test_create_admin_agent_libvirt_rejects_unknown_vm_image_selector_before_create_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "vm",
+        {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    def fail_create_vm(self: AdminService, **_kwargs: object) -> object:
+        raise AssertionError("create_vm should not be called for an unknown vm_image")
+
+    monkeypatch.setattr(service, "create_vm", MethodType(fail_create_vm, service))
+
+    with pytest.raises(ValueError, match="unknown libvirt VM template selector") as excinfo:
+        service.create_admin_agent(
+            {
+                "backend": "libvirt_vm",
+                "vm_name": "lab-vm",
+                "vm_image": "missing-selector",
+            }
+        )
+    message = str(excinfo.value)
+    assert "default" in message
+    assert "gpu" in message
+
+
+def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "vm",
+        {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "vm_image": "gpu",
+        }
+    )
+
+    assert result["success"] is True
+    assert result["vm_image"] == "ubuntu-24.04-gpu.img"
+    assert result["vm_image_alias"] == "gpu"
+    assert captured["metadata"] == {
+        "libvirt_vm_template": {
+            "image_ref": "ubuntu-24.04-gpu.img",
+            "template_alias": "gpu",
+        }
+    }
+
+
+def test_create_admin_agent_libvirt_records_default_template_when_vm_image_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["metadata"] == {
+        "libvirt_vm_template": {
+            "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "template_alias": "default",
+        }
+    }
+
+
+def test_create_admin_agent_libvirt_never_allows_existing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "session_id": "lab-session",
+        }
+    )
+
+    assert result["success"] is True
+    # The admin create flow must never request upsert behaviour: omitting the kwarg
+    # leaves vm/provider.py's allow_existing_session defaulting to False so a duplicate
+    # session fails clearly instead of being silently reused.
+    assert not captured.get("allow_existing_session", False)
+
+
+def test_create_container_agent_duplicate_session_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory("root")
+
+        def prepare_session(
+            self, *, session_id: str, metadata: dict[str, object] | None = None
+        ) -> WorkerSessionRecord:
+            return WorkerSessionRecord(
+                session_id=session_id,
+                root_path=f"/worker/{session_id}",
+                agent_home_path=f"/worker/{session_id}/agent_home",
+                repo_root_path=f"/worker/{session_id}/agent_home/repos",
+                artifacts_path=f"/worker/{session_id}/artifacts",
+                logs_path=f"/worker/{session_id}/logs",
+                metadata_path=f"/worker/{session_id}/metadata.json",
+                metadata=dict(metadata or {}),
+            )
+
+        def write_files(self, *, session_id: str, files: list[dict[str, object]]) -> object:
+            return object()
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    payload = {
+        "backend": "container_worker_vm",
+        "session_id": "container-session",
+        "target_name": "container-target",
+    }
+    first = service.create_admin_agent(payload)
+    assert first["success"] is True
+
+    with pytest.raises(ValueError, match="Session already exists: container-session"):
+        service.create_admin_agent(dict(payload))
+
+
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 

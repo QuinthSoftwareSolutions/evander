@@ -173,6 +173,19 @@ def agent_routes(
             }
         )
 
+    async def create_options(request: Request) -> JSONResponse:
+        directory_path = _string_query(request, "directory_path")
+        try:
+            options = await run_in_threadpool(
+                service.agent_create_options,
+                directory_path,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(_jsonable(options))
+
     async def create_agent(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
@@ -250,6 +263,7 @@ def agent_routes(
             methods=["GET"],
         ),
         Route("/api/admin/agents", create_agent, methods=["POST"]),
+        Route("/api/admin/agents/create-options", create_options, methods=["GET"]),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),
         Route("/api/admin/agents/{agent_id:str}", delete_agent, methods=["DELETE"]),
         Route("/api/admin/agents/{agent_id:str}/log", get_agent_log, methods=["GET"]),
