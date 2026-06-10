@@ -9,7 +9,7 @@ from typing import Any
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.approval_notification_targets import (
-    resolve_approval_notification_target_ids_for_directory,
+    normalize_approval_notification_target_ids,
 )
 from agent_sandbox.models import (
     ApprovalGrantSettings,
@@ -1233,11 +1233,9 @@ class PolicyEngine:
             ):
                 target_ids.extend(lease.approval_notification_target_ids)
 
-        return resolve_approval_notification_target_ids_for_directory(
-            runtime_dir=self.config.runtime_dir,
-            directory_store=self.policy_config.directory_store,
-            directory_path=session.directory_path,
-            target_ids=target_ids,
+        return normalize_approval_notification_target_ids(
+            target_ids,
+            field_name="approval_notification_target_ids",
         )
 
     def create_approval(

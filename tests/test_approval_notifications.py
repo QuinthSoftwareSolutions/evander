@@ -245,6 +245,31 @@ def test_approval_notifications_fallback_to_local_admin_web_url_when_public_base
     assert "decision=deny" in message
 
 
+def test_approval_creation_survives_legacy_missing_notification_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["missing-target"])
+    runtime.session_repository.upsert_session(_session_manifest())
+
+    approval = runtime.policy.create_approval(
+        "session-1",
+        "email_send_approved",
+        {"body": "secret", "token": "secret-token"},
+        "send email",
+    )
+
+    assert approval.status == ApprovalStatus.PENDING
+    assert approval.notification_target_ids == ["missing-target"]
+    assert approval.notification_status == ApprovalNotificationStatus.FAILED
+    assert approval.notification_error == (
+        "missing-target: unknown communication target: missing-target"
+    )
+    assert len(approval.notification_deliveries) == 1
+    assert approval.notification_deliveries[0].target_id == "missing-target"
+    assert approval.notification_deliveries[0].status == ApprovalNotificationDeliveryStatus.FAILED
+
+
 def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _write_targets(
