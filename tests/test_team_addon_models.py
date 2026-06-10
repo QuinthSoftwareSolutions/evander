@@ -24,6 +24,9 @@ from truman_team_addon.models import (
     ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
+    ReviewCriterionResult,
+    ReviewProfile,
+    ReviewProfileCriterion,
     ReviewRequest,
     Team,
     TeamRecordState,
@@ -625,6 +628,170 @@ def test_subtask_counts_classifies_child_states() -> None:
         "blocked": 2,
         "open": 1,
     }
+
+
+def _profile() -> ReviewProfile:
+    return ReviewProfile(
+        id="profile",
+        team_id="team",
+        project_id="project",
+        name="Code review",
+        description="Standard code review rubric.",
+        applicable_roles=["reviewer"],
+        criteria=[
+            ReviewProfileCriterion(id="tests", label="Tests pass"),
+            ReviewProfileCriterion(
+                id="style", label="Style", description="Matches repo style", required=False
+            ),
+        ],
+    )
+
+
+def test_review_profile_round_trips_through_team_state() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    profile = validated.review_profiles["profile"]
+    assert profile.name == "Code review"
+    assert profile.applicable_roles == ["reviewer"]
+    assert [criterion.id for criterion in profile.criteria] == ["tests", "style"]
+    assert profile.criteria[1].required is False
+    assert profile.archived is False
+
+
+def test_review_profile_rejects_missing_team() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["review_profiles"] = {
+        "profile": {
+            "id": "profile",
+            "team_id": "ghost",
+            "name": "Code review",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="review profile profile references missing team ghost"):
+        TeamState.model_validate(state)
+
+
+def test_review_profile_rejects_cross_team_project() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["teams"]["other-team"] = {
+        "id": "other-team",
+        "name": "Other team",
+        "manager_agent_id": "manager",
+    }
+    state["review_profiles"] = {
+        "profile": {
+            "id": "profile",
+            "team_id": "other-team",
+            "project_id": "project",
+            "name": "Code review",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="review profile profile project project belongs to team team"):
+        TeamState.model_validate(state)
+
+
+def test_review_profile_rejects_duplicate_criterion_ids() -> None:
+    with pytest.raises(ValidationError, match="review profile criteria contains duplicate ids"):
+        ReviewProfile(
+            id="profile",
+            team_id="team",
+            name="Code review",
+            criteria=[
+                ReviewProfileCriterion(id="tests", label="Tests pass"),
+                ReviewProfileCriterion(id="tests", label="Tests again"),
+            ],
+        )
+
+
+def test_review_with_profile_and_criterion_results_validates() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].instructions = "Focus on the new tests."
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed", finding="All green."),
+        ReviewCriterionResult(criterion_id="style", state="skipped"),
+    ]
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    review = validated.review_requests["review"]
+    assert review.review_profile_id == "profile"
+    assert review.instructions == "Focus on the new tests."
+    assert [result.criterion_id for result in review.criteria] == ["tests", "style"]
+    assert review.criteria[0].state == "passed"
+
+
+def test_review_rejects_criterion_result_for_unknown_criterion() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="ghost", state="passed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="criterion result references unknown criterion ghost"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_duplicate_criterion_results() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed"),
+        ReviewCriterionResult(criterion_id="tests", state="failed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="has duplicate criterion result tests"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_criterion_results_without_profile() -> None:
+    state = _valid_state()
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="has criterion results but no review profile"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_missing_profile_reference() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["review_requests"]["review"]["review_profile_id"] = "ghost"
+
+    with pytest.raises(
+        ValidationError, match="references missing review profile ghost"
+    ):
+        TeamState.model_validate(state)
+
+
+def test_legacy_state_without_review_profile_keys_validates() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state.pop("review_profiles", None)
+    review = state["review_requests"]["review"]
+    review.pop("review_profile_id", None)
+    review.pop("instructions", None)
+    review.pop("criteria", None)
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.review_profiles == {}
+    assert validated.review_requests["review"].review_profile_id is None
+    assert validated.review_requests["review"].instructions is None
+    assert validated.review_requests["review"].criteria == []
 
 
 def test_git_promotion_rejects_missing_project() -> None:

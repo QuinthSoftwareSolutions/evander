@@ -341,12 +341,71 @@ class Deliverable(TeamModel):
         return _unique_text_list(value, info.field_name)
 
 
+class ReviewProfileCriterion(TeamModel):
+    id: str
+    label: str
+    description: str = ""
+    required: bool = True
+
+    @field_validator("id", "label", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class ReviewProfile(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    name: str
+    description: str = ""
+    applicable_roles: list[str] = Field(default_factory=list)
+    criteria: list[ReviewProfileCriterion] = Field(default_factory=list)
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", "name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("applicable_roles", mode="before")
+    @classmethod
+    def _applicable_roles(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "applicable_roles")
+
+    @model_validator(mode="after")
+    def _validate_criterion_ids(self) -> "ReviewProfile":
+        _ensure_unique([criterion.id for criterion in self.criteria], "review profile criteria")
+        return self
+
+
+class ReviewCriterionResult(TeamModel):
+    criterion_id: str
+    state: Literal["passed", "failed", "skipped"]
+    finding: str = ""
+
+    @field_validator("criterion_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
 class ReviewRequest(TeamModel):
     id: str
     deliverable_id: str
     reviewer_agent_id: str
     state: TeamRecordState = TeamRecordState.PENDING
     findings: list[str] = Field(default_factory=list)
+    review_profile_id: str | None = None
+    instructions: str | None = None
+    criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     decision_at: datetime | None = None
 
     @field_validator("id", "deliverable_id", "reviewer_agent_id", mode="before")
@@ -358,6 +417,11 @@ class ReviewRequest(TeamModel):
     @classmethod
     def _findings(cls, value: object) -> list[str]:
         return _text_list(value, "findings")
+
+    @field_validator("review_profile_id", "instructions", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class AgentInboxItem(TeamModel):
@@ -576,6 +640,7 @@ class TeamState(TeamModel):
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
+    review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
@@ -598,6 +663,7 @@ class TeamState(TeamModel):
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
         self._validate_deliverables(errors)
+        self._validate_review_profiles(errors)
         self._validate_reviews(errors)
         self._validate_inbox(errors)
         self._validate_action_records(errors)
@@ -623,6 +689,7 @@ class TeamState(TeamModel):
             "tasks",
             "deliverables",
             "review_requests",
+            "review_profiles",
             "inbox",
             "action_records",
             "release_packages",
@@ -880,6 +947,25 @@ class TeamState(TeamModel):
                         f"deliverable {deliverable.id} review {review_request_id} does not point back"
                     )
 
+    def _validate_review_profiles(self, errors: list[str]) -> None:
+        for profile in self.review_profiles.values():
+            if profile.team_id not in self.teams:
+                errors.append(
+                    f"review profile {profile.id} references missing team {profile.team_id}"
+                )
+            if profile.project_id is not None:
+                project = self.projects.get(profile.project_id)
+                if project is None:
+                    errors.append(
+                        f"review profile {profile.id} references missing project "
+                        f"{profile.project_id}"
+                    )
+                elif project.team_id != profile.team_id:
+                    errors.append(
+                        f"review profile {profile.id} project {project.id} belongs to team "
+                        f"{project.team_id}"
+                    )
+
     def _validate_reviews(self, errors: list[str]) -> None:
         for review in self.review_requests.values():
             if review.deliverable_id not in self.deliverables:
@@ -891,6 +977,36 @@ class TeamState(TeamModel):
                 errors.append(
                     f"review request {review.id} references missing reviewer {review.reviewer_agent_id}"
                 )
+            profile = None
+            if review.review_profile_id is not None:
+                profile = self.review_profiles.get(review.review_profile_id)
+                if profile is None:
+                    errors.append(
+                        f"review request {review.id} references missing review profile "
+                        f"{review.review_profile_id}"
+                    )
+            if review.criteria and review.review_profile_id is None:
+                errors.append(
+                    f"review request {review.id} has criterion results but no review profile"
+                )
+            valid_criterion_ids = (
+                {criterion.id for criterion in profile.criteria}
+                if profile is not None
+                else set()
+            )
+            seen: set[str] = set()
+            for result in review.criteria:
+                if profile is not None and result.criterion_id not in valid_criterion_ids:
+                    errors.append(
+                        f"review request {review.id} criterion result references unknown "
+                        f"criterion {result.criterion_id}"
+                    )
+                if result.criterion_id in seen:
+                    errors.append(
+                        f"review request {review.id} has duplicate criterion result "
+                        f"{result.criterion_id}"
+                    )
+                seen.add(result.criterion_id)
 
     def _validate_inbox(self, errors: list[str]) -> None:
         for item in self.inbox.values():
