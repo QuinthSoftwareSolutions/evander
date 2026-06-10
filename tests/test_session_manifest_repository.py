@@ -75,6 +75,17 @@ def test_read_all_raises_on_invalid_entries(tmp_path) -> None:
     assert set(sessions) == {"session-1"}
 
 
+def test_read_all_populates_missing_notification_target_ids_as_empty_list(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({"session-1": _session_payload()}), encoding="utf-8")
+    repository = JsonSessionManifestRepository(path)
+
+    session = repository.get_session("session-1")
+
+    assert session is not None
+    assert session.approval_notification_target_ids == []
+
+
 def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     path.write_text(
@@ -184,6 +195,28 @@ def test_session_repository_supports_lifecycle_queries_and_mutations(tmp_path) -
     ]
     assert repository.delete_session("expired-session") is True
     assert repository.delete_session("missing-session") is False
+
+
+def test_session_repository_round_trips_notification_target_ids(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    repository = JsonSessionManifestRepository(path)
+    manifest = SessionManifest.model_validate(
+        {
+            **_session_payload(session_id="session-1"),
+            "approval_notification_target_ids": [
+                " Ops-Primary ",
+                "ops-primary",
+                "ops-backup",
+            ],
+        }
+    )
+
+    repository.upsert_session(manifest)
+
+    loaded = repository.get_session("session-1")
+
+    assert loaded is not None
+    assert loaded.approval_notification_target_ids == ["ops-primary", "ops-backup"]
 
 
 def test_session_repository_preserves_concurrent_independent_upserts(tmp_path) -> None:
