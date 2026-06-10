@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-10 - Admin Agent Create Accepts vm_image
+
+- `POST /api/admin/agents` with `backend=libvirt_vm` now accepts an optional
+  `vm_image` template alias. `AdminService.create_admin_agent` resolves it against
+  the directory's approved libvirt template catalog via
+  `resolve_libvirt_vm_template_selector` and records the selection in
+  `metadata["libvirt_vm_template"]` so VM creation sets `LIBVIRT_BASE_IMAGE`.
+  Omitting `vm_image` records the directory default template, and an unknown alias
+  raises `ValueError` (HTTP 400) listing the configured aliases.
+
 ## 2026-06-10 - Operator Steering Stability
 
 - Preserved Agents-page Operator steering drafts across live refreshes unless the

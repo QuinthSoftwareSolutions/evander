@@ -1832,6 +1832,126 @@ def test_create_container_agent_rejects_unknown_container_image_selector_before_
         )
 
 
+def test_create_admin_agent_libvirt_rejects_unknown_vm_image_selector_before_create_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "vm",
+        {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    def fail_create_vm(self: AdminService, **_kwargs: object) -> object:
+        raise AssertionError("create_vm should not be called for an unknown vm_image")
+
+    monkeypatch.setattr(service, "create_vm", MethodType(fail_create_vm, service))
+
+    with pytest.raises(ValueError, match="unknown libvirt VM template selector") as excinfo:
+        service.create_admin_agent(
+            {
+                "backend": "libvirt_vm",
+                "vm_name": "lab-vm",
+                "vm_image": "missing-selector",
+            }
+        )
+    message = str(excinfo.value)
+    assert "default" in message
+    assert "gpu" in message
+
+
+def test_create_admin_agent_libvirt_resolves_vm_image_alias_into_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    write_result = service.write_directory_domain_config(
+        "root",
+        "vm",
+        {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        },
+    )
+    assert write_result.ok is True
+
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "vm_image": "gpu",
+        }
+    )
+
+    assert result["success"] is True
+    assert result["vm_image"] == "ubuntu-24.04-gpu.img"
+    assert result["vm_image_alias"] == "gpu"
+    assert captured["metadata"] == {
+        "libvirt_vm_template": {
+            "image_ref": "ubuntu-24.04-gpu.img",
+            "template_alias": "gpu",
+        }
+    }
+
+
+def test_create_admin_agent_libvirt_records_default_template_when_vm_image_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    def create_vm(self: AdminService, **payload: object) -> VmActionResult:
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+
+    result = service.create_admin_agent(
+        {
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["metadata"] == {
+        "libvirt_vm_template": {
+            "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "template_alias": "default",
+        }
+    }
+
+
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 

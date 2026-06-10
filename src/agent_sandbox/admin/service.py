@@ -103,6 +103,7 @@ from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistant
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
+from agent_sandbox.vm.templates import resolve_libvirt_vm_template_selector
 from agent_sandbox.effects.registry import EffectProviderFactory
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.execution.container_worker_client import (
@@ -10278,6 +10279,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 self._agent_string_list(payload, "codex_skills")
             )
             agent_provider = self._agent_optional_string(payload, "agent_provider")
+            directory_path = self._agent_optional_string(payload, "directory_path") or "root"
+            vm_image_selector = self._agent_optional_string(payload, "vm_image")
+            vm_defaults = self.resolve_vm_defaults(directory_path)
+            vm_image_selection = resolve_libvirt_vm_template_selector(
+                vm_image_selector,
+                default_template=vm_defaults.libvirt_vm_default_template,
+                templates=vm_defaults.libvirt_vm_templates,
+            )
+            create_metadata: dict[str, Any] = {
+                "libvirt_vm_template": {
+                    "image_ref": vm_image_selection["image_ref"],
+                    "template_alias": vm_image_selection["template_alias"],
+                }
+            }
+            if agent_provider:
+                create_metadata["agent_provider"] = agent_provider
             result = self.create_vm(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -10353,8 +10370,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 mssql_init_root=self._agent_optional_string(payload, "mssql_init_root"),
                 playwright=bool(payload.get("playwright", False)),
                 codex_skills=codex_skills,
-                directory_path=self._agent_optional_string(payload, "directory_path") or "root",
-                **({"metadata": {"agent_provider": agent_provider}} if agent_provider else {}),
+                directory_path=directory_path,
+                metadata=create_metadata,
             )
             session_id = self._agent_optional_string(payload, "session_id")
             session = (
@@ -10372,6 +10389,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "provider": result.provider,
                 "provider_operation_id": result.provider_operation_id,
                 "effective_tool_policy": self.effective_tool_policy_payload(session),
+                "vm_image": vm_image_selection["image_ref"],
+                "vm_image_alias": vm_image_selection["template_alias"],
             }
 
         session_id = self._agent_optional_string(payload, "session_id")

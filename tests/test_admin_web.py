@@ -10736,7 +10736,8 @@ def test_admin_web_container_agent_log_threads_view_groups_threads(
 
 
 def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
     service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
     captured: dict[str, object] = {}
 
@@ -10781,6 +10782,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "mssql_init_root": "/tmp/init",
             "playwright": True,
             "codex_skills": ["exampleindustry-app-demo"],
+            "vm_image": "default",
         },
     )
 
@@ -10812,6 +10814,12 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "playwright": True,
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
+        "metadata": {
+            "libvirt_vm_template": {
+                "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "template_alias": "default",
+            }
+        },
     }
 
 
