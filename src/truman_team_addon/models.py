@@ -250,6 +250,8 @@ class AgentTask(TeamModel):
     title: str
     description: str
     created_by_agent_id: str
+    parent_task_id: str | None = None
+    dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -267,10 +269,28 @@ class AgentTask(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
+    @field_validator("parent_task_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("dependency_task_ids", mode="before")
+    @classmethod
+    def _dependency_task_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "dependency_task_ids")
+
     @field_validator("deliverable_ids", mode="before")
     @classmethod
     def _deliverable_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "deliverable_ids")
+
+    @model_validator(mode="after")
+    def _validate_self_links(self) -> "AgentTask":
+        if self.parent_task_id == self.id:
+            raise ValueError("task cannot be its own parent")
+        if self.id in self.dependency_task_ids:
+            raise ValueError("task cannot depend on itself")
+        return self
 
 
 class DeliverableGitRefs(TeamModel):
@@ -576,6 +596,7 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_agent_runtimes(errors)
         self._validate_tasks(errors)
+        self._validate_task_graph(errors)
         self._validate_deliverables(errors)
         self._validate_reviews(errors)
         self._validate_inbox(errors)
@@ -705,6 +726,139 @@ class TeamState(TeamModel):
                     errors.append(f"task {task.id} references missing deliverable {deliverable_id}")
                 elif deliverable.task_id != task.id:
                     errors.append(f"task {task.id} deliverable {deliverable_id} does not point back")
+
+    def _validate_task_graph(self, errors: list[str]) -> None:
+        for task in self.tasks.values():
+            if task.parent_task_id is not None:
+                parent = self.tasks.get(task.parent_task_id)
+                if parent is None:
+                    errors.append(
+                        f"task {task.id} references missing parent {task.parent_task_id}"
+                    )
+                elif parent.project_id != task.project_id:
+                    errors.append(
+                        f"task {task.id} parent {parent.id} belongs to project "
+                        f"{parent.project_id}"
+                    )
+            for dependency_id in task.dependency_task_ids:
+                dependency = self.tasks.get(dependency_id)
+                if dependency is None:
+                    errors.append(
+                        f"task {task.id} references missing dependency {dependency_id}"
+                    )
+                elif dependency.project_id != task.project_id:
+                    errors.append(
+                        f"task {task.id} dependency {dependency_id} belongs to project "
+                        f"{dependency.project_id}"
+                    )
+        for task_id in self.tasks:
+            self._validate_no_parent_cycle(task_id, errors)
+        self._validate_no_dependency_cycle(errors)
+
+    def _validate_no_parent_cycle(self, task_id: str, errors: list[str]) -> None:
+        seen: set[str] = set()
+        current_id: str | None = task_id
+        while current_id is not None:
+            if current_id in seen:
+                errors.append(f"task parent cycle includes {current_id}")
+                return
+            seen.add(current_id)
+            current = self.tasks.get(current_id)
+            current_id = current.parent_task_id if current is not None else None
+
+    def _validate_no_dependency_cycle(self, errors: list[str]) -> None:
+        visited: set[str] = set()
+        visiting: set[str] = set()
+        reported = False
+        for start in self.tasks:
+            if start in visited:
+                continue
+            stack: list[str] = [start]
+            while stack:
+                node = stack[-1]
+                visiting.add(node)
+                task = self.tasks.get(node)
+                dependencies = task.dependency_task_ids if task is not None else []
+                advanced = False
+                for dependency_id in dependencies:
+                    if dependency_id not in self.tasks:
+                        continue
+                    if dependency_id in visited:
+                        continue
+                    if dependency_id in visiting:
+                        if not reported:
+                            errors.append(
+                                f"task dependency cycle includes {dependency_id}"
+                            )
+                            reported = True
+                        continue
+                    stack.append(dependency_id)
+                    advanced = True
+                    break
+                if not advanced:
+                    visiting.discard(node)
+                    visited.add(node)
+                    stack.pop()
+
+    def child_task_ids(self, task_id: str) -> list[str]:
+        return sorted(
+            task.id
+            for task in self.tasks.values()
+            if task.parent_task_id == task_id
+        )
+
+    def dependency_status(self, task_id: str) -> str:
+        task = self.tasks.get(task_id)
+        if task is None or not task.dependency_task_ids:
+            return "satisfied"
+        dependency_states = [
+            self.tasks[dep_id].state
+            for dep_id in task.dependency_task_ids
+            if dep_id in self.tasks
+        ]
+        if any(
+            state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}
+            for state in dependency_states
+        ):
+            return "blocked"
+        if any(
+            state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}
+            for state in dependency_states
+        ):
+            return "waiting"
+        return "satisfied"
+
+    def blocked_by_task_ids(self, task_id: str) -> list[str]:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return []
+        blocked_by: list[str] = []
+        for dependency_id in task.dependency_task_ids:
+            dependency = self.tasks.get(dependency_id)
+            if dependency is None:
+                continue
+            if dependency.state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}:
+                blocked_by.append(dependency_id)
+        return blocked_by
+
+    def subtask_counts(self, task_id: str) -> dict[str, int]:
+        counts = {"total": 0, "accepted": 0, "finished": 0, "blocked": 0, "open": 0}
+        for child_id in self.child_task_ids(task_id):
+            child = self.tasks[child_id]
+            counts["total"] += 1
+            if child.state == TeamTaskState.ACCEPTED:
+                counts["accepted"] += 1
+            elif child.state == TeamTaskState.FINISHED:
+                counts["finished"] += 1
+            elif child.state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}:
+                counts["blocked"] += 1
+            elif child.state in {
+                TeamTaskState.PENDING,
+                TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_REVIEW,
+            }:
+                counts["open"] += 1
+        return counts
 
     def _validate_deliverables(self, errors: list[str]) -> None:
         for deliverable in self.deliverables.values():

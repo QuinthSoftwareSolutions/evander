@@ -364,6 +364,237 @@ def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     )
 
 
+def _state_with_task_graph() -> dict:
+    """A _valid_state payload with a parent task and two dependency tasks."""
+    state = _valid_state().model_dump(mode="python")
+    project = state["projects"]["project"]
+    state["tasks"]["parent"] = {
+        "id": "parent",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 5,
+        "state": TeamTaskState.IN_PROGRESS.value,
+        "title": "Parent",
+        "description": "Parent task",
+        "created_by_agent_id": "lead",
+    }
+    state["tasks"]["dep-a"] = {
+        "id": "dep-a",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 6,
+        "state": TeamTaskState.ACCEPTED.value,
+        "title": "Dep A",
+        "description": "Dependency A",
+        "created_by_agent_id": "lead",
+    }
+    state["tasks"]["dep-b"] = {
+        "id": "dep-b",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 7,
+        "state": TeamTaskState.PENDING.value,
+        "title": "Dep B",
+        "description": "Dependency B",
+        "created_by_agent_id": "lead",
+    }
+    # Make "task" a child of "parent" depending on both dep tasks.
+    state["tasks"]["task"]["parent_task_id"] = "parent"
+    state["tasks"]["task"]["dependency_task_ids"] = ["dep-a", "dep-b"]
+    assert project  # keep reference for clarity
+    return state
+
+
+def test_task_graph_loads_with_parent_and_dependencies() -> None:
+    validated = TeamState.model_validate(_state_with_task_graph())
+
+    assert validated.tasks["task"].parent_task_id == "parent"
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+
+
+def test_old_shape_task_without_graph_fields_validates() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"].pop("parent_task_id", None)
+    state["tasks"]["task"].pop("dependency_task_ids", None)
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.tasks["task"].parent_task_id is None
+    assert validated.tasks["task"].dependency_task_ids == []
+
+
+def test_task_graph_rejects_missing_parent() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"]["parent_task_id"] = "ghost"
+
+    with pytest.raises(ValidationError, match="missing parent ghost"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_missing_dependency() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"]["dependency_task_ids"] = ["ghost"]
+
+    with pytest.raises(ValidationError, match="missing dependency ghost"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_cross_project_parent() -> None:
+    state = _state_with_task_graph()
+    state["tasks"]["parent"]["project_id"] = "other"
+    # Decouple "task" from the (now cross-project) dependency tasks to isolate parent.
+    state["tasks"]["task"]["dependency_task_ids"] = []
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+    with pytest.raises(ValidationError, match="parent parent belongs to project other"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_cross_project_dependency() -> None:
+    state = _state_with_task_graph()
+    state["tasks"]["task"]["parent_task_id"] = None
+    state["tasks"]["dep-a"]["project_id"] = "other"
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+    with pytest.raises(
+        ValidationError, match="dependency dep-a belongs to project other"
+    ):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_parent_cycle() -> None:
+    state = _state_with_task_graph()
+    # parent <- task already; close the loop so parent points back to task.
+    state["tasks"]["parent"]["parent_task_id"] = "task"
+
+    with pytest.raises(ValidationError, match="parent cycle"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_dependency_cycle() -> None:
+    state = _state_with_task_graph()
+    # task -> dep-a, dep-b; add dep-a -> task to create a cycle.
+    state["tasks"]["dep-a"]["dependency_task_ids"] = ["task"]
+
+    with pytest.raises(ValidationError, match="dependency cycle"):
+        TeamState.model_validate(state)
+
+
+def test_task_rejects_self_parent() -> None:
+    with pytest.raises(ValidationError, match="cannot be its own parent"):
+        AgentTask(
+            id="task",
+            owner_agent_id="ui",
+            project_id="project",
+            priority=1,
+            title="Self",
+            description="Self parent",
+            created_by_agent_id="lead",
+            parent_task_id="task",
+        )
+
+
+def test_task_rejects_self_dependency() -> None:
+    with pytest.raises(ValidationError, match="cannot depend on itself"):
+        AgentTask(
+            id="task",
+            owner_agent_id="ui",
+            project_id="project",
+            priority=1,
+            title="Self",
+            description="Self dependency",
+            created_by_agent_id="lead",
+            dependency_task_ids=["task"],
+        )
+
+
+def test_task_graph_derived_helpers() -> None:
+    validated = TeamState.model_validate(_state_with_task_graph())
+
+    # "task" is the only child of "parent".
+    assert validated.child_task_ids("parent") == ["task"]
+    assert validated.child_task_ids("task") == []
+
+    # dep-a accepted, dep-b pending -> waiting.
+    assert validated.dependency_status("task") == "waiting"
+    assert validated.blocked_by_task_ids("task") == ["dep-b"]
+
+    # parent has no dependencies -> satisfied.
+    assert validated.dependency_status("parent") == "satisfied"
+    assert validated.blocked_by_task_ids("parent") == []
+
+    counts = validated.subtask_counts("parent")
+    assert counts == {
+        "total": 1,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 1,
+    }
+
+
+def test_dependency_status_satisfied_and_blocked() -> None:
+    state = _state_with_task_graph()
+    # Both dependencies accepted/finished -> satisfied.
+    state["tasks"]["dep-b"]["state"] = TeamTaskState.FINISHED.value
+    satisfied = TeamState.model_validate(state)
+    assert satisfied.dependency_status("task") == "satisfied"
+    assert satisfied.blocked_by_task_ids("task") == []
+
+    # A blocked dependency -> blocked.
+    blocked_state = _state_with_task_graph()
+    blocked_state["tasks"]["dep-b"]["state"] = TeamTaskState.BLOCKED.value
+    blocked = TeamState.model_validate(blocked_state)
+    assert blocked.dependency_status("task") == "blocked"
+    assert sorted(blocked.blocked_by_task_ids("task")) == ["dep-b"]
+
+
+def test_subtask_counts_classifies_child_states() -> None:
+    state = _state_with_task_graph()
+    # Add more children of "parent" in varied states.
+    for child_id, child_state in (
+        ("child-accepted", TeamTaskState.ACCEPTED),
+        ("child-finished", TeamTaskState.FINISHED),
+        ("child-blocked", TeamTaskState.BLOCKED),
+        ("child-rejected", TeamTaskState.REJECTED),
+    ):
+        state["tasks"][child_id] = {
+            "id": child_id,
+            "owner_agent_id": "ui",
+            "project_id": "project",
+            "priority": 9,
+            "state": child_state.value,
+            "title": child_id,
+            "description": child_id,
+            "created_by_agent_id": "lead",
+            "parent_task_id": "parent",
+        }
+
+    validated = TeamState.model_validate(state)
+
+    counts = validated.subtask_counts("parent")
+    # "task" is WAITING_FOR_REVIEW (open) plus the four added children.
+    assert counts == {
+        "total": 5,
+        "accepted": 1,
+        "finished": 1,
+        "blocked": 2,
+        "open": 1,
+    }
+
+
 def test_git_promotion_rejects_missing_project() -> None:
     state = _valid_state().model_dump(mode="python")
     state["git_promotions"] = {
