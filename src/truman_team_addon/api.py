@@ -20,6 +20,7 @@ from .models import (
     EphemeralAgentPolicy,
     ProjectGitConfig,
     ProjectGoal,
+    ReviewProfileCriterion,
     TeamRecordState,
     TeamTaskState,
     team_state_payload,
@@ -124,6 +125,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             description=_required(payload, "description"),
             created_by_agent_id=_required(payload, "created_by_agent_id"),
             state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
+            parent_task_id=_optional(payload, "parent_task_id"),
+            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
@@ -137,6 +140,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state=TeamTaskState(raw_state) if raw_state else None,
             title=_optional(payload, "title"),
             description=_optional(payload, "description"),
+            parent_task_id=_optional(payload, "parent_task_id"),
+            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -165,6 +170,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             reviewer_agent_id=_required(payload, "reviewer_agent_id"),
             state=TeamRecordState(raw_state) if raw_state else TeamRecordState.PENDING,
             findings=_optional_string_list(payload, "findings"),
+            review_profile_id=_optional(payload, "review_profile_id"),
+            instructions=_optional(payload, "instructions"),
             decision_at=datetime.fromisoformat(raw_decision_at) if raw_decision_at else None,
             expected_revision=_expected_revision(payload),
         )
@@ -172,13 +179,80 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def decide_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
+        criteria = (
+            _optional_list(payload, "criteria") if payload.get("criteria") is not None else None
+        )
         state = repository.record_review_decision(
             review_request_id=request.path_params["review_request_id"],
             state=TeamRecordState(_required(payload, "state")),
             findings=_optional_string_list(payload, "findings"),
+            criteria=criteria,
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
+
+    async def create_review_profile(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        criteria = [
+            ReviewProfileCriterion.model_validate(item)
+            for item in _optional_list(payload, "criteria")
+        ]
+        state = repository.create_review_profile(
+            profile_id=_required(payload, "id", "review_profile_id"),
+            team_id=_required(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            name=_required(payload, "name"),
+            description=_optional(payload, "description") or "",
+            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            criteria=criteria,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_review_profile(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        has_project = "project_id" in payload
+        has_criteria = "criteria" in payload
+        criteria = (
+            [
+                ReviewProfileCriterion.model_validate(item)
+                for item in _optional_list(payload, "criteria")
+            ]
+            if has_criteria
+            else None
+        )
+        raw_archived = payload.get("archived")
+        state = repository.update_review_profile(
+            profile_id=request.path_params["review_profile_id"],
+            name=_optional(payload, "name"),
+            description=_optional(payload, "description"),
+            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            criteria=criteria,
+            archived=raw_archived if isinstance(raw_archived, bool) else None,
+            project_id=_optional(payload, "project_id"),
+            set_project_id=has_project,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def list_review_profiles(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "review_profiles": [
+                    profile.model_dump(mode="json")
+                    for profile in state.review_profiles.values()
+                ],
+            }
+        )
+
+    async def get_review_profile(request: Request) -> JSONResponse:
+        state = repository.read()
+        profile = state.review_profiles.get(request.path_params["review_profile_id"])
+        if profile is None:
+            return JSONResponse({"error": "review profile not found"}, status_code=404)
+        return JSONResponse(profile.model_dump(mode="json"))
 
     async def create_release_package(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -249,6 +323,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "/review-requests/{review_request_id}/decision",
             _with_errors(decide_review_request),
             methods=["POST"],
+        ),
+        Route("/review-profiles", _with_errors(create_review_profile), methods=["POST"]),
+        Route("/review-profiles", _with_errors(list_review_profiles), methods=["GET"]),
+        Route(
+            "/review-profiles/{review_profile_id}",
+            _with_errors(get_review_profile),
+            methods=["GET"],
+        ),
+        Route(
+            "/review-profiles/{review_profile_id}",
+            _with_errors(patch_review_profile),
+            methods=["PATCH"],
         ),
         Route("/release-packages", _with_errors(create_release_package), methods=["POST"]),
         Route("/release-packages", _with_errors(list_release_packages), methods=["GET"]),

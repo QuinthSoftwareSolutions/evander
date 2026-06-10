@@ -38,6 +38,9 @@ from .models import (
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
+    ReviewCriterionResult,
+    ReviewProfile,
+    ReviewProfileCriterion,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -45,6 +48,7 @@ from .models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    task_payload_with_derived,
 )
 
 ADDON_ID = "team-addon"
@@ -275,6 +279,8 @@ class TeamStateRepository:
         description: str,
         created_by_agent_id: str,
         state: TeamTaskState = TeamTaskState.PENDING,
+        parent_task_id: str | None = None,
+        dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
@@ -284,6 +290,10 @@ class TeamStateRepository:
                 task.priority = priority
                 task.title = title
                 task.description = description
+                if parent_task_id is not None:
+                    task.parent_task_id = parent_task_id
+                if dependency_task_ids is not None:
+                    task.dependency_task_ids = dependency_task_ids
                 task.updated_at = now
                 return state_model
             state_model.tasks[task_id] = AgentTask(
@@ -295,6 +305,8 @@ class TeamStateRepository:
                 title=title,
                 description=description,
                 created_by_agent_id=created_by_agent_id,
+                parent_task_id=parent_task_id,
+                dependency_task_ids=dependency_task_ids or [],
                 created_at=now,
                 updated_at=now,
             )
@@ -310,6 +322,8 @@ class TeamStateRepository:
         state: TeamTaskState | None = None,
         title: str | None = None,
         description: str | None = None,
+        parent_task_id: str | None = None,
+        dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
@@ -322,6 +336,10 @@ class TeamStateRepository:
                 task.title = title
             if description is not None:
                 task.description = description
+            if parent_task_id is not None:
+                task.parent_task_id = parent_task_id
+            if dependency_task_ids is not None:
+                task.dependency_task_ids = dependency_task_ids
             task.updated_at = utc_now()
             return state_model
 
@@ -356,6 +374,71 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def create_review_profile(
+        self,
+        *,
+        profile_id: str,
+        team_id: str,
+        project_id: str | None = None,
+        name: str,
+        description: str = "",
+        applicable_roles: list[str] | None = None,
+        criteria: list[ReviewProfileCriterion] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            _require_absent(state.review_profiles, profile_id, "review profile")
+            now = utc_now()
+            profile = ReviewProfile(
+                id=profile_id,
+                team_id=team_id,
+                project_id=project_id,
+                name=name,
+                description=description,
+                applicable_roles=applicable_roles or [],
+                criteria=criteria or [],
+                created_at=now,
+                updated_at=now,
+            )
+            state.review_profiles[profile.id] = profile
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_review_profile(
+        self,
+        *,
+        profile_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        applicable_roles: list[str] | None = None,
+        criteria: list[ReviewProfileCriterion] | None = None,
+        archived: bool | None = None,
+        project_id: str | None = None,
+        set_project_id: bool = False,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            profile = _require_present(state.review_profiles, profile_id, "review profile")
+            if name is not None:
+                profile.name = name
+            if description is not None:
+                profile.description = description
+            if applicable_roles is not None:
+                profile.applicable_roles = applicable_roles
+            if criteria is not None:
+                profile.criteria = [
+                    ReviewProfileCriterion.model_validate(criterion) for criterion in criteria
+                ]
+            if archived is not None:
+                profile.archived = archived
+            if set_project_id:
+                profile.project_id = project_id
+            profile.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def record_review_request(
         self,
         *,
@@ -364,6 +447,8 @@ class TeamStateRepository:
         reviewer_agent_id: str,
         state: TeamRecordState = TeamRecordState.PENDING,
         findings: list[str] | None = None,
+        review_profile_id: str | None = None,
+        instructions: str | None = None,
         decision_at: datetime | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -376,6 +461,8 @@ class TeamStateRepository:
                 reviewer_agent_id=reviewer_agent_id,
                 state=state,
                 findings=findings or [],
+                review_profile_id=review_profile_id,
+                instructions=instructions,
                 decision_at=decision_at,
             )
             state_model.review_requests[review.id] = review
@@ -393,6 +480,7 @@ class TeamStateRepository:
         review_request_id: str,
         state: TeamRecordState,
         findings: list[str] | None = None,
+        criteria: list[ReviewCriterionResult] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_id = _required_text(review_request_id, "review_request_id")
@@ -401,11 +489,18 @@ class TeamStateRepository:
                 f"review decision state {state.value} must be accepted, rejected, or blocked"
             )
         findings_list = list(findings or [])
+        criterion_results = (
+            [ReviewCriterionResult.model_validate(item) for item in criteria]
+            if criteria is not None
+            else None
+        )
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(
                 state_model.review_requests, normalized_id, "review request"
             )
+            if criterion_results is not None:
+                review.criteria = criterion_results
             projects_to_recalc: set[str] = set()
             _cascade_review_decision(
                 state_model,
@@ -811,7 +906,18 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
-                if not active_tasks and not pending_inbox:
+                wake_eligible = (
+                    bool(pending_inbox)
+                    or any(
+                        state_model.dependency_status(task.id) == "satisfied"
+                        for task in active_tasks
+                    )
+                    or any(
+                        state_model.subtask_counts(task.id)["open"] > 0
+                        for task in active_tasks
+                    )
+                )
+                if not wake_eligible:
                     continue
                 due_by_time = (
                     runtime.next_wake_at is None
@@ -840,7 +946,10 @@ class TeamStateRepository:
                         "runtime": runtime.model_dump(mode="json"),
                         "dispatch_id": dispatch_id,
                         "reason": reason,
-                        "tasks": [task.model_dump(mode="json") for task in active_tasks],
+                        "tasks": [
+                            task_payload_with_derived(state_model, task)
+                            for task in active_tasks
+                        ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
@@ -957,28 +1066,70 @@ class TeamStateRepository:
             for update in _list_of_mappings(normalized_action.get("task_updates"), "task_updates"):
                 task_id = _required_text(update.get("task_id"), "task_id")
                 task = _require_present(state_model.tasks, task_id, "task")
-                if task.owner_agent_id != agent.id:
+                is_owner = task.owner_agent_id == agent.id
+                raw_state = _optional_text(update.get("state"))
+                priority = update.get("priority")
+                title = _optional_text(update.get("title"))
+                description = _optional_text(update.get("description"))
+                has_owner_only_edit = (
+                    raw_state is not None
+                    or priority is not None
+                    or title is not None
+                    or description is not None
+                )
+                has_dependency_edit = "dependency_task_ids" in update
+                # State, priority, title, and description remain owner-only.
+                if has_owner_only_edit and not is_owner:
                     result["errors"].append(f"agent {agent.id} cannot update task {task_id}")
                     continue
-                raw_state = _optional_text(update.get("state"))
-                if raw_state:
+                new_dependency_task_ids: list[str] | None = None
+                if has_dependency_edit:
+                    graph_permitted = (
+                        is_owner
+                        or _supervises(state_model, agent.id, task.owner_agent_id)
+                        or _is_project_lead_for(state_model, agent.id, task.project_id)
+                        or _is_team_manager(state_model, agent)
+                    )
+                    if not graph_permitted:
+                        result["errors"].append(
+                            f"agent {agent.id} is not permitted to edit the task graph "
+                            f"for task {task_id}"
+                        )
+                        continue
+                    new_dependency_task_ids = _string_list(
+                        update.get("dependency_task_ids"), "dependency_task_ids"
+                    )
+                    graph_error = _task_graph_edit_error(
+                        state_model,
+                        task_id=task.id,
+                        project_id=task.project_id,
+                        parent_task_id=task.parent_task_id,
+                        dependency_task_ids=new_dependency_task_ids,
+                    )
+                    if graph_error is not None:
+                        result["errors"].append(graph_error)
+                        continue
+                changed = False
+                if raw_state is not None:
                     task.state = TeamTaskState(raw_state)
                     projects_to_recalc.add(task.project_id)
-                    progress = True
-                priority = update.get("priority")
+                    changed = True
                 if priority is not None:
                     task.priority = int(priority)
-                    progress = True
-                title = _optional_text(update.get("title"))
+                    changed = True
                 if title is not None:
                     task.title = title
-                    progress = True
-                description = _optional_text(update.get("description"))
+                    changed = True
                 if description is not None:
                     task.description = description
+                    changed = True
+                if new_dependency_task_ids is not None:
+                    task.dependency_task_ids = new_dependency_task_ids
+                    changed = True
+                if changed:
+                    task.updated_at = utc_now()
                     progress = True
-                task.updated_at = utc_now()
-                result["updated_task_ids"].append(task.id)
+                    result["updated_task_ids"].append(task.id)
 
             for creation in _list_of_mappings(
                 normalized_action.get("task_creations"), "task_creations"
@@ -1637,6 +1788,20 @@ def _apply_task_creation(
     if task_id in state.tasks:
         result["errors"].append(f"task {task_id} already exists")
         return None
+    parent_task_id = _optional_text(creation.get("parent_task_id"))
+    dependency_task_ids = _string_list(
+        creation.get("dependency_task_ids"), "dependency_task_ids"
+    )
+    graph_error = _task_graph_edit_error(
+        state,
+        task_id=None,
+        project_id=project_id,
+        parent_task_id=parent_task_id,
+        dependency_task_ids=dependency_task_ids,
+    )
+    if graph_error is not None:
+        result["errors"].append(graph_error)
+        return None
     priority = creation.get("priority")
     now = utc_now()
     state.tasks[task_id] = AgentTask(
@@ -1648,6 +1813,8 @@ def _apply_task_creation(
         title=_required_text(creation.get("title"), "title"),
         description=_required_text(creation.get("description"), "description"),
         created_by_agent_id=actor.id,
+        parent_task_id=parent_task_id,
+        dependency_task_ids=dependency_task_ids,
         created_at=now,
         updated_at=now,
     )
@@ -1733,6 +1900,97 @@ def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
     return False
 
 
+def _has_dependency_cycle(dependency_map: dict[str, list[str]]) -> bool:
+    """Iterative DFS mirroring TeamState._validate_no_dependency_cycle."""
+
+    visited: set[str] = set()
+    visiting: set[str] = set()
+    for start in dependency_map:
+        if start in visited:
+            continue
+        stack: list[str] = [start]
+        while stack:
+            node = stack[-1]
+            visiting.add(node)
+            advanced = False
+            for dependency_id in dependency_map.get(node, []):
+                if dependency_id not in dependency_map:
+                    continue
+                if dependency_id in visited:
+                    continue
+                if dependency_id in visiting:
+                    return True
+                stack.append(dependency_id)
+                advanced = True
+                break
+            if not advanced:
+                visiting.discard(node)
+                visited.add(node)
+                stack.pop()
+    return False
+
+
+def _task_graph_edit_error(
+    state: TeamState,
+    *,
+    task_id: str | None,
+    project_id: str,
+    parent_task_id: str | None,
+    dependency_task_ids: list[str],
+) -> str | None:
+    """Pre-check the Step 1 task-graph invariants for a proposed create/edit.
+
+    Mirrors TeamState._validate_task_graph but simulates the proposed edge(s) so
+    apply_agent_action can reject the item instead of letting the post-mutation
+    re-validation abort the whole action. ``task_id`` is None for a new task.
+    """
+
+    if task_id is not None:
+        if parent_task_id == task_id:
+            return "task cannot be its own parent"
+        if task_id in dependency_task_ids:
+            return "task cannot depend on itself"
+    if parent_task_id is not None:
+        parent = state.tasks.get(parent_task_id)
+        if parent is None:
+            return f"task references missing parent {parent_task_id}"
+        if parent.project_id != project_id:
+            return (
+                f"task parent {parent_task_id} belongs to project {parent.project_id}"
+            )
+    for dependency_id in dependency_task_ids:
+        dependency = state.tasks.get(dependency_id)
+        if dependency is None:
+            return f"task references missing dependency {dependency_id}"
+        if dependency.project_id != project_id:
+            return (
+                f"task dependency {dependency_id} belongs to project "
+                f"{dependency.project_id}"
+            )
+    # Walk up the parent chain from the proposed parent; reaching task_id is a cycle.
+    if task_id is not None and parent_task_id is not None:
+        seen: set[str] = set()
+        current: str | None = parent_task_id
+        while current is not None:
+            if current == task_id:
+                return f"task parent cycle includes {task_id}"
+            if current in seen:
+                break
+            seen.add(current)
+            current_task = state.tasks.get(current)
+            current = current_task.parent_task_id if current_task is not None else None
+    # Simulate the dependency graph with the proposed edges and look for a cycle.
+    if task_id is not None:
+        dependency_map = {
+            existing_id: list(task.dependency_task_ids)
+            for existing_id, task in state.tasks.items()
+        }
+        dependency_map[task_id] = list(dependency_task_ids)
+        if _has_dependency_cycle(dependency_map):
+            return f"task dependency cycle includes {task_id}"
+    return None
+
+
 def _apply_review_request(
     state: TeamState,
     *,
@@ -1768,6 +2026,29 @@ def _apply_review_request(
             f"agent {actor.id} is not permitted to request review of deliverable {deliverable_id}"
         )
         return None
+    instructions = _optional_text(request.get("instructions"))
+    profile_id = _optional_text(request.get("review_profile_id"))
+    profile: ReviewProfile | None = None
+    if profile_id is not None:
+        profile = state.review_profiles.get(profile_id)
+        if profile is None:
+            result["errors"].append(
+                f"review request references missing review profile {profile_id}"
+            )
+            return None
+        if profile.archived:
+            result["errors"].append(f"review profile {profile_id} is archived")
+            return None
+        if profile.team_id != actor.team_id:
+            result["errors"].append(
+                f"review profile {profile_id} is not in the same team as {actor.id}"
+            )
+            return None
+        if profile.project_id is not None and profile.project_id != project_id:
+            result["errors"].append(
+                f"review profile {profile_id} does not apply to project {project_id}"
+            )
+            return None
     review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
@@ -1777,12 +2058,35 @@ def _apply_review_request(
         deliverable_id=deliverable_id,
         reviewer_agent_id=reviewer_id,
         state=TeamRecordState.PENDING,
+        review_profile_id=profile_id,
+        instructions=instructions,
     )
     state.review_requests[review.id] = review
     deliverable.review_request_ids = _append_unique(
         deliverable.review_request_ids,
         review.id,
     )
+    payload: dict[str, Any] = {
+        "kind": "review_request",
+        "review_request_id": review.id,
+        "deliverable_id": deliverable_id,
+        "instructions": instructions or "",
+    }
+    if profile is not None:
+        payload["review_profile"] = {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "criteria": [
+                {
+                    "id": criterion.id,
+                    "label": criterion.label,
+                    "description": criterion.description,
+                    "required": criterion.required,
+                }
+                for criterion in profile.criteria
+            ],
+        }
     inbox_id = f"inbox-{uuid4().hex}"
     state.inbox[inbox_id] = AgentInboxItem(
         id=inbox_id,
@@ -1790,12 +2094,7 @@ def _apply_review_request(
         sender_agent_id=actor.id,
         task_id=deliverable.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
-        payload={
-            "kind": "review_request",
-            "review_request_id": review.id,
-            "deliverable_id": deliverable_id,
-            "instructions": _optional_text(request.get("instructions")) or "",
-        },
+        payload=payload,
     )
     result["created_inbox_item_ids"].append(inbox_id)
     return review.id
@@ -1834,6 +2133,16 @@ def _apply_review_decision(
             f"review decision state {raw_state} must be accepted, rejected, or blocked"
         )
         return None
+    criterion_results, criteria_error = _build_criterion_results(
+        state,
+        review,
+        _list_of_mappings(decision.get("criteria"), "criteria"),
+    )
+    if criteria_error is not None:
+        result["errors"].append(criteria_error)
+        return None
+    if criterion_results is not None:
+        review.criteria = criterion_results
     _cascade_review_decision(
         state,
         review=review,
@@ -1842,6 +2151,60 @@ def _apply_review_decision(
         projects_to_recalc=projects_to_recalc,
     )
     return review.id
+
+
+def _build_criterion_results(
+    state: TeamState,
+    review: ReviewRequest,
+    raw_criteria: list[dict[str, Any]],
+) -> tuple[list[ReviewCriterionResult] | None, str | None]:
+    """Validate criterion-result mappings against the review's profile.
+
+    Returns ``(results, None)`` on success or ``(None, error_message)`` so callers
+    can append the error to ``result["errors"]`` without mutating state. ``results``
+    is an empty list when no criteria were supplied.
+    """
+
+    if not raw_criteria:
+        return [], None
+    profile = (
+        state.review_profiles.get(review.review_profile_id)
+        if review.review_profile_id is not None
+        else None
+    )
+    if profile is None:
+        return None, (
+            f"review decision for {review.id} has criterion results but no review profile"
+        )
+    valid_ids = {criterion.id for criterion in profile.criteria}
+    seen: set[str] = set()
+    results: list[ReviewCriterionResult] = []
+    for entry in raw_criteria:
+        criterion_id = _optional_text(entry.get("criterion_id"))
+        if criterion_id is None:
+            return None, "review decision criterion result is missing criterion_id"
+        if criterion_id not in valid_ids:
+            return None, (
+                f"review decision for {review.id} references unknown criterion {criterion_id}"
+            )
+        if criterion_id in seen:
+            return None, (
+                f"review decision for {review.id} has duplicate criterion result {criterion_id}"
+            )
+        seen.add(criterion_id)
+        raw_state = _optional_text(entry.get("state"))
+        if raw_state not in {"passed", "failed", "skipped"}:
+            return None, (
+                f"review decision criterion {criterion_id} has invalid state {raw_state}"
+            )
+        results.append(
+            ReviewCriterionResult(
+                criterion_id=criterion_id,
+                state=raw_state,
+                finding=_optional_text(entry.get("finding")) or "",
+            )
+        )
+    return results, None
 
 
 def _is_review_decision_state(decision_state: TeamRecordState) -> bool:

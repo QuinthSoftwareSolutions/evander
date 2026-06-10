@@ -250,6 +250,8 @@ class AgentTask(TeamModel):
     title: str
     description: str
     created_by_agent_id: str
+    parent_task_id: str | None = None
+    dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -267,10 +269,28 @@ class AgentTask(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
+    @field_validator("parent_task_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("dependency_task_ids", mode="before")
+    @classmethod
+    def _dependency_task_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "dependency_task_ids")
+
     @field_validator("deliverable_ids", mode="before")
     @classmethod
     def _deliverable_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "deliverable_ids")
+
+    @model_validator(mode="after")
+    def _validate_self_links(self) -> "AgentTask":
+        if self.parent_task_id == self.id:
+            raise ValueError("task cannot be its own parent")
+        if self.id in self.dependency_task_ids:
+            raise ValueError("task cannot depend on itself")
+        return self
 
 
 class DeliverableGitRefs(TeamModel):
@@ -321,12 +341,71 @@ class Deliverable(TeamModel):
         return _unique_text_list(value, info.field_name)
 
 
+class ReviewProfileCriterion(TeamModel):
+    id: str
+    label: str
+    description: str = ""
+    required: bool = True
+
+    @field_validator("id", "label", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class ReviewProfile(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    name: str
+    description: str = ""
+    applicable_roles: list[str] = Field(default_factory=list)
+    criteria: list[ReviewProfileCriterion] = Field(default_factory=list)
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", "name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("applicable_roles", mode="before")
+    @classmethod
+    def _applicable_roles(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "applicable_roles")
+
+    @model_validator(mode="after")
+    def _validate_criterion_ids(self) -> "ReviewProfile":
+        _ensure_unique([criterion.id for criterion in self.criteria], "review profile criteria")
+        return self
+
+
+class ReviewCriterionResult(TeamModel):
+    criterion_id: str
+    state: Literal["passed", "failed", "skipped"]
+    finding: str = ""
+
+    @field_validator("criterion_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
 class ReviewRequest(TeamModel):
     id: str
     deliverable_id: str
     reviewer_agent_id: str
     state: TeamRecordState = TeamRecordState.PENDING
     findings: list[str] = Field(default_factory=list)
+    review_profile_id: str | None = None
+    instructions: str | None = None
+    criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     decision_at: datetime | None = None
 
     @field_validator("id", "deliverable_id", "reviewer_agent_id", mode="before")
@@ -338,6 +417,11 @@ class ReviewRequest(TeamModel):
     @classmethod
     def _findings(cls, value: object) -> list[str]:
         return _text_list(value, "findings")
+
+    @field_validator("review_profile_id", "instructions", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class AgentInboxItem(TeamModel):
@@ -556,6 +640,7 @@ class TeamState(TeamModel):
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
+    review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
@@ -576,7 +661,9 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_agent_runtimes(errors)
         self._validate_tasks(errors)
+        self._validate_task_graph(errors)
         self._validate_deliverables(errors)
+        self._validate_review_profiles(errors)
         self._validate_reviews(errors)
         self._validate_inbox(errors)
         self._validate_action_records(errors)
@@ -602,6 +689,7 @@ class TeamState(TeamModel):
             "tasks",
             "deliverables",
             "review_requests",
+            "review_profiles",
             "inbox",
             "action_records",
             "release_packages",
@@ -706,6 +794,139 @@ class TeamState(TeamModel):
                 elif deliverable.task_id != task.id:
                     errors.append(f"task {task.id} deliverable {deliverable_id} does not point back")
 
+    def _validate_task_graph(self, errors: list[str]) -> None:
+        for task in self.tasks.values():
+            if task.parent_task_id is not None:
+                parent = self.tasks.get(task.parent_task_id)
+                if parent is None:
+                    errors.append(
+                        f"task {task.id} references missing parent {task.parent_task_id}"
+                    )
+                elif parent.project_id != task.project_id:
+                    errors.append(
+                        f"task {task.id} parent {parent.id} belongs to project "
+                        f"{parent.project_id}"
+                    )
+            for dependency_id in task.dependency_task_ids:
+                dependency = self.tasks.get(dependency_id)
+                if dependency is None:
+                    errors.append(
+                        f"task {task.id} references missing dependency {dependency_id}"
+                    )
+                elif dependency.project_id != task.project_id:
+                    errors.append(
+                        f"task {task.id} dependency {dependency_id} belongs to project "
+                        f"{dependency.project_id}"
+                    )
+        for task_id in self.tasks:
+            self._validate_no_parent_cycle(task_id, errors)
+        self._validate_no_dependency_cycle(errors)
+
+    def _validate_no_parent_cycle(self, task_id: str, errors: list[str]) -> None:
+        seen: set[str] = set()
+        current_id: str | None = task_id
+        while current_id is not None:
+            if current_id in seen:
+                errors.append(f"task parent cycle includes {current_id}")
+                return
+            seen.add(current_id)
+            current = self.tasks.get(current_id)
+            current_id = current.parent_task_id if current is not None else None
+
+    def _validate_no_dependency_cycle(self, errors: list[str]) -> None:
+        visited: set[str] = set()
+        visiting: set[str] = set()
+        reported = False
+        for start in self.tasks:
+            if start in visited:
+                continue
+            stack: list[str] = [start]
+            while stack:
+                node = stack[-1]
+                visiting.add(node)
+                task = self.tasks.get(node)
+                dependencies = task.dependency_task_ids if task is not None else []
+                advanced = False
+                for dependency_id in dependencies:
+                    if dependency_id not in self.tasks:
+                        continue
+                    if dependency_id in visited:
+                        continue
+                    if dependency_id in visiting:
+                        if not reported:
+                            errors.append(
+                                f"task dependency cycle includes {dependency_id}"
+                            )
+                            reported = True
+                        continue
+                    stack.append(dependency_id)
+                    advanced = True
+                    break
+                if not advanced:
+                    visiting.discard(node)
+                    visited.add(node)
+                    stack.pop()
+
+    def child_task_ids(self, task_id: str) -> list[str]:
+        return sorted(
+            task.id
+            for task in self.tasks.values()
+            if task.parent_task_id == task_id
+        )
+
+    def dependency_status(self, task_id: str) -> str:
+        task = self.tasks.get(task_id)
+        if task is None or not task.dependency_task_ids:
+            return "satisfied"
+        dependency_states = [
+            self.tasks[dep_id].state
+            for dep_id in task.dependency_task_ids
+            if dep_id in self.tasks
+        ]
+        if any(
+            state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}
+            for state in dependency_states
+        ):
+            return "blocked"
+        if any(
+            state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}
+            for state in dependency_states
+        ):
+            return "waiting"
+        return "satisfied"
+
+    def blocked_by_task_ids(self, task_id: str) -> list[str]:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return []
+        blocked_by: list[str] = []
+        for dependency_id in task.dependency_task_ids:
+            dependency = self.tasks.get(dependency_id)
+            if dependency is None:
+                continue
+            if dependency.state not in {TeamTaskState.ACCEPTED, TeamTaskState.FINISHED}:
+                blocked_by.append(dependency_id)
+        return blocked_by
+
+    def subtask_counts(self, task_id: str) -> dict[str, int]:
+        counts = {"total": 0, "accepted": 0, "finished": 0, "blocked": 0, "open": 0}
+        for child_id in self.child_task_ids(task_id):
+            child = self.tasks[child_id]
+            counts["total"] += 1
+            if child.state == TeamTaskState.ACCEPTED:
+                counts["accepted"] += 1
+            elif child.state == TeamTaskState.FINISHED:
+                counts["finished"] += 1
+            elif child.state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}:
+                counts["blocked"] += 1
+            elif child.state in {
+                TeamTaskState.PENDING,
+                TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_REVIEW,
+            }:
+                counts["open"] += 1
+        return counts
+
     def _validate_deliverables(self, errors: list[str]) -> None:
         for deliverable in self.deliverables.values():
             if deliverable.task_id not in self.tasks:
@@ -726,6 +947,25 @@ class TeamState(TeamModel):
                         f"deliverable {deliverable.id} review {review_request_id} does not point back"
                     )
 
+    def _validate_review_profiles(self, errors: list[str]) -> None:
+        for profile in self.review_profiles.values():
+            if profile.team_id not in self.teams:
+                errors.append(
+                    f"review profile {profile.id} references missing team {profile.team_id}"
+                )
+            if profile.project_id is not None:
+                project = self.projects.get(profile.project_id)
+                if project is None:
+                    errors.append(
+                        f"review profile {profile.id} references missing project "
+                        f"{profile.project_id}"
+                    )
+                elif project.team_id != profile.team_id:
+                    errors.append(
+                        f"review profile {profile.id} project {project.id} belongs to team "
+                        f"{project.team_id}"
+                    )
+
     def _validate_reviews(self, errors: list[str]) -> None:
         for review in self.review_requests.values():
             if review.deliverable_id not in self.deliverables:
@@ -737,6 +977,36 @@ class TeamState(TeamModel):
                 errors.append(
                     f"review request {review.id} references missing reviewer {review.reviewer_agent_id}"
                 )
+            profile = None
+            if review.review_profile_id is not None:
+                profile = self.review_profiles.get(review.review_profile_id)
+                if profile is None:
+                    errors.append(
+                        f"review request {review.id} references missing review profile "
+                        f"{review.review_profile_id}"
+                    )
+            if review.criteria and review.review_profile_id is None:
+                errors.append(
+                    f"review request {review.id} has criterion results but no review profile"
+                )
+            valid_criterion_ids = (
+                {criterion.id for criterion in profile.criteria}
+                if profile is not None
+                else set()
+            )
+            seen: set[str] = set()
+            for result in review.criteria:
+                if profile is not None and result.criterion_id not in valid_criterion_ids:
+                    errors.append(
+                        f"review request {review.id} criterion result references unknown "
+                        f"criterion {result.criterion_id}"
+                    )
+                if result.criterion_id in seen:
+                    errors.append(
+                        f"review request {review.id} has duplicate criterion result "
+                        f"{result.criterion_id}"
+                    )
+                seen.add(result.criterion_id)
 
     def _validate_inbox(self, errors: list[str]) -> None:
         for item in self.inbox.values():
@@ -880,5 +1150,19 @@ def _ensure_unique(values: list[str], field_name: str) -> None:
         raise ValueError(f"{field_name} contains duplicate ids: {', '.join(sorted(set(duplicates)))}")
 
 
+def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, Any]:
+    payload = task.model_dump(mode="json")
+    payload["child_task_ids"] = state.child_task_ids(task.id)
+    payload["dependency_status"] = state.dependency_status(task.id)
+    payload["blocked_by_task_ids"] = state.blocked_by_task_ids(task.id)
+    payload["subtask_counts"] = state.subtask_counts(task.id)
+    return payload
+
+
 def team_state_payload(state: TeamState) -> dict[str, Any]:
-    return state.model_dump(mode="json")
+    payload = state.model_dump(mode="json")
+    payload["tasks"] = {
+        task_id: task_payload_with_derived(state, task)
+        for task_id, task in state.tasks.items()
+    }
+    return payload

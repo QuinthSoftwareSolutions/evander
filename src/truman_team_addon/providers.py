@@ -737,6 +737,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "for direct subordinates. Use review_requests/review_decisions for deliverable "
         "review, goal_updates for project goals, git_* actions for review/feature/release "
         "branch promotion, and ephemeral_* actions for scoped worker delegation.\n\n"
+        "Each task carries derived graph context: dependency_status, child_task_ids, "
+        "blocked_by_task_ids, and subtask_counts. Do not start tasks whose "
+        "dependency_status is not 'satisfied'; wait until their blocked_by_task_ids "
+        "clear. Decompose large work by creating child tasks via task_creations with "
+        "parent_task_id instead of ad hoc checklists in descriptions, and declare "
+        "ordering between tasks with dependency_task_ids.\n\n"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
@@ -998,6 +1004,20 @@ def _filtered_team_state_payload(
         key: {
             **value,
             "deliverable_ids": _filter_ids(value.get("deliverable_ids"), visible_deliverable_ids),
+            # Keep the graph self-consistent within the scoped view: drop edges that
+            # point at tasks the caller cannot see. dependency_status and
+            # subtask_counts are intentionally left as computed from the full state
+            # so they reflect global truth even when some edges are hidden here.
+            "parent_task_id": value.get("parent_task_id")
+            if value.get("parent_task_id") in visible_task_ids
+            else None,
+            "dependency_task_ids": _filter_ids(
+                value.get("dependency_task_ids"), visible_task_ids
+            ),
+            "child_task_ids": _filter_ids(value.get("child_task_ids"), visible_task_ids),
+            "blocked_by_task_ids": _filter_ids(
+                value.get("blocked_by_task_ids"), visible_task_ids
+            ),
         }
         for key, value in filtered["tasks"].items()
     }

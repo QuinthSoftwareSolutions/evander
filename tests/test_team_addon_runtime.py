@@ -22,6 +22,7 @@ from truman_team_addon.models import (
     ReleasePackage,
     ReviewRequest,
     Team,
+    TeamInboxItemState,
     TeamInboxItemType,
     TeamState,
     TeamTaskState,
@@ -118,6 +119,65 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
     return repo
 
 
+def _add_task(
+    repo: TeamStateRepository,
+    *,
+    task_id: str,
+    owner_agent_id: str,
+    state: TeamTaskState = TeamTaskState.PENDING,
+) -> None:
+    repo.create_or_reprioritize_task(
+        task_id=task_id,
+        owner_agent_id=owner_agent_id,
+        project_id="project",
+        priority=1,
+        title=f"Task {task_id}",
+        description="Work to deliver.",
+        created_by_agent_id="lead",
+        state=state,
+    )
+
+
+def _set_task_graph(
+    repo: TeamStateRepository,
+    *,
+    task_id: str,
+    parent_task_id: str | None = None,
+    dependency_task_ids: list[str] | None = None,
+) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        task = state.tasks[task_id]
+        if parent_task_id is not None:
+            task.parent_task_id = parent_task_id
+        if dependency_task_ids is not None:
+            task.dependency_task_ids = list(dependency_task_ids)
+        return state
+
+    repo.update(_mutate)
+
+
+def _add_pending_inbox(
+    repo: TeamStateRepository,
+    *,
+    item_id: str,
+    recipient_agent_id: str,
+) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        state.inbox[item_id] = AgentInboxItem(
+            id=item_id,
+            recipient_agent_id=recipient_agent_id,
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            state=TeamInboxItemState.PENDING,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def _leased_agent_ids(leases: list[dict[str, object]]) -> list[str]:
+    return [str(lease["agent"]["id"]) for lease in leases]
+
+
 def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
 
@@ -145,6 +205,70 @@ def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None
     assert state.agent_runtimes["backend"].no_progress_count == 0
     assert len(state.inbox) == 1
     assert next(iter(state.inbox.values())).recipient_agent_id == "lead"
+
+
+def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    # A pending dependency owned by another agent keeps "task" waiting.
+    _add_task(repo, task_id="dep", owner_agent_id="lead")
+    _set_task_graph(repo, task_id="task", dependency_task_ids=["dep"])
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert "backend" not in _leased_agent_ids(leases)
+
+
+def test_dependency_waiting_owner_leased_with_pending_inbox(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _add_task(repo, task_id="dep", owner_agent_id="lead")
+    _set_task_graph(repo, task_id="task", dependency_task_ids=["dep"])
+    _add_pending_inbox(repo, item_id="inbox-1", recipient_agent_id="backend")
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    assert backend_lease["reason"] == "inbox"
+
+
+def test_owner_leaseable_after_dependencies_complete(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _add_task(repo, task_id="dep", owner_agent_id="lead", state=TeamTaskState.ACCEPTED)
+    _set_task_graph(repo, task_id="task", dependency_task_ids=["dep"])
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert "backend" in _leased_agent_ids(leases)
+
+
+def test_parent_owner_with_open_child_remains_leaseable_while_waiting(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    # "task" (owned by backend) waits on a pending dependency owned by lead...
+    _add_task(repo, task_id="blocker", owner_agent_id="lead")
+    _set_task_graph(repo, task_id="task", dependency_task_ids=["blocker"])
+    # ...but it has an open child task owned by another agent.
+    _add_task(repo, task_id="child", owner_agent_id="lead")
+    _set_task_graph(repo, task_id="child", parent_task_id="task")
+
+    state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert state.dependency_status("task") == "waiting"
+    assert state.subtask_counts("task")["open"] == 1
+    assert "backend" in _leased_agent_ids(leases)
+
+
+def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    task_payload = backend_lease["tasks"][0]
+    assert task_payload["dependency_status"] == "satisfied"
+    assert task_payload["child_task_ids"] == []
+    assert task_payload["blocked_by_task_ids"] == []
+    assert task_payload["subtask_counts"]["total"] == 0
 
 
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
@@ -185,8 +309,13 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "git_release_requests",
         "ephemeral_requests",
         "ephemeral_acceptances",
+        "dependency_status",
+        "child_task_ids",
+        "subtask_counts",
     ):
         assert field_name in prompt
+    assert "do not start tasks" in prompt.lower()
+    assert "creating child tasks via task_creations with parent_task_id" in prompt
     assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
@@ -640,7 +769,11 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(project_state["projects"]) == {"alpha-project"}
     assert set(project_state["agents"]) == {"alpha-lead", "alpha-dev", "alpha-reviewer"}
     assert set(project_state["agent_runtimes"]) == {"alpha-dev"}
-    assert set(project_state["tasks"]) == {"alpha-task"}
+    assert set(project_state["tasks"]) == {"alpha-task", "alpha-helper"}
+    # Parent/dependency stay intact when both tasks are within scope.
+    assert project_state["tasks"]["alpha-task"]["parent_task_id"] == "alpha-helper"
+    assert project_state["tasks"]["alpha-task"]["dependency_task_ids"] == ["alpha-helper"]
+    assert project_state["tasks"]["alpha-helper"]["child_task_ids"] == ["alpha-task"]
     assert set(project_state["deliverables"]) == {"alpha-deliverable"}
     assert set(project_state["review_requests"]) == {"alpha-review"}
     assert set(project_state["inbox"]) == {"alpha-inbox"}
@@ -673,6 +806,14 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
     assert set(agent_state["agents"]) == {"alpha-dev"}
     assert set(agent_state["agent_runtimes"]) == {"alpha-dev"}
     assert set(agent_state["tasks"]) == {"alpha-task"}
+    # alpha-helper is out of this agent's scope, so its edges are filtered out,
+    # but dependency_status still reflects global truth (alpha-helper is pending).
+    scoped_task = agent_state["tasks"]["alpha-task"]
+    assert scoped_task["parent_task_id"] is None
+    assert scoped_task["dependency_task_ids"] == []
+    assert scoped_task["blocked_by_task_ids"] == []
+    assert scoped_task["child_task_ids"] == []
+    assert scoped_task["dependency_status"] == "waiting"
     assert set(agent_state["deliverables"]) == {"alpha-deliverable"}
     assert set(agent_state["review_requests"]) == set()
     assert set(agent_state["inbox"]) == {"alpha-inbox"}
@@ -970,6 +1111,15 @@ def _multi_team_state() -> TeamState:
             "beta-dev": AgentRuntime(agent_id="beta-dev", active_dispatch_id="beta-dispatch"),
         },
         tasks={
+            "alpha-helper": AgentTask(
+                id="alpha-helper",
+                owner_agent_id="alpha-lead",
+                project_id="alpha-project",
+                priority=2,
+                title="Alpha helper",
+                description="Alpha groundwork",
+                created_by_agent_id="alpha-lead",
+            ),
             "alpha-task": AgentTask(
                 id="alpha-task",
                 owner_agent_id="alpha-dev",
@@ -979,6 +1129,8 @@ def _multi_team_state() -> TeamState:
                 description="Alpha work",
                 created_by_agent_id="alpha-lead",
                 deliverable_ids=["alpha-deliverable"],
+                parent_task_id="alpha-helper",
+                dependency_task_ids=["alpha-helper"],
             ),
             "beta-task": AgentTask(
                 id="beta-task",

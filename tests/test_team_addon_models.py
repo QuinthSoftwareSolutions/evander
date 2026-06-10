@@ -24,11 +24,15 @@ from truman_team_addon.models import (
     ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
+    ReviewCriterionResult,
+    ReviewProfile,
+    ReviewProfileCriterion,
     ReviewRequest,
     Team,
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    team_state_payload,
 )
 
 
@@ -362,6 +366,432 @@ def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     assert validated.release_packages["release"].canonical_branch == (
         "releases/project/release"
     )
+
+
+def _state_with_task_graph() -> dict:
+    """A _valid_state payload with a parent task and two dependency tasks."""
+    state = _valid_state().model_dump(mode="python")
+    project = state["projects"]["project"]
+    state["tasks"]["parent"] = {
+        "id": "parent",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 5,
+        "state": TeamTaskState.IN_PROGRESS.value,
+        "title": "Parent",
+        "description": "Parent task",
+        "created_by_agent_id": "lead",
+    }
+    state["tasks"]["dep-a"] = {
+        "id": "dep-a",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 6,
+        "state": TeamTaskState.ACCEPTED.value,
+        "title": "Dep A",
+        "description": "Dependency A",
+        "created_by_agent_id": "lead",
+    }
+    state["tasks"]["dep-b"] = {
+        "id": "dep-b",
+        "owner_agent_id": "ui",
+        "project_id": "project",
+        "priority": 7,
+        "state": TeamTaskState.PENDING.value,
+        "title": "Dep B",
+        "description": "Dependency B",
+        "created_by_agent_id": "lead",
+    }
+    # Make "task" a child of "parent" depending on both dep tasks.
+    state["tasks"]["task"]["parent_task_id"] = "parent"
+    state["tasks"]["task"]["dependency_task_ids"] = ["dep-a", "dep-b"]
+    assert project  # keep reference for clarity
+    return state
+
+
+def test_task_graph_loads_with_parent_and_dependencies() -> None:
+    validated = TeamState.model_validate(_state_with_task_graph())
+
+    assert validated.tasks["task"].parent_task_id == "parent"
+    assert validated.tasks["task"].dependency_task_ids == ["dep-a", "dep-b"]
+
+
+def test_old_shape_task_without_graph_fields_validates() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"].pop("parent_task_id", None)
+    state["tasks"]["task"].pop("dependency_task_ids", None)
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.tasks["task"].parent_task_id is None
+    assert validated.tasks["task"].dependency_task_ids == []
+
+
+def test_task_graph_rejects_missing_parent() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"]["parent_task_id"] = "ghost"
+
+    with pytest.raises(ValidationError, match="missing parent ghost"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_missing_dependency() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["tasks"]["task"]["dependency_task_ids"] = ["ghost"]
+
+    with pytest.raises(ValidationError, match="missing dependency ghost"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_cross_project_parent() -> None:
+    state = _state_with_task_graph()
+    state["tasks"]["parent"]["project_id"] = "other"
+    # Decouple "task" from the (now cross-project) dependency tasks to isolate parent.
+    state["tasks"]["task"]["dependency_task_ids"] = []
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+    with pytest.raises(ValidationError, match="parent parent belongs to project other"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_cross_project_dependency() -> None:
+    state = _state_with_task_graph()
+    state["tasks"]["task"]["parent_task_id"] = None
+    state["tasks"]["dep-a"]["project_id"] = "other"
+    state["projects"]["other"] = {
+        "id": "other",
+        "team_id": "team",
+        "name": "Other",
+        "lead_agent_id": "lead",
+    }
+    state["teams"]["team"]["project_ids"] = ["project", "other"]
+
+    with pytest.raises(
+        ValidationError, match="dependency dep-a belongs to project other"
+    ):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_parent_cycle() -> None:
+    state = _state_with_task_graph()
+    # parent <- task already; close the loop so parent points back to task.
+    state["tasks"]["parent"]["parent_task_id"] = "task"
+
+    with pytest.raises(ValidationError, match="parent cycle"):
+        TeamState.model_validate(state)
+
+
+def test_task_graph_rejects_dependency_cycle() -> None:
+    state = _state_with_task_graph()
+    # task -> dep-a, dep-b; add dep-a -> task to create a cycle.
+    state["tasks"]["dep-a"]["dependency_task_ids"] = ["task"]
+
+    with pytest.raises(ValidationError, match="dependency cycle"):
+        TeamState.model_validate(state)
+
+
+def test_task_rejects_self_parent() -> None:
+    with pytest.raises(ValidationError, match="cannot be its own parent"):
+        AgentTask(
+            id="task",
+            owner_agent_id="ui",
+            project_id="project",
+            priority=1,
+            title="Self",
+            description="Self parent",
+            created_by_agent_id="lead",
+            parent_task_id="task",
+        )
+
+
+def test_task_rejects_self_dependency() -> None:
+    with pytest.raises(ValidationError, match="cannot depend on itself"):
+        AgentTask(
+            id="task",
+            owner_agent_id="ui",
+            project_id="project",
+            priority=1,
+            title="Self",
+            description="Self dependency",
+            created_by_agent_id="lead",
+            dependency_task_ids=["task"],
+        )
+
+
+def test_task_graph_derived_helpers() -> None:
+    validated = TeamState.model_validate(_state_with_task_graph())
+
+    # "task" is the only child of "parent".
+    assert validated.child_task_ids("parent") == ["task"]
+    assert validated.child_task_ids("task") == []
+
+    # dep-a accepted, dep-b pending -> waiting.
+    assert validated.dependency_status("task") == "waiting"
+    assert validated.blocked_by_task_ids("task") == ["dep-b"]
+
+    # parent has no dependencies -> satisfied.
+    assert validated.dependency_status("parent") == "satisfied"
+    assert validated.blocked_by_task_ids("parent") == []
+
+    counts = validated.subtask_counts("parent")
+    assert counts == {
+        "total": 1,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 1,
+    }
+
+
+def test_team_state_payload_includes_derived_task_fields() -> None:
+    state = TeamState.model_validate(_state_with_task_graph())
+
+    payload = team_state_payload(state)
+
+    task = payload["tasks"]["task"]
+    assert task["parent_task_id"] == "parent"
+    assert task["dependency_task_ids"] == ["dep-a", "dep-b"]
+    assert task["child_task_ids"] == []
+    assert task["dependency_status"] == "waiting"
+    assert task["blocked_by_task_ids"] == ["dep-b"]
+    assert task["subtask_counts"] == {
+        "total": 0,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 0,
+    }
+
+    parent = payload["tasks"]["parent"]
+    assert parent["child_task_ids"] == ["task"]
+    assert parent["dependency_status"] == "satisfied"
+    assert parent["subtask_counts"] == {
+        "total": 1,
+        "accepted": 0,
+        "finished": 0,
+        "blocked": 0,
+        "open": 1,
+    }
+
+
+def test_dependency_status_satisfied_and_blocked() -> None:
+    state = _state_with_task_graph()
+    # Both dependencies accepted/finished -> satisfied.
+    state["tasks"]["dep-b"]["state"] = TeamTaskState.FINISHED.value
+    satisfied = TeamState.model_validate(state)
+    assert satisfied.dependency_status("task") == "satisfied"
+    assert satisfied.blocked_by_task_ids("task") == []
+
+    # A blocked dependency -> blocked.
+    blocked_state = _state_with_task_graph()
+    blocked_state["tasks"]["dep-b"]["state"] = TeamTaskState.BLOCKED.value
+    blocked = TeamState.model_validate(blocked_state)
+    assert blocked.dependency_status("task") == "blocked"
+    assert sorted(blocked.blocked_by_task_ids("task")) == ["dep-b"]
+
+
+def test_subtask_counts_classifies_child_states() -> None:
+    state = _state_with_task_graph()
+    # Add more children of "parent" in varied states.
+    for child_id, child_state in (
+        ("child-accepted", TeamTaskState.ACCEPTED),
+        ("child-finished", TeamTaskState.FINISHED),
+        ("child-blocked", TeamTaskState.BLOCKED),
+        ("child-rejected", TeamTaskState.REJECTED),
+    ):
+        state["tasks"][child_id] = {
+            "id": child_id,
+            "owner_agent_id": "ui",
+            "project_id": "project",
+            "priority": 9,
+            "state": child_state.value,
+            "title": child_id,
+            "description": child_id,
+            "created_by_agent_id": "lead",
+            "parent_task_id": "parent",
+        }
+
+    validated = TeamState.model_validate(state)
+
+    counts = validated.subtask_counts("parent")
+    # "task" is WAITING_FOR_REVIEW (open) plus the four added children.
+    assert counts == {
+        "total": 5,
+        "accepted": 1,
+        "finished": 1,
+        "blocked": 2,
+        "open": 1,
+    }
+
+
+def _profile() -> ReviewProfile:
+    return ReviewProfile(
+        id="profile",
+        team_id="team",
+        project_id="project",
+        name="Code review",
+        description="Standard code review rubric.",
+        applicable_roles=["reviewer"],
+        criteria=[
+            ReviewProfileCriterion(id="tests", label="Tests pass"),
+            ReviewProfileCriterion(
+                id="style", label="Style", description="Matches repo style", required=False
+            ),
+        ],
+    )
+
+
+def test_review_profile_round_trips_through_team_state() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    profile = validated.review_profiles["profile"]
+    assert profile.name == "Code review"
+    assert profile.applicable_roles == ["reviewer"]
+    assert [criterion.id for criterion in profile.criteria] == ["tests", "style"]
+    assert profile.criteria[1].required is False
+    assert profile.archived is False
+
+
+def test_review_profile_rejects_missing_team() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["review_profiles"] = {
+        "profile": {
+            "id": "profile",
+            "team_id": "ghost",
+            "name": "Code review",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="review profile profile references missing team ghost"):
+        TeamState.model_validate(state)
+
+
+def test_review_profile_rejects_cross_team_project() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["teams"]["other-team"] = {
+        "id": "other-team",
+        "name": "Other team",
+        "manager_agent_id": "manager",
+    }
+    state["review_profiles"] = {
+        "profile": {
+            "id": "profile",
+            "team_id": "other-team",
+            "project_id": "project",
+            "name": "Code review",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="review profile profile project project belongs to team team"):
+        TeamState.model_validate(state)
+
+
+def test_review_profile_rejects_duplicate_criterion_ids() -> None:
+    with pytest.raises(ValidationError, match="review profile criteria contains duplicate ids"):
+        ReviewProfile(
+            id="profile",
+            team_id="team",
+            name="Code review",
+            criteria=[
+                ReviewProfileCriterion(id="tests", label="Tests pass"),
+                ReviewProfileCriterion(id="tests", label="Tests again"),
+            ],
+        )
+
+
+def test_review_with_profile_and_criterion_results_validates() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].instructions = "Focus on the new tests."
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed", finding="All green."),
+        ReviewCriterionResult(criterion_id="style", state="skipped"),
+    ]
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+
+    review = validated.review_requests["review"]
+    assert review.review_profile_id == "profile"
+    assert review.instructions == "Focus on the new tests."
+    assert [result.criterion_id for result in review.criteria] == ["tests", "style"]
+    assert review.criteria[0].state == "passed"
+
+
+def test_review_rejects_criterion_result_for_unknown_criterion() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="ghost", state="passed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="criterion result references unknown criterion ghost"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_duplicate_criterion_results() -> None:
+    state = _valid_state()
+    state.review_profiles = {"profile": _profile()}
+    state.review_requests["review"].review_profile_id = "profile"
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed"),
+        ReviewCriterionResult(criterion_id="tests", state="failed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="has duplicate criterion result tests"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_criterion_results_without_profile() -> None:
+    state = _valid_state()
+    state.review_requests["review"].criteria = [
+        ReviewCriterionResult(criterion_id="tests", state="passed"),
+    ]
+
+    with pytest.raises(
+        ValidationError, match="has criterion results but no review profile"
+    ):
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+
+def test_review_rejects_missing_profile_reference() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state["review_requests"]["review"]["review_profile_id"] = "ghost"
+
+    with pytest.raises(
+        ValidationError, match="references missing review profile ghost"
+    ):
+        TeamState.model_validate(state)
+
+
+def test_legacy_state_without_review_profile_keys_validates() -> None:
+    state = _valid_state().model_dump(mode="python")
+    state.pop("review_profiles", None)
+    review = state["review_requests"]["review"]
+    review.pop("review_profile_id", None)
+    review.pop("instructions", None)
+    review.pop("criteria", None)
+
+    validated = TeamState.model_validate(state)
+
+    assert validated.review_profiles == {}
+    assert validated.review_requests["review"].review_profile_id is None
+    assert validated.review_requests["review"].instructions is None
+    assert validated.review_requests["review"].criteria == []
 
 
 def test_git_promotion_rejects_missing_project() -> None:
