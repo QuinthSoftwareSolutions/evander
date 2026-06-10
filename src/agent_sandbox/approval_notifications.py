@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from agent_sandbox.messaging.notifications import NotificationSender
 from agent_sandbox.models import (
@@ -14,6 +16,8 @@ from agent_sandbox.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_ADMIN_WEB_BASE_URL = "http://127.0.0.1:8100"
 
 
 class ApprovalNotificationDispatcher:
@@ -165,6 +169,9 @@ class ApprovalNotificationDispatcher:
             f'agent-sandbox-cli approve {request.request_id} <approver> '
             '--approve|--deny --reason "..."'
         )
+        review_url = cls._approval_admin_web_url(request.request_id)
+        approve_url = cls._approval_admin_web_url(request.request_id, decision="approve")
+        deny_url = cls._approval_admin_web_url(request.request_id, decision="deny")
         vm_id = request.vm_id or "n/a"
         tool_name = request.tool_name or request.action_type
         return "\n".join(
@@ -180,11 +187,31 @@ class ApprovalNotificationDispatcher:
                 f"human_summary: {request.human_summary}",
                 f"payload_digest: {request.payload_digest}",
                 "",
-                "Review:",
+                "Admin Web:",
+                f"  Review: [Open approval]({review_url})",
+                f"  Approve: [Open approval with approve selected]({approve_url})",
+                f"  Deny: [Open approval with deny selected]({deny_url})",
+                "",
+                "CLI fallback:",
                 f"  {review_command}",
                 "Decide:",
                 f"  {decision_command}",
             ]
+        )
+
+    @classmethod
+    def _approval_admin_web_url(cls, request_id: str, *, decision: str | None = None) -> str:
+        base_url = cls._admin_web_base_url()
+        query = {"request_id": request_id}
+        if decision is not None:
+            query["decision"] = decision
+        return f"{base_url}/#approvals?{urlencode(query)}"
+
+    @staticmethod
+    def _admin_web_base_url() -> str:
+        return (
+            os.environ.get("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", "").strip().rstrip("/")
+            or _DEFAULT_ADMIN_WEB_BASE_URL
         )
 
     @staticmethod

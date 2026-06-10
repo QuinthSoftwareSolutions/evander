@@ -94,6 +94,7 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", "https://admin.example.com")
     _write_targets(
         tmp_path,
         [
@@ -178,6 +179,11 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert "body:" not in message.lower()
     assert "token:" not in message.lower()
     assert "authorization:" not in message.lower()
+    assert "Admin Web:" in message
+    assert "[Open approval](https://admin.example.com/#approvals?request_id=" in message
+    assert "decision=approve" in message
+    assert "decision=deny" in message
+    assert "CLI fallback:" in message
     assert "agent-sandbox-cli show-approval" in message
     assert f"agent-sandbox-cli show-approval {approval.request_id}" in message
     assert (
@@ -195,6 +201,48 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert approval.notification_deliveries[0].provider == "teams"
     assert approval.notification_deliveries[0].message_id == "msg-123"
     assert approval.notification_deliveries[0].result_summary is not None
+
+
+def test_approval_notifications_fallback_to_local_admin_web_url_when_public_base_url_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
+    runtime.session_repository.upsert_session(_session_manifest())
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        send_calls.append(kwargs)
+        return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
+
+    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+        approval = runtime.policy.create_approval(
+            "session-1",
+            "email_send_approved",
+            {"body": "secret body"},
+            "send the email",
+        )
+
+    assert len(send_calls) == 1
+    message = str(send_calls[0]["message"])
+    assert "http://127.0.0.1:8100/#approvals?request_id=" in message
+    assert f"http://127.0.0.1:8100/#approvals?request_id={approval.request_id}" in message
+    assert "decision=approve" in message
+    assert "decision=deny" in message
 
 
 def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

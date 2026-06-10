@@ -89,7 +89,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     available_login_methods: [],
     azure_sso_login_url: null,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
   };
   const adminStateResponse = {
@@ -99,7 +99,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     role: "admin",
     can_manage_users: true,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
     assistant: {
       enabled: false,
@@ -181,7 +181,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     }
 
     if (pathname === "/api/admin/approvals") {
-      assert.equal(url.searchParams.get("statuses"), "pending");
+      assert.equal(url.searchParams.get("statuses"), null);
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "false");
       await route.fulfill(jsonResponse(approvalIndexResponse));
@@ -207,7 +207,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     }
   });
 
-  await page.goto(`http://127.0.0.1:${address.port}/#approvals`, {
+  await page.goto(`http://127.0.0.1:${address.port}/#approvals?request_id=approval-1&decision=approve`, {
     waitUntil: "domcontentloaded",
   });
 
@@ -233,6 +233,9 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() => page.getByLabel("Approver").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.waitForFunction(() => document.activeElement?.textContent === "Approve"),
+  );
   const approvalCard = page.locator(".approval-list-item").first();
   await assert.doesNotReject(() => approvalCard.waitFor({ state: "visible" }));
   const badgeLayout = await approvalCard.evaluate((element) => {
@@ -268,7 +271,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     `approval title should wrap before the badge column: titleRight=${badgeLayout.titleRight}, badgeLeft=${badgeLayout.badgeLeft}`,
   );
 
-  assert.equal(await page.evaluate(() => window.location.hash), "#approvals");
+  assert.equal(await page.evaluate(() => window.location.hash), "#approvals?request_id=approval-1&decision=approve");
   assert.equal(await navEntry.count(), 1);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/approvals/approval-1"));
   assert.deepEqual(pageErrors, []);
