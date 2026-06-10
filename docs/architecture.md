@@ -357,12 +357,13 @@ remains generic.
   project defaults, and PAT env indirection) is resolved by directory scope and the PAT remains
   host-only.
 - Approval request notifications follow the host-side operator boundary. Directory policy can set
-  `approval_notification_target_ids` to named communication targets with the `notify` capability.
-  When a new `ApprovalRequest` is created, the host sends one notification per configured target
-  for that deterministic request id. The message contains request metadata and Admin Web/CLI review
-  instructions, but not the redacted payload. Approval decisions still happen only through the
-  existing Admin Web, admin service, or `agent-sandbox-cli approve` paths, so notification targets
-  do not grant guests broader Discord, Teams, or email permissions.
+  `approval_notification_target_ids` to named communication targets with the `notify` capability,
+  and session policy or a live workflow-run approval lease can add more notify-capable targets for
+  that approval path. When a new `ApprovalRequest` is created, the host sends one notification per
+  resolved target for that deterministic request id. The message contains request metadata and
+  Admin Web/CLI review instructions, but not the redacted payload. Approval decisions still happen
+  only through the existing Admin Web, admin service, or `agent-sandbox-cli approve` paths, so
+  notification targets do not grant guests broader Discord, Teams, or email permissions.
 - Discord ingestion boundary in `bot_api` mode:
   - Poll targets are the channel IDs already present in the Discord command store
     (`discord_command_store_path`), not all reachable guild channels.

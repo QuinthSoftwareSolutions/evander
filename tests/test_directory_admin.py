@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
@@ -108,6 +109,97 @@ def test_directory_admin_service_reads_writes_and_resolves_directory_config(tmp_
     ]
     assert resolved.data.resolution.effective_config["email_send_enabled"] is True
     assert resolved.validation_diagnostics == []
+
+
+def test_directory_admin_service_validates_approval_notification_targets_on_write_and_effective_read(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig.model_validate(
+        {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}
+    )
+    store = DirectoryStore(config.directories_store_path)
+    admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
+
+    admin._communication_targets_repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-approvals",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "ops-read",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read"]},
+                },
+            ]
+        },
+    )
+    team = admin.create_child(parent="root", name="team").data.details.directory
+
+    written = admin.write_domain_config(
+        team.path,
+        domain="policy",
+        payload={
+            "default_session_ttl_seconds": 120,
+            "approval_notification_target_ids": [" OPS-Approvals ", "ops-approvals"],
+        },
+    )
+    assert written.ok is True
+    assert written.data is not None
+    assert written.data.config["approval_notification_target_ids"] == ["ops-approvals"]
+
+    read_back = admin.read_domain_config(team.id, domain="policy")
+    assert read_back.ok is True
+    assert read_back.data is not None
+    assert read_back.data.config == {
+        "default_session_ttl_seconds": 120,
+        "approval_notification_target_ids": ["ops-approvals"],
+    }
+
+    missing_target = admin.write_domain_config(
+        team.path,
+        domain="policy",
+        payload={"approval_notification_target_ids": ["missing-target"]},
+    )
+    assert missing_target.ok is False
+    assert "unknown communication target(s): missing-target" in missing_target.errors[0].message
+
+    non_notify_target = admin.write_domain_config(
+        team.path,
+        domain="policy",
+        payload={"approval_notification_target_ids": ["ops-read"]},
+    )
+    assert non_notify_target.ok is False
+    assert "without notify capability: ops-read" in non_notify_target.errors[0].message
+
+    policy_path = (
+        config.runtime_dir / "directory-config" / "root" / "team" / "policy.json"
+    )
+    policy_payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy_payload["approval_notification_target_ids"] = ["missing-target"]
+    policy_path.write_text(
+        json.dumps(policy_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    resolved = admin.compute_effective_config(team.path, domain="policy")
+    assert resolved.ok is True
+    assert any(
+        "unknown communication target(s): missing-target" in diagnostic.message
+        for diagnostic in resolved.validation_diagnostics
+    )
+
+    legacy_read = admin.read_domain_config(team.path, domain="policy")
+    assert legacy_read.ok is True
+    assert legacy_read.data is not None
+    assert legacy_read.data.config["approval_notification_target_ids"] == ["missing-target"]
 
 
 def test_directory_admin_root_effective_config_has_no_implicit_global_base(tmp_path: Path) -> None:

@@ -10,6 +10,9 @@ from agent_sandbox.directory_config import (
     DirectoryConfigStore,
     validate_effective_domain_payload,
 )
+from agent_sandbox.approval_notification_targets import (
+    resolve_approval_notification_target_ids_for_directory,
+)
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.messaging.targets import (
     COMMUNICATION_TARGETS_DOMAIN,
@@ -216,17 +219,28 @@ class DirectoryAdminService:
 
         def operation() -> DirectoryConfigWritePayload:
             directory = self._directories.show(reference).directory
+            normalized_payload = payload
             if domain == COMMUNICATION_TARGETS_DOMAIN:
                 _directory, written = self._communication_targets_resolver().write_overlay(
                     directory.id,
-                    payload,
+                    normalized_payload,
                 )
                 return DirectoryConfigWritePayload(
                     directory=directory,
                     domain=domain,
                     config=written,
                 )
-            written = self._config_store.write(directory.id, domain=domain, payload=payload)
+            if domain == "policy" and "approval_notification_target_ids" in normalized_payload:
+                normalized_payload = dict(normalized_payload)
+                normalized_payload["approval_notification_target_ids"] = (
+                    self._resolve_approval_notification_target_ids(
+                        directory_path=directory.path,
+                        target_ids=normalized_payload.get("approval_notification_target_ids"),
+                    )
+                )
+            written = self._config_store.write(
+                directory.id, domain=domain, payload=normalized_payload
+            )
             return DirectoryConfigWritePayload(
                 directory=directory,
                 domain=domain,
@@ -254,6 +268,16 @@ class DirectoryAdminService:
                 base_config=base_config,
                 validator=lambda candidate: validate_effective_domain_payload(domain, candidate),
             )
+            if domain == "policy":
+                try:
+                    self._resolve_approval_notification_target_ids(
+                        directory_path=resolution.selected_directory.path,
+                        target_ids=resolution.effective_config.get(
+                            "approval_notification_target_ids"
+                        ),
+                    )
+                except ValueError as exc:
+                    resolution.validation_errors.append(str(exc))
             return DirectoryEffectiveConfigPayload(resolution=resolution)
 
         return self._run(operation, include_validation=True)
@@ -292,6 +316,19 @@ class DirectoryAdminService:
         return CommunicationTargetsDirectoryResolver(
             self._directory_store,
             repository=self._communication_targets_repository,
+        )
+
+    def _resolve_approval_notification_target_ids(
+        self,
+        *,
+        directory_path: str,
+        target_ids: object,
+    ) -> list[str]:
+        return resolve_approval_notification_target_ids_for_directory(
+            runtime_dir=self._gateway_config.runtime_dir,
+            directory_store=self._directory_store,
+            directory_path=directory_path,
+            target_ids=target_ids,
         )
 
     def _list_config_domains(self, reference: str) -> list[str]:
