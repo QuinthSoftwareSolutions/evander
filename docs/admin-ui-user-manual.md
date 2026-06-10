@@ -170,8 +170,8 @@ Common tasks:
 1. Select a directory in the shell.
 2. Open **Agents**.
 3. Use **Refresh** to reload current target state.
-4. Select an agent from the left list to inspect details, logs, labels, policy, metadata, and
-   attached session or VM context.
+4. Select an agent from the left list to inspect details, logs, active steering dispatch, labels,
+   policy, metadata, and attached session or VM context.
 5. Unlock privileges before starting any mutation.
 6. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
    details, allowed tools/scripts, communication allowlists, bootstrap options, and optional Codex
@@ -181,7 +181,8 @@ Common tasks:
 9. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
    agent thread when available.
-10. Use lifecycle actions only after confirming the target and directory are correct.
+10. Use **Operator steering** to queue a note for the selected session's active model dispatch.
+11. Use lifecycle actions only after confirming the target and directory are correct.
 
 Notes:
 

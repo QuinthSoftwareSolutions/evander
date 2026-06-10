@@ -236,6 +236,29 @@ test("admin shell agents page forwards the selected log view through executions,
       return;
     }
 
+    if (pathname === "/api/operator-steering/context") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          directory_path: "root/team",
+          context: null,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/operator-steering/notes") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          dispatch_id: url.searchParams.get("dispatch_id"),
+          directory_path: "root/team",
+          notes: [],
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/agents") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
@@ -576,6 +599,29 @@ test("admin shell agents log polling refreshes auth state on session expiry", as
 
     if (pathname === "/api/admin/skills") {
       await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+
+    if (pathname === "/api/operator-steering/context") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          directory_path: "root/team",
+          context: null,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/operator-steering/notes") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          dispatch_id: url.searchParams.get("dispatch_id"),
+          directory_path: "root/team",
+          notes: [],
+        }),
+      );
       return;
     }
 

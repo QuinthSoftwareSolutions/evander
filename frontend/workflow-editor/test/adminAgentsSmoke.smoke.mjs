@@ -34,6 +34,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.setDefaultTimeout(5000);
 
   const requestedEndpoints = [];
   const agentListRequests = [];
@@ -212,6 +213,45 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       return;
     }
 
+    if (pathname === "/api/operator-steering/context") {
+      const sessionId = url.searchParams.get("session_id");
+      await route.fulfill(
+        jsonResponse({
+          session_id: sessionId,
+          directory_path: "root/team",
+          context: sessionId === "session-1"
+            ? {
+                session_id: "session-1",
+                dispatch_id: "dispatch-1",
+                workflow_run_id: "workflow-1",
+                effect_id: "effect-1",
+                node_id: "node-1",
+                agent_harness: "codex",
+                execution_backend: "libvirt_vm",
+                directory_path: "root/team",
+                model: "gpt-5.2-codex",
+                trace_id: "trace-1",
+                started_at: "2026-05-18T10:00:00Z",
+                expires_at: "2026-05-18T10:30:00Z",
+              }
+            : null,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/operator-steering/notes") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          dispatch_id: url.searchParams.get("dispatch_id"),
+          directory_path: "root/team",
+          notes: [],
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/agents") {
       const requestIndex = agentListRequests.length;
       agentListRequests.push(`${pathname}${url.search}`);
@@ -286,6 +326,9 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
+  await assert.match(await page.locator(".feature-content").innerText(), /Operator steering/);
+  await assert.doesNotReject(() => page.getByText("dispatch-1").waitFor({ state: "visible", timeout: 5000 }));
+  await assert.match(await page.locator(".feature-content").innerText(), /dispatch-1/);
 
   await assert.match(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
@@ -308,7 +351,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       url.searchParams.get("omit_vm_state") === "false" &&
       url.searchParams.get("_dashboard") === null
     );
-  });
+  }, { timeout: 5000 });
   const summaryRefreshRequest = page.waitForRequest((request) => {
     if (!request.url().includes("/api/admin/agents?")) return false;
     const url = new URL(request.url());
@@ -319,11 +362,11 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       url.searchParams.get("_dashboard") === "1" &&
       url.searchParams.get("_dashboard_refresh") === "1"
     );
-  });
+  }, { timeout: 5000 });
   await Promise.all([
     liveRefreshRequest,
     summaryRefreshRequest,
-    page.getByRole("button", { name: "Refresh" }).click(),
+    page.locator(".feature-sidebar-header").getByRole("button", { name: "Refresh", exact: true }).click(),
   ]);
   assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
