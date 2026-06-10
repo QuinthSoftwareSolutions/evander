@@ -38,6 +38,9 @@ from .models import (
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
+    ReviewCriterionResult,
+    ReviewProfile,
+    ReviewProfileCriterion,
     ReviewRequest,
     Team,
     TeamInboxItemState,
@@ -371,6 +374,71 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def create_review_profile(
+        self,
+        *,
+        profile_id: str,
+        team_id: str,
+        project_id: str | None = None,
+        name: str,
+        description: str = "",
+        applicable_roles: list[str] | None = None,
+        criteria: list[ReviewProfileCriterion] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            _require_absent(state.review_profiles, profile_id, "review profile")
+            now = utc_now()
+            profile = ReviewProfile(
+                id=profile_id,
+                team_id=team_id,
+                project_id=project_id,
+                name=name,
+                description=description,
+                applicable_roles=applicable_roles or [],
+                criteria=criteria or [],
+                created_at=now,
+                updated_at=now,
+            )
+            state.review_profiles[profile.id] = profile
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_review_profile(
+        self,
+        *,
+        profile_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        applicable_roles: list[str] | None = None,
+        criteria: list[ReviewProfileCriterion] | None = None,
+        archived: bool | None = None,
+        project_id: str | None = None,
+        set_project_id: bool = False,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            profile = _require_present(state.review_profiles, profile_id, "review profile")
+            if name is not None:
+                profile.name = name
+            if description is not None:
+                profile.description = description
+            if applicable_roles is not None:
+                profile.applicable_roles = applicable_roles
+            if criteria is not None:
+                profile.criteria = [
+                    ReviewProfileCriterion.model_validate(criterion) for criterion in criteria
+                ]
+            if archived is not None:
+                profile.archived = archived
+            if set_project_id:
+                profile.project_id = project_id
+            profile.updated_at = utc_now()
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def record_review_request(
         self,
         *,
@@ -379,6 +447,8 @@ class TeamStateRepository:
         reviewer_agent_id: str,
         state: TeamRecordState = TeamRecordState.PENDING,
         findings: list[str] | None = None,
+        review_profile_id: str | None = None,
+        instructions: str | None = None,
         decision_at: datetime | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -391,6 +461,8 @@ class TeamStateRepository:
                 reviewer_agent_id=reviewer_agent_id,
                 state=state,
                 findings=findings or [],
+                review_profile_id=review_profile_id,
+                instructions=instructions,
                 decision_at=decision_at,
             )
             state_model.review_requests[review.id] = review
@@ -408,6 +480,7 @@ class TeamStateRepository:
         review_request_id: str,
         state: TeamRecordState,
         findings: list[str] | None = None,
+        criteria: list[ReviewCriterionResult] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_id = _required_text(review_request_id, "review_request_id")
@@ -416,11 +489,18 @@ class TeamStateRepository:
                 f"review decision state {state.value} must be accepted, rejected, or blocked"
             )
         findings_list = list(findings or [])
+        criterion_results = (
+            [ReviewCriterionResult.model_validate(item) for item in criteria]
+            if criteria is not None
+            else None
+        )
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(
                 state_model.review_requests, normalized_id, "review request"
             )
+            if criterion_results is not None:
+                review.criteria = criterion_results
             projects_to_recalc: set[str] = set()
             _cascade_review_decision(
                 state_model,
@@ -1943,6 +2023,29 @@ def _apply_review_request(
             f"agent {actor.id} is not permitted to request review of deliverable {deliverable_id}"
         )
         return None
+    instructions = _optional_text(request.get("instructions"))
+    profile_id = _optional_text(request.get("review_profile_id"))
+    profile: ReviewProfile | None = None
+    if profile_id is not None:
+        profile = state.review_profiles.get(profile_id)
+        if profile is None:
+            result["errors"].append(
+                f"review request references missing review profile {profile_id}"
+            )
+            return None
+        if profile.archived:
+            result["errors"].append(f"review profile {profile_id} is archived")
+            return None
+        if profile.team_id != actor.team_id:
+            result["errors"].append(
+                f"review profile {profile_id} is not in the same team as {actor.id}"
+            )
+            return None
+        if profile.project_id is not None and profile.project_id != project_id:
+            result["errors"].append(
+                f"review profile {profile_id} does not apply to project {project_id}"
+            )
+            return None
     review_id = _optional_text(request.get("id")) or f"review-{uuid4().hex}"
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
@@ -1952,12 +2055,35 @@ def _apply_review_request(
         deliverable_id=deliverable_id,
         reviewer_agent_id=reviewer_id,
         state=TeamRecordState.PENDING,
+        review_profile_id=profile_id,
+        instructions=instructions,
     )
     state.review_requests[review.id] = review
     deliverable.review_request_ids = _append_unique(
         deliverable.review_request_ids,
         review.id,
     )
+    payload: dict[str, Any] = {
+        "kind": "review_request",
+        "review_request_id": review.id,
+        "deliverable_id": deliverable_id,
+        "instructions": instructions or "",
+    }
+    if profile is not None:
+        payload["review_profile"] = {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "criteria": [
+                {
+                    "id": criterion.id,
+                    "label": criterion.label,
+                    "description": criterion.description,
+                    "required": criterion.required,
+                }
+                for criterion in profile.criteria
+            ],
+        }
     inbox_id = f"inbox-{uuid4().hex}"
     state.inbox[inbox_id] = AgentInboxItem(
         id=inbox_id,
@@ -1965,12 +2091,7 @@ def _apply_review_request(
         sender_agent_id=actor.id,
         task_id=deliverable.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
-        payload={
-            "kind": "review_request",
-            "review_request_id": review.id,
-            "deliverable_id": deliverable_id,
-            "instructions": _optional_text(request.get("instructions")) or "",
-        },
+        payload=payload,
     )
     result["created_inbox_item_ids"].append(inbox_id)
     return review.id
@@ -2009,6 +2130,16 @@ def _apply_review_decision(
             f"review decision state {raw_state} must be accepted, rejected, or blocked"
         )
         return None
+    criterion_results, criteria_error = _build_criterion_results(
+        state,
+        review,
+        _list_of_mappings(decision.get("criteria"), "criteria"),
+    )
+    if criteria_error is not None:
+        result["errors"].append(criteria_error)
+        return None
+    if criterion_results is not None:
+        review.criteria = criterion_results
     _cascade_review_decision(
         state,
         review=review,
@@ -2017,6 +2148,60 @@ def _apply_review_decision(
         projects_to_recalc=projects_to_recalc,
     )
     return review.id
+
+
+def _build_criterion_results(
+    state: TeamState,
+    review: ReviewRequest,
+    raw_criteria: list[dict[str, Any]],
+) -> tuple[list[ReviewCriterionResult] | None, str | None]:
+    """Validate criterion-result mappings against the review's profile.
+
+    Returns ``(results, None)`` on success or ``(None, error_message)`` so callers
+    can append the error to ``result["errors"]`` without mutating state. ``results``
+    is an empty list when no criteria were supplied.
+    """
+
+    if not raw_criteria:
+        return [], None
+    profile = (
+        state.review_profiles.get(review.review_profile_id)
+        if review.review_profile_id is not None
+        else None
+    )
+    if profile is None:
+        return None, (
+            f"review decision for {review.id} has criterion results but no review profile"
+        )
+    valid_ids = {criterion.id for criterion in profile.criteria}
+    seen: set[str] = set()
+    results: list[ReviewCriterionResult] = []
+    for entry in raw_criteria:
+        criterion_id = _optional_text(entry.get("criterion_id"))
+        if criterion_id is None:
+            return None, "review decision criterion result is missing criterion_id"
+        if criterion_id not in valid_ids:
+            return None, (
+                f"review decision for {review.id} references unknown criterion {criterion_id}"
+            )
+        if criterion_id in seen:
+            return None, (
+                f"review decision for {review.id} has duplicate criterion result {criterion_id}"
+            )
+        seen.add(criterion_id)
+        raw_state = _optional_text(entry.get("state"))
+        if raw_state not in {"passed", "failed", "skipped"}:
+            return None, (
+                f"review decision criterion {criterion_id} has invalid state {raw_state}"
+            )
+        results.append(
+            ReviewCriterionResult(
+                criterion_id=criterion_id,
+                state=raw_state,
+                finding=_optional_text(entry.get("finding")) or "",
+            )
+        )
+    return results, None
 
 
 def _is_review_decision_state(decision_state: TeamRecordState) -> bool:

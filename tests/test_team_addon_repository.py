@@ -12,6 +12,7 @@ from truman_team_addon.models import (
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
+    ReviewProfileCriterion,
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
@@ -1707,3 +1708,356 @@ def test_apply_agent_action_non_owner_state_change_still_rejected(tmp_path: Path
     assert result["success"] is False
     assert any("cannot update task" in error for error in result["errors"])
     assert state.tasks["b1"].state == TeamTaskState.PENDING
+
+
+def _seed_review_profile(
+    repo: TeamStateRepository,
+    *,
+    profile_id: str = "profile",
+    project_id: str | None = None,
+    criteria: list[ReviewProfileCriterion] | None = None,
+) -> None:
+    repo.create_review_profile(
+        profile_id=profile_id,
+        team_id="team",
+        project_id=project_id,
+        name="Backend review",
+        description="Checklist for backend deliverables.",
+        applicable_roles=["backend", "worker"],
+        criteria=criteria
+        or [
+            ReviewProfileCriterion(id="tests", label="Tests pass", required=True),
+            ReviewProfileCriterion(
+                id="docs", label="Docs updated", description="README/CHANGELOG", required=False
+            ),
+        ],
+    )
+
+
+def test_create_update_archive_review_profile(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_review_profile(repo)
+
+    state = repo.read()
+    profile = state.review_profiles["profile"]
+    assert profile.team_id == "team"
+    assert profile.name == "Backend review"
+    assert [c.id for c in profile.criteria] == ["tests", "docs"]
+    assert profile.applicable_roles == ["backend", "worker"]
+    assert profile.archived is False
+
+    state = repo.update_review_profile(
+        profile_id="profile",
+        name="Renamed review",
+        criteria=[ReviewProfileCriterion(id="tests", label="Tests pass")],
+        archived=True,
+    )
+    profile = state.review_profiles["profile"]
+    assert profile.name == "Renamed review"
+    assert [c.id for c in profile.criteria] == ["tests"]
+    assert profile.archived is True
+
+
+def test_create_review_profile_rejects_duplicate(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_review_profile(repo)
+
+    with pytest.raises(ValueError, match="already exists"):
+        _seed_review_profile(repo)
+
+
+def test_apply_agent_action_review_request_with_profile(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                    "instructions": "Use the checklist.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    review = state.review_requests["review-1"]
+    assert review.review_profile_id == "profile"
+    assert review.instructions == "Use the checklist."
+    inbox_items = [
+        item
+        for item in state.inbox.values()
+        if item.item_type == TeamInboxItemType.STATUS_REQUEST
+        and item.recipient_agent_id == "worker"
+    ]
+    assert len(inbox_items) == 1
+    payload = inbox_items[0].payload
+    assert payload["instructions"] == "Use the checklist."
+    assert payload["review_profile"]["id"] == "profile"
+    assert payload["review_profile"]["name"] == "Backend review"
+    criterion_ids = [c["id"] for c in payload["review_profile"]["criteria"]]
+    assert criterion_ids == ["tests", "docs"]
+    assert payload["review_profile"]["criteria"][0]["required"] is True
+
+
+def test_apply_agent_action_review_request_archived_profile_errors(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    repo.update_review_profile(profile_id="profile", archived=True)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("archived" in error for error in result["errors"])
+    assert state.review_requests == {}
+
+
+def test_apply_agent_action_review_request_cross_project_profile_errors(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_project(
+        project_id="project-2",
+        team_id="team",
+        name="Other project",
+        lead_agent_id="lead-2",
+        lead_session_id="session-lead-2",
+        goals=[ProjectGoal(id="goal-2", description="Other work")],
+    )
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    # Profile is scoped to a different project than the deliverable's task ("project").
+    _seed_review_profile(repo, project_id="project-2")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("does not apply to project" in error for error in result["errors"])
+    assert state.review_requests == {}
+
+
+def test_apply_agent_action_review_request_missing_profile_errors(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "missing",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("missing review profile" in error for error in result["errors"])
+    assert state.review_requests == {}
+
+
+def _request_review_with_profile(repo: TeamStateRepository) -> None:
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                    "instructions": "Use the checklist.",
+                }
+            ],
+        },
+    )
+
+
+def test_apply_agent_action_review_decision_records_criteria(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "accepted",
+                    "findings": ["Looks good."],
+                    "criteria": [
+                        {"criterion_id": "tests", "state": "passed", "finding": "All green."},
+                        {"criterion_id": "docs", "state": "skipped"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    review = state.review_requests["review-1"]
+    assert review.state == TeamRecordState.ACCEPTED
+    assert review.findings == ["Looks good."]
+    assert {c.criterion_id: c.state for c in review.criteria} == {
+        "tests": "passed",
+        "docs": "skipped",
+    }
+    tests_result = next(c for c in review.criteria if c.criterion_id == "tests")
+    assert tests_result.finding == "All green."
+    # Criterion results never alter acceptance cascade.
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_apply_agent_action_review_decision_unknown_criterion_errors(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "nope", "state": "passed"}],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("unknown criterion nope" in error for error in result["errors"])
+    review = state.review_requests["review-1"]
+    assert review.criteria == []
+    assert review.state == TeamRecordState.PENDING
+
+
+def test_apply_agent_action_review_decision_criteria_without_profile_errors(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("no review profile" in error for error in result["errors"])
+    assert state.review_requests["review-1"].state == TeamRecordState.PENDING
+
+
+def test_apply_agent_action_review_decision_without_criteria_still_works(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": "review-1", "state": "accepted"}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    review = state.review_requests["review-1"]
+    assert review.state == TeamRecordState.ACCEPTED
+    assert review.criteria == []
+
+
+def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    repo.record_review_request(
+        review_request_id="review-1",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        review_profile_id="profile",
+        instructions="Operator instructions.",
+    )
+
+    from truman_team_addon.models import ReviewCriterionResult
+
+    state = repo.record_review_decision(
+        review_request_id="review-1",
+        state=TeamRecordState.ACCEPTED,
+        findings=["ok"],
+        criteria=[ReviewCriterionResult(criterion_id="tests", state="passed")],
+    )
+
+    review = state.review_requests["review-1"]
+    assert review.review_profile_id == "profile"
+    assert review.instructions == "Operator instructions."
+    assert review.state == TeamRecordState.ACCEPTED
+    assert [c.criterion_id for c in review.criteria] == ["tests"]
