@@ -27,6 +27,59 @@ type ActionLogEntry = {
   tone: "info" | "error";
 };
 
+type OperatorSteeringNoteStatus = "pending" | "injecting" | "delivered" | "cancelled" | "failed";
+
+type OperatorSteeringNote = {
+  note_id: string;
+  session_id: string;
+  dispatch_id: string;
+  message: string;
+  status: OperatorSteeringNoteStatus | string;
+  worker_execution_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  delivered_at: string | null;
+  cancelled_at: string | null;
+  provider: string | null;
+  provider_endpoint: string | null;
+  error: string | null;
+  delivery_attempts: number;
+};
+
+type OperatorSteeringContext = {
+  session_id: string;
+  dispatch_id: string;
+  workflow_run_id: string | null;
+  effect_id: string | null;
+  node_id: string | null;
+  agent_harness: string;
+  execution_backend: string | null;
+  directory_path: string | null;
+  model: string | null;
+  trace_id: string | null;
+  started_at: string;
+  expires_at: string;
+};
+
+type OperatorSteeringContextResponse = {
+  session_id: string;
+  directory_path: string;
+  context: OperatorSteeringContext | null;
+};
+
+type OperatorSteeringNoteListResponse = {
+  session_id: string;
+  dispatch_id: string | null;
+  directory_path: string;
+  notes: OperatorSteeringNote[];
+};
+
+type OperatorSteeringNoteMutationResponse = {
+  directory_path: string;
+  note: OperatorSteeringNote;
+};
+
 type BackendFilter = "all" | AgentBackend;
 type StatusFilter = "active" | "inactive" | "all";
 
@@ -309,6 +362,19 @@ async function loadAgentLogPage(
   );
 }
 
+async function loadOperatorSteeringContext(sessionId: string): Promise<OperatorSteeringContextResponse> {
+  const query = new URLSearchParams({ session_id: sessionId });
+  return fetchJson<OperatorSteeringContextResponse>(`/api/operator-steering/context?${query.toString()}`);
+}
+
+async function loadOperatorSteeringNotes(
+  sessionId: string,
+  dispatchId: string,
+): Promise<OperatorSteeringNoteListResponse> {
+  const query = new URLSearchParams({ session_id: sessionId, dispatch_id: dispatchId });
+  return fetchJson<OperatorSteeringNoteListResponse>(`/api/operator-steering/notes?${query.toString()}`);
+}
+
 function agentKey(agent: AgentRecord): string {
   return `${agent.backend}:${agent.agent_id}`;
 }
@@ -338,6 +404,21 @@ function agentMatchesSelection(agent: AgentRecord, selection: AgentHashSelection
 
 function backendLabel(backend: AgentBackend): string {
   return backend === "container_worker_vm" ? "Container agents" : "VM agents";
+}
+
+function operatorSteeringNoteSummary(note: OperatorSteeringNote): string {
+  if (note.status === "pending") return `Pending since ${formatTimestamp(note.created_at)}`;
+  if (note.status === "injecting") return `Injecting since ${formatTimestamp(note.updated_at)}`;
+  if (note.status === "delivered") return `Delivered ${formatTimestamp(note.delivered_at ?? note.updated_at)}`;
+  if (note.status === "cancelled") return `Cancelled ${formatTimestamp(note.cancelled_at ?? note.updated_at)}`;
+  return `${note.status} ${formatTimestamp(note.updated_at)}`;
+}
+
+function shortDispatchId(dispatchId: string | null | undefined): string {
+  const trimmed = dispatchId?.trim();
+  if (!trimmed) return "No dispatch";
+  if (trimmed.length <= 18) return trimmed;
+  return `${trimmed.slice(0, 10)}...${trimmed.slice(-6)}`;
 }
 
 function hostString(host: Record<string, unknown> | null | undefined, key: string): string | null {
@@ -747,7 +828,13 @@ function SkillIcon() {
 }
 
 export function AgentsPage() {
-  const { privilegedUnlocked, refreshAuthSession, selectedDirectoryPath } = useAdminUi();
+  const {
+    canControlWorkflowRuns,
+    canReadWorkflowRuns,
+    privilegedUnlocked,
+    refreshAuthSession,
+    selectedDirectoryPath,
+  } = useAdminUi();
   const [items, setItems] = useState<AgentRecord[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
@@ -760,6 +847,13 @@ export function AgentsPage() {
   const [agentPrompt, setAgentPrompt] = useState("");
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
   const [showPromptForm, setShowPromptForm] = useState(false);
+  const [operatorSteeringContext, setOperatorSteeringContext] = useState<OperatorSteeringContext | null>(null);
+  const [operatorSteeringNotes, setOperatorSteeringNotes] = useState<OperatorSteeringNote[]>([]);
+  const [operatorSteeringDraft, setOperatorSteeringDraft] = useState("");
+  const [operatorSteeringLoading, setOperatorSteeringLoading] = useState(false);
+  const [operatorSteeringSubmitting, setOperatorSteeringSubmitting] = useState(false);
+  const [operatorSteeringCancellingId, setOperatorSteeringCancellingId] = useState<string | null>(null);
+  const [operatorSteeringError, setOperatorSteeringError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -782,6 +876,7 @@ export function AgentsPage() {
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
+  const operatorSteeringLoadSeqRef = useRef(0);
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
@@ -902,6 +997,54 @@ export function AgentsPage() {
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
   const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
+  const operatorSteeringSessionId = selectedAgent?.session_id?.trim() ?? "";
+
+  const refreshOperatorSteering = useCallback(async () => {
+    const loadSeq = operatorSteeringLoadSeqRef.current + 1;
+    operatorSteeringLoadSeqRef.current = loadSeq;
+    if (!operatorSteeringSessionId || !canReadWorkflowRuns) {
+      setOperatorSteeringContext(null);
+      setOperatorSteeringNotes([]);
+      setOperatorSteeringLoading(false);
+      setOperatorSteeringError(null);
+      return;
+    }
+    setOperatorSteeringLoading(true);
+    setOperatorSteeringError(null);
+    try {
+      const contextPayload = await loadOperatorSteeringContext(operatorSteeringSessionId);
+      if (operatorSteeringLoadSeqRef.current !== loadSeq) return;
+      const context = contextPayload.context;
+      setOperatorSteeringContext(context);
+      if (context === null) {
+        setOperatorSteeringNotes([]);
+        return;
+      }
+      const notesPayload = await loadOperatorSteeringNotes(context.session_id, context.dispatch_id);
+      if (operatorSteeringLoadSeqRef.current !== loadSeq) return;
+      setOperatorSteeringNotes(notesPayload.notes);
+    } catch (reason: unknown) {
+      if (operatorSteeringLoadSeqRef.current !== loadSeq) return;
+      if (isApiAuthError(reason)) {
+        await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+      }
+      setOperatorSteeringContext(null);
+      setOperatorSteeringNotes([]);
+      setOperatorSteeringError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (operatorSteeringLoadSeqRef.current === loadSeq) {
+        setOperatorSteeringLoading(false);
+      }
+    }
+  }, [canReadWorkflowRuns, operatorSteeringSessionId, refreshAuthSession]);
+
+  useEffect(() => {
+    setOperatorSteeringDraft("");
+    setOperatorSteeringContext(null);
+    setOperatorSteeringNotes([]);
+    setOperatorSteeringError(null);
+    void refreshOperatorSteering();
+  }, [refreshOperatorSteering]);
 
   useEffect(() => {
     if (showPromptForm) return;
@@ -1203,6 +1346,89 @@ export function AgentsPage() {
     }
   }
 
+  async function submitOperatorSteeringNote() {
+    if (!selectedAgent) return;
+    const message = operatorSteeringDraft.trim();
+    if (!message) {
+      setOperatorSteeringError("Steering note is required.");
+      return;
+    }
+    if (!operatorSteeringContext) {
+      setOperatorSteeringError("No active model dispatch is available for this session.");
+      return;
+    }
+    if (!canControlWorkflowRuns) {
+      setOperatorSteeringError("Permission required: workflow_runs.control");
+      return;
+    }
+    if (!privilegedUnlocked) {
+      setOperatorSteeringError("Privileged operations are locked.");
+      return;
+    }
+    setOperatorSteeringSubmitting(true);
+    setOperatorSteeringError(null);
+    try {
+      const payload = await fetchJson<OperatorSteeringNoteMutationResponse>(
+        "/api/operator-steering/notes",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: operatorSteeringContext.session_id,
+            dispatch_id: operatorSteeringContext.dispatch_id,
+            worker_execution_id: hostString(selectedAgent.host, "latest_execution_id"),
+            message,
+          }),
+        },
+      );
+      setOperatorSteeringNotes((current) => [
+        payload.note,
+        ...current.filter((note) => note.note_id !== payload.note.note_id),
+      ]);
+      setOperatorSteeringDraft("");
+      const actionMessage = `${selectedAgent.target_name}: queued steering note for ${shortDispatchId(payload.note.dispatch_id)}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message: actionMessage, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus("Queued operator steering note.");
+      setError(null);
+    } catch (reason: unknown) {
+      if (isApiAuthError(reason)) {
+        await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+      }
+      const errorMessage = reason instanceof Error ? reason.message : String(reason);
+      setOperatorSteeringError(errorMessage);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${errorMessage}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setOperatorSteeringSubmitting(false);
+    }
+  }
+
+  async function cancelOperatorSteeringNote(note: OperatorSteeringNote) {
+    if (!selectedAgent || note.status !== "pending" || !canControlWorkflowRuns || !privilegedUnlocked) return;
+    setOperatorSteeringCancellingId(note.note_id);
+    setOperatorSteeringError(null);
+    try {
+      const payload = await fetchJson<OperatorSteeringNoteMutationResponse>(
+        `/api/operator-steering/notes/${encodeURIComponent(note.note_id)}/cancel`,
+        { method: "POST" },
+      );
+      setOperatorSteeringNotes((current) => current.map((item) => (
+        item.note_id === payload.note.note_id ? payload.note : item
+      )));
+      const actionMessage = `${selectedAgent.target_name}: cancelled steering note for ${shortDispatchId(payload.note.dispatch_id)}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message: actionMessage, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus("Cancelled operator steering note.");
+      setError(null);
+    } catch (reason: unknown) {
+      if (isApiAuthError(reason)) {
+        await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+      }
+      const errorMessage = reason instanceof Error ? reason.message : String(reason);
+      setOperatorSteeringError(errorMessage);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${errorMessage}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setOperatorSteeringCancellingId(null);
+    }
+  }
+
   function ttlIsInvalid(value: string): boolean {
     const trimmed = value.trim();
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
@@ -1426,6 +1652,18 @@ export function AgentsPage() {
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
   const canInstallSkills = canEditPolicy && skillOptions.length > 0;
+  const operatorSteeringCanSubmit = Boolean(
+    operatorSteeringContext &&
+    canControlWorkflowRuns &&
+    privilegedUnlocked &&
+    operatorSteeringDraft.trim() &&
+    !operatorSteeringSubmitting,
+  );
+  const operatorSteeringMeta = operatorSteeringLoading
+    ? "Loading"
+    : operatorSteeringContext
+      ? shortDispatchId(operatorSteeringContext.dispatch_id)
+      : "No active dispatch";
   const logTitle = selectedAgent?.backend === "container_worker_vm"
     ? selectedExecutions.length > 0
       ? `${selectedExecutions.length} execution${selectedExecutions.length === 1 ? "" : "s"}`
@@ -2256,12 +2494,117 @@ export function AgentsPage() {
                     </>
                   )}
                 </dl>
-              </article>
-            </div>
+	              </article>
+	            </div>
 
-            {selectedLabels.length > 0 ? (
-              <article className="panel compact-panel">
-                <div className="panel-header">
+	            <article className="panel agent-steering-panel">
+	              <div className="panel-header">
+	                <div>
+	                  <h3>Operator steering</h3>
+	                  <span className="panel-meta">{operatorSteeringMeta}</span>
+	                </div>
+	                <button
+	                  className="admin-action-button compact"
+	                  type="button"
+	                  aria-label="Refresh operator steering"
+	                  onClick={() => void refreshOperatorSteering()}
+	                  disabled={operatorSteeringLoading || !operatorSteeringSessionId || !canReadWorkflowRuns}
+	                >
+	                  Refresh
+	                </button>
+	              </div>
+	              <div className="operator-steering-panel">
+	                {!operatorSteeringSessionId ? (
+	                  <div className="empty-state compact-empty-state">No linked session.</div>
+	                ) : !canReadWorkflowRuns ? (
+	                  <div className="empty-state compact-empty-state">Permission required: workflow_runs.read.</div>
+	                ) : operatorSteeringLoading ? (
+	                  <div className="empty-state compact-empty-state">Loading steering context.</div>
+	                ) : operatorSteeringContext ? (
+	                  <>
+	                    <dl className="property-grid agent-steering-context-grid">
+	                      <div>
+	                        <dt>Session</dt>
+	                        <dd>{operatorSteeringContext.session_id}</dd>
+	                      </div>
+	                      <div>
+	                        <dt>Dispatch</dt>
+	                        <dd>{operatorSteeringContext.dispatch_id}</dd>
+	                      </div>
+	                      <div>
+	                        <dt>Model</dt>
+	                        <dd>{operatorSteeringContext.model ?? "Unknown"}</dd>
+	                      </div>
+	                      <div>
+	                        <dt>Expires</dt>
+	                        <dd>{formatTimestamp(operatorSteeringContext.expires_at)}</dd>
+	                      </div>
+	                    </dl>
+	                    <label className="field-stack operator-steering-form">
+	                      <span>Steering note</span>
+	                      <textarea
+	                        rows={3}
+	                        maxLength={2000}
+	                        value={operatorSteeringDraft}
+	                        placeholder="Move from exploration to implementation."
+	                        disabled={!canControlWorkflowRuns || !privilegedUnlocked || operatorSteeringSubmitting}
+	                        onChange={(event) => {
+	                          setOperatorSteeringDraft(event.target.value);
+	                          if (operatorSteeringError) setOperatorSteeringError(null);
+	                        }}
+	                      />
+	                    </label>
+	                    <div className="operator-steering-actions">
+	                      <button
+	                        type="button"
+	                        className="admin-action-button primary compact"
+	                        disabled={!operatorSteeringCanSubmit}
+	                        onClick={() => void submitOperatorSteeringNote()}
+	                      >
+	                        {operatorSteeringSubmitting ? "Queuing..." : "Queue note"}
+	                      </button>
+	                      {canControlWorkflowRuns && !privilegedUnlocked ? (
+	                        <span className="operator-steering-lock">Privileged operations locked</span>
+	                      ) : null}
+	                      {!canControlWorkflowRuns ? (
+	                        <span className="operator-steering-lock">Permission required: workflow_runs.control</span>
+	                      ) : null}
+	                    </div>
+	                  </>
+	                ) : (
+	                  <div className="empty-state compact-empty-state">No active model dispatch for this session.</div>
+	                )}
+	                {operatorSteeringError ? <div className="runtime-run-error">{operatorSteeringError}</div> : null}
+	                {operatorSteeringNotes.length > 0 ? (
+	                  <div className="operator-steering-notes">
+	                    {operatorSteeringNotes.slice(0, 4).map((note) => {
+	                      const cancelling = operatorSteeringCancellingId === note.note_id;
+	                      return (
+	                        <div className={`operator-steering-note status-${note.status}`} key={note.note_id}>
+	                          <span>{operatorSteeringNoteSummary(note)}</span>
+	                          {note.provider ? <span>{note.provider}{note.provider_endpoint ? ` / ${note.provider_endpoint}` : ""}</span> : null}
+	                          {note.error ? <span className="missing">{note.error}</span> : null}
+	                          {note.status === "pending" && canControlWorkflowRuns ? (
+	                            <button
+	                              type="button"
+	                              className="admin-action-button compact"
+	                              disabled={!privilegedUnlocked || cancelling}
+	                              onClick={() => void cancelOperatorSteeringNote(note)}
+	                            >
+	                              {cancelling ? "Cancelling..." : "Cancel"}
+	                            </button>
+	                          ) : null}
+	                        </div>
+	                      );
+	                    })}
+	                  </div>
+	                ) : null}
+	              </div>
+	            </article>
+
+	            {selectedLabels.length > 0 ? (
+	              <article className="panel compact-panel">
+	                <div className="panel-header">
                   <h3>Labels</h3>
                   <span className="panel-meta">{selectedLabels.length} entries</span>
                 </div>

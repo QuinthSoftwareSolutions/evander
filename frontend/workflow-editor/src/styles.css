@@ -3617,6 +3617,16 @@ select {
   background: rgba(255, 240, 235, 0.62);
 }
 
+.agent-steering-panel .operator-steering-panel {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.agent-steering-context-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .run-detail-candidates {
   align-items: start;
 }

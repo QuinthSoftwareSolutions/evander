@@ -7,6 +7,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-06-09 - Team Add-on Hierarchy, Reviews, and Git Releases
 
+- Added an Agents-page Operator steering panel that loads the selected
+  session's active dispatch, queues steering notes, and lists/cancels pending
+  notes without requiring operators to open Workflow inspect mode first.
 - Extended the Team Add-on agent action protocol with `task_creations`,
   `status_requests`, `operator_escalations`, `review_requests`,
   `review_decisions`, and `goal_updates`, enforcing hierarchy permissions for

@@ -1017,6 +1017,29 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/operator-steering/context") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          directory_path: "root/team",
+          context: null,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/operator-steering/notes") {
+      await route.fulfill(
+        jsonResponse({
+          session_id: url.searchParams.get("session_id"),
+          dispatch_id: url.searchParams.get("dispatch_id"),
+          directory_path: "root/team",
+          notes: [],
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/skills") {
       await route.fulfill(jsonResponse({ items: [] }));
       return;

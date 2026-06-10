@@ -74,7 +74,10 @@ from agent_sandbox.directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.models import (
+    ModelInferenceUsageEvent,
+    ModelUsageCorrelationContext,
+)
 from agent_sandbox.model_usage.pricing import (
     MODEL_PRICING_PATH_ENV,
     ModelPricingRule,
@@ -8617,6 +8620,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             raise ValueError(f"unknown session: {normalized_session_id}")
         return self._agent_record_directory_path(session.directory_path)
+
+    def active_operator_steering_context(
+        self,
+        *,
+        session_id: str,
+    ) -> ModelUsageCorrelationContext | None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        return model_usage_store(self.config.runtime_dir).get_active_correlation_context(
+            session_id=normalized_session_id,
+        )
 
     def create_operator_steering_note(
         self,

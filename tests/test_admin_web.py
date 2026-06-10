@@ -11612,6 +11612,16 @@ def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -
     )
     client = TestClient(create_app(service))
 
+    context_response = client.get(
+        "/api/operator-steering/context",
+        params={"session_id": "session-steer"},
+    )
+    assert context_response.status_code == 200
+    context_payload = context_response.json()
+    assert context_payload["directory_path"] == "root"
+    assert context_payload["context"]["session_id"] == "session-steer"
+    assert context_payload["context"]["dispatch_id"] == "dispatch-steer"
+
     locked_create = client.post(
         "/api/operator-steering/notes",
         json={

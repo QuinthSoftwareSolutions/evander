@@ -49,6 +49,30 @@ def _limit_from_query(value: str | None) -> int:
 
 
 def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
+    async def active_context(request: Request) -> JSONResponse:
+        try:
+            auth.require(request)
+            session_id = str(request.query_params.get("session_id") or "").strip()
+            context = service.active_operator_steering_context(session_id=session_id)
+            directory_path = service.operator_steering_directory_path(
+                session_id=session_id,
+                dispatch_id=context.dispatch_id if context is not None else None,
+            )
+            auth.require_permission(
+                request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
+            )
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "directory_path": directory_path,
+                "context": context.model_dump(mode="json") if context is not None else None,
+            }
+        )
+
     async def list_notes(request: Request) -> JSONResponse:
         try:
             auth.require(request)
@@ -139,6 +163,7 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
         )
 
     return [
+        Route("/api/operator-steering/context", active_context, methods=["GET"]),
         Route("/api/operator-steering/notes", list_notes, methods=["GET"]),
         Route("/api/operator-steering/notes", create_note, methods=["POST"]),
         Route(
