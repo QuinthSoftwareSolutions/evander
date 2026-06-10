@@ -10823,6 +10823,89 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
     }
 
 
+def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/agents/create-options")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["directory_path"] == "root"
+    assert body["backends"] == ["libvirt_vm", "container_worker_vm"]
+    providers = {provider["value"]: provider for provider in body["agent_providers"]}
+    assert providers["codex"]["execution_backends"] == [
+        "libvirt_vm",
+        "container_worker_vm",
+    ]
+    assert providers["claude"]["execution_backends"] == [
+        "libvirt_vm",
+        "container_worker_vm",
+    ]
+    assert providers["copilot"]["execution_backends"] == ["libvirt_vm"]
+    assert body["libvirt"]["default_template"] == "default"
+    assert body["libvirt"]["templates"] == [
+        {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"}
+    ]
+    assert body["container_worker"]["default_image"] == "agent-sandbox-runner:latest"
+    assert body["container_worker"]["images"] == []
+
+
+def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    providers_write = service.write_directory_domain_config(
+        team_path,
+        "providers",
+        {
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": "runner-base:latest",
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        },
+    )
+    assert providers_write.ok is True
+    vm_write = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "libvirt_vm_default_template": "ubuntu",
+            "libvirt_vm_templates": {
+                "ubuntu": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "fedora": "fedora-40-cloud.img",
+            },
+        },
+    )
+    assert vm_write.ok is True
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/agents/create-options",
+        params={"directory_path": team_path},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["directory_path"] == team_path
+    assert body["libvirt"]["default_template"] == "ubuntu"
+    assert body["libvirt"]["templates"] == [
+        {"alias": "default", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"},
+        {"alias": "fedora", "image_ref": "fedora-40-cloud.img"},
+        {"alias": "ubuntu", "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img"},
+    ]
+    assert body["container_worker"]["default_image"] == "runner-base:latest"
+    assert body["container_worker"]["images"] == [
+        {"alias": "default", "image_ref": "runner-base:latest"},
+        {
+            "alias": "dotnet-playwright",
+            "image_ref": "runner-dotnet-playwright:2026-06-05",
+        },
+    ]
+
+
 def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
     tmp_path: Path, monkeypatch
 ) -> None:
