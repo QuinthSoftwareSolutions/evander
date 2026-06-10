@@ -542,6 +542,234 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert response.status_code == 404
 
 
+def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+            "created_by_agent_id": "lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "deliverable",
+            "task_id": "task",
+            "producer_agent_id": "backend",
+            "summary": "Backend task is ready.",
+        },
+    )
+
+    # Create a review profile.
+    response = client.post(
+        "/api/addons/team-addon/review-profiles",
+        json={
+            "id": "profile",
+            "team_id": "team",
+            "project_id": "project",
+            "name": "Security review",
+            "description": "Checklist for security-sensitive work.",
+            "applicable_roles": ["reviewer", "lead"],
+            "criteria": [
+                {"id": "authz", "label": "Authorization", "required": True},
+                {"id": "logging", "label": "Logging", "description": "No secrets", "required": False},
+            ],
+        },
+    )
+    assert response.status_code == 201
+
+    # List shows it.
+    response = client.get("/api/addons/team-addon/review-profiles")
+    assert response.status_code == 200
+    listing = response.json()
+    assert [item["id"] for item in listing["review_profiles"]] == ["profile"]
+
+    # Get by id.
+    response = client.get("/api/addons/team-addon/review-profiles/profile")
+    assert response.status_code == 200
+    profile = response.json()
+    assert profile["name"] == "Security review"
+    assert [criterion["id"] for criterion in profile["criteria"]] == ["authz", "logging"]
+
+    # Missing profile returns 404.
+    assert client.get("/api/addons/team-addon/review-profiles/missing").status_code == 404
+
+    # Patch name and archived flag.
+    response = client.patch(
+        "/api/addons/team-addon/review-profiles/profile",
+        json={"name": "Security review v2", "archived": True},
+    )
+    assert response.status_code == 200
+    response = client.get("/api/addons/team-addon/review-profiles/profile")
+    profile = response.json()
+    assert profile["name"] == "Security review v2"
+    assert profile["archived"] is True
+
+    # Un-archive so the profile can be attached to a review request.
+    client.patch(
+        "/api/addons/team-addon/review-profiles/profile",
+        json={"archived": False},
+    )
+
+    # Create a review request with the profile + instructions.
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+            "review_profile_id": "profile",
+            "instructions": "Pay attention to authz.",
+        },
+    )
+    assert response.status_code == 201
+    review = response.json()["review_requests"]["review"]
+    assert review["review_profile_id"] == "profile"
+    assert review["instructions"] == "Pay attention to authz."
+
+    # GET /state shows the profile on the review.
+    state = client.get("/api/addons/team-addon/state").json()
+    assert state["review_requests"]["review"]["review_profile_id"] == "profile"
+
+    # Decision with criterion results persists them.
+    response = client.post(
+        "/api/addons/team-addon/review-requests/review/decision",
+        json={
+            "state": "accepted",
+            "findings": ["looks good"],
+            "criteria": [
+                {"criterion_id": "authz", "state": "passed", "finding": "scoped"},
+                {"criterion_id": "logging", "state": "skipped"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    review = response.json()["review_requests"]["review"]
+    assert review["state"] == "accepted"
+    assert [result["criterion_id"] for result in review["criteria"]] == ["authz", "logging"]
+    assert review["criteria"][0]["state"] == "passed"
+    assert review["criteria"][0]["finding"] == "scoped"
+
+
+def test_team_addon_admin_api_review_request_without_profile_still_works(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+            "created_by_agent_id": "lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "deliverable",
+            "task_id": "task",
+            "producer_agent_id": "backend",
+            "summary": "Backend task is ready.",
+        },
+    )
+
+    # Regression: review request without a profile still succeeds.
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["review_requests"]["review"]["review_profile_id"] is None
+
+    # Unknown profile id on a review request returns 400.
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review-2",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+            "review_profile_id": "missing-profile",
+        },
+    )
+    assert response.status_code == 400
+
+
 def test_team_addon_admin_api_patch_team_rejects_stale_revision(tmp_path: Path) -> None:
     client = _client(tmp_path)
     client.post(
