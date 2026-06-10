@@ -25,6 +25,10 @@ material. Newer entries are added incrementally as changes land.
   approved-alias dropdown for the container image selector on the container
   worker path. Direct create keeps failing clearly on duplicate VM names or
   session ids; the modal adds no upsert/no-op mode and no raw metadata JSON.
+- The Agents page direct-create modal now always creates in the current page
+  directory, removes the editable directory field, and reloads directory-scoped
+  provider/image options from that selected directory without changing tracked
+  dist asset hashes.
 
 ## 2026-06-10 - Operator Steering Stability
 

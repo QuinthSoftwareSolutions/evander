@@ -89,7 +89,6 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
-  directoryPath: string;
   model: string;
   ttlHours: string;
   labels: string;
@@ -169,13 +168,12 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
   };
 }
 
-function emptyCreateForm(directoryPath: string): AgentCreateFormState {
+function emptyCreateForm(): AgentCreateFormState {
   return {
     backend: "libvirt_vm",
     vmName: "",
     targetName: "",
     sessionId: "",
-    directoryPath,
     model: "",
     ttlHours: "",
     labels: "",
@@ -676,12 +674,12 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   };
 }
 
-function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
+function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {
   const labels = parseLabels(form.labels);
   const payload: AgentCreateRequest = {
     backend: form.backend,
     session_id: optionalText(form.sessionId),
-    directory_path: optionalText(form.directoryPath),
+    directory_path: optionalText(directoryPath),
     model: optionalText(form.model),
     ttl_hours: optionalNumber(form.ttlHours),
     labels,
@@ -891,7 +889,7 @@ export function AgentsPage() {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
-    emptyCreateForm(selectedDirectoryPath),
+    emptyCreateForm(),
   );
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
@@ -964,9 +962,18 @@ export function AgentsPage() {
 
   useEffect(() => {
     if (!showCreateForm) {
-      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+      setCreateForm(emptyCreateForm());
     }
-  }, [selectedDirectoryPath, showCreateForm]);
+  }, [showCreateForm]);
+
+  useEffect(() => {
+    setCreateForm((current) => ({
+      ...current,
+      agentProvider: "",
+      vmImage: "",
+      containerImage: "",
+    }));
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -987,6 +994,7 @@ export function AgentsPage() {
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
+      setCreateOptions(null);
       try {
         const options = await loadAgentCreateOptions(selectedDirectoryPath);
         if (!cancelled) setCreateOptions(options);
@@ -1533,14 +1541,14 @@ export function AgentsPage() {
     try {
       const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
         method: "POST",
-        body: JSON.stringify(buildCreatePayload(createForm)),
+        body: JSON.stringify(buildCreatePayload(createForm, selectedDirectoryPath)),
       });
       const message = `${payload.target_name}: ${payload.message}`;
       setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
       setStatus(payload.message);
       setError(null);
       setShowCreateForm(false);
-      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+      setCreateForm(emptyCreateForm());
       await refreshLiveAgents();
       setSelectedKey(`${payload.backend}:${payload.agent_id}`);
     } catch (reason: unknown) {
@@ -1749,7 +1757,7 @@ export function AgentsPage() {
               type="button"
               className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
               onClick={() => {
-                setCreateForm(emptyCreateForm(selectedDirectoryPath));
+                setCreateForm(emptyCreateForm());
                 setShowCreateForm(true);
                 setShowEditForm(false);
                 setShowSkillInstallForm(false);
@@ -2043,13 +2051,6 @@ export function AgentsPage() {
                         </option>
                       ))}
                     </select>
-                  </label>
-                  <label className="field-stack">
-                    <span>Directory</span>
-                    <input
-                      value={createForm.directoryPath}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))}
-                    />
                   </label>
                   <label className="field-stack">
                     <span>Session</span>

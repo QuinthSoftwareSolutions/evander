@@ -42,6 +42,15 @@ test("create modal loads create-options for the selected directory", () => {
   assert.match(page, /setCreateOptions\(options\)/);
 });
 
+test("create modal always posts the selected page directory", () => {
+  assert.doesNotMatch(page, /directoryPath: string;/);
+  assert.doesNotMatch(page, /createForm\.directoryPath/);
+  assert.doesNotMatch(page, /<span>Directory<\/span>/);
+  assert.match(page, /function buildCreatePayload\(form: AgentCreateFormState, directoryPath: string\)/);
+  assert.match(page, /directory_path: optionalText\(directoryPath\)/);
+  assert.match(page, /buildCreatePayload\(createForm, selectedDirectoryPath\)/);
+});
+
 test("provider options are filtered by execution_backends against the selected backend", () => {
   assert.match(
     page,
