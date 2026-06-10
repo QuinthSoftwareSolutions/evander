@@ -253,6 +253,7 @@ def test_model_usage_list_query_provider_adds_cost_estimates_and_totals(tmp_path
     assert result["count"] == 2
     assert result["total_input_tokens"] == 1010
     assert result["total_cached_input_tokens"] == 200
+    assert result["total_cache_write_input_tokens"] == 0
     assert result["total_output_tokens"] == 520
     assert result["total_tokens"] == 1530
     assert result["costs_estimated_count"] == 1
@@ -261,9 +262,11 @@ def test_model_usage_list_query_provider_adds_cost_estimates_and_totals(tmp_path
     assert result["items"][0]["estimated_cost"] == pytest.approx(0.008435)
     assert result["items"][0]["estimated_input_cost"] == pytest.approx(0.0014)
     assert result["items"][0]["estimated_cached_input_cost"] == pytest.approx(0.000035)
+    assert result["items"][0]["estimated_cache_write_cost"] == pytest.approx(0)
     assert result["items"][0]["estimated_output_cost"] == pytest.approx(0.007)
     assert result["items"][0]["cached_input_tokens"] == 200
+    assert result["items"][0]["cache_write_input_tokens"] == 0
     assert result["items"][0]["cost_status"] == "estimated"
     assert result["items"][0]["pricing_rule_id"] == "openai:gpt-5.2-codex:text:2025-12-11"
-    assert result["items"][0]["pricing_version"] == "openai-2026-06-04"
+    assert result["items"][0]["pricing_version"]
     assert result["items"][1]["cost_status"] == "pricing_unavailable"

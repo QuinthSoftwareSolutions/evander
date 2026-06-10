@@ -11,6 +11,7 @@ from agent_sandbox.model_usage.pricing import (
     ModelPricingCatalog,
     default_model_pricing_catalog,
     estimate_model_usage_cost,
+    extract_cache_write_input_tokens,
     extract_cached_input_tokens,
 )
 
@@ -73,6 +74,7 @@ class ModelUsageListQueryProvider(QueryProviderBase):
         total_estimated_cost = Decimal("0")
         total_input_tokens = 0
         total_cached_input_tokens = 0
+        total_cache_write_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
         costs_estimated_count = 0
@@ -84,8 +86,10 @@ class ModelUsageListQueryProvider(QueryProviderBase):
             input_tokens = int(event.input_tokens or 0)
             output_tokens = int(event.output_tokens or 0)
             cached_input_tokens = extract_cached_input_tokens(event)
+            cache_write_tokens = extract_cache_write_input_tokens(event)
             total_input_tokens += input_tokens
             total_cached_input_tokens += int(cached_input_tokens or 0)
+            total_cache_write_input_tokens += cache_write_tokens.total
             total_output_tokens += output_tokens
             total_tokens += (
                 int(event.total_tokens)
@@ -102,6 +106,9 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                         "estimated_cached_input_cost": _decimal_to_float(
                             estimate.cached_input_cost
                         ),
+                        "estimated_cache_write_cost": _decimal_to_float(
+                            estimate.cache_write_cost
+                        ),
                         "estimated_output_cost": _decimal_to_float(estimate.output_cost),
                         "cost_currency": estimate.currency,
                         "cost_status": estimate.status,
@@ -109,6 +116,7 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                         "pricing_version": estimate.pricing_version,
                         "pricing_explanation": estimate.explanation,
                         "cached_input_tokens": cached_input_tokens,
+                        "cache_write_input_tokens": cache_write_tokens.total,
                     }
                 )
                 if estimate.estimated_total is not None:
@@ -126,6 +134,7 @@ class ModelUsageListQueryProvider(QueryProviderBase):
             else None,
             "total_input_tokens": total_input_tokens,
             "total_cached_input_tokens": total_cached_input_tokens,
+            "total_cache_write_input_tokens": total_cache_write_input_tokens,
             "total_output_tokens": total_output_tokens,
             "total_tokens": total_tokens,
             "costs_estimated_count": costs_estimated_count,

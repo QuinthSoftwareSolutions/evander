@@ -15,6 +15,15 @@ material. Newer entries are added incrementally as changes land.
 - Exposed the new task graph and review profile controls in the bundled Team
   Add-on UI, and documented the updated agent action protocol.
 
+## 2026-06-10 - Model Usage Pricing
+
+- Added model-usage cost support for providers that report prompt cache reads
+  and cache writes as separate usage counters, including per-rule 5-minute and
+  1-hour cache-write rates in the pricing catalog.
+- Exposed cache-write token and cost totals from `query:model-usage:list` so
+  Claude/Anthropic usage reports include cache creation costs instead of only
+  base input, cache-read, and output costs.
+
 ## 2026-06-09 - Team Add-on Hierarchy, Reviews, and Git Releases
 
 - Tightened Team Add-on task creation and Git review promotion validation so
