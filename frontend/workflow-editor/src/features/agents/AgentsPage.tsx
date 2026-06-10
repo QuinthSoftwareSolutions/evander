@@ -414,6 +414,15 @@ function operatorSteeringNoteSummary(note: OperatorSteeringNote): string {
   return `${note.status} ${formatTimestamp(note.updated_at)}`;
 }
 
+function operatorSteeringTargetKey(
+  sessionId: string | null | undefined,
+  dispatchId: string | null | undefined,
+): string | null {
+  const normalizedSessionId = sessionId?.trim();
+  if (!normalizedSessionId) return null;
+  return `${normalizedSessionId}\n${dispatchId?.trim() ?? ""}`;
+}
+
 function shortDispatchId(dispatchId: string | null | undefined): string {
   const trimmed = dispatchId?.trim();
   if (!trimmed) return "No dispatch";
@@ -877,6 +886,7 @@ export function AgentsPage() {
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
   const operatorSteeringLoadSeqRef = useRef(0);
+  const operatorSteeringDraftTargetRef = useRef<string | null>(null);
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
@@ -1003,6 +1013,8 @@ export function AgentsPage() {
     const loadSeq = operatorSteeringLoadSeqRef.current + 1;
     operatorSteeringLoadSeqRef.current = loadSeq;
     if (!operatorSteeringSessionId || !canReadWorkflowRuns) {
+      operatorSteeringDraftTargetRef.current = null;
+      setOperatorSteeringDraft("");
       setOperatorSteeringContext(null);
       setOperatorSteeringNotes([]);
       setOperatorSteeringLoading(false);
@@ -1015,6 +1027,14 @@ export function AgentsPage() {
       const contextPayload = await loadOperatorSteeringContext(operatorSteeringSessionId);
       if (operatorSteeringLoadSeqRef.current !== loadSeq) return;
       const context = contextPayload.context;
+      const nextDraftTarget = operatorSteeringTargetKey(
+        context?.session_id ?? operatorSteeringSessionId,
+        context?.dispatch_id ?? null,
+      );
+      if (operatorSteeringDraftTargetRef.current !== nextDraftTarget) {
+        operatorSteeringDraftTargetRef.current = nextDraftTarget;
+        setOperatorSteeringDraft("");
+      }
       setOperatorSteeringContext(context);
       if (context === null) {
         setOperatorSteeringNotes([]);
@@ -1039,7 +1059,6 @@ export function AgentsPage() {
   }, [canReadWorkflowRuns, operatorSteeringSessionId, refreshAuthSession]);
 
   useEffect(() => {
-    setOperatorSteeringDraft("");
     setOperatorSteeringContext(null);
     setOperatorSteeringNotes([]);
     setOperatorSteeringError(null);

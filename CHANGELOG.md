@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-10 - Operator Steering Stability
+
+- Preserved Agents-page Operator steering drafts across live refreshes unless the
+  selected steering session or dispatch changes.
+- Fixed Anthropic/Claude operator steering delivery so injected notes are placed
+  before trailing `system` messages, avoiding invalid Anthropic message ordering.
+
 ## 2026-06-10 - Team Add-on Task Graphs And Review Profiles
 
 - Added Team Add-on task graph fields for parent tasks and dependency ordering,
