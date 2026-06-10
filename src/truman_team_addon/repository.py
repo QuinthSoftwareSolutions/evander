@@ -276,6 +276,8 @@ class TeamStateRepository:
         description: str,
         created_by_agent_id: str,
         state: TeamTaskState = TeamTaskState.PENDING,
+        parent_task_id: str | None = None,
+        dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
@@ -285,6 +287,10 @@ class TeamStateRepository:
                 task.priority = priority
                 task.title = title
                 task.description = description
+                if parent_task_id is not None:
+                    task.parent_task_id = parent_task_id
+                if dependency_task_ids is not None:
+                    task.dependency_task_ids = dependency_task_ids
                 task.updated_at = now
                 return state_model
             state_model.tasks[task_id] = AgentTask(
@@ -296,6 +302,8 @@ class TeamStateRepository:
                 title=title,
                 description=description,
                 created_by_agent_id=created_by_agent_id,
+                parent_task_id=parent_task_id,
+                dependency_task_ids=dependency_task_ids or [],
                 created_at=now,
                 updated_at=now,
             )
@@ -311,6 +319,8 @@ class TeamStateRepository:
         state: TeamTaskState | None = None,
         title: str | None = None,
         description: str | None = None,
+        parent_task_id: str | None = None,
+        dependency_task_ids: list[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state_model: TeamState) -> TeamState:
@@ -323,6 +333,10 @@ class TeamStateRepository:
                 task.title = title
             if description is not None:
                 task.description = description
+            if parent_task_id is not None:
+                task.parent_task_id = parent_task_id
+            if dependency_task_ids is not None:
+                task.dependency_task_ids = dependency_task_ids
             task.updated_at = utc_now()
             return state_model
 

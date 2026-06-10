@@ -259,6 +259,162 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert "exactly one" in response.json()["error"]
 
 
+def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "other-project",
+            "team_id": "team",
+            "name": "Other Project",
+            "lead_agent_id": "other-lead",
+            "lead_session_id": "session-other-lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+        },
+    )
+
+    # Parent task and a dependency task that the child will depend on.
+    assert (
+        client.post(
+            "/api/addons/team-addon/tasks",
+            json={
+                "id": "parent",
+                "owner_agent_id": "backend",
+                "project_id": "project",
+                "priority": 10,
+                "title": "Parent task",
+                "description": "Coordinating task.",
+                "created_by_agent_id": "lead",
+            },
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/addons/team-addon/tasks",
+            json={
+                "id": "dependency",
+                "owner_agent_id": "backend",
+                "project_id": "project",
+                "priority": 10,
+                "title": "Dependency task",
+                "description": "Must finish first.",
+                "created_by_agent_id": "lead",
+            },
+        ).status_code
+        == 201
+    )
+
+    # Child task with parent + dependency graph fields.
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "child",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Child task",
+            "description": "Depends on the dependency task.",
+            "created_by_agent_id": "lead",
+            "parent_task_id": "parent",
+            "dependency_task_ids": ["dependency"],
+        },
+    )
+    assert response.status_code == 201
+    state = response.json()
+    child = state["tasks"]["child"]
+    assert child["parent_task_id"] == "parent"
+    assert child["dependency_task_ids"] == ["dependency"]
+    assert child["dependency_status"] == "waiting"
+    assert state["tasks"]["parent"]["child_task_ids"] == ["child"]
+
+    # PATCH can update dependency links.
+    response = client.patch(
+        "/api/addons/team-addon/tasks/child",
+        json={"dependency_task_ids": []},
+    )
+    assert response.status_code == 200
+    child = response.json()["tasks"]["child"]
+    assert child["dependency_task_ids"] == []
+    assert child["dependency_status"] == "satisfied"
+
+    # Cross-project parent is rejected with a 400.
+    client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "other-task",
+            "owner_agent_id": "lead",
+            "project_id": "other-project",
+            "priority": 10,
+            "title": "Other project task",
+            "description": "Belongs to a different project.",
+            "created_by_agent_id": "other-lead",
+        },
+    )
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "bad-parent",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Bad parent",
+            "description": "Parent in another project.",
+            "created_by_agent_id": "lead",
+            "parent_task_id": "other-task",
+        },
+    )
+    assert response.status_code == 400
+
+    # Payloads WITHOUT the new keys still work (regression).
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "plain",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Plain task",
+            "description": "No graph fields.",
+            "created_by_agent_id": "lead",
+        },
+    )
+    assert response.status_code == 201
+    plain = response.json()["tasks"]["plain"]
+    assert plain["parent_task_id"] is None
+    assert plain["dependency_task_ids"] == []
+
+
 def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

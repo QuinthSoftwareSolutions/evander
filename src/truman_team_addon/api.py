@@ -124,6 +124,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             description=_required(payload, "description"),
             created_by_agent_id=_required(payload, "created_by_agent_id"),
             state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
+            parent_task_id=_optional(payload, "parent_task_id"),
+            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
@@ -137,6 +139,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state=TeamTaskState(raw_state) if raw_state else None,
             title=_optional(payload, "title"),
             description=_optional(payload, "description"),
+            parent_task_id=_optional(payload, "parent_task_id"),
+            dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
