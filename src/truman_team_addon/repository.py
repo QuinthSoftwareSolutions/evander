@@ -45,6 +45,7 @@ from .models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    task_payload_with_derived,
 )
 
 ADDON_ID = "team-addon"
@@ -811,7 +812,18 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
-                if not active_tasks and not pending_inbox:
+                wake_eligible = (
+                    bool(pending_inbox)
+                    or any(
+                        state_model.dependency_status(task.id) == "satisfied"
+                        for task in active_tasks
+                    )
+                    or any(
+                        state_model.subtask_counts(task.id)["open"] > 0
+                        for task in active_tasks
+                    )
+                )
+                if not wake_eligible:
                     continue
                 due_by_time = (
                     runtime.next_wake_at is None
@@ -840,7 +852,10 @@ class TeamStateRepository:
                         "runtime": runtime.model_dump(mode="json"),
                         "dispatch_id": dispatch_id,
                         "reason": reason,
-                        "tasks": [task.model_dump(mode="json") for task in active_tasks],
+                        "tasks": [
+                            task_payload_with_derived(state_model, task)
+                            for task in active_tasks
+                        ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
