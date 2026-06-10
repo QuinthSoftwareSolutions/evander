@@ -1371,16 +1371,39 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert release.feature_branches == ["team/team/features/task-backend"]
     assert release.release_branch == "team/team/releases/rel-1"
     assert release.canonical_branch == "releases/project/rel-1"
-    assert len(release.git_promotion_record_ids) == 2
+    assert len(release.git_promotion_record_ids) == 1
     kinds = sorted(
         state.git_promotions[pid].promotion_kind
         for pid in release.git_promotion_record_ids
     )
-    assert kinds == ["canonical_push", "release"]
-    assert len(result["git_promotion_event_ids"]) == 2
+    assert kinds == ["release"]
+    assert len(result["git_promotion_event_ids"]) == 1
     payloads = {event["payload"]["promotion_kind"]: event["payload"] for event in result["events"]}
     assert payloads["release"]["source_branches"] == ["team/team/features/task-backend"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
+    assert "canonical_push" not in payloads
+
+    release_promotion_id = release.git_promotion_record_ids[0]
+    state, promotion_result = repo.record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="feedface",
+    )
+    release = state.release_packages["rel-1"]
+    canonical_promotions = [
+        state.git_promotions[promotion_id]
+        for promotion_id in release.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+    ]
+    assert len(canonical_promotions) == 1
+    canonical = canonical_promotions[0]
+    assert canonical.source_branch == "team/team/releases/rel-1"
+    assert canonical.target_branch == "releases/project/rel-1"
+    assert promotion_result["git_promotion_event_ids"] == [canonical.id]
+    payloads = {
+        event["payload"]["promotion_kind"]: event["payload"]
+        for event in promotion_result["events"]
+    }
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
     assert payloads["canonical_push"]["canonical_origin_url"] == (

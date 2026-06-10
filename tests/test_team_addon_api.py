@@ -6,6 +6,8 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from truman_team_addon.repository import TeamStateRepository
 
 
 def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
@@ -335,6 +337,16 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert state["deliverables"]["deliverable"]["state"] == "accepted"
     assert state["tasks"]["task"]["state"] == "accepted"
 
+    repo = TeamStateRepository(tmp_path / "runtime")
+
+    def _attach_feature_branch(current):
+        current.deliverables["deliverable"].git_refs.feature_branch = (
+            "team/team/features/task-backend"
+        )
+        return current
+
+    repo.update(_attach_feature_branch)
+
     response = client.post(
         "/api/addons/team-addon/release-packages",
         json={
@@ -344,9 +356,16 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
         },
     )
     assert response.status_code == 201
-    assert response.json()["release_packages"]["release"]["deliverable_ids"] == [
+    payload = response.json()
+    assert payload["release_packages"]["release"]["deliverable_ids"] == [
         "deliverable"
     ]
+    assert len(payload["published_event_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == "team.git.promotion_requested"
+    assert events[0].payload["promotion_kind"] == "release"
+    assert events[0].payload["target_branch"] == "team/team/releases/release"
 
     response = client.get("/api/addons/team-addon/release-packages")
     assert response.status_code == 200

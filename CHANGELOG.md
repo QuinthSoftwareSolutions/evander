@@ -36,6 +36,10 @@ material. Newer entries are added incrementally as changes land.
 - Extended the Team Add-on Admin API and UI to manage the operator
   communication target, project Git config, review decisions, release packages,
   and Git promotion records.
+- Fixed release promotion sequencing so canonical pushes are emitted only after
+  release branch consolidation succeeds, ensured Admin-created release packages
+  publish their Git promotion events, and expanded wake prompts with the full
+  agent action schema.
 
 ## 2026-06-09 - Team Runtime Failure Handling
 

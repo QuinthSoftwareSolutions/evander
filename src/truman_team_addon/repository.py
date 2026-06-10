@@ -430,6 +430,26 @@ class TeamStateRepository:
         canonical_branch: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        state, _result = self.create_release_package_with_result(
+            project_id=project_id,
+            deliverable_ids=deliverable_ids,
+            release_id=release_id,
+            release_branch=release_branch,
+            canonical_branch=canonical_branch,
+            expected_revision=expected_revision,
+        )
+        return state
+
+    def create_release_package_with_result(
+        self,
+        *,
+        project_id: str,
+        deliverable_ids: list[str],
+        release_id: str | None = None,
+        release_branch: str | None = None,
+        canonical_branch: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
         normalized_project_id = _required_text(project_id, "project_id")
         request = {
             "id": _optional_text(release_id),
@@ -438,14 +458,21 @@ class TeamStateRepository:
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
         }
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_ids": [],
+            "errors": [],
+            "events": [],
+            "git_promotion_event_ids": [],
+            "created_deliverable_ids": [],
+        }
 
         def _mutate(state_model: TeamState) -> TeamState:
             project = _require_present(
                 state_model.projects, normalized_project_id, "project"
             )
-            result: dict[str, Any] = {"errors": [], "events": [], "git_promotion_event_ids": [], "created_deliverable_ids": []}
             projects_to_recalc: set[str] = set()
-            _build_release_package(
+            created_id = _build_release_package(
                 state_model,
                 project=project,
                 request=request,
@@ -454,13 +481,18 @@ class TeamStateRepository:
                 actor_agent_id=project.lead_agent_id,
                 team_id=project.team_id,
             )
+            if created_id is not None:
+                result["release_package_ids"].append(created_id)
             if result["errors"]:
                 raise ValueError("; ".join(result["errors"]))
             for recalc_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, recalc_id)
+            result["success"] = True
             return state_model
 
-        return self.update(_mutate, expected_revision=expected_revision)
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        return state, result
 
     def request_ephemeral_assignments(
         self,
@@ -1285,6 +1317,8 @@ class TeamStateRepository:
             "release_package_id": None,
             "created_deliverable_ids": [],
             "created_inbox_item_ids": [],
+            "events": [],
+            "git_promotion_event_ids": [],
             "error": None,
         }
 
@@ -2191,8 +2225,9 @@ def _build_release_package(
     )
     promotion_ids: list[str] = []
     # Internal feature branches are consolidated into a release branch, which is then
-    # pushed to the canonical remote. Only create git promotions when there is at least
-    # one feature branch to consolidate; pure artifact deliverables need no push.
+    # pushed to the canonical remote after consolidation succeeds. Only create git
+    # promotions when there is at least one feature branch to consolidate; pure
+    # artifact deliverables need no push.
     if feature_branches:
         release_promotion_id = f"promotion-{uuid4().hex}"
         state.git_promotions[release_promotion_id] = GitPromotionRecord(
@@ -2205,17 +2240,6 @@ def _build_release_package(
             promotion_kind="release",
         )
         promotion_ids.append(release_promotion_id)
-        canonical_promotion_id = f"promotion-{uuid4().hex}"
-        state.git_promotions[canonical_promotion_id] = GitPromotionRecord(
-            id=canonical_promotion_id,
-            project_id=project.id,
-            release_package_id=release_id,
-            actor_agent_id=actor_agent_id,
-            source_branch=target_release_branch,
-            target_branch=target_canonical_branch,
-            promotion_kind="canonical_push",
-        )
-        promotion_ids.append(canonical_promotion_id)
     state.release_packages[release_id] = ReleasePackage(
         id=release_id,
         project_id=project.id,
@@ -2240,25 +2264,6 @@ def _build_release_package(
                 "source_branches": list(feature_branches),
                 "target_branch": target_release_branch,
             },
-        )
-        canonical_payload: dict[str, Any] = {
-            "promotion_id": promotion_ids[1],
-            "promotion_kind": "canonical_push",
-            "project_id": project.id,
-            "release_package_id": release_id,
-            "host_repo_path": git.host_repo_path,
-            "base_branch": git.base_branch,
-            "source_branch": target_release_branch,
-            "target_branch": target_canonical_branch,
-        }
-        if git.canonical_origin_url is not None:
-            canonical_payload["canonical_origin_url"] = git.canonical_origin_url
-        if git.provider is not None:
-            canonical_payload["provider"] = git.provider
-        _emit_git_promotion_event(
-            result,
-            promotion_id=promotion_ids[1],
-            payload=canonical_payload,
         )
         result["git_promotion_event_ids"].extend(promotion_ids)
     projects_to_recalc.add(project_id)
@@ -2327,8 +2332,81 @@ def _attach_promotion_success(
         )
         if kind == "release":
             release.release_branch = release.release_branch or promotion.target_branch
+            _queue_canonical_push_after_release_success(
+                state,
+                release=release,
+                release_promotion=promotion,
+                result=result,
+            )
         elif kind == "canonical_push":
             release.canonical_branch = release.canonical_branch or promotion.target_branch
+
+
+def _queue_canonical_push_after_release_success(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    release_promotion: GitPromotionRecord,
+    result: dict[str, Any],
+) -> None:
+    project = state.projects.get(release_promotion.project_id)
+    git = project.git if project is not None else None
+    if project is None or git is None:
+        release.state = TeamRecordState.BLOCKED
+        release.error = (
+            f"project {release_promotion.project_id} has no git configuration "
+            "for canonical release push"
+        )
+        result["error"] = release.error
+        return
+
+    source_branch = release.release_branch or release_promotion.target_branch
+    target_branch = release.canonical_branch or canonical_release_branch(project, release.id)
+    existing = next(
+        (
+            state.git_promotions[promotion_id]
+            for promotion_id in release.git_promotion_record_ids
+            if promotion_id in state.git_promotions
+            and state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+        ),
+        None,
+    )
+    if existing is None:
+        existing = GitPromotionRecord(
+            id=f"promotion-{uuid4().hex}",
+            project_id=project.id,
+            release_package_id=release.id,
+            actor_agent_id=release_promotion.actor_agent_id,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            promotion_kind="canonical_push",
+        )
+        state.git_promotions[existing.id] = existing
+        release.git_promotion_record_ids = _append_unique(
+            release.git_promotion_record_ids,
+            existing.id,
+        )
+    release.canonical_branch = target_branch
+
+    if existing.state != "pending":
+        return
+
+    payload: dict[str, Any] = {
+        "promotion_id": existing.id,
+        "promotion_kind": "canonical_push",
+        "project_id": project.id,
+        "release_package_id": release.id,
+        "host_repo_path": git.host_repo_path,
+        "base_branch": git.base_branch,
+        "source_branch": existing.source_branch,
+        "target_branch": existing.target_branch,
+    }
+    if git.canonical_origin_url is not None:
+        payload["canonical_origin_url"] = git.canonical_origin_url
+    if git.provider is not None:
+        payload["provider"] = git.provider
+    _emit_git_promotion_event(result, promotion_id=existing.id, payload=payload)
+    result["git_promotion_event_ids"].append(existing.id)
 
 
 def _attach_promotion_failure(

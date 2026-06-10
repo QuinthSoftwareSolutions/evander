@@ -407,6 +407,12 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
                 "expected_revision": exc.expected_revision,
                 "current_revision": exc.current_revision,
             }
+        published_event_ids = _publish_team_events(
+            self.runtime_context,
+            result.get("events"),
+        )
+        if published_event_ids:
+            result["published_event_ids"] = published_event_ids
         return result
 
 
@@ -705,17 +711,32 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
         "task_updates": [],
+        "task_creations": [],
+        "status_requests": [],
         "questions": [],
         "status_reports": [],
         "deliverables": [],
+        "review_requests": [],
+        "review_decisions": [],
+        "goal_updates": [],
+        "operator_escalations": [],
+        "git_review_promotions": [],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
         "handled_inbox_item_ids": [],
         "notes": "",
     }
     return (
         "Continue your assigned team-agent work.\n"
         "Use the provided team context and update only your own assigned tasks. "
-        "Questions must go to your direct superior. Progress reports and deliverables "
-        "will be routed by the team runtime.\n\n"
+        "Questions and progress reports must go to your direct superior; top-level "
+        "managers use operator_escalations. Use task_creations only for yourself, "
+        "subordinates, or project/team scopes you lead. Use status_requests only "
+        "for direct subordinates. Use review_requests/review_decisions for deliverable "
+        "review, goal_updates for project goals, git_* actions for review/feature/release "
+        "branch promotion, and ephemeral_* actions for scoped worker delegation.\n\n"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"

@@ -170,7 +170,22 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert result["leased_count"] == 1
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
-    assert "team-action.json" in str(resumer.calls[0]["prompt"])
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "team-action.json" in prompt
+    for field_name in (
+        "task_creations",
+        "status_requests",
+        "operator_escalations",
+        "review_requests",
+        "review_decisions",
+        "goal_updates",
+        "git_review_promotions",
+        "git_feature_updates",
+        "git_release_requests",
+        "ephemeral_requests",
+        "ephemeral_acceptances",
+    ):
+        assert field_name in prompt
     assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 

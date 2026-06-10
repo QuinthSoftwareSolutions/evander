@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from truman_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
@@ -165,6 +166,63 @@ def test_record_git_promotion_failure_blocks_and_notifies(tmp_path: Path) -> Non
     assert notice.item_type == TeamInboxItemType.PROGRESS_REPORT
     assert notice.payload["kind"] == "git_promotion_failed"
     assert notice.payload["promotion_id"] == "promotion-1"
+
+
+def test_record_release_promotion_success_publishes_canonical_push(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _mutate(state):
+        state.projects["project"].git.canonical_origin_url = "https://example.invalid/Truman.git"
+        state.projects["project"].git.provider = "azure_devops"
+        state.git_promotions["release-promotion"] = GitPromotionRecord(
+            id="release-promotion",
+            project_id="project",
+            release_package_id="release-1",
+            actor_agent_id="lead",
+            source_branch="team/team/features/task-backend",
+            target_branch="team/team/releases/release-1",
+            promotion_kind="release",
+        )
+        state.release_packages["release-1"].git_promotion_record_ids = [
+            "release-promotion"
+        ]
+        return state
+
+    repo.update(_mutate)
+
+    result = _record_promotion_provider(
+        tmp_path,
+        promotion_id="release-promotion",
+        success=True,
+        commit_sha="feedface",
+    )
+
+    assert result["success"] is True
+    assert len(result["git_promotion_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 1
+    state = repo.read()
+    canonical_id = result["git_promotion_event_ids"][0]
+    canonical = state.git_promotions[canonical_id]
+    assert canonical.promotion_kind == "canonical_push"
+    assert canonical.source_branch == "team/team/releases/release-1"
+    assert canonical.target_branch == "releases/project/release-1"
+    release = state.release_packages["release-1"]
+    assert release.git_promotion_record_ids == ["release-promotion", canonical_id]
+
+    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == "team.git.promotion_requested"
+    assert events[0].payload["promotion_id"] == canonical_id
+    assert events[0].payload["promotion_kind"] == "canonical_push"
+    assert events[0].payload["source_branch"] == "team/team/releases/release-1"
+    assert events[0].payload["target_branch"] == "releases/project/release-1"
+    assert events[0].payload["canonical_origin_url"] == (
+        "https://example.invalid/Truman.git"
+    )
+    assert events[0].payload["provider"] == "azure_devops"
 
 
 def _seed_release(repo: TeamStateRepository) -> None:

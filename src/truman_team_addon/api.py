@@ -10,6 +10,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.addons import AddonContext
+from agent_sandbox.events.internal import (
+    InternalEventBus,
+    InternalEventSource,
+    internal_event_store_path,
+)
 
 from .models import (
     EphemeralAgentPolicy,
@@ -177,7 +182,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def create_release_package(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
-        state = repository.create_release_package(
+        state, result = repository.create_release_package_with_result(
             project_id=_required(payload, "project_id"),
             deliverable_ids=_optional_string_list(payload, "deliverable_ids") or [],
             release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
@@ -185,7 +190,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             canonical_branch=_optional(payload, "canonical_branch"),
             expected_revision=_expected_revision(payload),
         )
-        return JSONResponse(team_state_payload(state), status_code=201)
+        response_payload = team_state_payload(state)
+        published_event_ids = _publish_team_events(context, result.get("events"))
+        if published_event_ids:
+            response_payload["published_event_ids"] = published_event_ids
+        return JSONResponse(response_payload, status_code=201)
 
     async def list_release_packages(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -274,6 +283,42 @@ def _with_errors(handler):
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     return _wrapped
+
+
+def _publish_team_events(context: AddonContext, events: object) -> list[str]:
+    if not isinstance(events, list):
+        return []
+    bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    published_ids: list[str] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            payload = {}
+        published = bus.publish(
+            event_type=_required_event_text(event.get("event_type"), "event_type"),
+            payload=dict(payload),
+            correlation_key=_optional_event_text(event.get("correlation_key")),
+            idempotency_key=_optional_event_text(event.get("idempotency_key")),
+            source=InternalEventSource(source_type="team-addon", source_name="team-addon"),
+        )
+        published_ids.append(published.event_id)
+    return published_ids
+
+
+def _required_event_text(value: object, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_event_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:
