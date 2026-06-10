@@ -140,12 +140,19 @@ applied item counts as progress and resets the agent's `no_progress_count`.
 
 - `task_creations[]` — delegate work down or across the hierarchy. Shape:
   `{"id"?, "owner_agent_id", "project_id", "priority"?, "title", "description",
-  "state"?}`. The actor may create a task for itself, for a direct subordinate,
-  for any agent in a project it leads (`lead_agent_id`), or — as the team
-  manager — for that project's direct lead. Targets outside the actor's team or
-  outside the target project are rejected. Tasks default to `pending` and may
-  only start in a non-terminal state. Created ids are returned in
-  `created_task_ids`.
+  "state"?, "parent_task_id"?, "dependency_task_ids"?}`. The actor may create a
+  task for itself, for a direct subordinate, for any agent in a project it leads
+  (`lead_agent_id`), or — as the team manager — for that project's direct lead.
+  Targets outside the actor's team or outside the target project are rejected.
+  Parent and dependency tasks must belong to the same project, parent cycles and
+  dependency cycles are rejected, tasks default to `pending`, and tasks may only
+  start in a non-terminal state. Created ids are returned in `created_task_ids`.
+- `task_updates[]` — update owned task details or maintain dependency edges.
+  Shape: `{"task_id", "state"?, "priority"?, "title"?, "description"?,
+  "dependency_task_ids"?}`. State, priority, title, and description remain
+  owner-only. Dependency edits may also be made by a supervising agent, the
+  project lead, or the team manager, and use the same same-project and cycle
+  validation as task creation. Updated ids are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
   Shape: `{"recipient_agent_id", "task_id"?, "question"?}`. The recipient must be
   a direct subordinate; otherwise the item is rejected. A `STATUS_REQUEST` inbox
@@ -168,12 +175,18 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   in `operator_escalation_event_ids`.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
-  "instructions"?}`. The actor must be the deliverable's `producer_agent_id`,
-  supervise the producer (direct or transitive), or hold project-lead/manager
-  authority over the deliverable's project; the reviewer must be in the same
-  team. Returned in `created_review_request_ids`.
+  "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's
+  `producer_agent_id`, supervise the producer (direct or transitive), or hold
+  project-lead/manager authority over the deliverable's project; the reviewer
+  must be in the same team. When `review_profile_id` is provided, the profile
+  must be active, in the same team, applicable to the deliverable's project, and
+  applicable to the assigned reviewer's role when the profile lists roles.
+  Returned in `created_review_request_ids`.
 - `review_decisions[]` — decide a review. Shape: `{"review_request_id",
-  "state", "findings"?}` where `state` is `accepted`, `rejected`, or `blocked`.
+  "state", "findings"?, "criteria"?}` where `state` is `accepted`, `rejected`,
+  or `blocked`, and `criteria[]` contains `{"criterion_id", "state",
+  "finding"?}` entries with criterion state `passed`, `failed`, or `skipped`.
+  Criterion ids must exist on the review profile attached to the review request.
   Only the assigned `reviewer_agent_id` may decide. Returned in
   `decided_review_request_ids`.
 - `goal_updates[]` — set explicit goal acceptance. Shape: `{"project_id",
@@ -225,6 +238,30 @@ Every decision stamps `decision_at` and triggers
 changes, and release changes. A project is `completed` when all goals are
 accepted and no active task, deliverable, review, or release package is pending
 or blocked; `blocked` if any of those is blocked; otherwise `active`.
+
+### Task Graphs And Review Profiles
+
+Team tasks can be split into tracked child tasks with `parent_task_id` and can
+declare ordering constraints with `dependency_task_ids`. The add-on stores those
+edges in canonical Team state, validates missing tasks, cross-project edges, and
+cycles, and exposes derived task fields in API/query payloads:
+
+- `child_task_ids`
+- `dependency_status` (`satisfied`, `waiting`, or `blocked`)
+- `blocked_by_task_ids`
+- `subtask_counts`
+
+The runtime wake loop uses this derived graph state: persistent agents are not
+prompted to start tasks whose dependencies are still waiting or blocked, while
+agents with open child tasks can still be woken to supervise or consolidate that
+work.
+
+Review profiles are reusable, team-owned review rubrics. A profile may be scoped
+to one project, constrained to specific reviewer roles with `applicable_roles`,
+and populated with criteria rows. Review requests can attach a profile and
+instructions; review decisions can then record per-criterion outcomes. Archived
+profiles remain visible for history but cannot be assigned to new review
+requests through either the agent action protocol or Admin API.
 
 ### Deterministic Git Branch Naming
 

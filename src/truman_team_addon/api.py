@@ -126,6 +126,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             created_by_agent_id=_required(payload, "created_by_agent_id"),
             state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
             parent_task_id=_optional(payload, "parent_task_id"),
+            set_parent_task_id="parent_task_id" in payload,
             dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )
@@ -141,6 +142,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             title=_optional(payload, "title"),
             description=_optional(payload, "description"),
             parent_task_id=_optional(payload, "parent_task_id"),
+            set_parent_task_id="parent_task_id" in payload,
             dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),
             expected_revision=_expected_revision(payload),
         )

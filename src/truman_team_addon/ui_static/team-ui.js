@@ -22,6 +22,7 @@ const elements = {
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
   projectsView: document.querySelector("#projects-view"),
+  reviewProfilesView: document.querySelector("#review-profiles-view"),
   releasesView: document.querySelector("#releases-view"),
   refreshButton: document.querySelector("#refresh-button"),
 };
@@ -44,6 +45,7 @@ function emptyState() {
     tasks: {},
     deliverables: {},
     review_requests: {},
+    review_profiles: {},
     inbox: {},
     action_records: {},
     release_packages: {},
@@ -116,6 +118,7 @@ function render() {
   renderHierarchy();
   renderAgents();
   renderProjects();
+  renderReviewProfiles();
   renderReleases();
   refreshSelects();
 }
@@ -127,6 +130,7 @@ function renderSummary() {
   const tasks = values(state.tasks);
   const deliverables = values(state.deliverables);
   const reviews = values(state.review_requests);
+  const reviewProfiles = values(state.review_profiles);
   const ephemeral = values(state.ephemeral_assignments);
 
   const metrics = [
@@ -135,6 +139,7 @@ function renderSummary() {
     ["Agents", agents.length],
     ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
     ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
+    ["Review profiles", reviewProfiles.filter((profile) => !profile.archived).length],
     ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
   ];
 
@@ -375,12 +380,43 @@ function renderTasks(tasks) {
                 <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
               </div>
               <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
+              ${renderTaskGraph(task)}
               <div class="meta-line">${escapeHtml(task.description)}</div>
             </li>
           `;
         })
         .join("")}
     </ul>
+  `;
+}
+
+function renderTaskGraph(task) {
+  const lines = [];
+  if (task.parent_task_id) {
+    lines.push(`parent ${task.parent_task_id}`);
+  }
+  if ((task.dependency_task_ids || []).length) {
+    lines.push(`depends on ${task.dependency_task_ids.join(", ")}`);
+  }
+  if ((task.blocked_by_task_ids || []).length) {
+    lines.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
+  }
+  if ((task.child_task_ids || []).length) {
+    lines.push(`children ${task.child_task_ids.join(", ")}`);
+  }
+  const counts = task.subtask_counts || {};
+  const subtaskLine = counts.total
+    ? `subtasks ${counts.accepted || 0} accepted, ${counts.finished || 0} finished, ${counts.open || 0} open, ${counts.blocked || 0} blocked`
+    : "";
+  const graphLines = lines.length
+    ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>`
+    : "";
+  const countLine = subtaskLine ? `<div class="meta-line">${escapeHtml(subtaskLine)}</div>` : "";
+  return `
+    <div class="meta-line">
+      Dependency status <span class="state-pill ${escapeHtml(task.dependency_status || "satisfied")}">${escapeHtml(task.dependency_status || "satisfied")}</span>
+    </div>
+    ${graphLines}${countLine}
   `;
 }
 
@@ -428,10 +464,28 @@ function renderReviewSummary(reviewIds) {
                 <strong>${escapeHtml(review.id)}</strong>
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
-              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
+              ${renderCriterionResults(review.criteria || [])}
             </li>
           `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderCriterionResults(criteria) {
+  if (!criteria.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${criteria
+        .map((criterion) => {
+          const finding = criterion.finding ? ` - ${escapeHtml(criterion.finding)}` : "";
+          return `<li>${escapeHtml(criterion.criterion_id)}: ${escapeHtml(criterion.state)}${finding}</li>`;
         })
         .join("")}
     </ul>
@@ -479,6 +533,57 @@ function renderGitRefs(gitRefs) {
   return `${branchLine}${promotionLine}`;
 }
 
+function renderReviewProfiles() {
+  if (!elements.reviewProfilesView) {
+    return;
+  }
+  const profiles = values(state.review_profiles).sort(byId);
+  if (!profiles.length) {
+    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No review profiles.</p>`;
+    return;
+  }
+  elements.reviewProfilesView.innerHTML = `
+    <ul class="review-list">
+      ${profiles
+        .map((profile) => {
+          const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
+          const roles = (profile.applicable_roles || []).length
+            ? `roles ${profile.applicable_roles.join(", ")}`
+            : "all reviewer roles";
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(profile.name)}</strong>
+                <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
+              </div>
+              <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
+              ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
+              ${renderProfileCriteria(profile.criteria || [])}
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderProfileCriteria(criteria) {
+  if (!criteria.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${criteria
+        .map((criterion) => {
+          const required = criterion.required === false ? "optional" : "required";
+          const description = criterion.description ? ` - ${escapeHtml(criterion.description)}` : "";
+          return `<li>${escapeHtml(criterion.id)}: ${escapeHtml(criterion.label)} (${required})${description}</li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
 function renderReleases() {
   if (!elements.releasesView) {
     return;
@@ -524,6 +629,10 @@ function refreshSelects() {
   const reviewRequests = values(state.review_requests)
     .sort(byId)
     .map((review) => [review.id, `${review.id} - ${review.state}`]);
+  const reviewProfiles = values(state.review_profiles)
+    .filter((profile) => !profile.archived)
+    .sort(byId)
+    .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
   const releasePackages = values(state.release_packages)
     .sort(byId)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
@@ -533,6 +642,7 @@ function refreshSelects() {
     agents,
     tasks,
     deliverables,
+    "review-profiles": reviewProfiles,
     "review-requests": reviewRequests,
     "release-packages": releasePackages,
     "task-states": taskStates.map((item) => [item, item]),
@@ -581,10 +691,13 @@ async function submitTaskUpdate(form) {
   const priority = text(data.priority);
   const title = text(data.title);
   const description = text(data.description);
+  const parentTaskId = text(data.parent_task_id);
   if (stateValue) payload.state = stateValue;
   if (priority) payload.priority = Number(priority);
   if (title) payload.title = title;
   if (description) payload.description = description;
+  payload.parent_task_id = parentTaskId || null;
+  payload.dependency_task_ids = splitList(data.dependency_task_ids);
   await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
     resetOnSuccess: false,
   });
@@ -696,6 +809,26 @@ function payloadForForm(form) {
     if (text(data.state)) {
       payload.state = text(data.state);
     }
+    const parentTaskId = text(data.parent_task_id);
+    if (parentTaskId) {
+      payload.parent_task_id = parentTaskId;
+    }
+    payload.dependency_task_ids = splitList(data.dependency_task_ids);
+    return payload;
+  }
+  if (formId === "create-review-profile-form") {
+    const payload = {
+      id: text(data.id),
+      team_id: text(data.team_id),
+      name: text(data.name),
+      description: text(data.description),
+      applicable_roles: splitList(data.applicable_roles),
+      criteria: parseCriteria(data.criteria),
+    };
+    const projectId = text(data.project_id);
+    if (projectId) {
+      payload.project_id = projectId;
+    }
     return payload;
   }
   if (formId === "record-deliverable-form") {
@@ -718,6 +851,14 @@ function payloadForForm(form) {
       reviewer_agent_id: text(data.reviewer_agent_id),
       findings: splitList(data.findings),
     };
+    const profileId = text(data.review_profile_id);
+    if (profileId) {
+      payload.review_profile_id = profileId;
+    }
+    const instructions = text(data.instructions);
+    if (instructions) {
+      payload.instructions = instructions;
+    }
     if (text(data.state)) {
       payload.state = text(data.state);
     }
@@ -761,7 +902,11 @@ async function submitReviewDecision(form) {
     setStatus("Decision is required.", "error");
     return;
   }
-  const payload = { state: stateValue, findings: splitList(data.findings) };
+  const payload = {
+    state: stateValue,
+    findings: splitList(data.findings),
+    criteria: parseCriterionResults(data.criteria),
+  };
   await submitMutation(
     form,
     `/review-requests/${encodeURIComponent(reviewId)}/decision`,
@@ -788,6 +933,12 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
   }
   if (!keepEditedValues || !form.elements.description.value) {
     form.elements.description.value = task.description || "";
+  }
+  if (!keepEditedValues || !form.elements.parent_task_id.value) {
+    form.elements.parent_task_id.value = task.parent_task_id || "";
+  }
+  if (!keepEditedValues || !form.elements.dependency_task_ids.value) {
+    form.elements.dependency_task_ids.value = (task.dependency_task_ids || []).join("\n");
   }
 }
 
@@ -890,6 +1041,41 @@ function splitList(value) {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseCriteria(value) {
+  return text(value)
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [id, label, description = "", required = "true"] = line
+        .split("|")
+        .map((part) => part.trim());
+      return {
+        id,
+        label: label || id,
+        description,
+        required: !["false", "no", "0", "optional"].includes(required.toLowerCase()),
+      };
+    });
+}
+
+function parseCriterionResults(value) {
+  return text(value)
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [criterion_id, stateValue = "passed", finding = ""] = line
+        .split("|")
+        .map((part) => part.trim());
+      return {
+        criterion_id,
+        state: stateValue || "passed",
+        finding,
+      };
+    });
 }
 
 function escapeHtml(value) {
