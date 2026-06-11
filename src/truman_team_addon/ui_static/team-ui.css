@@ -623,6 +623,17 @@ form {
   padding: 0.8rem;
 }
 
+.review-decision-form {
+  margin-top: 0.6rem;
+  border-top: 1px dashed var(--line);
+  padding: 0.6rem 0 0;
+  background: transparent;
+}
+
+.review-decision-form button {
+  width: fit-content;
+}
+
 label {
   display: grid;
   gap: 0.25rem;

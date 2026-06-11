@@ -108,6 +108,19 @@ function bindForms() {
   });
 }
 
+function bindWorkspaceReviewDecisionForms() {
+  document.querySelectorAll("form[data-review-decision-form]").forEach((form) => {
+    if (form.dataset.boundReviewDecision === "true") {
+      return;
+    }
+    form.dataset.boundReviewDecision = "true";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitReviewDecision(form);
+    });
+  });
+}
+
 function bindDeliveryFilters() {
   document.querySelectorAll(".delivery-filter").forEach((button) => {
     button.addEventListener("click", () => {
@@ -160,8 +173,10 @@ function setDeliveryFilter(filter) {
     updateDeliveryFilterButtons();
     return;
   }
+  const drafts = captureFormDrafts();
   selectedDeliveryFilter = nextFilter;
   renderReviewDeliveryWorkspace();
+  restoreFormDrafts(drafts);
 }
 
 function updateDeliveryFilterButtons() {
@@ -189,6 +204,7 @@ function renderReviewDeliveryWorkspace() {
         No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
       </p>
     `;
+    bindWorkspaceReviewDecisionForms();
     return;
   }
 
@@ -199,6 +215,7 @@ function renderReviewDeliveryWorkspace() {
   elements.reviewDeliveryView.innerHTML = teamGroups
     .map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses))
     .join("");
+  bindWorkspaceReviewDecisionForms();
 }
 
 function renderSummary() {
@@ -524,7 +541,7 @@ function renderDeliverables(deliverables) {
   `;
 }
 
-function renderReviewSummary(reviewIds) {
+function renderReviewSummary(reviewIds, { interactive = false } = {}) {
   if (!reviewIds.length) {
     return "";
   }
@@ -536,22 +553,88 @@ function renderReviewSummary(reviewIds) {
     <ul class="review-list">
       ${reviews
         .map((review) => {
+          const profile = review.review_profile_id
+            ? state.review_profiles[review.review_profile_id] || null
+            : null;
           return `
             <li class="record-item">
               <div class="record-line">
                 <strong>${escapeHtml(review.id)}</strong>
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
-              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              <div class="meta-line">Reviewer id ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}${profile?.name ? ` (${escapeHtml(profile.name)})` : ""}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
               ${renderCriterionResults(review.criteria || [])}
+              ${interactive ? renderReviewDecisionForm(review, profile) : ""}
             </li>
           `;
         })
         .join("")}
     </ul>
   `;
+}
+
+function renderReviewDecisionForm(review, profile) {
+  if (terminalRecordStates.has(review.state)) {
+    return "";
+  }
+  const selectedState = decisionStates.includes(review.state) ? review.state : "";
+  const criteriaPlaceholder = renderReviewCriteriaPlaceholder(profile?.criteria || []);
+  const criteriaHelp = renderReviewCriteriaHelp(profile?.criteria || []);
+  return `
+    <form
+      class="review-decision-form"
+      id="review-decision-form-${escapeAttr(review.id)}"
+      data-review-decision-form="true"
+      data-review-request-id="${escapeAttr(review.id)}"
+    >
+      <label>
+        Decision
+        <select name="state" required>
+          <option value="">Select</option>
+          ${decisionStates
+            .map((stateValue) => {
+              const selected = stateValue === selectedState ? " selected" : "";
+              return `<option value="${escapeAttr(stateValue)}"${selected}>${escapeHtml(stateValue)}</option>`;
+            })
+            .join("")}
+        </select>
+      </label>
+      <label>
+        Findings
+        <textarea name="findings" rows="2"></textarea>
+      </label>
+      <label>
+        Criteria results
+        <textarea name="criteria" rows="3" placeholder="${escapeAttr(criteriaPlaceholder)}"></textarea>
+      </label>
+      ${criteriaHelp}
+      <button type="submit">Submit decision</button>
+    </form>
+  `;
+}
+
+function renderReviewCriteriaHelp(criteria) {
+  if (!criteria.length) {
+    return "";
+  }
+  return `
+    <div class="meta-line">Profile criteria:</div>
+    ${renderProfileCriteria(criteria)}
+  `;
+}
+
+function renderReviewCriteriaPlaceholder(criteria) {
+  if (!criteria.length) {
+    return "criterion_id | passed | finding";
+  }
+  return criteria
+    .map((criterion) => {
+      const finding = criterion.description || criterion.label || "finding";
+      return `${criterion.id} | passed | ${finding}`;
+    })
+    .join("\n");
 }
 
 function renderCriterionResults(criteria) {
@@ -960,7 +1043,7 @@ function renderDeliveryRow(row) {
         ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
         ${
           reviewIds.length
-            ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds)}</div>`
+            ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
             : ""
         }
         ${releaseSummaries}
@@ -1309,7 +1392,7 @@ function gitConfigForForm(data) {
 
 async function submitReviewDecision(form) {
   const data = formData(form);
-  const reviewId = text(data.review_request_id);
+  const reviewId = text(data.review_request_id || form.dataset.reviewRequestId);
   if (!reviewId) {
     setStatus("Review is required.", "error");
     return;
