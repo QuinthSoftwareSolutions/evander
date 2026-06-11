@@ -10,6 +10,10 @@ from starlette.testclient import TestClient
 import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
@@ -838,6 +842,23 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
 
 def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-approvals",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["notify"]},
+                }
+            ]
+        },
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
@@ -893,6 +914,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
                     "payload_mode": "any",
                 }
             },
+            "approval_notification_target_ids": [" OPS-Approvals ", "ops-approvals"],
             "metadata": {"keep": "new-value"},
         },
     )
@@ -912,6 +934,12 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "create_ado_backlog_item"
     ][0]["id"] == "issue-policy"
     assert response.json()["session"]["approval_required_tools"] == ["run_script"]
+    assert response.json()["session"]["approval_notification_target_ids"] == ["ops-approvals"]
+    options = response.json()["session"]["approval_notification_target_options"]
+    assert options[0]["value"] == "ops-approvals"
+    assert options[0]["label"].startswith("ops-approvals (teams")
+    assert options[0]["metadata"]["provider"] == "teams"
+    assert options[0]["metadata"]["policy_capabilities"] == ["notify"]
     assert response.json()["session"]["approval_tool_settings"]["run_script"] == {
         "ttl_seconds": 120,
         "max_uses": None,
@@ -928,6 +956,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert updated is not None
     assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "issue-policy"
     assert updated.approval_required_tools == [ToolName.RUN_SCRIPT]
+    assert updated.approval_notification_target_ids == ["ops-approvals"]
     assert updated.approval_tool_settings["run_script"].ttl_seconds == 120
     assert updated.approval_tool_settings["run_script"].max_uses is None
     assert updated.communication_file_receive_enabled is True

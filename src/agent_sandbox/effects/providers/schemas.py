@@ -911,6 +911,7 @@ class SessionApproveMcpToolsForRunEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     tools: ConfigValue
     expires_in_seconds: ConfigValue | None = None
+    approval_notification_target_ids: ConfigValue | None = None
 
     @field_validator("tools")
     @classmethod

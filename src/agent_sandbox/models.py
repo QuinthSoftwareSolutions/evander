@@ -20,6 +20,10 @@ from pydantic import (
     model_validator,
 )
 
+from agent_sandbox.approval_notification_targets import (
+    normalize_approval_notification_target_ids,
+)
+
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS = 1000
 ADO_DAILY_STATUS_REPORT_MAX_ITEMS_LIMIT = 5000
@@ -504,6 +508,7 @@ class SessionManifest(BaseModel):
     allowed_tools: list[ToolName]
     approval_required_tools: list[ToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
+    approval_notification_target_ids: list[str] = Field(default_factory=list)
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
@@ -565,6 +570,15 @@ class SessionManifest(BaseModel):
     ) -> dict[str, object]:
         return normalize_approval_tool_settings(value, field_name="approval_tool_settings")
 
+    @field_validator("approval_notification_target_ids", mode="before")
+    @classmethod
+    def normalize_approval_notification_target_ids_field(
+        cls, value: object
+    ) -> list[str]:
+        return normalize_approval_notification_target_ids(
+            value, field_name="approval_notification_target_ids"
+        )
+
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
     def normalize_tool_argument_policies_field(
@@ -617,6 +631,7 @@ class SessionToolApprovalLease(BaseModel):
     tools: list[ToolName]
     effect_execution_id: str | None = None
     approval_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
+    approval_notification_target_ids: list[str] = Field(default_factory=list)
     used_counts: dict[str, int] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
@@ -634,6 +649,15 @@ class SessionToolApprovalLease(BaseModel):
         cls, value: object
     ) -> dict[str, object]:
         return normalize_approval_tool_settings(value, field_name="approval_settings")
+
+    @field_validator("approval_notification_target_ids", mode="before")
+    @classmethod
+    def normalize_approval_notification_target_ids_field(
+        cls, value: object
+    ) -> list[str]:
+        return normalize_approval_notification_target_ids(
+            value, field_name="approval_notification_target_ids"
+        )
 
     @field_validator("used_counts", mode="before")
     @classmethod
@@ -1149,21 +1173,9 @@ class ApprovalRequest(BaseModel):
     @field_validator("notification_target_ids", mode="before")
     @classmethod
     def normalize_notification_target_ids(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("notification_target_ids must be a list of strings")
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            target_id = str(item or "").strip().lower()
-            if not target_id or target_id in seen:
-                continue
-            seen.add(target_id)
-            normalized.append(target_id)
-        return normalized
+        return normalize_approval_notification_target_ids(
+            value, field_name="notification_target_ids"
+        )
 
     @field_validator("intended_effect", mode="before")
     @classmethod

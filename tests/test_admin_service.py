@@ -33,6 +33,10 @@ from agent_sandbox.execution.container_worker_repository import (
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
@@ -9254,6 +9258,82 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_require_approval_for_send is True
     assert updated.web_search_enabled is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_update_session_policy_and_agent_validate_approval_notification_targets(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-approvals",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "ops-read",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read"]},
+                },
+            ]
+        },
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.update_session_policy(
+        "13302",
+        {
+            "approval_notification_target_ids": [" OPS-Approvals ", "ops-approvals"],
+        },
+    )
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
+    assert result.success is True
+    assert updated is not None
+    assert updated.approval_notification_target_ids == ["ops-approvals"]
+
+    with pytest.raises(ValueError, match="unknown communication target\\(s\\): missing-target"):
+        service.update_session_policy(
+            "13302",
+            {
+                "approval_notification_target_ids": ["missing-target"],
+            },
+        )
+
+    agent_result = service.update_admin_agent(
+        "vm-13302",
+        payload={
+            "approval_notification_target_ids": ["ops-approvals"],
+        },
+    )
+    assert agent_result["status"] == "updated"
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
+    assert updated is not None
+    assert updated.approval_notification_target_ids == ["ops-approvals"]
+
+    with pytest.raises(ValueError, match="without notify capability: ops-read"):
+        service.update_admin_agent(
+            "vm-13302",
+            payload={
+                "approval_notification_target_ids": ["ops-read"],
+            },
+        )
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(

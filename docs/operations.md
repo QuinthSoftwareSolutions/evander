@@ -1187,7 +1187,10 @@ email send allowlists for the host to notify an operator target.
    ```
 
    Child directories inherit the root value unless they replace the list in their own
-   `policy.json` overlay. An empty list disables approval notifications.
+   `policy.json` overlay. An empty list disables approval notifications. Directory policy
+   sets the inherited baseline, session policy can add more target IDs for a specific session,
+   and a live workflow-run approval lease can add run-scoped targets. The runtime resolves the
+   final list in that order and deduplicates first-seen IDs.
 
    In Admin Web, the Access Policy tab exposes `approval_notification_target_ids` as an explicit
    list of known notify-capable communication targets with an `Add communication target` control

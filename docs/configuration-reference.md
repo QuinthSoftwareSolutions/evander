@@ -1369,14 +1369,17 @@ Approval notification policy:
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
   are configured in Admin Web under Configuration -> Communications and stored in
   `runtime/communication-targets.db`; each selected target must include the `notify` capability.
+- Directory policy sets the inherited baseline. Session policy can add more target IDs for one
+  session, and a live workflow-run approval lease can add run-scoped targets for that run. The
+  runtime resolves the final list in that order and deduplicates first-seen IDs.
 - In Admin Web, this field is presented as a selectable list of known notify-capable communication
   targets with an `Add communication target` action.
-- The default is an empty list, which disables approval notifications.
-- Lists replace inherited values, so set the complete target list on the directory overlay that
-  should own notifications.
-- This is not a session manifest setting and does not grant guests Discord, Teams, or email send
-  permission. The host sends notifications for newly created approval records, and operators still
-  decide through Admin Web, the admin service, or `agent-sandbox-cli approve`.
+- Lists are normalized by trimming, lowercasing, and dropping duplicates. The default is an empty
+  list, which disables approval notifications.
+- This field does not grant guests Discord, Teams, or email send permission. The host sends
+  notifications for newly created approval records, and delivery failures are audited without
+  changing the approval state. Operators still decide through Admin Web, the admin service, or
+  `agent-sandbox-cli approve`.
 
 Approval-required tool policy:
 

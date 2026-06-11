@@ -46,6 +46,46 @@ def test_tool_approval_lease_allows_only_matching_session_run_and_tool(tmp_path)
     )
 
 
+def test_tool_approval_lease_persists_notification_target_ids(tmp_path):
+    repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    lease = repository.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_notification_target_ids=[" Ops-Primary ", "ops-primary", "ops-backup"],
+    )
+
+    assert lease.approval_notification_target_ids == ["ops-primary", "ops-backup"]
+    assert repository.get_lease(lease.lease_id).approval_notification_target_ids == [
+        "ops-primary",
+        "ops-backup",
+    ]
+
+
+def test_tool_approval_lease_loads_missing_notification_target_ids_as_empty_list(tmp_path):
+    repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    repository.path.write_text(
+        """
+        {
+          "lease-1": {
+            "lease_id": "lease-1",
+            "session_id": "session-1",
+            "workflow_run_id": "run-1",
+            "tools": ["run_script"],
+            "expires_at": "2030-01-01T00:10:00Z"
+          }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    lease = repository.get_lease("lease-1")
+
+    assert lease is not None
+    assert lease.approval_notification_target_ids == []
+
+
 def test_tool_approval_lease_expiry_and_revoke_disable_access(tmp_path):
     repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
     lease = repository.upsert_lease(

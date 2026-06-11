@@ -4,6 +4,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from agent_sandbox.approval_notification_targets import (
+    normalize_approval_notification_target_ids,
+)
 from agent_sandbox.models import (
     ApprovalGrantSettings,
     SessionToolApprovalLease,
@@ -27,6 +30,7 @@ class SessionToolApprovalLeaseRepository(Protocol):
         expires_at: datetime,
         effect_execution_id: str | None = None,
         approval_settings: dict[str, ApprovalGrantSettings] | None = None,
+        approval_notification_target_ids: list[str] | None = None,
     ) -> SessionToolApprovalLease: ...
 
     def get_lease(self, lease_id: str) -> SessionToolApprovalLease | None: ...
@@ -75,6 +79,7 @@ class JsonSessionToolApprovalLeaseRepository:
         expires_at: datetime,
         effect_execution_id: str | None = None,
         approval_settings: dict[str, ApprovalGrantSettings] | None = None,
+        approval_notification_target_ids: list[str] | None = None,
     ) -> SessionToolApprovalLease:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_workflow_run_id = _required_text(workflow_run_id, "workflow_run_id")
@@ -97,6 +102,10 @@ class JsonSessionToolApprovalLeaseRepository:
             effect_execution_id=str(effect_execution_id or "").strip() or None,
             approval_settings=_normalize_approval_settings(
                 approval_settings or {}, normalized_tools
+            ),
+            approval_notification_target_ids=normalize_approval_notification_target_ids(
+                approval_notification_target_ids,
+                field_name="approval_notification_target_ids",
             ),
             created_at=now,
             expires_at=effective_expires_at,

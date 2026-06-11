@@ -41,6 +41,8 @@ type SessionRecord = {
   allowed_tools: string[];
   approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
+  approval_notification_target_ids: string[];
+  approval_notification_target_options: Array<{ value: string; label: string }>;
   effective_tool_policy?: EffectiveToolPolicy | null;
   allowed_script_names: string[];
   discord_channel_allowlist: string[];
@@ -133,6 +135,7 @@ type SessionPolicyDraft = {
   allowedScriptNames: string;
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
+  approvalNotificationTargetIds: string[];
   discordChannelAllowlist: string;
   teamsChannelAllowlist: string;
   communicationFileReceiveEnabled: boolean;
@@ -254,6 +257,27 @@ function formatList(value: unknown): string {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
 }
 
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function formatNotificationTargetOptionLabel(option: { value: string; label: string }): string {
+  const label = option.label.trim();
+  const value = option.value.trim();
+  if (!label || label === value) {
+    return value;
+  }
+  return `${label} (${value})`;
+}
+
 function normalizeApprovalSettings(value: ApprovalGrantSettings | null | undefined): ApprovalGrantSettings {
   const ttlSeconds = Math.max(1, Math.trunc(Number(value?.ttl_seconds ?? DEFAULT_APPROVAL_SETTINGS.ttl_seconds)));
   const rawMaxUses = value?.max_uses;
@@ -281,6 +305,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     allowedScriptNames: formatList(session.allowed_script_names),
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
+    approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
     discordChannelAllowlist: formatList(session.discord_channel_allowlist),
     teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
     communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
@@ -860,6 +885,7 @@ export function SessionsScreen() {
     allowedScriptNames: "",
     approvalRequiredTools: [],
     approvalToolSettings: {},
+    approvalNotificationTargetIds: [],
     discordChannelAllowlist: "",
     teamsChannelAllowlist: "",
     communicationFileReceiveEnabled: false,
@@ -1284,6 +1310,102 @@ export function SessionsScreen() {
     setPolicyStatus(null);
   }
 
+  function updateApprovalNotificationTargets(nextTargets: string[]) {
+    updatePolicyDraft({ approvalNotificationTargetIds: dedupeStrings(nextTargets) });
+  }
+
+  function renderApprovalNotificationTargetEditor() {
+    const knownTargets = selectedSession?.approval_notification_target_options ?? [];
+    const entries = policyDraft.approvalNotificationTargetIds;
+    const nextAvailableTarget = knownTargets.find((option) => !entries.includes(option.value)) ?? null;
+
+    return (
+      <div className="string-list-selector">
+        <div className="contacts-editor-header">
+          <p className="muted-text">
+            Select notify-capable communication targets from the selected session&apos;s directory.
+          </p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                updateApprovalNotificationTargets([
+                  ...entries,
+                  nextAvailableTarget?.value ?? "",
+                ])
+              }
+              disabled={mutationLocked || !nextAvailableTarget}
+            >
+              Add notification target
+            </button>
+          </div>
+        </div>
+        {entries.length === 0 ? (
+          <div className="empty-state">
+            {knownTargets.length
+              ? "No approval notification targets selected."
+              : "No notify-capable communication targets are currently available for this session."}
+          </div>
+        ) : null}
+        {entries.map((entry, index) => {
+          const rowOptions = dedupeStrings([
+            entry,
+            ...knownTargets
+              .map((option) => option.value)
+              .filter((option) => option === entry || !entries.includes(option)),
+          ]);
+          const knownTarget = knownTargets.find((option) => option.value === entry) ?? null;
+          const isUnknownTarget = knownTarget == null;
+          return (
+            <div key={`approval-notification-target-${index}-${entry}`} className="string-list-selector-row">
+              <label className="field-stack">
+                <span>Notification target</span>
+                <select
+                  value={entry}
+                  onChange={(event) => {
+                    const nextEntries = [...entries];
+                    nextEntries[index] = event.target.value;
+                    updateApprovalNotificationTargets(nextEntries);
+                  }}
+                  disabled={mutationLocked}
+                >
+                  {rowOptions.map((option) => {
+                    const optionLabel =
+                      knownTargets.find((knownOption) => knownOption.value === option) ??
+                      null;
+                    return (
+                      <option key={option} value={option}>
+                        {option === entry && isUnknownTarget
+                          ? `${option} (unknown target)`
+                          : optionLabel
+                            ? formatNotificationTargetOptionLabel(optionLabel)
+                            : option}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+              <div className="inline-actions compact-actions">
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() =>
+                    updateApprovalNotificationTargets(
+                      entries.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                  disabled={mutationLocked}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function toggleApprovalRequirement(toolValue: string) {
     if (!toolsDraft.includes(toolValue)) {
       return;
@@ -1400,6 +1522,7 @@ export function SessionsScreen() {
               communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
               communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
+              approval_notification_target_ids: dedupeStrings(policyDraft.approvalNotificationTargetIds),
               web_search_enabled: policyDraft.webSearchEnabled,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
@@ -1836,6 +1959,14 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                   </label>
+                  <div className="field-stack">
+                    <span>Approval notifications</span>
+                    <p className="field-description">
+                      Notification-only host targets that receive approval requests for this session.
+                      These IDs must resolve to notify-capable communication targets in the selected directory.
+                    </p>
+                    {renderApprovalNotificationTargetEditor()}
+                  </div>
                   <label className="field-stack">
                     <span>Discord channel or target allowlist</span>
                     <textarea

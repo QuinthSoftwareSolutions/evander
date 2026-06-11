@@ -15,7 +15,7 @@ from agent_sandbox.container_worker_images import (
 )
 from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
 from agent_sandbox.events.models import materialize_node_definition
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import ApprovalRequest, SessionManifest, SessionToolApprovalLease, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_anthropic_base_url,
@@ -89,6 +89,51 @@ def test_approval_notification_target_ids_are_normalized_and_deduplicated() -> N
         "ops-primary",
         "ops-secondary",
     ]
+
+
+def test_approval_notification_target_ids_use_consistent_normalization_across_models() -> None:
+    session = SessionManifest.model_validate(
+        {
+            "session_id": "session-1",
+            "directory_path": "root",
+            "allowed_tools": ["approval_submit"],
+            "approval_notification_target_ids": [" Ops-Primary ", "", "OPS-Primary", "ops-backup"],
+            "expires_at": "2030-01-01T00:00:00Z",
+        }
+    )
+    lease = SessionToolApprovalLease.model_validate(
+        {
+            "lease_id": "lease-1",
+            "session_id": "session-1",
+            "workflow_run_id": "run-1",
+            "tools": ["approval_submit"],
+            "approval_notification_target_ids": [
+                " Ops-Primary ",
+                "ops-primary",
+                "ops-backup",
+            ],
+            "expires_at": "2030-01-01T00:00:00Z",
+        }
+    )
+    request = ApprovalRequest.model_validate(
+        {
+            "request_id": "approval-1",
+            "session_id": "session-1",
+            "action_type": "tool-call",
+            "payload_digest": "digest",
+            "human_summary": "summary",
+            "notification_target_ids": [
+                " Ops-Primary ",
+                "ops-primary",
+                "ops-backup",
+            ],
+            "expires_at": "2030-01-01T00:00:00Z",
+        }
+    )
+
+    assert session.approval_notification_target_ids == ["ops-primary", "ops-backup"]
+    assert lease.approval_notification_target_ids == ["ops-primary", "ops-backup"]
+    assert request.notification_target_ids == ["ops-primary", "ops-backup"]
 
 
 def test_container_worker_images_are_normalized_and_round_trip_through_config_model() -> None:

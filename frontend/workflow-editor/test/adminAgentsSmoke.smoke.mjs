@@ -16,6 +16,10 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("admin shell agents page deep-links to a selected agent", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -41,6 +45,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   let manualRefreshRequested = false;
   let manualRefreshRequest = null;
   let manualSummaryRefreshRequest = null;
+  let delayNextOperatorSteeringContext = false;
   const agentsResponse = {
     items: [
       {
@@ -215,6 +220,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
 
     if (pathname === "/api/operator-steering/context") {
       const sessionId = url.searchParams.get("session_id");
+      if (delayNextOperatorSteeringContext) {
+        delayNextOperatorSteeringContext = false;
+        await delay(500);
+      }
       await route.fulfill(
         jsonResponse({
           session_id: sessionId,
@@ -344,6 +353,23 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   const steeringDraft = "Please keep the current fix focused.";
   const steeringTextarea = page.locator(".agent-steering-panel textarea");
   await steeringTextarea.fill(steeringDraft);
+
+  delayNextOperatorSteeringContext = true;
+  const steeringContextRefreshRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === "/api/operator-steering/context";
+  }, { timeout: 5000 });
+  const steeringContextRefreshResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/operator-steering/context";
+  }, { timeout: 5000 });
+  await page.getByRole("button", { name: "Refresh operator steering" }).click();
+  await steeringContextRefreshRequest;
+  await page.waitForTimeout(50);
+  assert.equal(await page.getByText("Loading steering context.").count(), 0);
+  assert.equal(await steeringTextarea.inputValue(), steeringDraft);
+  assert.match(await page.locator(".agent-steering-panel").innerText(), /dispatch-1/);
+  await steeringContextRefreshResponse;
 
   manualRefreshRequested = true;
   const liveRefreshRequest = page.waitForRequest((request) => {

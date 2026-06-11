@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -95,9 +95,18 @@ function approvalRequestIdFromHash(): string {
   return hashQueryParam(window.location.hash, "request_id") ?? hashQueryParam(window.location.hash, "approval_id") ?? "";
 }
 
+function approvalDecisionFromHash(): "approve" | "deny" | "" {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const decision = hashQueryParam(window.location.hash, "decision")?.toLowerCase() ?? "";
+  return decision === "approve" || decision === "deny" ? decision : "";
+}
+
 export function ApprovalsScreen() {
   const { privilegedUnlocked, authRequired, currentUserId, currentUserLabel, selectedDirectoryPath } = useAdminUi();
   const initialRequestId = approvalRequestIdFromHash();
+  const initialDecision = approvalDecisionFromHash();
   const [filters, setFilters] = useState<Filters>({
     status: initialRequestId ? "" : "pending",
     directOnly: false,
@@ -109,6 +118,7 @@ export function ApprovalsScreen() {
   const [response, setResponse] = useState<ApprovalIndexResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string>(initialRequestId);
   const [deepLinkedRequestId, setDeepLinkedRequestId] = useState<string>(initialRequestId);
+  const [deepLinkedDecision, setDeepLinkedDecision] = useState<"approve" | "deny" | "">(initialDecision);
   const [detail, setDetail] = useState<ApprovalDetailResponse | null>(null);
   const [approver, setApprover] = useState("admin");
   const [reason, setReason] = useState("");
@@ -117,10 +127,13 @@ export function ApprovalsScreen() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [acting, setActing] = useState<"approve" | "deny" | "revoke" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const approveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const denyButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const query = useMemo(() => toQuery(filters, selectedDirectoryPath), [filters, selectedDirectoryPath]);
   const usesAnonymousApprover = !authRequired;
   const signedInApprover = currentUserLabel.trim() || currentUserId.trim() || "unknown";
+  const mutationLocked = !privilegedUnlocked;
 
   async function loadApprovals(options: { preserveSelectedId?: string } = {}) {
     const next = await fetchJson<ApprovalIndexResponse>(`/api/admin/approvals${query}`);
@@ -136,11 +149,14 @@ export function ApprovalsScreen() {
   useEffect(() => {
     const applyDeepLink = () => {
       const requestId = approvalRequestIdFromHash();
+      const decision = approvalDecisionFromHash();
       if (!requestId) {
+        setDeepLinkedDecision("");
         return;
       }
       setDeepLinkedRequestId(requestId);
       setSelectedId(requestId);
+      setDeepLinkedDecision(decision);
       setFilters((current) => (current.status ? { ...current, status: "" } : current));
     };
 
@@ -172,6 +188,14 @@ export function ApprovalsScreen() {
       window.clearInterval(interval);
     };
   }, [query]);
+
+  useEffect(() => {
+    if (!detail || detail.request.status !== "pending" || mutationLocked || !deepLinkedDecision) {
+      return;
+    }
+    const targetButton = deepLinkedDecision === "approve" ? approveButtonRef.current : denyButtonRef.current;
+    targetButton?.focus();
+  }, [detail, deepLinkedDecision, mutationLocked]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -268,7 +292,6 @@ export function ApprovalsScreen() {
   }
 
   const items = response?.items ?? [];
-  const mutationLocked = !privilegedUnlocked;
   const selectedApprovalIsValid = detail ? detail.request.status === "approved" && detail.expires_in_seconds > 0 : false;
 
   return (
@@ -333,6 +356,7 @@ export function ApprovalsScreen() {
                 className={`feature-list-item approval-list-item${selectedId === item.request_id ? " selected" : ""}`}
                 onClick={() => {
                   setDeepLinkedRequestId("");
+                  setDeepLinkedDecision("");
                   setSelectedId(item.request_id);
                 }}
               >
@@ -432,6 +456,7 @@ export function ApprovalsScreen() {
                       <button
                         type="button"
                         className="primary"
+                        ref={approveButtonRef}
                         disabled={acting !== null || mutationLocked}
                         onClick={() => void submitDecision(true)}
                       >
@@ -440,6 +465,7 @@ export function ApprovalsScreen() {
                       <button
                         type="button"
                         className="danger"
+                        ref={denyButtonRef}
                         disabled={acting !== null || mutationLocked}
                         onClick={() => void submitDecision(false)}
                       >

@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from agent_sandbox.approval_notification_targets import (
+    resolve_approval_notification_target_ids_for_directory,
+)
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.messaging.targets import (
     CommunicationTargetsDirectoryResolver,
@@ -85,6 +88,60 @@ def test_communication_targets_apply_provider_address_validation() -> None:
                     },
                 ]
             }
+        )
+
+
+def test_approval_notification_target_resolution_requires_notify_capability(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    directory_store = DirectoryStore(runtime_dir / "directories.json")
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-approvals",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "ops-read",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read"]},
+                },
+            ]
+        },
+    )
+
+    assert resolve_approval_notification_target_ids_for_directory(
+        runtime_dir=runtime_dir,
+        directory_store=directory_store,
+        directory_path="root",
+        target_ids=[" Ops-Approvals ", "ops-approvals"],
+    ) == ["ops-approvals"]
+
+    with pytest.raises(ValueError, match="unknown communication target\\(s\\): missing-target"):
+        resolve_approval_notification_target_ids_for_directory(
+            runtime_dir=runtime_dir,
+            directory_store=directory_store,
+            directory_path="root",
+            target_ids=["missing-target"],
+        )
+
+    with pytest.raises(ValueError, match="without notify capability: ops-read"):
+        resolve_approval_notification_target_ids_for_directory(
+            runtime_dir=runtime_dir,
+            directory_store=directory_store,
+            directory_path="root",
+            target_ids=["ops-read"],
         )
 
 
