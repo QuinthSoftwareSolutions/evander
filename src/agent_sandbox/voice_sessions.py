@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -590,6 +591,86 @@ class VoiceSessionStore:
 
 
 class VoiceProjectionService:
+    @staticmethod
+    def _fallback_tool_summary(session: SessionManifest) -> dict[str, Any]:
+        allowed_tools = [
+            {
+                "tool_name": tool.value if isinstance(tool, ToolName) else str(tool),
+                "source": "session.allowed_tools",
+                "requires_approval": tool in session.approval_required_tools,
+            }
+            for tool in session.allowed_tools
+        ]
+        approval_required_tools = [
+            tool.value if isinstance(tool, ToolName) else str(tool)
+            for tool in session.approval_required_tools
+            if str(tool or "").strip()
+        ]
+        return {
+            "session_id": session.session_id,
+            "available_tools": allowed_tools,
+            "approval_required_tools": approval_required_tools,
+            "unavailable_tools": [],
+            "evaluated": False,
+        }
+
+    @staticmethod
+    def _normalize_tool_summary(
+        session: SessionManifest, tool_summary: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        if tool_summary is None:
+            return VoiceProjectionService._fallback_tool_summary(session)
+
+        normalized = dict(tool_summary)
+        normalized.setdefault("session_id", session.session_id)
+        normalized.setdefault("available_tools", [])
+        normalized.setdefault("approval_required_tools", [])
+        normalized.setdefault("unavailable_tools", [])
+        normalized.setdefault("evaluated", True)
+        return normalized
+
+    @staticmethod
+    def _tool_name_from_summary_entry(entry: Any) -> str | None:
+        if isinstance(entry, Mapping):
+            candidate = entry.get("tool_name")
+            if candidate is None:
+                candidate = entry.get("name")
+        else:
+            candidate = entry
+        text = str(candidate or "").strip()
+        return text or None
+
+    @classmethod
+    def _render_available_tools(cls, summary: Mapping[str, Any]) -> str:
+        rendered: list[str] = []
+        for entry in summary.get("available_tools", []):
+            tool_name = cls._tool_name_from_summary_entry(entry)
+            if not tool_name:
+                continue
+            if isinstance(entry, Mapping) and entry.get("requires_approval"):
+                rendered.append(f"{tool_name} (approval required)")
+            else:
+                rendered.append(tool_name)
+        return ", ".join(rendered) or "<none>"
+
+    @classmethod
+    def _render_unavailable_tools(cls, summary: Mapping[str, Any]) -> str:
+        rendered: list[str] = []
+        for entry in summary.get("unavailable_tools", []):
+            tool_name = cls._tool_name_from_summary_entry(entry)
+            if not tool_name:
+                continue
+            reason = ""
+            if isinstance(entry, Mapping):
+                reason = str(entry.get("reason") or "").strip()
+            if reason:
+                rendered.append(f"{tool_name} ({reason})")
+            else:
+                rendered.append(tool_name)
+        if rendered:
+            return ", ".join(rendered)
+        return "<not evaluated>" if not summary.get("evaluated", False) else "<none>"
+
     def build_projection(
         self,
         *,
@@ -597,11 +678,13 @@ class VoiceProjectionService:
         prompt: str,
         channel: VoiceSessionChannel,
         metadata: dict[str, Any] | None = None,
+        tool_summary: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_prompt = str(prompt or "").strip()
         if not normalized_prompt:
             raise ValueError("prompt is required")
         session_metadata = sanitize_voice_metadata(dict(session.metadata or {}))
+        normalized_tool_summary = self._normalize_tool_summary(session, tool_summary)
         instructions = (
             "You are a live voice projection of an existing Truman text agent session. "
             "Speak as that originating agent, preserve its current task context, and do not "
@@ -632,7 +715,8 @@ class VoiceProjectionService:
             f"Origin session id: {session.session_id}",
             f"Directory path: {session.directory_path}",
             f"Model: {session.model}",
-            f"Allowed tools: {', '.join(sorted(str(tool.value if isinstance(tool, ToolName) else tool) for tool in session.allowed_tools)) or '<none>'}",
+            f"Available MCP tools: {self._render_available_tools(normalized_tool_summary)}",
+            f"Unavailable MCP tools: {self._render_unavailable_tools(normalized_tool_summary)}",
         ]
         if session_metadata:
             context_lines.append(
@@ -648,6 +732,7 @@ class VoiceProjectionService:
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
+            "tool_summary": normalized_tool_summary,
             "origin_metadata": session_metadata,
             "caller_metadata": sanitize_voice_metadata(metadata or {}),
             "task_prompt": normalized_prompt,
@@ -813,6 +898,7 @@ class OpenAIRealtimePhoneCallService:
         store: VoiceSessionStore,
         bridge_client: VoiceMediaBridgeClient,
         reconciler: VoiceSessionReconciler | None = None,
+        tool_summary_provider: Callable[[SessionManifest], Mapping[str, Any] | None] | None = None,
     ) -> None:
         self.config = config
         self.contacts_config = contacts_config or ContactDirectoryConfig()
@@ -820,6 +906,7 @@ class OpenAIRealtimePhoneCallService:
         self.bridge_client = bridge_client
         self.reconciler = reconciler
         self.projection_service = VoiceProjectionService()
+        self.tool_summary_provider = tool_summary_provider
 
     def make_phone_call(
         self,
@@ -834,11 +921,18 @@ class OpenAIRealtimePhoneCallService:
         if not normalized_contact:
             raise ValueError("contact is required")
         contact_entry, phone_number = self._resolve_contact(normalized_contact)
+        tool_summary = None
+        if self.tool_summary_provider is not None:
+            try:
+                tool_summary = self.tool_summary_provider(session)
+            except Exception:
+                tool_summary = None
         projection = self.projection_service.build_projection(
             session=session,
             prompt=prompt,
             channel="phone",
             metadata=metadata or {},
+            tool_summary=tool_summary,
         )
         prompt_metadata = _prompt_metadata(prompt)
         record, created = self.store.prepare_session(

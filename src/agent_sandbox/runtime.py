@@ -251,6 +251,9 @@ class RuntimeContext:
                 timeout_seconds=resolved_config.voice_media_controller_request_timeout_seconds,
             ),
             reconciler=self.voice_session_reconciler,
+            tool_summary_provider=lambda session: self.policy.allowed_tool_summary_for_session(
+                session
+            ),
         )
         return PhoneCallRouterService(
             backend=resolved_config.phone_call_backend,
