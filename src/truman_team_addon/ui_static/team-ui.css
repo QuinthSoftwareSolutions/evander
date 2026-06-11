@@ -240,6 +240,122 @@ textarea {
   margin-top: 0.85rem;
 }
 
+.timeline-panel {
+  padding-bottom: 1rem;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.timeline-note {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.timeline-summary {
+  min-width: 9rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+.timeline-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+}
+
+.timeline-status {
+  min-height: 1.5rem;
+  margin-top: 0.85rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.timeline-status.loading {
+  color: var(--amber);
+}
+
+.timeline-status.error {
+  color: var(--red);
+}
+
+.timeline-view {
+  margin-top: 0.6rem;
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.timeline-entry {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbfa 100%);
+  box-shadow: 0 8px 20px rgba(27, 45, 47, 0.04);
+}
+
+.timeline-entry-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.timeline-timestamp {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.timeline-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}
+
+.timeline-pill {
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+.timeline-summary-text {
+  margin: 0.55rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.timeline-meta {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 0.4rem;
+}
+
+.timeline-related {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.timeline-empty {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+}
+
 .inline-list {
   margin: 0.2rem 0 0;
   padding-left: 1.1rem;
@@ -401,7 +517,8 @@ label textarea {
 @media (max-width: 1180px) {
   .team-layout,
   .content-grid,
-  .project-columns {
+  .project-columns,
+  .timeline-filters {
     grid-template-columns: 1fr;
   }
 
@@ -424,7 +541,9 @@ label textarea {
   .agent-line,
   .task-line,
   .record-line,
-  .project-header {
+  .project-header,
+  .timeline-header,
+  .timeline-entry-top {
     display: grid;
   }
 

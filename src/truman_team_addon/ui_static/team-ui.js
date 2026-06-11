@@ -14,6 +14,9 @@ const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
 let state = emptyState();
+let timelineState = emptyTimelineState();
+let timelineLoading = false;
+let timelineRequestId = 0;
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
@@ -24,11 +27,21 @@ const elements = {
   projectsView: document.querySelector("#projects-view"),
   reviewProfilesView: document.querySelector("#review-profiles-view"),
   releasesView: document.querySelector("#releases-view"),
+  timelineSummary: document.querySelector("#timeline-summary"),
+  timelineStatus: document.querySelector("#timeline-status"),
+  timelineView: document.querySelector("#timeline-view"),
+  timelineTeamFilter: document.querySelector("#timeline-team-filter"),
+  timelineProjectFilter: document.querySelector("#timeline-project-filter"),
+  timelineAgentFilter: document.querySelector("#timeline-agent-filter"),
+  timelineTypeFilter: document.querySelector("#timeline-type-filter"),
+  timelineStatusFilter: document.querySelector("#timeline-status-filter"),
+  timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
   refreshButton: document.querySelector("#refresh-button"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   bindForms();
+  bindTimelineFilters();
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
@@ -54,6 +67,19 @@ function emptyState() {
   };
 }
 
+function emptyTimelineState() {
+  return {
+    revision: 0,
+    derived: true,
+    audit_log: false,
+    source: "derived_from_current_team_state",
+    description: "Derived timeline from the current TeamState snapshot.",
+    filters: {},
+    timestampless_count: 0,
+    entries: [],
+  };
+}
+
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
   question: "Question",
@@ -62,6 +88,17 @@ const inboxItemLabels = {
   deliverable_notice: "Deliverable notice",
   escalation: "Escalation",
 };
+
+const timelineTypeOrder = [
+  "task",
+  "inbox_item",
+  "deliverable",
+  "review",
+  "action",
+  "ephemeral_assignment",
+  "git_promotion",
+  "release_package",
+];
 
 function bindForms() {
   document.querySelectorAll("form[data-endpoint]").forEach((form) => {
@@ -90,6 +127,7 @@ function bindForms() {
 async function loadState({ preserveForms = false } = {}) {
   const drafts = preserveForms ? captureFormDrafts() : null;
   setStatus("Loading team state.", "loading");
+  timelineLoading = true;
   try {
     const response = await fetch(`${API_BASE}/state`, {
       headers: { Accept: "application/json" },
@@ -103,7 +141,9 @@ async function loadState({ preserveForms = false } = {}) {
       restoreFormDrafts(drafts);
     }
     setStatus(`Loaded revision ${state.revision}.`, "ok");
+    void loadTimeline();
   } catch (error) {
+    timelineLoading = false;
     setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
   }
 }
@@ -121,6 +161,7 @@ function render() {
   renderReviewProfiles();
   renderReleases();
   refreshSelects();
+  renderTimeline();
 }
 
 function renderSummary() {
@@ -620,6 +661,220 @@ function renderReleases() {
   `;
 }
 
+function bindTimelineFilters() {
+  const filters = [
+    elements.timelineTeamFilter,
+    elements.timelineProjectFilter,
+    elements.timelineAgentFilter,
+    elements.timelineTypeFilter,
+    elements.timelineStatusFilter,
+    elements.timelineAttentionFilter,
+  ];
+  filters.forEach((filter) => {
+    filter?.addEventListener("change", () => {
+      void loadTimeline();
+    });
+  });
+}
+
+async function loadTimeline() {
+  if (!elements.timelineView) {
+    return;
+  }
+  const requestId = ++timelineRequestId;
+  const filters = readTimelineFilters();
+  const search = new URLSearchParams();
+  if (filters.team_id) {
+    search.set("team_id", filters.team_id);
+  }
+  if (filters.project_id) {
+    search.set("project_id", filters.project_id);
+  }
+  if (filters.agent_id) {
+    search.set("agent_id", filters.agent_id);
+  }
+  if (filters.type) {
+    search.set("type", filters.type);
+  }
+  if (filters.status) {
+    search.set("status", filters.status);
+  }
+  if (filters.attention_needed !== null && filters.attention_needed !== undefined) {
+    search.set("attention_needed", filters.attention_needed ? "true" : "false");
+  }
+
+  timelineLoading = true;
+  setTimelineStatus("Loading derived timeline.", "loading");
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
+      {
+        headers: { Accept: "application/json" },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineState = normalizeTimeline(payload);
+    timelineLoading = false;
+    refreshSelects();
+    renderTimeline();
+    setTimelineStatus(describeTimelineStatus(timelineState), "ok");
+  } catch (error) {
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineLoading = false;
+    setTimelineStatus(error instanceof Error ? error.message : "Timeline failed to load.", "error");
+    renderTimeline();
+  }
+}
+
+function normalizeTimeline(payload) {
+  return {
+    ...emptyTimelineState(),
+    ...(payload || {}),
+    entries: Array.isArray(payload?.entries) ? payload.entries : [],
+  };
+}
+
+function renderTimeline() {
+  if (!elements.timelineView) {
+    return;
+  }
+
+  const entries = timelineState.entries || [];
+  const summaryParts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
+  if (timelineState.timestampless_count) {
+    summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
+  }
+  elements.timelineSummary.textContent = summaryParts.join(" · ");
+
+  if (!entries.length) {
+    elements.timelineView.innerHTML = timelineLoading
+      ? `<p class="timeline-empty">Loading timeline entries.</p>`
+      : `<p class="timeline-empty">No timeline entries match these filters.</p>`;
+    return;
+  }
+
+  elements.timelineView.innerHTML = `
+    <ul class="timeline-list">
+      ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
+    </ul>
+  `;
+}
+
+function renderTimelineEntry(entry) {
+  const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
+  const actorLine = [
+    entry.actor_agent_id ? `Actor ${entry.actor_agent_id}` : "Actor unknown",
+    entry.team_id ? `team ${entry.team_id}` : "",
+    entry.project_id ? `project ${entry.project_id}` : "",
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const relatedAgents = [
+    entry.actor_agent_id ? `actor ${entry.actor_agent_id}` : null,
+    (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const relatedIds = renderTimelineRelatedIds(entry);
+  return `
+    <li class="timeline-entry">
+      <article>
+        <div class="timeline-entry-top">
+          <div>
+            <div class="timeline-timestamp">${escapeHtml(timestamp)}</div>
+            <div class="timeline-pills">
+              <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.type))}</span>
+              <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.category))}</span>
+            </div>
+          </div>
+          <span class="state-pill ${escapeHtml(entry.status || "pending")}">${escapeHtml(entry.status || "pending")}</span>
+        </div>
+        <div class="timeline-meta">
+          <div class="meta-line">${escapeHtml(actorLine)}</div>
+          ${relatedAgents ? `<div class="meta-line">${escapeHtml(relatedAgents)}</div>` : ""}
+        </div>
+        <p class="timeline-summary-text">${escapeHtml(entry.summary)}</p>
+        ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
+      </article>
+    </li>
+  `;
+}
+
+function renderTimelineRelatedIds(entry) {
+  const parts = [];
+  const idLabels = [
+    ["task_id", "Task"],
+    ["deliverable_id", "Deliverable"],
+    ["review_request_id", "Review"],
+    ["inbox_item_id", "Inbox"],
+    ["action_record_id", "Action"],
+    ["ephemeral_assignment_id", "Ephemeral"],
+    ["git_promotion_id", "Git promotion"],
+    ["release_package_id", "Release"],
+  ];
+  idLabels.forEach(([key, label]) => {
+    if (entry[key]) {
+      parts.push(`${label} ${entry[key]}`);
+    }
+  });
+  return parts.length ? `Related IDs: ${parts.map((part) => escapeHtml(part)).join(" · ")}` : "";
+}
+
+function describeTimelineStatus(timeline) {
+  const filters = timeline.filters || {};
+  const filterParts = [];
+  if (filters.team_id) {
+    filterParts.push(`team ${filters.team_id}`);
+  }
+  if (filters.project_id) {
+    filterParts.push(`project ${filters.project_id}`);
+  }
+  if (filters.agent_id) {
+    filterParts.push(`agent ${filters.agent_id}`);
+  }
+  if (filters.type) {
+    filterParts.push(`type ${filters.type}`);
+  }
+  if (filters.status) {
+    filterParts.push(`status ${Array.isArray(filters.status) ? filters.status.join(", ") : filters.status}`);
+  }
+  if (filters.attention_needed !== undefined && filters.attention_needed !== null) {
+    filterParts.push(`attention ${filters.attention_needed ? "yes" : "no"}`);
+  }
+  const filterSuffix = filterParts.length ? ` for ${filterParts.join(", ")}` : "";
+  if (!(timeline.entries || []).length) {
+    return `No timeline entries matched the current filters${filterSuffix}.`;
+  }
+  return `Derived timeline loaded${filterSuffix}.`;
+}
+
+function readTimelineFilters() {
+  const teamId = text(elements.timelineTeamFilter?.value);
+  const projectId = text(elements.timelineProjectFilter?.value);
+  const agentId = text(elements.timelineAgentFilter?.value);
+  const type = text(elements.timelineTypeFilter?.value);
+  const status = text(elements.timelineStatusFilter?.value);
+  const attentionValue = text(elements.timelineAttentionFilter?.value);
+  return {
+    team_id: teamId || null,
+    project_id: projectId || null,
+    agent_id: agentId || null,
+    type: type || null,
+    status: status || null,
+    attention_needed:
+      attentionValue === "true" ? true : attentionValue === "false" ? false : null,
+  };
+}
+
 function refreshSelects() {
   const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
   const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
@@ -636,6 +891,7 @@ function refreshSelects() {
   const releasePackages = values(state.release_packages)
     .sort(byId)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
+  const timelineOptions = buildTimelineSelectOptions();
   const options = {
     teams,
     projects,
@@ -648,6 +904,15 @@ function refreshSelects() {
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
+    "timeline-teams": timelineOptions.teams,
+    "timeline-projects": timelineOptions.projects,
+    "timeline-agents": timelineOptions.agents,
+    "timeline-types": timelineOptions.types,
+    "timeline-statuses": timelineOptions.statuses,
+    "timeline-attention": [
+      ["true", "Yes"],
+      ["false", "No"],
+    ],
   };
 
   document.querySelectorAll("select[data-options]").forEach((select) => {
@@ -663,7 +928,7 @@ function refreshSelects() {
 
 function fillSelect(select, options) {
   const currentValue = select.value;
-  const placeholder = select.required ? "Select" : "Default";
+  const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `<option value="">${placeholder}</option>${options
     .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
     .join("")}`;
@@ -992,6 +1257,25 @@ function setStatus(message, level) {
   elements.statusMessage.className = `status-message ${level || ""}`.trim();
 }
 
+function setTimelineStatus(message, level) {
+  if (!elements.timelineStatus) {
+    return;
+  }
+  elements.timelineStatus.textContent = message;
+  elements.timelineStatus.className = `timeline-status ${level || ""}`.trim();
+}
+
+function formatTimelineTimestamp(timestamp) {
+  const value = new Date(timestamp);
+  if (Number.isNaN(value.getTime())) {
+    return String(timestamp);
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(value);
+}
+
 async function responseText(response) {
   const textValue = await response.text();
   if (!textValue) {
@@ -1009,6 +1293,98 @@ function orderedTasksForAgent(agentId) {
   return values(state.tasks)
     .filter((task) => task.owner_agent_id === agentId)
     .sort(byPriority);
+}
+
+function buildTimelineSelectOptions() {
+  const teamLabels = new Map();
+  const projectLabels = new Map();
+  const agentLabels = new Map();
+  const typeLabels = new Map();
+  const statusLabels = new Map();
+  const filters = readTimelineFilters();
+
+  values(state.teams)
+    .sort(byId)
+    .forEach((team) => {
+      teamLabels.set(team.id, `${team.name} (${team.id})`);
+    });
+  values(state.projects)
+    .sort(byId)
+    .forEach((project) => {
+      projectLabels.set(project.id, `${project.name} (${project.id})`);
+    });
+  values(state.agents)
+    .sort(byId)
+    .forEach((agent) => {
+      agentLabels.set(agent.id, `${agent.id} - ${agent.role}`);
+    });
+
+  timelineState.entries.forEach((entry) => {
+    if (entry.team_id && !teamLabels.has(entry.team_id)) {
+      teamLabels.set(entry.team_id, entry.team_id);
+    }
+    if (entry.project_id && !projectLabels.has(entry.project_id)) {
+      projectLabels.set(entry.project_id, entry.project_id);
+    }
+    if (entry.actor_agent_id && !agentLabels.has(entry.actor_agent_id)) {
+      agentLabels.set(entry.actor_agent_id, entry.actor_agent_id);
+    }
+    (entry.related_agent_ids || []).forEach((agentId) => {
+      if (!agentLabels.has(agentId)) {
+        agentLabels.set(agentId, agentId);
+      }
+    });
+    if (entry.type && !typeLabels.has(entry.type)) {
+      typeLabels.set(entry.type, humanizeToken(entry.type));
+    }
+    if (entry.status && !statusLabels.has(entry.status)) {
+      statusLabels.set(entry.status, humanizeToken(entry.status));
+    }
+  });
+
+  if (filters.team_id && !teamLabels.has(filters.team_id)) {
+    teamLabels.set(filters.team_id, filters.team_id);
+  }
+  if (filters.project_id && !projectLabels.has(filters.project_id)) {
+    projectLabels.set(filters.project_id, filters.project_id);
+  }
+  if (filters.agent_id && !agentLabels.has(filters.agent_id)) {
+    agentLabels.set(filters.agent_id, filters.agent_id);
+  }
+  if (filters.type && !typeLabels.has(filters.type)) {
+    typeLabels.set(filters.type, humanizeToken(filters.type));
+  }
+  if (filters.status && !statusLabels.has(filters.status)) {
+    statusLabels.set(filters.status, humanizeToken(filters.status));
+  }
+
+  return {
+    teams: optionsFromMap(teamLabels),
+    projects: optionsFromMap(projectLabels),
+    agents: optionsFromMap(agentLabels),
+    types: optionsFromMap(typeLabels, timelineTypeOrder),
+    statuses: optionsFromMap(statusLabels),
+  };
+}
+
+function optionsFromMap(map, preferredOrder = []) {
+  const entries = [...map.entries()];
+  const orderMap = new Map(preferredOrder.map((value, index) => [value, index]));
+  entries.sort((left, right) => {
+    const leftOrder = orderMap.has(left[0]) ? orderMap.get(left[0]) : Number.POSITIVE_INFINITY;
+    const rightOrder = orderMap.has(right[0]) ? orderMap.get(right[0]) : Number.POSITIVE_INFINITY;
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return left[1].localeCompare(right[1]) || String(left[0]).localeCompare(String(right[0]));
+  });
+  return entries;
+}
+
+function humanizeToken(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .replace(/\b([a-z])/g, (match) => match.toUpperCase());
 }
 
 function byId(left, right) {

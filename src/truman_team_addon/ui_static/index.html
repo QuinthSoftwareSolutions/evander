@@ -55,6 +55,60 @@
             <h2 id="releases-heading">Releases</h2>
             <div id="releases-view" class="releases-view"></div>
           </section>
+
+          <section class="content-panel timeline-panel" aria-labelledby="timeline-heading">
+            <div class="timeline-header">
+              <div>
+                <h2 id="timeline-heading">Timeline / Audit</h2>
+                <p class="timeline-note">
+                  Derived from the current TeamState snapshot, not a persisted audit log.
+                </p>
+              </div>
+              <div id="timeline-summary" class="timeline-summary"></div>
+            </div>
+
+            <div class="timeline-filters" aria-label="Timeline filters">
+              <label>
+                Team
+                <select id="timeline-team-filter" data-options="timeline-teams" data-placeholder="All teams"></select>
+              </label>
+              <label>
+                Project
+                <select
+                  id="timeline-project-filter"
+                  data-options="timeline-projects"
+                  data-placeholder="All projects"
+                ></select>
+              </label>
+              <label>
+                Agent
+                <select id="timeline-agent-filter" data-options="timeline-agents" data-placeholder="All agents"></select>
+              </label>
+              <label>
+                Item type
+                <select id="timeline-type-filter" data-options="timeline-types" data-placeholder="All types"></select>
+              </label>
+              <label>
+                Status
+                <select id="timeline-status-filter" data-options="timeline-statuses" data-placeholder="All statuses"></select>
+              </label>
+              <label>
+                Attention needed
+                <select
+                  id="timeline-attention-filter"
+                  data-options="timeline-attention"
+                  data-placeholder="Any attention"
+                >
+                  <option value=""></option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="timeline-status" class="timeline-status" role="status" aria-live="polite"></div>
+            <div id="timeline-view" class="timeline-view"></div>
+          </section>
         </section>
 
         <aside class="forms-panel" aria-labelledby="forms-heading">
