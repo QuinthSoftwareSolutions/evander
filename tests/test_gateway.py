@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
@@ -170,6 +172,66 @@ def _build_runtime_with_workflow_config(
         )
     )
     return context
+
+
+def _build_inbound_phone_runtime(
+    tmp_path: Path,
+    *,
+    token_env: str,
+    route_id: str,
+    session_id: str,
+    did: str,
+    caller_number: str,
+    route_prompt: str,
+    startup_text: str | None = None,
+    blocked_callers: list[str] | None = None,
+    root_token_env: str | None = None,
+) -> tuple[object, str]:
+    runtime_dir = tmp_path / "runtime"
+    config_kwargs: dict[str, object] = {
+        "runtime_dir": runtime_dir,
+        "audit_log_path": runtime_dir / "audit.jsonl",
+        "session_store_path": runtime_dir / "sessions.json",
+        "approval_store_path": runtime_dir / "approvals.json",
+        "draft_store_path": runtime_dir / "drafts.json",
+        "email_store_path": runtime_dir / "emails.json",
+        "discord_command_store_path": runtime_dir / "discord.json",
+    }
+    if root_token_env is not None:
+        config_kwargs["voice_media_controller_token_env"] = root_token_env
+    config = GatewayConfig(**config_kwargs)
+    context = build_runtime(config)
+    service = DirectoryService(context.directories)
+    team = service.create(parent="root", name="team")
+    provider_payload: dict[str, object] = {
+        "voice_media_controller_token_env": token_env,
+        "inbound_phone_routes": [
+            {
+                "id": route_id,
+                "did": did,
+                "directory_path": team.path,
+                "origin_session_id": session_id,
+                "allowed_callers": [caller_number],
+                "blocked_callers": blocked_callers or [],
+                "route_prompt": route_prompt,
+                "startup_text": startup_text,
+            }
+        ],
+    }
+    DirectoryConfigStore(context.directories, runtime_dir=runtime_dir).write(
+        team.path,
+        domain="providers",
+        payload=provider_payload,
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id=session_id,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path=team.path,
+        )
+    )
+    return context, team.path
 
 
 def _revoke_lease_with_provider(
@@ -1678,6 +1740,215 @@ def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
         headers={"Authorization": "Bearer controller-token"},
     )
     assert get_response.json()["answer"] == "It adds the hybrid voice query path."
+
+
+def test_inbound_phone_call_provisioning_uses_directory_route_and_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_CONTROLLER_TOKEN", "team-token")
+    context, team_path = _build_inbound_phone_runtime(
+        tmp_path,
+        token_env="TEAM_CONTROLLER_TOKEN",
+        route_id="ops-main",
+        session_id="team-origin",
+        did="+1 (555) 000-0100",
+        caller_number="+1 (555) 000-0200",
+        route_prompt="Answer inbound calls for ops.",
+        startup_text="Thanks for calling ops.",
+    )
+    client = TestClient(create_app(context))
+    payload = {
+        "did": " +1 (555) 000-0100 ",
+        "caller_number": " +1 (555) 000-0200 ",
+        "asterisk_channel_id": "SIP/abc-0001",
+        "bridge_call_id": "bridge-1",
+        "sip_headers": {"X-Bridge-Token": "secret"},
+    }
+
+    response = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json=payload,
+        headers={"Authorization": "Bearer team-token"},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    request_id = "inbound-phone:ops-main:SIP/abc-0001"
+
+    assert body["voice_session_id"]
+    assert body["request_id"] == request_id
+    assert body["route"] == {
+        "route_id": "ops-main",
+        "directory_path": team_path,
+        "configured_session_field": "origin_session_id",
+        "configured_session_id": "team-origin",
+        "did": {
+            "redacted": "<redacted>",
+            "sha256": sha256("+15550000100".encode("utf-8")).hexdigest(),
+        },
+        "caller": {
+            "redacted": "<redacted>",
+            "sha256": sha256("+15550000200".encode("utf-8")).hexdigest(),
+        },
+        "asterisk_channel_id": "SIP/abc-0001",
+        "bridge_call_id": "bridge-1",
+        "sip_headers": {"X-Bridge-Token": "<redacted>"},
+    }
+    assert body["inbound_instructions"] == {
+        "route_prompt": "Answer inbound calls for ops.",
+        "startup_text": "Thanks for calling ops.",
+    }
+    assert body["projection"]["task_prompt"] == "Answer inbound calls for ops."
+    assert body["projection"]["caller_metadata"]["sip_headers"]["X-Bridge-Token"] == "<redacted>"
+
+    record = context.voice_session_store.get_by_request_id(request_id)
+    assert record is not None
+    assert record.voice_session_id == body["voice_session_id"]
+    assert record.contact_id == "ops-main"
+    assert record.directory_path == team_path
+    assert record.caller_metadata["caller_sha256"] == sha256(
+        "+15550000200".encode("utf-8")
+    ).hexdigest()
+
+    duplicate = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json=payload,
+        headers={"Authorization": "Bearer team-token"},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["voice_session_id"] == body["voice_session_id"]
+    assert duplicate.json()["request_id"] == request_id
+    assert context.voice_session_store.get_by_request_id(request_id).voice_session_id == body[
+        "voice_session_id"
+    ]
+
+    store_text = context.voice_session_store.path.read_text(encoding="utf-8")
+    audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
+    assert "+15550000100" not in store_text
+    assert "+15550000200" not in store_text
+    assert "+15550000100" not in audit_text
+    assert "+15550000200" not in audit_text
+    assert "+15550000100" not in json.dumps(body)
+    assert "+15550000200" not in json.dumps(body)
+
+
+def test_inbound_phone_call_provisioning_rejects_blocked_caller_without_creating_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_CONTROLLER_TOKEN", "team-token")
+    blocked_number = "+1 (555) 000-0999"
+    context, _team_path = _build_inbound_phone_runtime(
+        tmp_path,
+        token_env="TEAM_CONTROLLER_TOKEN",
+        route_id="ops-main",
+        session_id="team-origin",
+        did="+1 (555) 000-0100",
+        caller_number=blocked_number,
+        route_prompt="Answer inbound calls for ops.",
+        blocked_callers=[blocked_number],
+    )
+    client = TestClient(create_app(context))
+    request_id = "inbound-phone:ops-main:SIP/abc-0002"
+
+    response = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json={
+            "did": "+1 (555) 000-0100",
+            "caller_number": blocked_number,
+            "asterisk_channel_id": "SIP/abc-0002",
+            "bridge_call_id": "bridge-2",
+        },
+        headers={"Authorization": "Bearer team-token"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Caller is blocked for this inbound route"
+    assert context.voice_session_store.get_by_request_id(request_id) is None
+    audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
+    assert blocked_number not in audit_text
+
+
+def test_inbound_phone_call_provisioning_rejects_missing_route_with_root_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROOT_CONTROLLER_TOKEN", "root-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path / "runtime",
+            audit_log_path=tmp_path / "runtime" / "audit.jsonl",
+            session_store_path=tmp_path / "runtime" / "sessions.json",
+            approval_store_path=tmp_path / "runtime" / "approvals.json",
+            draft_store_path=tmp_path / "runtime" / "drafts.json",
+            email_store_path=tmp_path / "runtime" / "emails.json",
+            discord_command_store_path=tmp_path / "runtime" / "discord.json",
+            voice_media_controller_token_env="ROOT_CONTROLLER_TOKEN",
+        )
+    )
+    client = TestClient(create_app(context))
+
+    response = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json={
+            "did": "+1 (555) 000-0100",
+            "caller_number": "+1 (555) 000-0200",
+            "asterisk_channel_id": "SIP/abc-0003",
+            "bridge_call_id": "bridge-3",
+            "route_id": "missing-route",
+        },
+        headers={"Authorization": "Bearer root-token"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "No inbound phone routes are configured"
+    assert context.voice_session_store.get_by_request_id(
+        "inbound-phone:missing-route:SIP/abc-0003"
+    ) is None
+    assert "SIP/abc-0003" not in context.voice_session_store.path.read_text(encoding="utf-8")
+
+
+def test_inbound_phone_call_provisioning_rejects_expired_target_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_CONTROLLER_TOKEN", "team-token")
+    context, _team_path = _build_inbound_phone_runtime(
+        tmp_path,
+        token_env="TEAM_CONTROLLER_TOKEN",
+        route_id="ops-main",
+        session_id="team-origin",
+        did="+1 (555) 000-0100",
+        caller_number="+1 (555) 000-0200",
+        route_prompt="Answer inbound calls for ops.",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="team-origin",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            directory_path="root/team",
+        )
+    )
+    client = TestClient(create_app(context))
+
+    response = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json={
+            "did": "+1 (555) 000-0100",
+            "caller_number": "+1 (555) 000-0200",
+            "asterisk_channel_id": "SIP/abc-0004",
+            "bridge_call_id": "bridge-4",
+        },
+        headers={"Authorization": "Bearer team-token"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Configured inbound route session is inactive"
+    assert context.voice_session_store.get_by_request_id("inbound-phone:ops-main:SIP/abc-0004") is None
+    audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
+    assert "+15550000100" not in audit_text
+    assert "+15550000200" not in audit_text
 
 
 def test_submit_voice_query_response_requires_explicit_tool_policy(tmp_path: Path) -> None:
