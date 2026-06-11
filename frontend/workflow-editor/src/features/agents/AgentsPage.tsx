@@ -944,7 +944,12 @@ export function AgentsPage() {
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
   const operatorSteeringLoadSeqRef = useRef(0);
   const operatorSteeringDraftTargetRef = useRef<string | null>(null);
+  const refreshAuthSessionRef = useRef(refreshAuthSession);
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
+
+  useEffect(() => {
+    refreshAuthSessionRef.current = refreshAuthSession;
+  }, [refreshAuthSession]);
 
   useEffect(() => {
     const syncHashSelection = () => {
@@ -1131,7 +1136,7 @@ export function AgentsPage() {
     } catch (reason: unknown) {
       if (operatorSteeringLoadSeqRef.current !== loadSeq) return;
       if (isApiAuthError(reason)) {
-        await refreshAuthSession(AUTH_EXPIRED_MESSAGE);
+        await refreshAuthSessionRef.current(AUTH_EXPIRED_MESSAGE);
       }
       setOperatorSteeringContext(null);
       setOperatorSteeringNotes([]);
@@ -1141,7 +1146,7 @@ export function AgentsPage() {
         setOperatorSteeringLoading(false);
       }
     }
-  }, [canReadWorkflowRuns, operatorSteeringSessionId, refreshAuthSession]);
+  }, [canReadWorkflowRuns, operatorSteeringSessionId]);
 
   useEffect(() => {
     setOperatorSteeringContext(null);
@@ -1766,10 +1771,11 @@ export function AgentsPage() {
     operatorSteeringDraft.trim() &&
     !operatorSteeringSubmitting,
   );
-  const operatorSteeringMeta = operatorSteeringLoading
-    ? "Loading"
-    : operatorSteeringContext
-      ? shortDispatchId(operatorSteeringContext.dispatch_id)
+  const operatorSteeringInitialLoading = operatorSteeringLoading && operatorSteeringContext === null;
+  const operatorSteeringMeta = operatorSteeringContext
+    ? shortDispatchId(operatorSteeringContext.dispatch_id)
+    : operatorSteeringLoading
+      ? "Loading"
       : "No active dispatch";
   const logTitle = selectedAgent?.backend === "container_worker_vm"
     ? selectedExecutions.length > 0
@@ -2791,7 +2797,7 @@ export function AgentsPage() {
 	                  <div className="empty-state compact-empty-state">No linked session.</div>
 	                ) : !canReadWorkflowRuns ? (
 	                  <div className="empty-state compact-empty-state">Permission required: workflow_runs.read.</div>
-	                ) : operatorSteeringLoading ? (
+	                ) : operatorSteeringInitialLoading ? (
 	                  <div className="empty-state compact-empty-state">Loading steering context.</div>
 	                ) : operatorSteeringContext ? (
 	                  <>
