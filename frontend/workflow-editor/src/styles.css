@@ -3617,7 +3617,18 @@ select {
   background: rgba(255, 240, 235, 0.62);
 }
 
-.agent-steering-panel .operator-steering-panel {
+.agent-steering-modal {
+  width: min(100%, 50rem);
+}
+
+.agent-steering-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.agent-steering-modal .operator-steering-panel {
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
@@ -5142,6 +5153,33 @@ select {
 
 .vm-label-grid dd {
   overflow-wrap: anywhere;
+}
+
+.agent-inline-label-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.85rem;
+  min-width: 0;
+}
+
+.agent-inline-label {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  gap: 0.35rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.agent-inline-label strong {
+  flex: 0 0 auto;
+  color: #7d5d34;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
+.agent-inline-label span {
+  min-width: 0;
 }
 
 .callout {

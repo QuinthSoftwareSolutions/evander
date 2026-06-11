@@ -85,6 +85,9 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         updated_at: "2026-05-18T10:01:00Z",
         host: {
           state: "running",
+          labels: {
+            "vm-type": "issue",
+          },
           runtime_image: {
             backend: "libvirt_vm",
             kind: "libvirt_vm_template",
@@ -335,9 +338,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
-  await assert.match(await page.locator(".feature-content").innerText(), /Operator steering/);
-  await assert.doesNotReject(() => page.locator(".agent-steering-panel").getByText("dispatch-1").first().waitFor({ state: "visible", timeout: 5000 }));
-  await assert.match(await page.locator(".feature-content").innerText(), /dispatch-1/);
+  await assert.match(await page.locator(".agent-inline-label").filter({ hasText: "vm-type" }).innerText(), /issue/);
+  assert.equal(await page.locator(".panel-header h3").filter({ hasText: /^Labels$/ }).count(), 0);
+  const steeringButton = page.getByRole("button", { name: "Operator steering" });
+  await assert.doesNotReject(() => steeringButton.waitFor({ state: "visible", timeout: 5000 }));
 
   await assert.match(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
@@ -349,9 +353,13 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
 
   await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await steeringButton.click();
+  const steeringDialog = page.getByRole("dialog", { name: "Operator steering" });
+  await assert.doesNotReject(() => steeringDialog.getByText("dispatch-1").first().waitFor({ state: "visible", timeout: 5000 }));
+  await assert.match(await steeringDialog.innerText(), /dispatch-1/);
 
   const steeringDraft = "Please keep the current fix focused.";
-  const steeringTextarea = page.locator(".agent-steering-panel textarea");
+  const steeringTextarea = steeringDialog.locator("textarea");
   await steeringTextarea.fill(steeringDraft);
 
   delayNextOperatorSteeringContext = true;
@@ -363,13 +371,14 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     const url = new URL(response.url());
     return url.pathname === "/api/operator-steering/context";
   }, { timeout: 5000 });
-  await page.getByRole("button", { name: "Refresh operator steering" }).click();
+  await steeringDialog.getByRole("button", { name: "Refresh operator steering" }).click();
   await steeringContextRefreshRequest;
   await page.waitForTimeout(50);
   assert.equal(await page.getByText("Loading steering context.").count(), 0);
   assert.equal(await steeringTextarea.inputValue(), steeringDraft);
-  assert.match(await page.locator(".agent-steering-panel").innerText(), /dispatch-1/);
+  assert.match(await steeringDialog.innerText(), /dispatch-1/);
   await steeringContextRefreshResponse;
+  await steeringDialog.getByRole("button", { name: "Close" }).click();
 
   manualRefreshRequested = true;
   const liveRefreshRequest = page.waitForRequest((request) => {
@@ -401,7 +410,10 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
-  assert.equal(await steeringTextarea.inputValue(), steeringDraft);
+  await steeringButton.click();
+  const reopenedSteeringDialog = page.getByRole("dialog", { name: "Operator steering" });
+  await assert.doesNotReject(() => reopenedSteeringDialog.getByText("dispatch-1").first().waitFor({ state: "visible", timeout: 5000 }));
+  assert.equal(await reopenedSteeringDialog.locator("textarea").inputValue(), steeringDraft);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/agents?")));
   assert.ok(agentListRequests.length >= 1);
   assert.match(agentListRequests[0], /summary_only=true/);
