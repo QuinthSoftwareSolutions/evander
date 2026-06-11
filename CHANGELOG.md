@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
+
+- Added bridge-side inbound call handling for marked Asterisk `StasisStart`
+  events so the DIDWW SIP bridge can provision fixed inbound routes through the
+  gateway, answer the inbound channel, create the `ExternalMedia` bridge, and
+  send a route-specific opening to OpenAI Realtime.
+- Extended the bridge store and call record payloads to keep inbound route
+  metadata redacted, including DID/caller hashes and route identifiers, while
+  preserving outbound call behavior.
+- Added focused bridge tests covering listener filtering, inbound provisioning,
+  inbound bridge setup, and the failure path that hangs up rejected calls.
+
 ## 2026-06-11 - Agents Page Detail Layout
 
 - Moved selected-agent labels into the VM host / worker session details panel
