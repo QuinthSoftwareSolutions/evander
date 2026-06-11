@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
@@ -1165,4 +1165,399 @@ def team_state_payload(state: TeamState) -> dict[str, Any]:
         task_id: task_payload_with_derived(state, task)
         for task_id, task in state.tasks.items()
     }
+    payload["runtime_operations"] = runtime_operations_payload(state)
     return payload
+
+
+def runtime_operations_payload(
+    state: TeamState,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    effective_now = _ensure_utc(now or utc_now())
+    agents = [
+        _runtime_agent_payload(state, agent, effective_now)
+        for agent in sorted(state.agents.values(), key=lambda item: item.id)
+    ]
+    attention = _runtime_attention_payload(state)
+    return {
+        "generated_at": effective_now.isoformat(),
+        "agents": agents,
+        "attention": attention,
+    }
+
+
+def _runtime_agent_payload(
+    state: TeamState,
+    agent: PersistentAgent,
+    now: datetime,
+) -> dict[str, Any]:
+    runtime = state.agent_runtimes.get(agent.id)
+    wake_leased_until = runtime.wake_leased_until if runtime is not None else None
+    next_wake_at = runtime.next_wake_at if runtime is not None else None
+    wake_due = runtime is not None and (
+        runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
+    )
+    lease_active = runtime is not None and (
+        runtime.wake_leased_until is not None
+        and _ensure_utc(runtime.wake_leased_until) > now
+    )
+    detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
+    if agent.project_id is not None:
+        detail_parts.append(f"project {agent.project_id}")
+    if runtime is None:
+        detail_parts.append("no runtime snapshot")
+    elif runtime.wake_reason is not None:
+        detail_parts.append(f"wake reason {runtime.wake_reason}")
+    return {
+        "id": agent.id,
+        "kind": "agent_runtime",
+        "severity": "warning" if wake_due or lease_active else "info",
+        "title": agent.id,
+        "detail": "; ".join(detail_parts),
+        "team_id": agent.team_id,
+        "project_id": agent.project_id,
+        "role": agent.role,
+        "session_id": agent.session_id,
+        "status": agent.status.value,
+        "last_wake_at": _json_datetime(runtime.last_wake_at if runtime is not None else None),
+        "next_wake_at": _json_datetime(next_wake_at),
+        "wake_leased_until": _json_datetime(wake_leased_until),
+        "wake_reason": runtime.wake_reason if runtime is not None else None,
+        "active_dispatch_id": runtime.active_dispatch_id if runtime is not None else None,
+        "no_progress_count": runtime.no_progress_count if runtime is not None else 0,
+        "wake_due": wake_due,
+        "lease_active": lease_active,
+    }
+
+
+def _runtime_attention_payload(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    rows.extend(_blocked_task_rows(state))
+    rows.extend(_waiting_dependency_rows(state))
+    rows.extend(_pending_inbox_rows(state))
+    rows.extend(_failed_action_rows(state))
+    rows.extend(_failed_promotion_rows(state))
+    rows.extend(_blocked_release_rows(state))
+    rows.extend(_ephemeral_assignment_rows(state))
+    rows.sort(key=lambda row: (_severity_rank(row["severity"]), row["kind"], row["id"]))
+    return rows
+
+
+def _blocked_task_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for task in sorted(state.tasks.values(), key=lambda item: item.id):
+        dependency_status = state.dependency_status(task.id)
+        if task.state != TeamTaskState.BLOCKED and dependency_status != "blocked":
+            continue
+        rows.append(
+            _runtime_row(
+                id=task.id,
+                kind="blocked_task",
+                severity="warning",
+                title=task.title,
+                detail=_task_attention_detail(task, dependency_status=dependency_status),
+                state=task.state.value,
+                agent_id=task.owner_agent_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                deliverable_id=_first_deliverable_id(state, task.id),
+                dependency_status=dependency_status,
+                blocked_by_task_ids=state.blocked_by_task_ids(task.id),
+            )
+        )
+    return rows
+
+
+def _waiting_dependency_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for task in sorted(state.tasks.values(), key=lambda item: item.id):
+        dependency_status = state.dependency_status(task.id)
+        if dependency_status != "waiting" or task.state == TeamTaskState.BLOCKED:
+            continue
+        rows.append(
+            _runtime_row(
+                id=task.id,
+                kind="waiting_dependency_task",
+                severity="warning",
+                title=task.title,
+                detail=_task_attention_detail(task, dependency_status=dependency_status),
+                state=task.state.value,
+                agent_id=task.owner_agent_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                deliverable_id=_first_deliverable_id(state, task.id),
+                dependency_status=dependency_status,
+                blocked_by_task_ids=state.blocked_by_task_ids(task.id),
+            )
+        )
+    return rows
+
+
+def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in sorted(state.inbox.values(), key=lambda entry: (entry.created_at, entry.id)):
+        if item.state != TeamInboxItemState.PENDING:
+            continue
+        title = _inbox_title(item)
+        detail = _inbox_detail(state, item)
+        kind = "pending_escalation" if item.item_type == TeamInboxItemType.ESCALATION else "pending_inbox_item"
+        rows.append(
+            _runtime_row(
+                id=item.id,
+                kind=kind,
+                severity="warning",
+                title=title,
+                detail=detail,
+                state=item.state.value,
+                agent_id=item.recipient_agent_id,
+                project_id=_project_id_for_task(state, item.task_id),
+                task_id=item.task_id,
+                inbox_item_id=item.id,
+                sender_agent_id=item.sender_agent_id,
+                item_type=item.item_type.value,
+            )
+        )
+    return rows
+
+
+def _failed_action_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in sorted(state.action_records.values(), key=lambda entry: (entry.created_at, entry.id)):
+        if record.success:
+            continue
+        rows.append(
+            _runtime_row(
+                id=record.id,
+                kind="failed_action_record",
+                severity="critical",
+                title=f"Failed action {record.id}",
+                detail=_action_record_detail(record),
+                state="failed",
+                agent_id=record.agent_id,
+                project_id=_agent_project_id(state, record.agent_id),
+                dispatch_id=record.dispatch_id,
+                action_record_id=record.id,
+                error=record.error,
+            )
+        )
+    return rows
+
+
+def _failed_promotion_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for promotion in sorted(
+        state.git_promotions.values(),
+        key=lambda entry: (entry.created_at, entry.id),
+    ):
+        if promotion.state != "failed":
+            continue
+        rows.append(
+            _runtime_row(
+                id=promotion.id,
+                kind="failed_git_promotion",
+                severity="critical",
+                title=f"Failed {promotion.promotion_kind} promotion {promotion.id}",
+                detail=_promotion_detail(promotion),
+                state=promotion.state,
+                agent_id=promotion.actor_agent_id,
+                project_id=promotion.project_id,
+                task_id=promotion.task_id,
+                deliverable_id=promotion.deliverable_id,
+                promotion_id=promotion.id,
+                release_package_id=promotion.release_package_id,
+                promotion_kind=promotion.promotion_kind,
+                source_branch=promotion.source_branch,
+                target_branch=promotion.target_branch,
+                error=promotion.error,
+            )
+        )
+    return rows
+
+
+def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for release in sorted(state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)):
+        if release.state != TeamRecordState.BLOCKED and not release.error:
+            continue
+        rows.append(
+            _runtime_row(
+                id=release.id,
+                kind="blocked_release_package",
+                severity="critical" if release.error else "warning",
+                title=f"Release {release.id} blocked",
+                detail=_release_detail(release),
+                state=release.state.value,
+                project_id=release.project_id,
+                release_package_id=release.id,
+                deliverable_ids=list(release.deliverable_ids),
+                artifact_refs=list(release.artifact_refs),
+                error=release.error,
+            )
+        )
+    return rows
+
+
+def _ephemeral_assignment_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for assignment in sorted(
+        state.ephemeral_assignments.values(),
+        key=lambda entry: (entry.created_at, entry.id),
+    ):
+        if assignment.state not in {
+            EphemeralAssignmentState.FAILED,
+            EphemeralAssignmentState.CLEANUP_PENDING,
+        }:
+            continue
+        kind = (
+            "failed_ephemeral_assignment"
+            if assignment.state == EphemeralAssignmentState.FAILED
+            else "cleanup_pending_ephemeral_assignment"
+        )
+        rows.append(
+            _runtime_row(
+                id=assignment.id,
+                kind=kind,
+                severity="critical"
+                if assignment.state == EphemeralAssignmentState.FAILED
+                else "warning",
+                title=f"Ephemeral assignment {assignment.id} {assignment.state.value.replace('_', ' ')}",
+                detail=_assignment_detail(assignment),
+                state=assignment.state.value,
+                agent_id=assignment.parent_agent_id,
+                project_id=assignment.project_id,
+                task_id=assignment.task_id,
+                assignment_id=assignment.id,
+                session_id=assignment.session_id,
+                error=assignment.error,
+            )
+        )
+    return rows
+
+
+def _runtime_row(**row: Any) -> dict[str, Any]:
+    base = {
+        "id": None,
+        "kind": None,
+        "severity": None,
+        "title": None,
+        "detail": None,
+        "state": None,
+        "error": None,
+        "team_id": None,
+        "agent_id": None,
+        "project_id": None,
+        "task_id": None,
+        "deliverable_id": None,
+        "inbox_item_id": None,
+        "assignment_id": None,
+        "promotion_id": None,
+        "release_package_id": None,
+        "dispatch_id": None,
+        "session_id": None,
+    }
+    base.update(row)
+    return base
+
+
+def _severity_rank(severity: object) -> int:
+    order = {"critical": 0, "warning": 1, "info": 2}
+    return order.get(str(severity), 9)
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _json_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return _ensure_utc(value).isoformat()
+
+
+def _first_deliverable_id(state: TeamState, task_id: str) -> str | None:
+    for deliverable in sorted(state.deliverables.values(), key=lambda item: item.id):
+        if deliverable.task_id == task_id:
+            return deliverable.id
+    return None
+
+
+def _project_id_for_task(state: TeamState, task_id: str | None) -> str | None:
+    if task_id is None:
+        return None
+    task = state.tasks.get(task_id)
+    return task.project_id if task is not None else None
+
+
+def _agent_project_id(state: TeamState, agent_id: str) -> str | None:
+    agent = state.agents.get(agent_id)
+    return agent.project_id if agent is not None else None
+
+
+def _task_attention_detail(task: AgentTask, *, dependency_status: str) -> str:
+    detail_parts = [f"owner {task.owner_agent_id}", f"state {task.state.value}"]
+    if dependency_status != "satisfied":
+        detail_parts.append(f"dependencies {dependency_status}")
+    blocked_by = ", ".join(task.dependency_task_ids) if task.dependency_task_ids else "none"
+    if blocked_by != "none":
+        detail_parts.append(f"depends on {blocked_by}")
+    return "; ".join(detail_parts)
+
+
+def _inbox_title(item: AgentInboxItem) -> str:
+    label = item.item_type.value.replace("_", " ")
+    return label.title()
+
+
+def _inbox_detail(state: TeamState, item: AgentInboxItem) -> str:
+    detail_parts = [f"recipient {item.recipient_agent_id}", f"state {item.state.value}"]
+    if item.sender_agent_id is not None:
+        detail_parts.append(f"sender {item.sender_agent_id}")
+    if item.task_id is not None:
+        task = state.tasks.get(item.task_id)
+        if task is not None:
+            detail_parts.append(f"task {task.id}")
+            detail_parts.append(f"project {task.project_id}")
+    return "; ".join(detail_parts)
+
+
+def _action_record_detail(record: AgentActionRecord) -> str:
+    action_type = _optional_text(record.action.get("type") or record.action.get("kind"))
+    detail_parts = [f"agent {record.agent_id}", f"dispatch {record.dispatch_id}"]
+    if action_type is not None:
+        detail_parts.append(f"action {action_type}")
+    if record.error is not None:
+        detail_parts.append(f"error {record.error}")
+    return "; ".join(detail_parts)
+
+
+def _promotion_detail(promotion: GitPromotionRecord) -> str:
+    detail_parts = [
+        f"actor {promotion.actor_agent_id}",
+        f"{promotion.source_branch} -> {promotion.target_branch}",
+    ]
+    if promotion.error is not None:
+        detail_parts.append(f"error {promotion.error}")
+    return "; ".join(detail_parts)
+
+
+def _release_detail(release: ReleasePackage) -> str:
+    detail_parts = [f"project {release.project_id}"]
+    if release.deliverable_ids:
+        detail_parts.append(f"deliverables {', '.join(release.deliverable_ids)}")
+    if release.error is not None:
+        detail_parts.append(f"error {release.error}")
+    return "; ".join(detail_parts)
+
+
+def _assignment_detail(assignment: EphemeralAssignment) -> str:
+    detail_parts = [
+        f"parent {assignment.parent_agent_id}",
+        f"session {assignment.session_id}",
+        f"state {assignment.state.value}",
+    ]
+    if assignment.error is not None:
+        detail_parts.append(f"error {assignment.error}")
+    return "; ".join(detail_parts)
