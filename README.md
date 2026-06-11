@@ -7,7 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
-- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected phone calls
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
@@ -116,6 +116,10 @@ Directory-scoped config is rooted at `root`:
    trunk plus `agent-sandbox-didww-sip-bridge --runtime-dir runtime`. The bridge
    keeps SIP, RTP, and OpenAI credentials on the host and is only reached by the
    gateway through `phone_call_backend=openai_realtime_didww`.
+   When `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true`, the same bridge also
+   listens for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`
+   events and provisions fixed routes through the gateway using
+   `VOICE_MEDIA_CONTROLLER_TOKEN`.
 
    Optional Teams meeting voice sessions require the Windows-hosted bridge in
    `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`

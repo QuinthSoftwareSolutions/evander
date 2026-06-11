@@ -17,6 +17,15 @@ material. Newer entries are added incrementally as changes land.
 - Added focused bridge tests covering listener filtering, inbound provisioning,
   inbound bridge setup, and the failure path that hangs up rejected calls.
 
+## 2026-06-11 - DIDWW SIP Bridge Inbound Documentation
+
+- Documented the inbound Asterisk `Stasis` dialplan shape, the bridge-to-gateway
+  provisioning path, and the new bridge env vars used to enable fixed inbound
+  DID routes.
+- Added an operator-facing inbound route example with caller allow/block policy
+  and clarified the failure handling for route misses, caller rejection, missing
+  sessions, bridge setup failures, and hangup/reconciliation cases.
+
 ## 2026-06-11 - Agents Page Detail Layout
 
 - Moved selected-agent labels into the VM host / worker session details panel

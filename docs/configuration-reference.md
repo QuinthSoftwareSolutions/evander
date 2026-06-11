@@ -26,7 +26,9 @@ manager environment or optional repo-root `secrets.env`.
 Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
 configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
 backend uses `didww_sip_bridge_token_env`; the DIDWW bridge service uses its own
-`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials. For systemd deployments,
+`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials and, when inbound routing
+is enabled, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` plus
+`DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` for gateway provisioning. For systemd deployments,
 put actual secret values in repo-root `secrets.env` or the service manager environment rather than
 `config/gateway.env`.
 
@@ -42,6 +44,8 @@ put actual secret values in repo-root `secrets.env` or the service manager envir
 |---|---|---|
 | `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` bridge API listener bind. |
 | `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
+| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL`, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` gateway provisioning endpoint and bearer-token env-var name for accepted inbound calls; the token env default is `VOICE_MEDIA_CONTROLLER_TOKEN`. |
 | `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
 | `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
 | `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
@@ -1190,6 +1194,11 @@ Each `inbound_phone_routes` entry is a JSON object with these keys.
 | `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |
 | `startup_text` | within each `inbound_phone_routes` entry | Optional caller-facing startup text for the initial greeting. |
 
+Inbound routes are matched on normalized numbers, so the gateway and bridge compare digits plus an
+optional leading `+` rather than the raw formatted input. The runtime stores and audit logs keep
+redacted or hashed DID/caller forms only; raw numbers are not returned to agents or written to the
+JSON stores.
+
 ### DIDWW SIP bridge service keys
 
 These keys live in `config/didww-sip-bridge.env` or host environment and are consumed by
@@ -1200,6 +1209,9 @@ overlays.
 |---|---|---|
 | `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | bridge env | HTTP listener bind for the bridge API. |
 | `DIDWW_SIP_BRIDGE_TOKEN_ENV` | bridge env | Env-var name containing the bridge API bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | bridge env | Enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` | bridge env | Gateway provisioning URL used by accepted inbound calls; required when inbound phone calls are enabled. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | bridge env | Env-var name containing the gateway bearer token used for inbound provisioning; default `VOICE_MEDIA_CONTROLLER_TOKEN`. |
 | `OPENAI_REALTIME_API_KEY_ENV`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_API_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_IDLE_TIMEOUT_MS`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket configuration. |
 | `ASTERISK_ARI_URL`, `ASTERISK_ARI_USER`, `ASTERISK_ARI_PASSWORD_ENV`, `ASTERISK_ARI_APP` | bridge env | Asterisk ARI HTTP/WebSocket control connection. |
 | `ASTERISK_PJSIP_ENDPOINT`, `ASTERISK_ENDPOINT_TEMPLATE` | bridge env | Asterisk endpoint used to originate DIDWW outbound calls; default template is `PJSIP/{number}@{trunk}`. |

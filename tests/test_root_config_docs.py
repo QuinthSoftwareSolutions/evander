@@ -9,10 +9,15 @@ def test_root_only_config_docs_describe_root_as_live_baseline() -> None:
 
     assert "is the live top-level baseline" in readme
     assert "Legacy gateway YAML is only a migration/import source" in readme
+    assert "Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)" in readme
     assert "Configure `root` directory overlays directly" in operations
     assert "is the live top-level layer" in operations
+    assert "/voice-sessions/inbound-phone-calls" in operations
     assert "Legacy gateway YAML import keys" in configuration_reference
     assert "is not the live runtime baseline" in configuration_reference
+    assert "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS" in configuration_reference
+    assert "DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL" in configuration_reference
+    assert "DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV" in configuration_reference
 
 
 def test_teams_docs_cover_host_delegated_identity_binding() -> None:
