@@ -406,6 +406,7 @@ class ReviewRequest(TeamModel):
     review_profile_id: str | None = None
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
+    created_at: datetime | None = None
     decision_at: datetime | None = None
 
     @field_validator("id", "deliverable_id", "reviewer_agent_id", mode="before")
@@ -480,6 +481,7 @@ class ReleasePackage(TeamModel):
     published_at: datetime | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime | None = None
 
     @field_validator("id", "project_id", mode="before")
     @classmethod
