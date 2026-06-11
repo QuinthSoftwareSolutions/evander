@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Team Add-on Review & Delivery Guardrails
+
+- Pinned the bundled Team Add-on UI contract in the Admin API test so the served
+  HTML, script, and stylesheet all expose the Review & Delivery workspace hooks
+  used by the operator surface.
+- Documented the dedicated Review & Delivery workspace in the Team Add-ons guide
+  while keeping the existing setup forms and Admin Web integration model intact.
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`

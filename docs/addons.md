@@ -98,7 +98,10 @@ a non-canonical integration index.
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
-or models to Truman core Admin Web pages.
+or models to Truman core Admin Web pages. The bundled UI now includes a
+dedicated Review & Delivery workspace that groups deliverables, review
+requests, review profiles, release packages, and Git promotion state while
+keeping the existing setup forms available in the side panel.
 
 When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:

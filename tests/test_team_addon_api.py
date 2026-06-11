@@ -69,6 +69,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
+    assert "Review &amp; Delivery" in ui.text
+    assert 'id="review-delivery-view"' in ui.text
+    assert 'id="delivery-filter-blocked"' in ui.text
     assert 'name="parent_task_id"' in ui.text
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
@@ -79,10 +82,18 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "dependency_task_ids" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
+    assert "renderReviewDeliveryWorkspace" in script.text
+    assert "submitReviewDecision" in script.text
+    assert "bindWorkspaceReviewDecisionForms" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
     assert ".team-shell" in stylesheet.text
+    assert ".review-delivery-panel" in stylesheet.text
+    assert ".review-delivery-view" in stylesheet.text
+    assert ".delivery-filter" in stylesheet.text
+    assert ".state-pill.rejected" in stylesheet.text
+    assert ".state-pill.blocked" in stylesheet.text
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
