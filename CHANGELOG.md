@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Admin Web Communication Artifact Configuration
+
+- Exposed Teams control-plane communication artifact link settings in Admin Web
+  under Configuration -> Provider Integrations -> Communication artifacts.
+
 ## 2026-06-11 - Admin Web Configuration Panel
 
 - Fixed the Directory override JSON panel header so the collapse toggle no

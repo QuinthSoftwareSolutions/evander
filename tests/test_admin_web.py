@@ -9184,6 +9184,34 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "container_worker_base_url" in container_worker_fields
     assert "container_worker_images" in container_worker_fields
     assert "container_worker_mssql_enabled" in container_worker_fields
+    communication_artifacts = next(
+        section
+        for section in providers["sections"]
+        if section["title"] == "Communication artifacts"
+    )
+    communication_artifact_fields = {
+        field["field_name"]: field for field in communication_artifacts["fields"]
+    }
+    assert set(communication_artifact_fields) == {
+        "communication_artifact_public_base_url",
+        "communication_artifact_link_secret_env",
+        "communication_artifact_link_ttl_seconds",
+    }
+    assert communication_artifact_fields["communication_artifact_public_base_url"]["label"] == (
+        "Communication artifact public base URL"
+    )
+    assert communication_artifact_fields["communication_artifact_public_base_url"]["kind"] == (
+        "text"
+    )
+    assert "Teams recipients" in communication_artifact_fields[
+        "communication_artifact_public_base_url"
+    ]["tooltip"]
+    assert "gateway and Admin Web" in communication_artifact_fields[
+        "communication_artifact_link_secret_env"
+    ]["tooltip"]
+    assert communication_artifact_fields["communication_artifact_link_ttl_seconds"]["kind"] == (
+        "int"
+    )
     semantic_store = next(
         section for section in providers["sections"] if section["title"] == "Semantic store"
     )
@@ -9626,6 +9654,38 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
+
+
+def test_admin_web_provider_integrations_saves_communication_artifact_link_fields(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+    )
+
+    response = client.put(
+        "/api/configuration/domains/providers?directory_path=root",
+        json={
+            "config": {
+                "communication_artifact_public_base_url": "https://admin.example.test",
+                "communication_artifact_link_secret_env": "TEAM_ARTIFACT_LINK_SECRET",
+                "communication_artifact_link_ttl_seconds": 3600,
+            },
+            "expected_revision": _configuration_expected_revision(client, "root", "providers"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["write_result"]["ok"] is True
+    provider_config = payload["tab_snapshot"]["raw"]["config"]
+    assert provider_config["communication_artifact_public_base_url"] == (
+        "https://admin.example.test"
+    )
+    assert provider_config["communication_artifact_link_secret_env"] == (
+        "TEAM_ARTIFACT_LINK_SECRET"
+    )
+    assert provider_config["communication_artifact_link_ttl_seconds"] == 3600
 
 
 def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_override(

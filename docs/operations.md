@@ -1400,9 +1400,10 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
    `request_id` to the send tool.
    Teams image artifacts are sent inline through Graph. Teams non-image artifacts are posted as
    signed control-plane download links; configure `communication_artifact_public_base_url` in
-   provider config or `AGENT_SANDBOX_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`, and set the secret
-   named by `communication_artifact_link_secret_env` in an environment loaded by both gateway and
-   Admin Web, usually repo-root `secrets.env`.
+   Admin Web under Configuration -> Provider Integrations -> Communication artifacts, via provider
+   config, or with `AGENT_SANDBOX_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`. Set the secret named by
+   `communication_artifact_link_secret_env` in an environment loaded by both gateway and Admin Web,
+   usually repo-root `secrets.env`.
    For Azure DevOps PR/backlog tools, approve the exact comment/text payload, `mentions`, and
    artifact IDs.
 5. Disable `communication_file_send_enabled` again after the test unless the production change was
