@@ -9414,21 +9414,19 @@ def create_app(context: RuntimeContext) -> Starlette:
                         status_code=503,
                     )
 
-            configured_session_id = str(
-                route.origin_session_id or route.target_session_id or ""
-            ).strip()
-            if not configured_session_id:
-                raise ValueError("inbound phone route is missing a configured session")
-            configured_session = context.session_repository.get_session(configured_session_id)
-            if configured_session is None:
+            route_session_id = str(route.session_id or "").strip()
+            if not route_session_id:
+                raise ValueError("inbound phone route is missing a session_id")
+            route_session = context.session_repository.get_session(route_session_id)
+            if route_session is None:
                 context.audit.log_decision(
                     event_type="inbound_phone_call_provisioning",
                     decision="denied",
-                    reason="configured session is unavailable",
+                    reason="route session is unavailable",
                     args={
                         "route_id": route.id,
                         "route_directory_path": route.directory_path,
-                        "configured_session_id": configured_session_id,
+                        "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
                         "asterisk_channel_id": asterisk_channel_id,
@@ -9440,15 +9438,15 @@ def create_app(context: RuntimeContext) -> Starlette:
                     {"error": "Configured inbound route session is unavailable"},
                     status_code=404,
                 )
-            if configured_session.expires_at <= datetime.now(timezone.utc):
+            if route_session.expires_at <= datetime.now(timezone.utc):
                 context.audit.log_decision(
                     event_type="inbound_phone_call_provisioning",
                     decision="denied",
-                    reason="configured session is inactive",
+                    reason="route session is inactive",
                     args={
                         "route_id": route.id,
                         "route_directory_path": route.directory_path,
-                        "configured_session_id": configured_session_id,
+                        "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
                         "asterisk_channel_id": asterisk_channel_id,
@@ -9460,16 +9458,16 @@ def create_app(context: RuntimeContext) -> Starlette:
                     {"error": "Configured inbound route session is inactive"},
                     status_code=403,
                 )
-            if str(configured_session.directory_path or "").strip() != route.directory_path:
+            if str(route_session.directory_path or "").strip() != route.directory_path:
                 context.audit.log_decision(
                     event_type="inbound_phone_call_provisioning",
                     decision="denied",
-                    reason="configured session directory mismatch",
+                    reason="route session directory mismatch",
                     args={
                         "route_id": route.id,
                         "route_directory_path": route.directory_path,
-                        "configured_session_id": configured_session_id,
-                        "configured_session_directory_path": configured_session.directory_path,
+                        "route_session_id": route_session_id,
+                        "route_session_directory_path": route_session.directory_path,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
                         "asterisk_channel_id": asterisk_channel_id,
@@ -9494,7 +9492,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     args={
                         "route_id": route.id,
                         "route_directory_path": route.directory_path,
-                        "configured_session_id": configured_session_id,
+                        "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
                         "asterisk_channel_id": asterisk_channel_id,
@@ -9515,7 +9513,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 "startup_text_sha256": _hash_identity(route.startup_text),
             }
             projection = VoiceProjectionService().build_projection(
-                session=configured_session,
+                session=route_session,
                 prompt=route.route_prompt,
                 channel="phone",
                 metadata={
@@ -9533,8 +9531,8 @@ def create_app(context: RuntimeContext) -> Starlette:
                 },
             )
             record, created = context.voice_session_store.prepare_session(
-                origin_session_id=configured_session.session_id,
-                directory_path=configured_session.directory_path,
+                origin_session_id=route_session.session_id,
+                directory_path=route_session.directory_path,
                 channel="phone",
                 request_id=f"inbound-phone:{route.id}:{asterisk_channel_id}",
                 prompt_metadata=prompt_metadata,
@@ -9563,10 +9561,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 "route": {
                     "route_id": route.id,
                     "directory_path": route.directory_path,
-                    "configured_session_field": (
-                        "origin_session_id" if route.origin_session_id else "target_session_id"
-                    ),
-                    "configured_session_id": configured_session_id,
+                    "session_id": route_session_id,
                     "did": _identity_payload(request_number),
                     "caller": _identity_payload(caller_number),
                     "asterisk_channel_id": asterisk_channel_id,
@@ -9584,7 +9579,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 args={
                     "route_id": route.id,
                     "route_directory_path": route.directory_path,
-                    "configured_session_id": configured_session_id,
+                    "route_session_id": route_session_id,
                     "did_sha256": _hash_identity(request_number),
                     "caller_sha256": _hash_identity(caller_number),
                     "asterisk_channel_id": asterisk_channel_id,

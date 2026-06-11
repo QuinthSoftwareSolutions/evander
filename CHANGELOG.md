@@ -14,6 +14,8 @@ material. Newer entries are added incrementally as changes land.
 - Synced terminal inbound bridge results back to the gateway so accepted calls
   update the gateway-owned voice-session store and schedule the originating
   agent's reconciliation wake.
+- Collapsed fixed inbound route configuration to one `session_id` field for the
+  active Truman session that owns projection and reconciliation.
 - Extended the bridge store and call record payloads to keep inbound route
   metadata redacted, including DID/caller hashes and route identifiers, while
   preserving outbound call behavior.

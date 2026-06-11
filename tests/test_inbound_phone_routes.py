@@ -13,7 +13,7 @@ def test_inbound_phone_routes_normalize_numbers_and_round_trip_through_config_mo
                     "id": " ops-main ",
                     "called_number": " +1 (555) 000-0100 ",
                     "directory_path": "root/ops",
-                    "origin_session_id": " origin-session ",
+                    "session_id": " origin-session ",
                     "allowed_callers": [" +1 (555) 000-0200 ", "+15550000200"],
                     "blocked_callers": ["(555) 000-0999"],
                     "route_prompt": "Answer inbound calls for ops.",
@@ -26,7 +26,7 @@ def test_inbound_phone_routes_normalize_numbers_and_round_trip_through_config_mo
     assert config.inbound_phone_routes[0].id == "ops-main"
     assert config.inbound_phone_routes[0].called_number == "+15550000100"
     assert config.inbound_phone_routes[0].directory_path == "root/ops"
-    assert config.inbound_phone_routes[0].origin_session_id == "origin-session"
+    assert config.inbound_phone_routes[0].session_id == "origin-session"
     assert config.inbound_phone_routes[0].allowed_callers == ["+15550000200"]
     assert config.inbound_phone_routes[0].blocked_callers == ["5550000999"]
     assert config.inbound_phone_routes[0].route_prompt == "Answer inbound calls for ops."
@@ -49,7 +49,7 @@ def test_inbound_phone_routes_reject_duplicate_ids() -> None:
                         "id": "ops-main",
                         "did": "+15550000100",
                         "directory_path": "root/ops",
-                        "origin_session_id": "origin-session",
+                        "session_id": "origin-session",
                         "allowed_callers": ["+15550000200"],
                         "route_prompt": "Answer inbound calls for ops.",
                     },
@@ -57,7 +57,7 @@ def test_inbound_phone_routes_reject_duplicate_ids() -> None:
                         "id": "ops-main",
                         "did": "+15550000101",
                         "directory_path": "root/ops",
-                        "origin_session_id": "origin-session-2",
+                        "session_id": "origin-session-2",
                         "allowed_callers": ["+15550000201"],
                         "route_prompt": "Answer inbound calls for ops backups.",
                     },
@@ -76,20 +76,20 @@ def test_inbound_phone_routes_reject_duplicate_ids() -> None:
                 "directory_path": "root/ops",
                 "route_prompt": "Answer inbound calls for ops.",
             },
-            "define exactly one of origin_session_id or target_session_id",
+            "session_id",
         ),
         (
             {
                 "id": "ops-main",
                 "directory_path": "root/ops",
-                "origin_session_id": "origin-session",
+                "session_id": "origin-session",
                 "route_prompt": "Answer inbound calls for ops.",
             },
             "define did or called_number",
         ),
     ],
 )
-def test_inbound_phone_routes_reject_missing_target_or_match_criteria(
+def test_inbound_phone_routes_reject_missing_session_or_match_criteria(
     payload: dict[str, object], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):

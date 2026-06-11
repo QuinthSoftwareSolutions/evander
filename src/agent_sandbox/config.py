@@ -170,8 +170,7 @@ class InboundPhoneRoute(BaseModel):
     did: str | None = None
     called_number: str | None = None
     directory_path: str = Field(min_length=1)
-    origin_session_id: str | None = None
-    target_session_id: str | None = None
+    session_id: str = Field(min_length=1)
     allowed_callers: list[str] = Field(default_factory=list)
     blocked_callers: list[str] = Field(default_factory=list)
     route_prompt: str = Field(min_length=1)
@@ -192,10 +191,15 @@ class InboundPhoneRoute(BaseModel):
     def normalize_directory_path_field(cls, value: object, info) -> object:
         return _normalize_directory_path(value, field_name=info.field_name)
 
-    @field_validator("origin_session_id", "target_session_id", "startup_text", mode="before")
+    @field_validator("startup_text", mode="before")
     @classmethod
     def normalize_optional_route_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="session_id")
 
     @field_validator("route_prompt", mode="before")
     @classmethod
@@ -211,13 +215,6 @@ class InboundPhoneRoute(BaseModel):
     def validate_route(self) -> "InboundPhoneRoute":
         if not self.did and not self.called_number:
             raise ValueError("inbound_phone_routes entries must define did or called_number")
-        has_origin = bool(self.origin_session_id)
-        has_target = bool(self.target_session_id)
-        if has_origin == has_target:
-            raise ValueError(
-                "inbound_phone_routes entries must define exactly one of origin_session_id or "
-                "target_session_id"
-            )
         return self
 
 

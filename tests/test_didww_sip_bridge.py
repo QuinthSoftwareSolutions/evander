@@ -87,8 +87,7 @@ def _inbound_start_payload() -> dict[str, object]:
         "route": {
             "route_id": "ops-main",
             "directory_path": "root/ops",
-            "configured_session_field": "origin_session_id",
-            "configured_session_id": "origin-session",
+            "session_id": "origin-session",
             "did": {"redacted": "***0100", "sha256": "a" * 64},
             "caller": {"redacted": "***0200", "sha256": "b" * 64},
             "asterisk_channel_id": "SIP/abc-0001",

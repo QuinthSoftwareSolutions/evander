@@ -1187,8 +1187,7 @@ Each `inbound_phone_routes` entry is a JSON object with these keys.
 | `did` | within each `inbound_phone_routes` entry | Normalized inbound DID match value; numbers are reduced to `+` and digits only. |
 | `called_number` | within each `inbound_phone_routes` entry | Optional normalized called-number match value; numbers are reduced to `+` and digits only. |
 | `directory_path` | within each `inbound_phone_routes` entry | Directory scope used to resolve provider overlays and route-specific context. |
-| `origin_session_id` | within each `inbound_phone_routes` entry | Origin Truman session used when the inbound call is projected from an existing agent session. |
-| `target_session_id` | within each `inbound_phone_routes` entry | Alternative target Truman session used when the route should anchor to a different live session. |
+| `session_id` | within each `inbound_phone_routes` entry | Active Truman session used to project the inbound call and receive reconciliation wakes. |
 | `allowed_callers` | within each `inbound_phone_routes` entry | Allow-list of normalized caller numbers. |
 | `blocked_callers` | within each `inbound_phone_routes` entry | Optional deny-list of normalized caller numbers. |
 | `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |

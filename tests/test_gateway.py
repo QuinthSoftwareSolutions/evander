@@ -210,7 +210,7 @@ def _build_inbound_phone_runtime(
                 "id": route_id,
                 "did": did,
                 "directory_path": team.path,
-                "origin_session_id": session_id,
+                "session_id": session_id,
                 "allowed_callers": [caller_number],
                 "blocked_callers": blocked_callers or [],
                 "route_prompt": route_prompt,
@@ -1780,8 +1780,7 @@ def test_inbound_phone_call_provisioning_uses_directory_route_and_is_idempotent(
     assert body["route"] == {
         "route_id": "ops-main",
         "directory_path": team_path,
-        "configured_session_field": "origin_session_id",
-        "configured_session_id": "team-origin",
+        "session_id": "team-origin",
         "did": {
             "redacted": "<redacted>",
             "sha256": sha256("+15550000100".encode("utf-8")).hexdigest(),

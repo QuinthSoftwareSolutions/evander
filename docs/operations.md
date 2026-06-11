@@ -944,7 +944,7 @@ DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV=VOICE_MEDIA_CONTROLLER_TOKEN
       "id": "ops-main",
       "did": "+15551230000",
       "directory_path": "root/ops",
-      "origin_session_id": "session-1234",
+      "session_id": "session-1234",
       "allowed_callers": ["+15551230001"],
       "blocked_callers": ["+15551239999"],
       "route_prompt": "Answer inbound calls for the ops team.",
@@ -964,8 +964,8 @@ summary, decisions, and action items into `runtime/voice-sessions-store.json` an
 same-origin reconciliation wake.
 
 The gateway resolves exactly one configured route by route id or DID, requires the configured
-origin or target session to exist and remain active in the same directory, and enforces caller
-policy before creating the voice-session record. `route_prompt` becomes the projected Realtime task
+`session_id` to exist and remain active in the same directory, and enforces caller policy before
+creating the voice-session record. `route_prompt` becomes the projected Realtime task
 prompt; `startup_text` is the caller-facing greeting. Raw DID and caller numbers are normalized
 for matching, but only redacted or hashed forms are stored in audit logs and JSON stores.
 
