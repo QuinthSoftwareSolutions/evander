@@ -185,6 +185,52 @@ textarea {
   padding: 1rem;
 }
 
+.runtime-operations-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.runtime-operations-header,
+.runtime-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.runtime-operations-header h2 {
+  margin-top: 0.1rem;
+}
+
+.runtime-filter-group {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+button.runtime-filter-button {
+  min-height: 1.9rem;
+  border-color: var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  padding: 0.35rem 0.68rem;
+  font-size: 0.8rem;
+}
+
+button.runtime-filter-button:hover {
+  border-color: var(--accent);
+  background: var(--panel-alt);
+  color: var(--ink);
+}
+
+button.runtime-filter-button.active {
+  border-color: var(--accent);
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
+}
+
 .forms-panel {
   position: sticky;
   top: 1rem;
@@ -311,6 +357,58 @@ textarea {
   margin-top: 0.85rem;
 }
 
+.runtime-operations-view {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.runtime-section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.runtime-section h3 {
+  margin: 0.1rem 0 0;
+  font-size: 1rem;
+}
+
+.runtime-count {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.runtime-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.runtime-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 0.7rem;
+}
+
+.runtime-severity-warning {
+  box-shadow: inset 3px 0 0 rgba(154, 107, 19, 0.7);
+}
+
+.runtime-severity-critical {
+  box-shadow: inset 3px 0 0 rgba(163, 61, 61, 0.75);
+}
+
+.runtime-severity-info {
+  box-shadow: inset 3px 0 0 rgba(23, 111, 122, 0.55);
+}
+
+.runtime-generated-at {
+  margin-top: 0.15rem;
+}
+
 .project-block {
   padding: 0.85rem;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbfa 100%);
@@ -356,6 +454,21 @@ textarea {
 .state-pill.failed {
   background: rgba(163, 61, 61, 0.12);
   color: var(--red);
+}
+
+.state-pill.warning {
+  background: rgba(154, 107, 19, 0.12);
+  color: var(--amber);
+}
+
+.state-pill.critical {
+  background: rgba(163, 61, 61, 0.12);
+  color: var(--red);
+}
+
+.state-pill.info {
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
 }
 
 .form-stack {
@@ -421,6 +534,8 @@ label textarea {
   }
 
   .team-header,
+  .runtime-operations-header,
+  .runtime-section-header,
   .agent-line,
   .task-line,
   .record-line,
