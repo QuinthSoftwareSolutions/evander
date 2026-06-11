@@ -286,6 +286,27 @@ def test_list_unread_feedback_skips_ignored_feedback_ids(tmp_path: Path) -> None
     assert response.next_cursor == "2026-01-01T00:00:00Z"
 
 
+def test_list_all_feedback_includes_ignored_feedback_ids(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    _write_store(store_path)
+    ignored_path.write_text(
+        json.dumps({"feedback_ids": ["github:review:2"]}),
+        encoding="utf-8",
+    )
+    service = PrFeedbackService(store_path, ignored_feedback_store_path=ignored_path)
+
+    response = service.list_all_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+    )
+
+    assert [item.feedback_id for item in response.feedback] == [
+        "github:review:1",
+        "github:review:2",
+    ]
+    assert response.next_cursor == "2026-01-02T00:00:00Z"
+
+
 def test_list_unread_feedback_prunes_expired_ignored_feedback_ids(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     ignored_path = tmp_path / "ignored-feedback-ids.json"

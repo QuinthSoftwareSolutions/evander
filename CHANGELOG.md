@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Admin Web Model Pricing Tests
+
+- Relaxed the default model-pricing catalog status test so it validates the
+  endpoint contract without pinning dynamic catalog version dates or provider
+  ordering.
+
+## 2026-06-11 - PR Feedback History
+
+- Changed `list_all_feedback` to include agent-authored PR replies that are
+  intentionally suppressed from wake and unread-feedback checks.
+
 ## 2026-06-11 - Teams Control-Plane Artifact Links
 
 - Added signed public download links for staged communication artifacts so
