@@ -100,6 +100,16 @@ tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
 or models to Truman core Admin Web pages.
 
+The `Teams` tab includes an org-chart hierarchy view for each team. It renders
+the manager, subordinate agents, nested reporting lines, and unreachable or
+malformed hierarchy references without changing persisted state. Agent nodes
+show `display_name` when it is present and fall back to the stable agent id;
+the create-team, create-project, and register-agent forms expose optional
+display-name fields for the manager, project lead, and additional agents. Hover
+or keyboard focus on an agent node reveals operational details from the add-on
+state payload, including session, project, reports-to, task, inbox, runtime
+wake, and ephemeral-capacity information when those records are available.
+
 When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
