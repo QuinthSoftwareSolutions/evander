@@ -934,11 +934,7 @@ def test_realtime_tool_response_cancels_pending_idle_prompt(
     realtime = asyncio.run(run())
 
     assert realtime.responses == [
-        (
-            "The lookup result is available now in the conversation. Briefly answer "
-            "the caller from it. Do not mention internal agent handoffs, do not say "
-            "the query is still pending, and do not say that you are still checking."
-        )
+        didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     ]
     assert didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS not in realtime.responses
 
@@ -2417,7 +2413,7 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
         {"call_id": "tool-call-1", "output": {"status": "pending", "query_id": "voice-query-1"}}
     ]
     assert len(realtime.responses) == 1
-    assert "lookup result is available" in str(realtime.responses[0])
+    assert realtime.responses[0] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert "origin agent" not in str(realtime.responses[0]).lower()
     assert "originating agent" not in str(realtime.responses[0]).lower()
     assert realtime.injected[0]["answer"] == "The file was checked."
@@ -2544,9 +2540,9 @@ def test_realtime_origin_query_answer_waits_for_caller_transcript_completion(
     realtime = asyncio.run(run())
 
     assert realtime.injected[0]["answer"] == "The file was checked."
-    assert realtime.responses[0] is None
+    assert realtime.responses[0] == didww_sip_bridge._CALLER_TURN_COMPLETION_INSTRUCTIONS
     assert len(realtime.responses) == 2
-    assert "lookup result is available" in str(realtime.responses[1])
+    assert realtime.responses[1] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
         "response.create"
     )
@@ -2635,7 +2631,7 @@ def test_realtime_idle_origin_query_answer_requests_response_immediately(
     realtime = asyncio.run(run())
 
     assert len(realtime.responses) == 1
-    assert "lookup result is available" in str(realtime.responses[0])
+    assert realtime.responses[0] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert realtime.injected[0]["answer"] == "The file was checked."
 
 
@@ -2764,9 +2760,9 @@ def test_realtime_queued_origin_results_are_flushed_fifo_after_caller_turn_compl
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses[0] is None
+    assert realtime.responses[0] == didww_sip_bridge._CALLER_TURN_COMPLETION_INSTRUCTIONS
     assert len(realtime.responses) == 3
-    assert "lookup result is available" in str(realtime.responses[1])
+    assert realtime.responses[1] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert "could not complete the lookup right now" in str(realtime.responses[2]).lower()
     assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
         "response.create.1"
@@ -2986,7 +2982,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
     ]
     assert realtime.injected[0]["answer"] == "The deployment summary is available."
     assert len(realtime.responses) == 1
-    assert "lookup result is available" in str(realtime.responses[0])
+    assert realtime.responses[0] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert "origin agent" not in str(realtime.responses[0]).lower()
     assert "originating agent" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
@@ -3236,6 +3232,122 @@ def test_origin_query_hold_ack_does_not_queue_extra_response(
     assert len(hold_ack) == 1
 
 
+def test_realtime_origin_query_hold_ack_flushes_queued_result_without_prelude(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    order: list[str] = []
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.done", "response": {"id": "resp-1"}},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 120},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "query_origin_agent",
+                        "arguments": json.dumps({"question": "What changed?"}),
+                    },
+                },
+                {"type": "__sleep__", "seconds": 0.05},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "No, I'll wait.",
+                },
+                {"type": "response.done", "response": {"id": "resp-2"}},
+            ]
+            self.responses: list[str | None] = []
+            self.injected: list[dict[str, object]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                order.append(str(event["type"]))
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            return None
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            order.append("response.create")
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+    class FakeController:
+        configured = True
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            assert voice_session_id == "voice-1"
+            assert kwargs["question"] == "What changed?"
+            return {"query_id": "voice-query-1", "status": "pending"}
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            assert voice_session_id == "voice-1"
+            assert query_id == "voice-query-1"
+            return {
+                "query_id": query_id,
+                "status": "answered",
+                "answer": "The file was checked.",
+            }
+
+        async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            raise AssertionError("query should not time out")
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            raise AssertionError("audio should not be sent")
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.injected[0]["answer"] == "The file was checked."
+    assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS]
+    assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
+        "response.create"
+    )
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "backchannel_ignored" in event_types
+    assert "origin_query.response_requested" in event_types
+
+
 def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_query(
     tmp_path: Path,
 ) -> None:
@@ -3337,7 +3449,7 @@ def test_duplicate_answered_origin_query_reuses_answer_without_new_controller_qu
         },
     ]
     assert len(realtime.responses) == 1
-    assert "lookup result is available" in str(realtime.responses[0])
+    assert realtime.responses[0] == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     assert "origin agent" not in str(realtime.responses[0]).lower()
 
 
@@ -4056,7 +4168,10 @@ def test_realtime_active_response_error_requeues_response_request(
     realtime = asyncio.run(run())
 
     assert len(realtime.responses) == 2
-    assert all("lookup result is available" in str(item) for item in realtime.responses)
+    assert all(
+        item == didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
+        for item in realtime.responses
+    )
     assert all("origin agent" not in str(item).lower() for item in realtime.responses)
     latest = store.get("voice-1")
     assert latest is not None
@@ -4070,7 +4185,7 @@ def test_realtime_active_response_error_requeues_response_request(
     )
     assert queued.metadata["request_reason"] == "query_result"
     assert len(queued.metadata["instruction_sha256"]) == 64
-    assert "lookup result is available" in queued.metadata["instruction_snippet"]
+    assert "heard back on the earlier question" in queued.metadata["instruction_snippet"]
     assert "origin agent" not in queued.metadata["instruction_snippet"].lower()
     requeued = next(event for event in latest.debug_events if event.event_type == "bridge.response.requeued")
     assert requeued.metadata["reason"] == "conversation_already_has_active_response"

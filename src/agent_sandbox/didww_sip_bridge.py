@@ -113,6 +113,16 @@ _MISSING_TASK_CLARIFICATION_RESPONSE_KEY = "projection:missing_task_clarificatio
 _MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
     "Ask exactly one concise caller-facing clarification question about the call objective."
 )
+_CALLER_TURN_COMPLETION_RESPONSE_KEY_PREFIX = "bridge:caller_turn_completed"
+_CALLER_TURN_COMPLETION_INSTRUCTIONS = (
+    "Briefly acknowledge or answer the caller's latest turn. "
+    "Do not use or mention the queued lookup result yet."
+)
+_ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
+    "Start with a natural transition such as 'I heard back on the earlier question.' "
+    "Then briefly answer from the lookup result. Do not mention internal agent handoffs, "
+    "do not say the query is still pending, and do not say that you are still checking."
+)
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
     "Tell the caller in one short sentence that you will look that up for them. "
     "Then say, in one short sentence, that you will wait for the answer; if they want "
@@ -917,7 +927,8 @@ class OpenAIRealtimeSession:
         )
         if request_response:
             await self.request_response(
-                "If still relevant, briefly tell the caller the lookup result is ready. "
+                "Start with a natural transition such as 'I heard back on the earlier question.' "
+                "Then briefly tell the caller the lookup result is ready. "
                 "Do not mention internal agent handoffs."
             )
 
@@ -2032,6 +2043,7 @@ class DidwwSipBridgeService:
         async def mark_caller_turn_completed(transcript_text: str) -> None:
             nonlocal caller_speech_active, caller_speech_started_during_assistant
             nonlocal caller_turn_incomplete, last_caller_turn
+            blocked_origin_response_index = first_blocked_origin_response_index()
             await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
             last_caller_turn = transcript_text
             caller_speech_active = False
@@ -2052,6 +2064,12 @@ class DidwwSipBridgeService:
                         "transcript_snippet": _debug_snippet(transcript_text),
                     },
                 )
+                if (
+                    blocked_origin_response_index is not None
+                    and not response_active
+                    and not assistant_speaking
+                ):
+                    await mark_response_done_and_flush()
                 return
             if not caller_speech_started_during_assistant:
                 if is_backchannel:
@@ -2064,8 +2082,28 @@ class DidwwSipBridgeService:
                             "transcript_snippet": _debug_snippet(transcript_text),
                         },
                     )
+                    if (
+                        blocked_origin_response_index is not None
+                        and not response_active
+                        and not assistant_speaking
+                    ):
+                        await mark_response_done_and_flush()
                     return
-                await request_bridge_response(reason="caller_turn_completed")
+                request_instructions = (
+                    _CALLER_TURN_COMPLETION_INSTRUCTIONS
+                    if blocked_origin_response_index is not None
+                    else None
+                )
+                request_key = (
+                    f"{_CALLER_TURN_COMPLETION_RESPONSE_KEY_PREFIX}:{current_caller_utterance_id}"
+                    if blocked_origin_response_index is not None
+                    else None
+                )
+                await request_bridge_response(
+                    request_instructions,
+                    reason="caller_turn_completed",
+                    key=request_key,
+                )
                 return
             elapsed_ms = int(
                 max(
@@ -2099,9 +2137,29 @@ class DidwwSipBridgeService:
                         "transcript_snippet": _debug_snippet(transcript_text),
                     },
                 )
+                if (
+                    blocked_origin_response_index is not None
+                    and not response_active
+                    and not assistant_speaking
+                ):
+                    await mark_response_done_and_flush()
                 return
             caller_speech_started_during_assistant = False
-            await request_bridge_response(reason="caller_turn_completed")
+            request_instructions = (
+                _CALLER_TURN_COMPLETION_INSTRUCTIONS
+                if blocked_origin_response_index is not None
+                else None
+            )
+            request_key = (
+                f"{_CALLER_TURN_COMPLETION_RESPONSE_KEY_PREFIX}:{current_caller_utterance_id}"
+                if blocked_origin_response_index is not None
+                else None
+            )
+            await request_bridge_response(
+                request_instructions,
+                reason="caller_turn_completed",
+                key=request_key,
+            )
             if barge_cancelled_utterance_id == current_caller_utterance_id:
                 return
             if assistant_audio_active():
@@ -2849,15 +2907,12 @@ class DidwwSipBridgeService:
             state.answer_response_queued = True
             if status == "failed":
                 response_instructions = (
-                    "Tell the caller you could not complete the lookup right now. "
+                    "Tell the caller, in one short sentence, that you could not complete the lookup "
+                    "right now. "
                     "Do not mention internal agent handoffs or say the query is still pending."
                 )
             else:
-                response_instructions = (
-                    "The lookup result is available now in the conversation. Briefly answer "
-                    "the caller from it. Do not mention internal agent handoffs, do not say "
-                    "the query is still pending, and do not say that you are still checking."
-                )
+                response_instructions = _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
             response_kind = "answer"
             response_reason = "query_result"
         self._append_debug_event(
