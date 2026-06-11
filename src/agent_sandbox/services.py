@@ -338,6 +338,21 @@ def _artifact_teams_reference_content_url(artifact: dict[str, Any]) -> str | Non
     return None
 
 
+def _artifact_control_plane_download_url(artifact: dict[str, Any]) -> str | None:
+    candidates: list[Any] = [
+        artifact.get("download_url"),
+        artifact.get("public_url"),
+    ]
+    metadata = artifact.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend([metadata.get("download_url"), metadata.get("public_url")])
+    for candidate in candidates:
+        normalized = _quote_teams_reference_content_url(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
 def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
     path = artifact.get("path")
     if path:
@@ -2631,6 +2646,7 @@ class GraphTeamsService:
         attachments: list[dict[str, Any]] = []
         inline_images: list[tuple[str, str]] = []
         attachment_references: list[str] = []
+        download_links: list[tuple[str, str]] = []
         for index, artifact in enumerate(artifacts):
             temporary_id = str(index + 1)
             filename = _artifact_filename(artifact, index=index)
@@ -2649,6 +2665,10 @@ class GraphTeamsService:
 
             reference_content_url = _artifact_teams_reference_content_url(artifact)
             if not reference_content_url:
+                download_url = _artifact_control_plane_download_url(artifact)
+                if download_url:
+                    download_links.append((filename, download_url))
+                    continue
                 raise ValueError(
                     "Teams file attachments require a SharePoint/OneDrive contentUrl; "
                     "staged bytes can only be sent as inline image hosted content."
@@ -2675,6 +2695,15 @@ class GraphTeamsService:
                 '" alt="'
                 f"{html.escape(filename, quote=True)}"
                 '"></p>'
+            )
+        for filename, download_url in download_links:
+            escaped_filename = html.escape(filename, quote=False)
+            body_html += (
+                '<p><a href="'
+                f"{html.escape(download_url, quote=True)}"
+                '">'
+                f"{escaped_filename}"
+                "</a></p>"
             )
         payload: dict[str, Any] = {
             "body": {"content": body_html, "contentType": "html"},

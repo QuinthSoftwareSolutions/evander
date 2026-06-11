@@ -1388,6 +1388,7 @@ class CommunicationSendMessageWithAttachmentsResponse(BaseModel):
     message_id: str | None = None
     draft_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
+    published_links: list[dict[str, Any]] = Field(default_factory=list)
     result: dict[str, Any] = Field(default_factory=dict)
 
 

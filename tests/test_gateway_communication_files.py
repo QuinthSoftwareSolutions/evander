@@ -3,13 +3,19 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox import gateway
+from agent_sandbox.communication_artifact_links import (
+    verify_communication_artifact_download_token,
+)
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import build_runtime
@@ -48,6 +54,36 @@ class FakeAgentCopyFilesEffectProvider:
         return {
             "copied_count": len(copied_paths),
             "copied_paths": copied_paths,
+        }
+
+
+class FakeTeamsFileService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def post_file(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        artifacts: list[dict[str, object]],
+        thread_id: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "message": message,
+                "channel_target": channel_target,
+                "session_id": session_id,
+                "artifacts": artifacts,
+                "thread_id": thread_id,
+            }
+        )
+        return {
+            "status": "posted",
+            "message_id": "teams-message-1",
+            "channel_target": channel_target,
+            "session_id": session_id,
+            "artifact_count": len(artifacts),
         }
 
 
@@ -305,6 +341,82 @@ def test_post_ado_backlog_comment_uses_staged_artifact_send_policy(
     assert calls[0]["remote_issue_id"] == "123"
     assert calls[0]["project"] == "Project"
     assert calls[0]["attachments"][0]["artifact_id"] == artifact.artifact_id
+
+
+def test_teams_post_file_publishes_non_image_as_signed_control_plane_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_LINK_SECRET", "test-secret")
+    context = make_context(
+        tmp_path,
+        communication_artifact_public_base_url="https://root-control.example.test",
+    )
+    team_directory = DirectoryService(context.directories).create(parent="root", name="team")
+    DirectoryConfigStore(context.directories, runtime_dir=context.config.runtime_dir).write(
+        team_directory.path,
+        domain="providers",
+        payload={
+            "communication_artifact_public_base_url": "https://control.example.test",
+            "communication_artifact_link_secret_env": "TEAM_LINK_SECRET",
+        },
+    )
+    fake_service = FakeTeamsFileService()
+    context.teams_service = fake_service
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_FILE],
+            teams_channel_allowlist=["team-a/channel-1"],
+            communication_file_send_enabled=True,
+            communication_file_max_bytes=100,
+            communication_file_allowed_mime_types=["text/plain"],
+            communication_file_allowed_extensions=[".txt"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path=team_directory.path,
+        ),
+    )
+    artifact = CommunicationArtifactStore(tmp_path).stage(
+        provider="workspace",
+        session_id="session-1",
+        content=b"hello",
+        original_filename="hello.txt",
+        mime_type="text/plain",
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_post_file",
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "message": "Here is the file",
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert result["published_links"][0]["artifact_id"] == artifact.artifact_id
+    posted_artifacts = fake_service.calls[0]["artifacts"]
+    assert isinstance(posted_artifacts, list)
+    download_url = str(posted_artifacts[0]["download_url"])
+    parsed = urlparse(download_url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "control.example.test"
+    assert parsed.path == f"/public/communication-artifacts/{artifact.artifact_id}"
+    token = parse_qs(parsed.query)["token"][0]
+    assert (
+        verify_communication_artifact_download_token(
+            artifact_id=artifact.artifact_id,
+            token=token,
+            secret_env="TEAM_LINK_SECRET",
+        )
+        == artifact.artifact_id
+    )
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "published_links" in audit_text
+    assert "token=" not in audit_text
 
 
 def test_inline_media_pr_feedback_downloads_and_copies_artifact(

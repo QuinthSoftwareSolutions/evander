@@ -2168,6 +2168,67 @@ def test_graph_teams_post_file_inlines_image_hosted_content(
     assert len(requests) == 1
 
 
+def test_graph_teams_post_file_links_non_image_control_plane_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.read())
+        assert payload["body"]["content"] == (
+            '<p>file incoming</p><p><a href="'
+            'https://control.example.test/public/communication-artifacts/comm_123?token=abc">'
+            "upload.txt</a></p>"
+        )
+        assert "attachments" not in payload
+        assert "hostedContents" not in payload
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "createdDateTime": "2026-03-30T11:00:00Z",
+                "body": {"content": "<p>file incoming</p>", "contentType": "html"},
+                "from": {"user": {"id": "bot-1"}},
+                "attachments": [],
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    result = service.post_file(
+        "file incoming",
+        "team-a/channel-1",
+        "session-1",
+        [
+            {
+                "filename": "upload.txt",
+                "mime_type": "text/plain",
+                "download_url": (
+                    "https://control.example.test/public/communication-artifacts/"
+                    "comm_123?token=abc"
+                ),
+            }
+        ],
+    )
+
+    assert result["status"] == "posted"
+    assert result["artifact_count"] == 1
+    assert len(requests) == 1
+
+
 def test_graph_teams_post_file_rejects_non_image_bytes_without_share_link(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

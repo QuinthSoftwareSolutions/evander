@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Teams Control-Plane Artifact Links
+
+- Added signed public download links for staged communication artifacts so
+  `teams_post_file` can share non-image files through the control plane without
+  requiring SharePoint/OneDrive upload scopes. Teams image artifacts continue to
+  use inline Graph hosted content.
+- Marked signed public communication artifact downloads as `Cache-Control:
+  no-store` so bearer-token artifact URLs are not cacheable past their expiry.
+
 ## 2026-06-11 - Agents Page Steering Refresh Stability
 
 - Kept existing Operator steering content rendered while refreshes are in

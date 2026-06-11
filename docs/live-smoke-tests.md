@@ -234,7 +234,8 @@ the same dedicated test destinations.
 4. For Discord, call `discord_post_file` with the approved `request_id` and the staged
    `artifact_ids`, targeting only the dedicated Discord test channel.
 5. For Teams, call `teams_post_file` with the approved `request_id`, targeting only the dedicated
-   Teams test channel/chat.
+   Teams test channel/chat. Image artifacts should render inline; non-image artifacts should appear
+   as signed control-plane download links when the public base URL and link secret are configured.
 6. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
    `email_send_approved_with_attachments` only if `email_send_enabled: true` is intentionally set
    and the approval payload matches exactly.
