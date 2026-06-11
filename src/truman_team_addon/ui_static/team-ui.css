@@ -247,6 +247,7 @@ textarea {
   border-radius: 8px;
   padding: 1rem;
   background: linear-gradient(180deg, #ffffff 0%, #f4f8f6 100%);
+  min-width: 0;
 }
 
 .hierarchy-team-header {
@@ -263,7 +264,12 @@ textarea {
 .hierarchy-chart {
   margin-top: 0.9rem;
   overflow-x: auto;
+  overflow-y: visible;
+  max-width: 100%;
+  min-width: 0;
   padding-bottom: 0.25rem;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .hierarchy-tree {
@@ -275,6 +281,7 @@ textarea {
 
 .hierarchy-branch {
   position: relative;
+  min-width: 0;
 }
 
 .hierarchy-children {
@@ -298,8 +305,9 @@ textarea {
   position: relative;
   display: grid;
   gap: 0.35rem;
-  width: min(100%, 21rem);
+  width: clamp(15rem, 100%, 21rem);
   min-width: 15rem;
+  max-width: 100%;
   padding: 0.8rem;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -334,6 +342,7 @@ textarea {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .hierarchy-node-title strong,
@@ -346,6 +355,8 @@ textarea {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 700;
+  flex: 0 1 auto;
+  text-align: right;
 }
 
 .hierarchy-node-subtitle {
@@ -353,6 +364,7 @@ textarea {
   align-items: center;
   gap: 0.45rem;
   flex-wrap: wrap;
+  min-width: 0;
   color: var(--muted);
   font-size: 0.78rem;
 }
@@ -363,6 +375,8 @@ textarea {
   max-height: 0;
   overflow: hidden;
   opacity: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   transition:
     max-height 0.18s ease,
     opacity 0.18s ease;
@@ -571,8 +585,12 @@ label textarea {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .hierarchy-chart {
+    max-width: 100%;
+  }
+
   .hierarchy-node-card {
-    width: min(100%, 19rem);
+    width: clamp(15rem, 100%, 19rem);
   }
 }
 
@@ -601,13 +619,26 @@ label textarea {
     display: grid;
   }
 
+  .hierarchy-team {
+    padding: 0.85rem;
+  }
+
   .hierarchy-chart {
     overflow-x: auto;
+    overflow-y: visible;
+    padding-bottom: 0.4rem;
   }
 
   .hierarchy-node-card {
-    width: min(100%, 16.5rem);
-    min-width: 0;
+    width: clamp(14rem, 100%, 16.5rem);
+    min-width: 14rem;
+  }
+
+  .hierarchy-node-card:hover .hierarchy-node-details,
+  .hierarchy-node-card:focus .hierarchy-node-details,
+  .hierarchy-node-card:focus-visible .hierarchy-node-details,
+  .hierarchy-node-card:focus-within .hierarchy-node-details {
+    max-height: none;
   }
 }
 
