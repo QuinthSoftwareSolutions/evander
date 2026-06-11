@@ -787,6 +787,24 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "git_promotion_record_ids"
     ] == ["alpha-release-promotion"]
     assert set(project_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
+    project_runtime_operations = project_state["runtime_operations"]
+    assert {row["id"] for row in project_runtime_operations["agents"]} == {
+        "alpha-dev",
+        "alpha-lead",
+        "alpha-reviewer",
+    }
+    assert {
+        row["inbox_item_id"]
+        for row in project_runtime_operations["attention"]
+        if row.get("inbox_item_id")
+    } == {"alpha-inbox"}
+    assert all(
+        "beta-" not in json.dumps(row)
+        for row in (
+            project_runtime_operations["agents"]
+            + project_runtime_operations["attention"]
+        )
+    )
 
     agent_query = TeamStateQueryProvider()
     agent_query.initialize(
@@ -827,6 +845,20 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "git_promotion_record_ids"
     ] == ["alpha-release-promotion"]
     assert set(agent_state["ephemeral_assignments"]) == {"alpha-ephemeral"}
+    agent_runtime_operations = agent_state["runtime_operations"]
+    assert {row["id"] for row in agent_runtime_operations["agents"]} == {"alpha-dev"}
+    assert {
+        row["inbox_item_id"]
+        for row in agent_runtime_operations["attention"]
+        if row.get("inbox_item_id")
+    } == {"alpha-inbox"}
+    assert all(
+        "beta-" not in json.dumps(row)
+        for row in (
+            agent_runtime_operations["agents"]
+            + agent_runtime_operations["attention"]
+        )
+    )
 
 
 def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
