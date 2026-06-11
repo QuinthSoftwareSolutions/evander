@@ -1832,6 +1832,44 @@ def test_inbound_phone_call_provisioning_uses_directory_route_and_is_idempotent(
     assert "+15550000200" not in json.dumps(body)
 
 
+def test_inbound_phone_call_provisioning_matches_plus_and_digits_only_numbers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_CONTROLLER_TOKEN", "team-token")
+    context, team_path = _build_inbound_phone_runtime(
+        tmp_path,
+        token_env="TEAM_CONTROLLER_TOKEN",
+        route_id="ops-main",
+        session_id="team-origin",
+        did="+1 (555) 000-0100",
+        caller_number="+1 (555) 000-0200",
+        route_prompt="Answer inbound calls for ops.",
+    )
+    client = TestClient(create_app(context))
+
+    response = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json={
+            "did": "15550000100",
+            "called_number": "+1 (555) 000-0100",
+            "caller_number": "15550000200",
+            "asterisk_channel_id": "SIP/abc-0006",
+            "bridge_call_id": "bridge-6",
+        },
+        headers={"Authorization": "Bearer team-token"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["route"]["route_id"] == "ops-main"
+    assert body["route"]["directory_path"] == team_path
+    assert body["route"]["caller"]["sha256"]
+    assert context.voice_session_store.get_by_request_id(
+        "inbound-phone:ops-main:SIP/abc-0006"
+    ) is not None
+
+
 def test_inbound_phone_call_provisioning_rejects_blocked_caller_without_creating_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

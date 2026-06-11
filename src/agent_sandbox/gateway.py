@@ -9250,6 +9250,12 @@ def create_app(context: RuntimeContext) -> Starlette:
     def _normalize_inbound_phone_number(value: object) -> str | None:
         return _normalize_phone_number(value, field_name="inbound_phone_calls")
 
+    def _inbound_phone_match_key(value: str | None) -> str | None:
+        normalized = _normalize_inbound_phone_number(value)
+        if normalized is None:
+            return None
+        return normalized.removeprefix("+")
+
     def _hash_identity(value: str | None) -> str | None:
         normalized = str(value or "").strip()
         if not normalized:
@@ -9294,13 +9300,20 @@ def create_app(context: RuntimeContext) -> Starlette:
         matches: list[InboundPhoneRoute] = []
         route_id_filter = str(route_id or "").strip() or None
         dialed_numbers = {
-            number for number in (did, called_number) if number is not None
+            match_key
+            for number in (did, called_number)
+            if (match_key := _inbound_phone_match_key(number))
         }
         dialed_number = next(iter(dialed_numbers), None)
         for route in routes:
             if route_id_filter and route.id != route_id_filter:
                 continue
-            if dialed_number and dialed_number not in {route.did, route.called_number}:
+            route_numbers = {
+                match_key
+                for number in (route.did, route.called_number)
+                if (match_key := _inbound_phone_match_key(number))
+            }
+            if dialed_number and dialed_number not in route_numbers:
                 continue
             matches.append(route)
         if not matches:
@@ -9314,9 +9327,20 @@ def create_app(context: RuntimeContext) -> Starlette:
         *,
         caller_number: str,
     ) -> str | None:
-        if route.blocked_callers and caller_number in set(route.blocked_callers):
+        caller_key = _inbound_phone_match_key(caller_number)
+        blocked_callers = {
+            match_key
+            for number in route.blocked_callers
+            if (match_key := _inbound_phone_match_key(number))
+        }
+        allowed_callers = {
+            match_key
+            for number in route.allowed_callers
+            if (match_key := _inbound_phone_match_key(number))
+        }
+        if blocked_callers and caller_key in blocked_callers:
             return "Caller is blocked for this inbound route"
-        if route.allowed_callers and caller_number not in set(route.allowed_callers):
+        if allowed_callers and caller_key not in allowed_callers:
             return "Caller is not allowlisted for this inbound route"
         return None
 
@@ -9339,7 +9363,11 @@ def create_app(context: RuntimeContext) -> Starlette:
 
             did = _normalize_inbound_phone_number(raw_did)
             called_number = _normalize_inbound_phone_number(raw_called_number)
-            if did is not None and called_number is not None and did != called_number:
+            if (
+                did is not None
+                and called_number is not None
+                and _inbound_phone_match_key(did) != _inbound_phone_match_key(called_number)
+            ):
                 raise ValueError("did and called_number must refer to the same number")
             request_number = did or called_number
             if request_number is None:
