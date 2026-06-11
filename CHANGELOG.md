@@ -10,6 +10,10 @@ material. Newer entries are added incrementally as changes land.
 - Kept existing Operator steering content rendered while refreshes are in
   flight, avoiding the loading-placeholder layout jump during periodic Agents
   page updates.
+- Restored the checked-in Admin Web entrypoint to the bundled workflow-editor
+  asset already present in `dist/assets`, and made approval notification deep
+  links fall back to `config/admin-web.env` when non-admin services do not carry
+  `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL` in their process environment.
 
 ## 2026-06-10 - Agents Page Create Modal Immutable Configuration
 

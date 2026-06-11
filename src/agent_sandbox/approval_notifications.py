@@ -17,6 +17,8 @@ from agent_sandbox.models import (
 
 logger = logging.getLogger(__name__)
 
+_ADMIN_WEB_PUBLIC_BASE_URL_ENV = "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL"
+_ADMIN_WEB_ENV_RELATIVE_PATH = Path("config") / "admin-web.env"
 _DEFAULT_ADMIN_WEB_BASE_URL = "http://127.0.0.1:8100"
 
 
@@ -162,16 +164,15 @@ class ApprovalNotificationDispatcher:
     def _review_command(request_id: str) -> str:
         return f"agent-sandbox-cli show-approval {request_id}"
 
-    @classmethod
-    def _render_message(cls, request: ApprovalRequest) -> str:
-        review_command = cls._review_command(request.request_id)
+    def _render_message(self, request: ApprovalRequest) -> str:
+        review_command = self._review_command(request.request_id)
         decision_command = (
             f'agent-sandbox-cli approve {request.request_id} <approver> '
             '--approve|--deny --reason "..."'
         )
-        review_url = cls._approval_admin_web_url(request.request_id)
-        approve_url = cls._approval_admin_web_url(request.request_id, decision="approve")
-        deny_url = cls._approval_admin_web_url(request.request_id, decision="deny")
+        review_url = self._approval_admin_web_url(request.request_id)
+        approve_url = self._approval_admin_web_url(request.request_id, decision="approve")
+        deny_url = self._approval_admin_web_url(request.request_id, decision="deny")
         vm_id = request.vm_id or "n/a"
         tool_name = request.tool_name or request.action_type
         return "\n".join(
@@ -199,20 +200,21 @@ class ApprovalNotificationDispatcher:
             ]
         )
 
-    @classmethod
-    def _approval_admin_web_url(cls, request_id: str, *, decision: str | None = None) -> str:
-        base_url = cls._admin_web_base_url()
+    def _approval_admin_web_url(self, request_id: str, *, decision: str | None = None) -> str:
+        base_url = self._admin_web_base_url()
         query = {"request_id": request_id}
         if decision is not None:
             query["decision"] = decision
         return f"{base_url}/#approvals?{urlencode(query)}"
 
-    @staticmethod
-    def _admin_web_base_url() -> str:
-        return (
-            os.environ.get("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", "").strip().rstrip("/")
-            or _DEFAULT_ADMIN_WEB_BASE_URL
-        )
+    def _admin_web_base_url(self) -> str:
+        env_value = os.environ.get(_ADMIN_WEB_PUBLIC_BASE_URL_ENV, "").strip().rstrip("/")
+        if env_value:
+            return env_value
+        file_value = _load_optional_env_file(
+            self.project_dir / _ADMIN_WEB_ENV_RELATIVE_PATH
+        ).get(_ADMIN_WEB_PUBLIC_BASE_URL_ENV, "")
+        return file_value.strip().rstrip("/") or _DEFAULT_ADMIN_WEB_BASE_URL
 
     @staticmethod
     def _extract_message_id(result: dict[str, Any]) -> str | None:
@@ -242,3 +244,27 @@ class ApprovalNotificationDispatcher:
         if not parts:
             return None
         return ", ".join(parts)
+
+
+def _load_optional_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("Could not read Admin Web env file %s: %s", path, exc)
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values

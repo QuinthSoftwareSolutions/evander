@@ -245,6 +245,54 @@ def test_approval_notifications_fallback_to_local_admin_web_url_when_public_base
     assert "decision=deny" in message
 
 
+def test_approval_notifications_read_public_base_url_from_admin_web_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    admin_env_path = tmp_path / "config" / "admin-web.env"
+    admin_env_path.parent.mkdir(parents=True)
+    admin_env_path.write_text(
+        'AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL="https://admin.example.com/control/"\n',
+        encoding="utf-8",
+    )
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
+    runtime.session_repository.upsert_session(_session_manifest())
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        send_calls.append(kwargs)
+        return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
+
+    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+        approval = runtime.policy.create_approval(
+            "session-1",
+            "email_send_approved",
+            {"body": "secret body"},
+            "send the email",
+        )
+
+    assert len(send_calls) == 1
+    message = str(send_calls[0]["message"])
+    assert f"https://admin.example.com/control/#approvals?request_id={approval.request_id}" in message
+    assert "http://127.0.0.1:8100" not in message
+    assert "decision=approve" in message
+    assert "decision=deny" in message
+
+
 def test_approval_creation_survives_legacy_missing_notification_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
