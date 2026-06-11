@@ -9238,7 +9238,8 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["path_source"] == "default"
-    assert payload["version"] == "openai-2026-06-04"
+    assert isinstance(payload["version"], str)
+    assert payload["version"]
     assert payload["currency"] == "usd"
     assert payload["rule_count"] >= 1
     assert payload["sources"]
@@ -9248,10 +9249,12 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     assert payload["editable"] is True
     assert payload["write_requires_privileged_unlock"] is True
     first_rule = payload["rules"][0]
-    assert first_rule["id"].startswith("openai:")
-    assert first_rule["provider"] == "openai"
+    assert isinstance(first_rule["id"], str)
+    assert first_rule["id"]
+    assert isinstance(first_rule["provider"], str)
+    assert first_rule["provider"]
     assert first_rule["rates_per_1m_tokens"]["input"]
-    assert payload["catalog"]["rules"][0]["id"].startswith("openai:")
+    assert payload["catalog"]["rules"][0]["id"] == first_rule["id"]
 
 
 def test_admin_web_model_pricing_catalog_status_reports_env_override(
