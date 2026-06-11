@@ -5664,12 +5664,28 @@ select {
   align-items: flex-start;
 }
 
-.configuration-json-toggle {
+.panel-header > .configuration-json-toggle {
+  flex: 1 1 auto;
+  width: auto;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
   min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+}
+
+.panel-header > .configuration-json-toggle:hover {
+  transform: none;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .configuration-json-toggle > div {
