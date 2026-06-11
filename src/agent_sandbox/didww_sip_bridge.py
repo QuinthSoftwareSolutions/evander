@@ -589,7 +589,9 @@ class DidwwBridgeStore:
     ) -> DidwwBridgeCallRecord:
         def mutate(record: DidwwBridgeCallRecord) -> None:
             record.status = normalize_voice_session_status(status, default="ended")
-            record.summary = _optional_text(summary) or record.summary
+            sanitized_summary = _debug_snippet(summary)
+            if sanitized_summary is not None:
+                record.summary = sanitized_summary
             if decisions is not None:
                 record.decisions = [_normalize_list_item(item) for item in decisions if _normalize_list_item(item)]
             if action_items is not None:
@@ -597,7 +599,7 @@ class DidwwBridgeStore:
                     _normalize_list_item(item) for item in action_items if _normalize_list_item(item)
                 ]
             if error is not None:
-                record.error = str(error)
+                record.error = _debug_snippet(error)
             record.ended_at = record.ended_at or datetime.now(UTC)
 
         return self._mutate(voice_session_id, mutate)

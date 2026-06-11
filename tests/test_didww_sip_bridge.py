@@ -4406,3 +4406,22 @@ def test_asterisk_hangup_failure_causes_mark_call_failed(tmp_path: Path) -> None
         latest = store.get(record.voice_session_id)
         assert latest is not None
         assert latest.status == "failed"
+
+
+def test_bridge_completion_sanitizes_terminal_summary_and_error(tmp_path: Path) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    completed = store.complete(
+        record.voice_session_id,
+        status="failed",
+        summary="Call failed for +1 (555) 000-0100",
+        error="Caller +1 (555) 000-0200 triggered a bridge failure",
+    )
+
+    serialized = store.path.read_text(encoding="utf-8")
+    assert "+15550000100" not in serialized
+    assert "+15550000200" not in serialized
+    assert "+15550000100" not in (completed.summary or "")
+    assert "+15550000200" not in (completed.error or "")
+    assert completed.status == "failed"
