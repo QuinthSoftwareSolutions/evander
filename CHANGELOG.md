@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Team Add-on Runtime Blockers Presentation
+
+- Tightened the Team Add-on Runtime / Blockers panel styling so long section
+  headings, filter controls, and runtime summary text wrap cleanly on narrow
+  viewports.
+- Kept the bundled add-on packaging contract unchanged while documenting the
+  new operator-facing runtime view in the project history.
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`

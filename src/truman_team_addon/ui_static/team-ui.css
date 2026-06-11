@@ -201,6 +201,7 @@ textarea {
 
 .runtime-operations-header h2 {
   margin-top: 0.1rem;
+  overflow-wrap: anywhere;
 }
 
 .runtime-filter-group {
@@ -371,11 +372,16 @@ button.runtime-filter-button.active {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .runtime-section {
   display: grid;
   gap: 0.5rem;
+}
+
+.runtime-section-header > div:first-child {
+  min-width: 0;
 }
 
 .runtime-section h3 {
@@ -390,6 +396,7 @@ button.runtime-filter-button.active {
   font-weight: 700;
   text-align: right;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .runtime-list {
