@@ -9,6 +9,8 @@ material. Newer entries are added incrementally as changes land.
 
 - Exposed Teams control-plane communication artifact link settings in Admin Web
   under Configuration -> Provider Integrations -> Communication artifacts.
+- Updated managed Admin Web Caddy config to proxy `/public/*` routes so signed
+  communication artifact links are not treated as static frontend assets.
 
 ## 2026-06-11 - Admin Web Configuration Panel
 

@@ -3,6 +3,10 @@
 		reverse_proxy {{ agent_sandbox_admin_web_caddy_upstream_host }}:{{ agent_sandbox_admin_web_caddy_upstream_port }}
 	}
 
+	handle /public/* {
+		reverse_proxy {{ agent_sandbox_admin_web_caddy_upstream_host }}:{{ agent_sandbox_admin_web_caddy_upstream_port }}
+	}
+
 	handle /healthz {
 		reverse_proxy {{ agent_sandbox_admin_web_caddy_upstream_host }}:{{ agent_sandbox_admin_web_caddy_upstream_port }}
 	}

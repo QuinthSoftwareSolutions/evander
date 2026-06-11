@@ -90,6 +90,7 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "Reload Caddy after Caddyfile changes" in tasks
 
     assert "handle /api/*" in caddyfile
+    assert "handle /public/*" in caddyfile
     assert "handle /healthz" in caddyfile
     assert "@admin_web_index path / /index.html" in caddyfile
     assert "handle @admin_web_index" in caddyfile
