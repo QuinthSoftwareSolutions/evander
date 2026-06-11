@@ -27,6 +27,7 @@ from truman_team_addon.timeline import derive_team_timeline
 def _timeline_state() -> TeamState:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     later = base + timedelta(hours=1)
+    later1_5 = base + timedelta(minutes=90)
     later2 = base + timedelta(hours=2)
     later3 = base + timedelta(hours=3)
     later4 = base + timedelta(hours=4)
@@ -204,6 +205,19 @@ def _timeline_state() -> TeamState:
             ),
         },
         release_packages={
+            "release-c": ReleasePackage(
+                id="release-c",
+                project_id="project-a",
+                deliverable_ids=["deliverable-a"],
+                artifact_refs=[],
+                feature_branches=[],
+                release_branch="team-a/releases/release-c",
+                canonical_branch="releases/project-a/release-c",
+                git_promotion_record_ids=[],
+                state=TeamRecordState.PENDING,
+                created_at=later1_5,
+                updated_at=later8,
+            ),
             "release-a": ReleasePackage(
                 id="release-a",
                 project_id="project-a",
@@ -308,6 +322,7 @@ def test_derive_team_timeline_filters_by_scope_type_status_and_attention() -> No
     blocked_entries = derive_team_timeline(state, statuses=["blocked"])["entries"]
     attention_entries = derive_team_timeline(state, attention_needed=True)["entries"]
     calm_entries = derive_team_timeline(state, attention_needed=False)["entries"]
+    all_entries = derive_team_timeline(state)["entries"]
 
     assert "task:task-b:created" not in {entry["id"] for entry in team_entries}
     assert "task:task-b:created" not in {entry["id"] for entry in project_entries}
@@ -318,6 +333,8 @@ def test_derive_team_timeline_filters_by_scope_type_status_and_attention() -> No
     assert {entry["status"] for entry in review_entries} == {"blocked"}
     assert {entry["type"] for entry in blocked_entries} == {"review", "release_package"}
     assert all(entry["status"] == "blocked" for entry in blocked_entries)
+    assert "release:release-c:created" in {entry["id"] for entry in all_entries}
+    assert "release:release-c:blocked" not in {entry["id"] for entry in all_entries}
 
     assert attention_entries
     assert all(entry["attention_needed"] is True for entry in attention_entries)

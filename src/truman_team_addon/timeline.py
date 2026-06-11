@@ -444,36 +444,35 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                 summary=f"Release package {release.id} created for project {release.project_id}",
             )
         )
-        has_terminal_entry = (
-            release.state != TeamRecordState.PENDING
-            or release.published_at is not None
-            or (
-                release.updated_at is not None
-                and release.updated_at != release.created_at
-            )
-        )
-        if has_terminal_entry:
-            timestamp = (
-                release.published_at
-                if release.state == TeamRecordState.ACCEPTED and release.published_at is not None
-                else release.updated_at
-            )
+        if release.state == TeamRecordState.ACCEPTED:
+            timestamp = release.published_at or release.updated_at
             entries.append(
                 _entry(
-                    id=f"release:{release.id}:{'published' if release.state == TeamRecordState.ACCEPTED else 'blocked'}",
+                    id=f"release:{release.id}:published",
                     type="release_package",
-                    category=(
-                        "published"
-                        if release.state == TeamRecordState.ACCEPTED
-                        else "blocked"
-                    ),
+                    category="published",
                     timestamp=timestamp,
-                    timestamp_source=(
-                        "published_at"
-                        if release.state == TeamRecordState.ACCEPTED
-                        else "updated_at"
-                    ),
+                    timestamp_source="published_at" if release.published_at is not None else "updated_at",
                     timestamp_missing=timestamp is None,
+                    actor_agent_id=project.lead_agent_id if project is not None else None,
+                    related_agent_ids=related,
+                    team_id=team_id,
+                    project_id=release.project_id,
+                    release_package_id=release.id,
+                    status=release.state.value,
+                    attention_needed=_release_attention_needed(release.state),
+                    summary=_release_summary(release),
+                )
+            )
+        elif release.state == TeamRecordState.BLOCKED:
+            entries.append(
+                _entry(
+                    id=f"release:{release.id}:blocked",
+                    type="release_package",
+                    category="blocked",
+                    timestamp=release.updated_at,
+                    timestamp_source="updated_at",
+                    timestamp_missing=release.updated_at is None,
                     actor_agent_id=project.lead_agent_id if project is not None else None,
                     related_agent_ids=related,
                     team_id=team_id,
