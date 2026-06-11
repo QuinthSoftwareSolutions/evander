@@ -10,23 +10,28 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 import agent_sandbox.didww_sip_bridge as didww_sip_bridge
 from agent_sandbox.didww_sip_bridge import (
     AsteriskAriClient,
     AsteriskCallHandles,
+    DidwwBridgeCallRecord,
     DidwwBridgeStore,
     DidwwSipBridgeConfig,
     DidwwSipBridgeService,
+    InboundPhoneCallStartRequest,
     OpenAIRealtimeSession,
     PhoneCallStartRequest,
     RealtimeFunctionCall,
     RtpPacket,
     RtpUdpEndpoint,
+    VoiceMediaControllerClient,
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
+    initial_inbound_call_instructions,
     initial_outbound_call_instructions,
     load_config,
     projection_to_instructions,
@@ -57,6 +62,48 @@ def _phone_payload() -> dict[str, object]:
         },
         "realtime": {"model": "gpt-realtime-2", "api_key_env": "OPENAI_API_KEY"},
         "metadata": {"origin_session_id": "session-1"},
+    }
+
+
+def _inbound_start_payload() -> dict[str, object]:
+    return {
+        "voice_session_id": "voice-inbound-1",
+        "request_id": "inbound-phone:ops-main:SIP/abc-0001",
+        "gateway_voice_session_id": "voice-inbound-1",
+        "route_id": "ops-main",
+        "asterisk_channel_id": "SIP/abc-0001",
+        "bridge_call_id": "bridge-1",
+        "did_redacted": "***0100",
+        "caller_redacted": "***0200",
+        "projection": {
+            "prompt": "Answer inbound calls for ops.",
+            "caller_metadata": {"direction": "inbound"},
+        },
+        "realtime": {
+            "model": "gpt-realtime-2",
+            "media_controller_url": "http://gateway.local",
+            "media_controller_token_env": "VOICE_MEDIA_CONTROLLER_TOKEN",
+        },
+        "route": {
+            "route_id": "ops-main",
+            "directory_path": "root/ops",
+            "session_id": "origin-session",
+            "did": {"redacted": "***0100", "sha256": "a" * 64},
+            "caller": {"redacted": "***0200", "sha256": "b" * 64},
+            "asterisk_channel_id": "SIP/abc-0001",
+            "bridge_call_id": "bridge-1",
+            "sip_headers": {"X-Bridge-Token": "<redacted>"},
+        },
+        "inbound_instructions": {
+            "route_prompt": "Answer inbound calls for ops.",
+            "startup_text": "Thanks for calling ops.",
+        },
+        "metadata": {
+            "route": {
+                "route_id": "ops-main",
+                "directory_path": "root/ops",
+            },
+        },
     }
 
 
@@ -181,6 +228,62 @@ def test_initial_outbound_call_with_incomplete_prompt_asks_caller_clarification(
     assert "checking context" not in lowered
 
 
+def test_projection_to_instructions_uses_inbound_startup_contract_for_inbound_calls() -> None:
+    instructions = projection_to_instructions(
+        {
+            "prompt": "Answer inbound calls for ops.",
+            "caller_metadata": {"direction": "inbound"},
+            "context": "Allowed tools: query_origin_agent",
+        }
+    )
+
+    lowered = instructions.lower()
+    assert "inbound startup contract" in lowered
+    assert "outbound startup contract" not in lowered
+    assert "do not use outbound startup wording" in lowered
+    assert "caller metadata" in lowered
+
+
+def test_initial_inbound_call_instructions_use_route_specific_opening() -> None:
+    instructions = initial_inbound_call_instructions(
+        {
+            "route_prompt": "Answer inbound calls for ops.",
+            "startup_text": "Thanks for calling ops.",
+        },
+        {
+            "prompt": "Answer inbound calls for ops.",
+            "caller_metadata": {"direction": "inbound"},
+        },
+    )
+
+    lowered = instructions.lower()
+    assert "start the inbound phone call now" in lowered
+    assert "thanks for calling ops." in lowered
+    assert "route prompt" in lowered
+    assert "outbound startup wording" in lowered
+
+
+def test_inbound_bridge_store_creates_idempotent_redacted_records(tmp_path: Path) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = InboundPhoneCallStartRequest.model_validate(_inbound_start_payload())
+
+    record, created = store.create_inbound_call(payload)
+    duplicate, duplicate_created = store.create_inbound_call(payload)
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate.voice_session_id == record.voice_session_id
+    assert record.direction == "inbound"
+    assert record.route_id == "ops-main"
+    assert record.gateway_voice_session_id == "voice-inbound-1"
+    assert record.did_redacted == "***0100"
+    assert record.caller_redacted == "***0200"
+    assert record.contact["id"] == "ops-main"
+    payload_json = json.dumps(record.response_payload(), sort_keys=True)
+    assert "+15550000100" not in payload_json
+    assert "+15550000200" not in payload_json
+
+
 def test_debug_events_are_exposed_without_changing_transcript_events(
     tmp_path: Path,
     monkeypatch,
@@ -291,6 +394,66 @@ def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -
     assert requests[4].url.path == "/ari/bridges/bridge-didww-test/addChannel"
 
 
+def test_voice_media_controller_client_provisions_and_syncs_inbound_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/voice-sessions/inbound-phone-calls":
+            return httpx.Response(
+                201,
+                json={
+                    "voice_session_id": "voice-inbound-1",
+                    "request_id": "inbound-phone:ops-main:SIP/abc-0001",
+                },
+            )
+        if request.url.path == "/voice-sessions/voice-inbound-1/bridge-result":
+            return httpx.Response(
+                200,
+                json={
+                    "voice_session_id": "voice-inbound-1",
+                    "status": "ended",
+                    "reconciliation_status": "scheduled",
+                },
+            )
+        return httpx.Response(404, json={"error": "unexpected path"})
+
+    async def run() -> tuple[dict[str, Any], dict[str, Any]]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            controller = VoiceMediaControllerClient(
+                base_url="http://gateway.local/",
+                token_env="VOICE_MEDIA_CONTROLLER_TOKEN",
+                timeout_seconds=1,
+                http_client=client,
+            )
+            provisioned = await controller.create_inbound_phone_call(
+                {
+                    "did": "+15550000100",
+                    "caller_number": "+15550000200",
+                    "asterisk_channel_id": "SIP/abc-0001",
+                    "bridge_call_id": "bridge-1",
+                }
+            )
+            synced = await controller.sync_voice_session(
+                "voice-inbound-1",
+                {"status": "ended", "transcript": "caller: hello"},
+            )
+            return provisioned, synced
+
+    provisioned, synced = asyncio.run(run())
+
+    assert provisioned["voice_session_id"] == "voice-inbound-1"
+    assert synced["reconciliation_status"] == "scheduled"
+    assert [request.url.path for request in requests] == [
+        "/voice-sessions/inbound-phone-calls",
+        "/voice-sessions/voice-inbound-1/bridge-result",
+    ]
+    assert all(request.headers["authorization"] == "Bearer controller-token" for request in requests)
+
+
 def test_asterisk_ari_client_waits_for_stasis_before_bridge_add(
     tmp_path: Path,
     monkeypatch,
@@ -371,6 +534,62 @@ def test_asterisk_ari_client_reports_hangup_before_stasis(
         assert "ended before entering Stasis: busy" in str(exc)
     else:  # pragma: no cover - defensive assertion clarity
         raise AssertionError("expected RuntimeError")
+
+
+def test_asterisk_ari_client_starts_external_media_for_inbound_calls(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    requests: list[httpx.Request] = []
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "media-inbound-test"},
+                }
+            ]
+
+        async def recv(self) -> str:
+            return json.dumps(self.events.pop(0))
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/ari/channels/externalMedia":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "media-inbound-test",
+                    "channelvars": {
+                        "UNICASTRTP_LOCAL_ADDRESS": "127.0.0.1",
+                        "UNICASTRTP_LOCAL_PORT": "27086",
+                    },
+                },
+            )
+        return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[-1]})
+
+    async def run() -> AsteriskCallHandles:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            ari = AsteriskAriClient(_config(tmp_path), http_client=client)
+            return await ari.start_external_media_for_inbound(
+                call_id="inbound-test",
+                inbound_channel_id="SIP/abc-0001",
+                external_host="127.0.0.1:49000",
+                event_websocket=FakeWebSocket(),
+            )
+
+    handles = asyncio.run(run())
+
+    assert handles.call_channel_id == "SIP/abc-0001"
+    assert handles.external_media_local_addr == ("127.0.0.1", 27086)
+    assert [request.method for request in requests] == ["POST", "POST", "POST", "POST", "POST"]
+    assert requests[0].url.path == "/ari/bridges/bridge-inbound-test"
+    assert requests[1].url.path == "/ari/channels/SIP/abc-0001/answer"
+    assert requests[2].url.path == "/ari/channels/externalMedia"
+    assert requests[3].url.path == "/ari/bridges/bridge-inbound-test/addChannel"
+    assert requests[4].url.path == "/ari/bridges/bridge-inbound-test/addChannel"
 
 
 def test_rtp_packet_roundtrip() -> None:
@@ -674,6 +893,340 @@ def test_realtime_lifecycle_audio_turn_and_transcript_debug_events(tmp_path: Pat
     )
     assert "+15551234567" not in debug_json
     assert "<redacted-phone>" in debug_json
+
+
+def test_inbound_listener_ignores_outbound_and_external_media_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    service = DidwwSipBridgeService(
+        _config(tmp_path).model_copy(
+            update={
+                "enable_inbound_phone_calls": True,
+                "inbound_gateway_url": "http://gateway.local",
+            }
+        ),
+        store=DidwwBridgeStore(tmp_path / "bridge.json"),
+        start_background_tasks=False,
+    )
+    handled: list[dict[str, Any]] = []
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "call-didww-test"},
+                    "args": ["didww-test"],
+                },
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "media-didww-test"},
+                    "args": ["didww-test"],
+                },
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "SIP/abc-0001"},
+                    "args": ["inbound:+1 (555) 000-0100"],
+                    "channelvars": {
+                        "INBOUND_PHONE_CALL": "1",
+                        "CALLER_NUMBER": "+1 (555) 000-0200",
+                        "BRIDGE_CALL_ID": "bridge-1",
+                    },
+                },
+            ]
+
+        async def recv(self) -> str:
+            if not self.events:
+                raise RuntimeError("listener stopped")
+            return json.dumps(self.events.pop(0))
+
+    class FakeAriClient:
+        @asynccontextmanager
+        async def event_stream(self) -> Any:
+            yield FakeWebSocket()
+
+    service.ari_client = FakeAriClient()  # type: ignore[assignment]
+
+    async def fake_handle(context: dict[str, Any], gateway_client: Any) -> None:
+        handled.append(context)
+
+    async def run() -> None:
+        monkeypatch.setattr(service, "_handle_inbound_stasis_start", fake_handle)
+        await service._run_inbound_phone_listener()
+
+    asyncio.run(run())
+
+    assert len(handled) == 1
+    assert handled[0]["asterisk_channel_id"] == "SIP/abc-0001"
+    assert handled[0]["did"] == "+15550000100"
+    assert handled[0]["caller_number"] == "+15550000200"
+    assert handled[0]["bridge_call_id"] == "bridge-1"
+
+
+def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    service = DidwwSipBridgeService(
+        _config(tmp_path).model_copy(
+            update={
+                "enable_inbound_phone_calls": True,
+                "inbound_gateway_url": "http://gateway.local",
+            }
+        ),
+        store=store,
+        realtime_factory=lambda _projection, _realtime: FakeRealtime(),  # type: ignore[arg-type]
+        rtp_endpoint_factory=lambda: FakeRtpEndpoint(),  # type: ignore[arg-type]
+        start_background_tasks=False,
+    )
+    events: list[str] = []
+    synced_results: list[dict[str, Any]] = []
+
+    async def fake_sync_voice_session(
+        self: VoiceMediaControllerClient,
+        voice_session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        synced_results.append(
+            {
+                "base_url": self.base_url,
+                "voice_session_id": voice_session_id,
+                "payload": payload,
+            }
+        )
+        return {
+            "voice_session_id": voice_session_id,
+            "status": payload.get("status"),
+            "reconciliation_status": "scheduled",
+        }
+
+    monkeypatch.setattr(
+        VoiceMediaControllerClient,
+        "sync_voice_session",
+        fake_sync_voice_session,
+    )
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                {
+                    "type": "StasisStart",
+                    "channel": {"id": "media-inbound-1"},
+                }
+            ]
+
+        async def recv(self) -> str:
+            return json.dumps(self.events.pop(0))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.responses: list[str | None] = []
+
+        async def __aenter__(self) -> "FakeRealtime":
+            events.append("realtime_open")
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            events.append("realtime_close")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            events.append("initial_response")
+
+    class FakeRtpEndpoint:
+        port: int | None = None
+        remote_addr: tuple[str, int] | None = None
+
+        async def start(self) -> None:
+            events.append("rtp_start")
+            self.port = 49000
+
+        def close(self) -> None:
+            events.append("rtp_close")
+
+    class FakeAriClient:
+        @asynccontextmanager
+        async def event_stream(self) -> Any:
+            events.append("event_stream_open")
+            try:
+                yield FakeWebSocket()
+            finally:
+                events.append("event_stream_close")
+
+        async def start_external_media_for_inbound(
+            self,
+            *,
+            call_id: str,
+            inbound_channel_id: str,
+            external_host: str,
+            event_websocket: Any | None = None,
+        ) -> AsteriskCallHandles:
+            events.append("start_external_media_for_inbound")
+            assert call_id == "inbound-bridge-1"
+            assert inbound_channel_id == "SIP/abc-0001"
+            assert external_host == "127.0.0.1:49000"
+            assert event_websocket is not None
+            assert json.loads(await event_websocket.recv())["channel"]["id"] == "media-inbound-1"
+            return AsteriskCallHandles(
+                call_channel_id="SIP/abc-0001",
+                bridge_id="bridge-inbound-1",
+                external_media_channel_id="media-inbound-1",
+                external_media_local_address="127.0.0.1",
+                external_media_local_port=27086,
+            )
+
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            events.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            events.append(f"destroy:{bridge_id}")
+
+    service.ari_client = FakeAriClient()  # type: ignore[assignment]
+
+    class FakeGatewayClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create_inbound_phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.requests.append(payload)
+            return {
+                "voice_session_id": "voice-inbound-1",
+                "request_id": "inbound-phone:ops-main:SIP/abc-0001",
+                "projection": {
+                    "prompt": "Answer inbound calls for ops.",
+                    "caller_metadata": {"direction": "inbound"},
+                },
+                "realtime_session_config": {
+                    "model": "gpt-realtime-2",
+                    "media_controller_url": "http://gateway.local",
+                    "media_controller_token_env": "VOICE_MEDIA_CONTROLLER_TOKEN",
+                },
+                "route": {
+                    "route_id": "ops-main",
+                    "did": {"redacted": "***0100", "sha256": "a" * 64},
+                    "caller": {"redacted": "***0200", "sha256": "b" * 64},
+                    "asterisk_channel_id": "SIP/abc-0001",
+                    "bridge_call_id": "bridge-1",
+                    "sip_headers": {"X-Bridge-Token": "<redacted>"},
+                },
+                "inbound_instructions": {
+                    "route_prompt": "Answer inbound calls for ops.",
+                    "startup_text": "Thanks for calling ops.",
+                },
+            }
+
+    async def fake_bridge_media_until_done(*args: Any, **kwargs: Any) -> None:
+        events.append("bridge_media")
+
+    async def run() -> tuple[list[str], DidwwBridgeCallRecord, list[str | None], dict[str, Any]]:
+        gateway_client = FakeGatewayClient()
+        monkeypatch.setattr(service, "_bridge_media_until_done", fake_bridge_media_until_done)
+        monkeypatch.setattr(service, "_cleanup_asterisk", lambda _record: asyncio.sleep(0))
+        await service._handle_inbound_stasis_start(
+            {
+                "asterisk_channel_id": "SIP/abc-0001",
+                "did": "+15550000100",
+                "route_id": "ops-main",
+                "caller_number": "+15550000200",
+                "bridge_call_id": "bridge-1",
+                "sip_headers": {"X-Bridge-Token": "secret"},
+            },
+            gateway_client,  # type: ignore[arg-type]
+        )
+        assert service._background_tasks
+        await asyncio.wait_for(
+            asyncio.gather(*list(service._background_tasks)),
+            timeout=1,
+        )
+        record = store.get("voice-inbound-1")
+        assert record is not None
+        return events, record, gateway_client.requests, service.store.get("voice-inbound-1").response_payload()
+
+    events, record, gateway_requests, response_payload = asyncio.run(run())
+
+    assert gateway_requests[0]["did"] == "+15550000100"
+    assert gateway_requests[0]["caller_number"] == "+15550000200"
+    assert gateway_requests[0]["route_id"] == "ops-main"
+    assert record.direction == "inbound"
+    assert record.route_id == "ops-main"
+    assert record.did_redacted == "***0100"
+    assert record.caller_redacted == "***0200"
+    assert record.ari_channel_id == "SIP/abc-0001"
+    assert record.ari_external_media_channel_id == "media-inbound-1"
+    assert synced_results[0]["base_url"] == "http://gateway.local"
+    assert synced_results[0]["voice_session_id"] == "voice-inbound-1"
+    synced_payload = synced_results[0]["payload"]
+    assert synced_payload["voice_session_id"] == "voice-inbound-1"
+    assert synced_payload["direction"] == "inbound"
+    assert synced_payload["metadata"]["ari_channel_id"] == "SIP/abc-0001"
+    assert response_payload["direction"] == "inbound"
+    assert response_payload["metadata"]["to_number"] == "***0100"
+    assert response_payload["metadata"]["from_number"] == "***0200"
+    assert events == [
+        "rtp_start",
+        "realtime_open",
+        "event_stream_open",
+        "start_external_media_for_inbound",
+        "initial_response",
+        "bridge_media",
+        "event_stream_close",
+        "realtime_close",
+        "rtp_close",
+    ]
+    assert record.response_payload()["metadata"]["to_number"] == "***0100"
+    assert "thanks for calling ops." in initial_inbound_call_instructions(
+        {"route_prompt": "Answer inbound calls for ops.", "startup_text": "Thanks for calling ops."},
+        {"prompt": "Answer inbound calls for ops.", "caller_metadata": {"direction": "inbound"}},
+    ).lower()
+
+
+def test_inbound_phone_call_provisioning_failure_hangs_up_inbound_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    service = DidwwSipBridgeService(
+        _config(tmp_path).model_copy(
+            update={
+                "enable_inbound_phone_calls": True,
+                "inbound_gateway_url": "http://gateway.local",
+            }
+        ),
+        store=DidwwBridgeStore(tmp_path / "bridge.json"),
+        start_background_tasks=False,
+    )
+    hung_up: list[str | None] = []
+
+    class FailingGatewayClient:
+        async def create_inbound_phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("No inbound phone routes are configured")
+
+    async def hangup_channel(channel_id: str | None) -> None:
+        hung_up.append(channel_id)
+
+    service.ari_client.hangup_channel = hangup_channel  # type: ignore[method-assign]
+
+    async def run() -> None:
+        await service._handle_inbound_stasis_start(
+            {
+                "asterisk_channel_id": "SIP/abc-0001",
+                "did": "+15550000100",
+                "caller_number": "+15550000200",
+                "bridge_call_id": "bridge-1",
+                "route_id": "missing-route",
+            },
+            FailingGatewayClient(),  # type: ignore[arg-type]
+        )
+
+    asyncio.run(run())
+
+    assert hung_up == ["SIP/abc-0001"]
+    assert service.store.get("voice-inbound-1") is None
 
 
 def test_realtime_idle_prompt_waits_for_rtp_playback_before_countdown(
@@ -3947,3 +4500,22 @@ def test_asterisk_hangup_failure_causes_mark_call_failed(tmp_path: Path) -> None
         latest = store.get(record.voice_session_id)
         assert latest is not None
         assert latest.status == "failed"
+
+
+def test_bridge_completion_sanitizes_terminal_summary_and_error(tmp_path: Path) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    completed = store.complete(
+        record.voice_session_id,
+        status="failed",
+        summary="Call failed for +1 (555) 000-0100",
+        error="Caller +1 (555) 000-0200 triggered a bridge failure",
+    )
+
+    serialized = store.path.read_text(encoding="utf-8")
+    assert "+15550000100" not in serialized
+    assert "+15550000200" not in serialized
+    assert "+15550000100" not in (completed.summary or "")
+    assert "+15550000200" not in (completed.error or "")
+    assert completed.status == "failed"

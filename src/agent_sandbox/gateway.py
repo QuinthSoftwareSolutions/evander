@@ -6,6 +6,7 @@ import contextlib
 from contextvars import ContextVar
 import json
 import logging
+from hashlib import sha256
 import os
 import time
 from dataclasses import dataclass
@@ -59,7 +60,8 @@ from agent_sandbox.communication_artifact_links import (
     communication_artifact_public_base_url,
     issue_communication_artifact_download_link,
 )
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import GatewayConfig, InboundPhoneRoute, _normalize_phone_number
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
@@ -168,6 +170,11 @@ from agent_sandbox.retell_phone import (
 )
 from agent_sandbox.teams_meeting import voice_session_transcript_from_teams_events
 from agent_sandbox.voice_sessions import VoiceQueryDelegator, voice_query_payload
+from agent_sandbox.voice_sessions import (
+    VoiceProjectionService,
+    realtime_session_config,
+    sanitize_voice_metadata,
+)
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
@@ -9226,10 +9233,397 @@ def create_app(context: RuntimeContext) -> Starlette:
             )
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    def _authorization_bearer_token(request: Request) -> str | None:
+        auth_header = str(request.headers.get("authorization") or "").strip()
+        if not auth_header.lower().startswith("bearer "):
+            return None
+        token = auth_header.split(None, 1)[1].strip()
+        return token or None
+
+    def _controller_token(config: GatewayConfig) -> tuple[str | None, str | None]:
+        env_var = str(config.voice_media_controller_token_env or "").strip()
+        if not env_var:
+            return None, None
+        token = os.environ.get(env_var, "").strip()
+        return (token or None), env_var
+
+    def _normalize_inbound_phone_number(value: object) -> str | None:
+        return _normalize_phone_number(value, field_name="inbound_phone_calls")
+
+    def _inbound_phone_match_key(value: str | None) -> str | None:
+        normalized = _normalize_inbound_phone_number(value)
+        if normalized is None:
+            return None
+        return normalized.removeprefix("+")
+
+    def _hash_identity(value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        return sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _identity_payload(value: str | None) -> dict[str, str] | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        return {"redacted": "<redacted>", "sha256": _hash_identity(normalized) or ""}
+
+    def _collect_inbound_phone_routes() -> list[InboundPhoneRoute]:
+        routes: list[InboundPhoneRoute] = []
+        seen_signatures: set[str] = set()
+        directory_service = DirectoryService(context.directories)
+        directory_paths = sorted(
+            {
+                directory_service.show(directory_id).directory.path
+                for directory_id in context.directories.read_all()
+            }
+        )
+        for directory_path in directory_paths:
+            resolved_config = context.provider_config.resolve_for_directory(directory_path)
+            for route in resolved_config.inbound_phone_routes:
+                signature = json.dumps(route.model_dump(mode="json"), sort_keys=True)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                routes.append(route)
+        return routes
+
+    def _resolve_inbound_phone_route(
+        *,
+        route_id: str | None,
+        did: str | None,
+        called_number: str | None,
+    ) -> InboundPhoneRoute:
+        routes = _collect_inbound_phone_routes()
+        if not routes:
+            raise LookupError("No inbound phone routes are configured")
+        matches: list[InboundPhoneRoute] = []
+        route_id_filter = str(route_id or "").strip() or None
+        dialed_numbers = {
+            match_key
+            for number in (did, called_number)
+            if (match_key := _inbound_phone_match_key(number))
+        }
+        dialed_number = next(iter(dialed_numbers), None)
+        for route in routes:
+            if route_id_filter and route.id != route_id_filter:
+                continue
+            route_numbers = {
+                match_key
+                for number in (route.did, route.called_number)
+                if (match_key := _inbound_phone_match_key(number))
+            }
+            if dialed_number and dialed_number not in route_numbers:
+                continue
+            matches.append(route)
+        if not matches:
+            raise LookupError("No inbound phone route matched the request")
+        if len(matches) > 1:
+            raise LookupError("Inbound phone route match is ambiguous")
+        return matches[0]
+
+    def _inbound_phone_route_policy_error(
+        route: InboundPhoneRoute,
+        *,
+        caller_number: str,
+    ) -> str | None:
+        caller_key = _inbound_phone_match_key(caller_number)
+        blocked_callers = {
+            match_key
+            for number in route.blocked_callers
+            if (match_key := _inbound_phone_match_key(number))
+        }
+        allowed_callers = {
+            match_key
+            for number in route.allowed_callers
+            if (match_key := _inbound_phone_match_key(number))
+        }
+        if blocked_callers and caller_key in blocked_callers:
+            return "Caller is blocked for this inbound route"
+        if allowed_callers and caller_key not in allowed_callers:
+            return "Caller is not allowlisted for this inbound route"
+        return None
+
+    async def create_inbound_phone_call(request: Request) -> JSONResponse:
+        root_token, root_env = _controller_token(context.config)
+        request_token = _authorization_bearer_token(request)
+        root_authorized = bool(root_token and request_token == root_token)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("inbound phone call payload must be an object")
+
+            raw_did = payload.get("did")
+            raw_called_number = payload.get("called_number")
+            raw_caller_number = payload.get("caller_number")
+            raw_asterisk_channel_id = payload.get("asterisk_channel_id")
+            raw_bridge_call_id = payload.get("bridge_call_id")
+            raw_route_id = payload.get("route_id")
+            raw_sip_headers = payload.get("sip_headers")
+
+            did = _normalize_inbound_phone_number(raw_did)
+            called_number = _normalize_inbound_phone_number(raw_called_number)
+            if (
+                did is not None
+                and called_number is not None
+                and _inbound_phone_match_key(did) != _inbound_phone_match_key(called_number)
+            ):
+                raise ValueError("did and called_number must refer to the same number")
+            request_number = did or called_number
+            if request_number is None:
+                raise ValueError("did or called_number is required")
+
+            caller_number = _normalize_inbound_phone_number(raw_caller_number)
+            if caller_number is None:
+                raise ValueError("caller_number is required")
+
+            asterisk_channel_id = str(raw_asterisk_channel_id or "").strip()
+            if not asterisk_channel_id:
+                raise ValueError("asterisk_channel_id is required")
+
+            bridge_call_id = str(raw_bridge_call_id or "").strip()
+            if not bridge_call_id:
+                raise ValueError("bridge_call_id is required")
+
+            route_id = str(raw_route_id or "").strip() or None
+            if raw_sip_headers is not None and not isinstance(raw_sip_headers, dict):
+                raise ValueError("sip_headers must be an object when provided")
+            sip_headers = sanitize_voice_metadata(raw_sip_headers or {})
+
+            route = _resolve_inbound_phone_route(
+                route_id=route_id,
+                did=did,
+                called_number=called_number,
+            )
+            route_config = context.provider_config.resolve_for_directory(route.directory_path)
+            route_token, route_env = _controller_token(route_config)
+
+            if not root_authorized:
+                usable_tokens = [token for token in (root_token, route_token) if token]
+                if usable_tokens:
+                    if request_token not in usable_tokens:
+                        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                else:
+                    missing_env = root_env or route_env or "VOICE_MEDIA_CONTROLLER_TOKEN"
+                    return JSONResponse(
+                        {
+                            "error": (
+                                f"Voice media controller token env var {missing_env!r} is not set"
+                            )
+                        },
+                        status_code=503,
+                    )
+
+            route_session_id = str(route.session_id or "").strip()
+            if not route_session_id:
+                raise ValueError("inbound phone route is missing a session_id")
+            route_session = context.session_repository.get_session(route_session_id)
+            if route_session is None:
+                context.audit.log_decision(
+                    event_type="inbound_phone_call_provisioning",
+                    decision="denied",
+                    reason="route session is unavailable",
+                    args={
+                        "route_id": route.id,
+                        "route_directory_path": route.directory_path,
+                        "route_session_id": route_session_id,
+                        "did_sha256": _hash_identity(request_number),
+                        "caller_sha256": _hash_identity(caller_number),
+                        "asterisk_channel_id": asterisk_channel_id,
+                        "bridge_call_id": bridge_call_id,
+                    },
+                    result={},
+                )
+                return JSONResponse(
+                    {"error": "Configured inbound route session is unavailable"},
+                    status_code=404,
+                )
+            if route_session.expires_at <= datetime.now(timezone.utc):
+                context.audit.log_decision(
+                    event_type="inbound_phone_call_provisioning",
+                    decision="denied",
+                    reason="route session is inactive",
+                    args={
+                        "route_id": route.id,
+                        "route_directory_path": route.directory_path,
+                        "route_session_id": route_session_id,
+                        "did_sha256": _hash_identity(request_number),
+                        "caller_sha256": _hash_identity(caller_number),
+                        "asterisk_channel_id": asterisk_channel_id,
+                        "bridge_call_id": bridge_call_id,
+                    },
+                    result={},
+                )
+                return JSONResponse(
+                    {"error": "Configured inbound route session is inactive"},
+                    status_code=403,
+                )
+            if str(route_session.directory_path or "").strip() != route.directory_path:
+                context.audit.log_decision(
+                    event_type="inbound_phone_call_provisioning",
+                    decision="denied",
+                    reason="route session directory mismatch",
+                    args={
+                        "route_id": route.id,
+                        "route_directory_path": route.directory_path,
+                        "route_session_id": route_session_id,
+                        "route_session_directory_path": route_session.directory_path,
+                        "did_sha256": _hash_identity(request_number),
+                        "caller_sha256": _hash_identity(caller_number),
+                        "asterisk_channel_id": asterisk_channel_id,
+                        "bridge_call_id": bridge_call_id,
+                    },
+                    result={},
+                )
+                return JSONResponse(
+                    {"error": "Configured inbound route session directory mismatch"},
+                    status_code=403,
+                )
+
+            policy_error = _inbound_phone_route_policy_error(
+                route,
+                caller_number=caller_number,
+            )
+            if policy_error is not None:
+                context.audit.log_decision(
+                    event_type="inbound_phone_call_provisioning",
+                    decision="denied",
+                    reason=policy_error,
+                    args={
+                        "route_id": route.id,
+                        "route_directory_path": route.directory_path,
+                        "route_session_id": route_session_id,
+                        "did_sha256": _hash_identity(request_number),
+                        "caller_sha256": _hash_identity(caller_number),
+                        "asterisk_channel_id": asterisk_channel_id,
+                        "bridge_call_id": bridge_call_id,
+                    },
+                    result={},
+                )
+                return JSONResponse({"error": policy_error}, status_code=403)
+
+            prompt_metadata = {
+                "route_id": route.id,
+                "route_directory_path": route.directory_path,
+                "request_number_sha256": _hash_identity(request_number),
+                "caller_sha256": _hash_identity(caller_number),
+                "asterisk_channel_id": asterisk_channel_id,
+                "bridge_call_id": bridge_call_id,
+                "route_prompt_sha256": _hash_identity(route.route_prompt),
+                "startup_text_sha256": _hash_identity(route.startup_text),
+            }
+            projection = VoiceProjectionService().build_projection(
+                session=route_session,
+                prompt=route.route_prompt,
+                channel="phone",
+                metadata={
+                    "direction": "inbound",
+                    "route_id": route.id,
+                    "route_directory_path": route.directory_path,
+                    "did_redacted": "<redacted>",
+                    "did_sha256": _hash_identity(request_number),
+                    "caller_redacted": "<redacted>",
+                    "caller_sha256": _hash_identity(caller_number),
+                    "asterisk_channel_id": asterisk_channel_id,
+                    "bridge_call_id": bridge_call_id,
+                    "startup_text": route.startup_text,
+                    "sip_headers": sip_headers,
+                },
+            )
+            record, created = context.voice_session_store.prepare_session(
+                origin_session_id=route_session.session_id,
+                directory_path=route_session.directory_path,
+                channel="phone",
+                request_id=f"inbound-phone:{route.id}:{asterisk_channel_id}",
+                prompt_metadata=prompt_metadata,
+                projection=projection,
+                caller_metadata={
+                    "direction": "inbound",
+                    "route_id": route.id,
+                    "route_directory_path": route.directory_path,
+                    "did_redacted": "<redacted>",
+                    "did_sha256": _hash_identity(request_number),
+                    "caller_redacted": "<redacted>",
+                    "caller_sha256": _hash_identity(caller_number),
+                    "asterisk_channel_id": asterisk_channel_id,
+                    "bridge_call_id": bridge_call_id,
+                    "startup_text": route.startup_text,
+                    "sip_headers": sip_headers,
+                },
+                contact_id=route.id,
+                contact_display_name=route.id,
+            )
+            response = {
+                "voice_session_id": record.voice_session_id,
+                "request_id": record.request_id,
+                "projection": projection,
+                "realtime_session_config": realtime_session_config(route_config),
+                "route": {
+                    "route_id": route.id,
+                    "directory_path": route.directory_path,
+                    "session_id": route_session_id,
+                    "did": _identity_payload(request_number),
+                    "caller": _identity_payload(caller_number),
+                    "asterisk_channel_id": asterisk_channel_id,
+                    "bridge_call_id": bridge_call_id,
+                    "sip_headers": sip_headers,
+                },
+                "inbound_instructions": {
+                    "route_prompt": route.route_prompt,
+                    "startup_text": route.startup_text,
+                },
+            }
+            context.audit.log_decision(
+                event_type="inbound_phone_call_provisioning",
+                decision="allowed",
+                args={
+                    "route_id": route.id,
+                    "route_directory_path": route.directory_path,
+                    "route_session_id": route_session_id,
+                    "did_sha256": _hash_identity(request_number),
+                    "caller_sha256": _hash_identity(caller_number),
+                    "asterisk_channel_id": asterisk_channel_id,
+                    "bridge_call_id": bridge_call_id,
+                },
+                result={
+                    "voice_session_id": record.voice_session_id,
+                    "request_id": record.request_id,
+                    "created": created,
+                },
+            )
+            return JSONResponse(response, status_code=201 if created else 200)
+        except LookupError as exc:
+            context.audit.log_decision(
+                event_type="inbound_phone_call_provisioning",
+                decision="denied",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            status_code = 409 if "ambiguous" in str(exc).lower() else 404
+            return JSONResponse({"error": str(exc)}, status_code=status_code)
+        except ValueError as exc:
+            context.audit.log_decision(
+                event_type="inbound_phone_call_provisioning",
+                decision="error",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            context.audit.log_decision(
+                event_type="inbound_phone_call_provisioning",
+                decision="error",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     def voice_controller_auth_error(request: Request, directory_path: str) -> JSONResponse | None:
         resolved_config = context.provider_config.resolve_for_directory(directory_path)
-        token_env = str(resolved_config.voice_media_controller_token_env or "").strip()
-        token = os.environ.get(token_env, "").strip() if token_env else ""
+        token, token_env = _controller_token(resolved_config)
         if not token:
             return JSONResponse(
                 {"error": f"Voice media controller token env var {token_env!r} is not set"},
@@ -9266,6 +9660,40 @@ def create_app(context: RuntimeContext) -> Starlette:
                 ),
             )
             return JSONResponse(voice_query_payload(query), status_code=201)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    async def sync_voice_session_from_bridge(request: Request) -> JSONResponse:
+        voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+        record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None:
+            return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+        auth_error = voice_controller_auth_error(request, record.directory_path)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("voice session bridge result payload must be an object")
+            updated = context.voice_session_store.update_from_bridge_payload(
+                voice_session_id,
+                payload,
+            )
+            if updated.status in {"ended", "failed"}:
+                context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
+                updated = context.voice_session_store.get_by_voice_session_id(
+                    voice_session_id
+                ) or updated
+            return JSONResponse(
+                {
+                    "voice_session_id": updated.voice_session_id,
+                    "status": updated.status,
+                    "reconciliation_status": updated.reconciliation_status,
+                    "reconciliation_request_id": updated.reconciliation_request_id,
+                }
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception as exc:
@@ -9320,8 +9748,18 @@ def create_app(context: RuntimeContext) -> Starlette:
             Route("/retell/webhook", retell_webhook, methods=["POST"]),
             Route("/copilot-auth/token", copilot_auth_token, methods=["GET"]),
             Route(
+                "/voice-sessions/inbound-phone-calls",
+                create_inbound_phone_call,
+                methods=["POST"],
+            ),
+            Route(
                 "/voice-sessions/{voice_session_id}/queries",
                 create_voice_query,
+                methods=["POST"],
+            ),
+            Route(
+                "/voice-sessions/{voice_session_id}/bridge-result",
+                sync_voice_session_from_bridge,
                 methods=["POST"],
             ),
             Route(

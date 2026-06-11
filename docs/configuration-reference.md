@@ -26,9 +26,11 @@ manager environment or optional repo-root `secrets.env`.
 Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
 configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
 backend uses `didww_sip_bridge_token_env`; the DIDWW bridge service uses its own
-`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials. For systemd deployments,
-put actual secret values in repo-root `secrets.env` or the service manager environment rather than
-`config/gateway.env`.
+`OPENAI_REALTIME_API_KEY_ENV` setting for upstream Realtime credentials and, when inbound routing
+is enabled, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` plus
+`DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` for gateway provisioning and terminal bridge-result
+sync. For systemd deployments, put actual secret values in repo-root `secrets.env` or the service
+manager environment rather than `config/gateway.env`.
 
 ## `config/openai-relay.env.example`
 
@@ -42,6 +44,8 @@ put actual secret values in repo-root `secrets.env` or the service manager envir
 |---|---|---|
 | `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` bridge API listener bind. |
 | `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
+| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL`, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` gateway provisioning endpoint and bearer-token env-var name for accepted inbound calls; the token env default is `VOICE_MEDIA_CONTROLLER_TOKEN`. |
 | `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
 | `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
 | `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
@@ -1095,7 +1099,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public download links for staged communication artifacts, used by `teams_post_file` when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. The secret env var must be loaded by both gateway and Admin Web; the link TTL is also capped by the staged artifact expiry. |
-| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
@@ -1171,6 +1175,32 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
+| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Truman session. |
+
+### Inbound phone route keys
+
+Each `inbound_phone_routes` entry is a JSON object with these keys.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `id` | within each `inbound_phone_routes` entry | Stable route identifier used for matching and idempotent provisioning. |
+| `did` | within each `inbound_phone_routes` entry | Normalized inbound DID match value; numbers are reduced to `+` and digits only. |
+| `called_number` | within each `inbound_phone_routes` entry | Optional normalized called-number match value; numbers are reduced to `+` and digits only. |
+| `directory_path` | within each `inbound_phone_routes` entry | Directory scope used to resolve provider overlays and route-specific context. |
+| `session_id` | within each `inbound_phone_routes` entry | Active Truman session used to project the inbound call and receive reconciliation wakes. |
+| `allowed_callers` | within each `inbound_phone_routes` entry | Allow-list of normalized caller numbers. |
+| `blocked_callers` | within each `inbound_phone_routes` entry | Optional deny-list of normalized caller numbers. |
+| `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |
+| `startup_text` | within each `inbound_phone_routes` entry | Optional caller-facing startup text for the initial greeting. |
+
+Inbound routes are matched on normalized numbers, so the gateway and bridge compare digits plus an
+optional leading `+` rather than the raw formatted input. The runtime stores and audit logs keep
+redacted or hashed DID/caller forms only; raw numbers are not returned to agents or written to the
+JSON stores. Accepted inbound calls are first provisioned through
+`POST /voice-sessions/inbound-phone-calls`; when the bridge reaches a terminal state it syncs
+sanitized status and transcript data back through
+`POST /voice-sessions/{voice_session_id}/bridge-result` so the gateway-owned voice-session store can
+schedule the origin-session reconciliation wake.
 
 ### DIDWW SIP bridge service keys
 
@@ -1182,6 +1212,9 @@ overlays.
 |---|---|---|
 | `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | bridge env | HTTP listener bind for the bridge API. |
 | `DIDWW_SIP_BRIDGE_TOKEN_ENV` | bridge env | Env-var name containing the bridge API bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
+| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | bridge env | Enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` | bridge env | Gateway controller URL used by accepted inbound calls for provisioning and terminal bridge-result sync; required when inbound phone calls are enabled. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | bridge env | Env-var name containing the gateway bearer token used for inbound provisioning and terminal bridge-result sync; default `VOICE_MEDIA_CONTROLLER_TOKEN`. |
 | `OPENAI_REALTIME_API_KEY_ENV`, `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_API_BASE_URL`, `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_IDLE_TIMEOUT_MS`, `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | bridge env | Server-side OpenAI Realtime WebSocket configuration. |
 | `ASTERISK_ARI_URL`, `ASTERISK_ARI_USER`, `ASTERISK_ARI_PASSWORD_ENV`, `ASTERISK_ARI_APP` | bridge env | Asterisk ARI HTTP/WebSocket control connection. |
 | `ASTERISK_PJSIP_ENDPOINT`, `ASTERISK_ENDPOINT_TEMPLATE` | bridge env | Asterisk endpoint used to originate DIDWW outbound calls; default template is `PJSIP/{number}@{trunk}`. |

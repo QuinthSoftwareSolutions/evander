@@ -365,6 +365,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "didww_from_number": (
         "Optional caller ID passed to the DIDWW SIP bridge. Stored host-side only."
     ),
+    "inbound_phone_routes": (
+        "Fixed inbound DID or called-number routes that map a caller policy and projection "
+        "prompt to an existing Truman session. Caller and number fields are normalized and "
+        "stored host-side only."
+    ),
     "contacts": (
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "
         "description, email_addresses, and phone_numbers with one optional primary phone number."

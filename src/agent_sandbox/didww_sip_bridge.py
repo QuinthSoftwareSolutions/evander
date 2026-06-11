@@ -139,6 +139,11 @@ class DidwwSipBridgeConfig(BaseModel):
     port: int = Field(default=11888, ge=1, le=65535)
     runtime_dir: Path = Field(default_factory=lambda: Path("runtime"))
     bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
+    enable_inbound_phone_calls: bool = False
+    inbound_gateway_url: str | None = None
+    inbound_gateway_token_env: str = Field(
+        default="VOICE_MEDIA_CONTROLLER_TOKEN", min_length=1
+    )
     openai_api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     openai_realtime_model: str = Field(default="gpt-realtime-2", min_length=1)
     openai_realtime_api_base_url: str = "https://api.openai.com/v1"
@@ -172,7 +177,12 @@ class DidwwSipBridgeConfig(BaseModel):
         default_factory=lambda: list(_DEFAULT_BACKCHANNEL_PHRASES)
     )
 
-    @field_validator("openai_realtime_api_base_url", "asterisk_ari_url", mode="before")
+    @field_validator(
+        "openai_realtime_api_base_url",
+        "asterisk_ari_url",
+        "inbound_gateway_url",
+        mode="before",
+    )
     @classmethod
     def normalize_base_url(cls, value: object) -> object:
         return str(value or "").strip().rstrip("/")
@@ -257,6 +267,40 @@ class PhoneCallStartRequest(BaseModel):
         return text or None
 
 
+class InboundPhoneCallStartRequest(BaseModel):
+    voice_session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    gateway_voice_session_id: str = Field(min_length=1)
+    route_id: str = Field(min_length=1)
+    asterisk_channel_id: str = Field(min_length=1)
+    bridge_call_id: str = Field(min_length=1)
+    projection: dict[str, Any] = Field(default_factory=dict)
+    realtime: dict[str, Any] = Field(default_factory=dict)
+    route: dict[str, Any] = Field(default_factory=dict)
+    inbound_instructions: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    did_redacted: str | None = None
+    caller_redacted: str | None = None
+
+    @field_validator(
+        "voice_session_id",
+        "request_id",
+        "gateway_voice_session_id",
+        "route_id",
+        "asterisk_channel_id",
+        "bridge_call_id",
+        "did_redacted",
+        "caller_redacted",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 class DidwwBridgeDebugEvent(BaseModel):
     sequence: int = Field(ge=1)
     event_type: str = Field(min_length=1)
@@ -274,6 +318,9 @@ class DidwwBridgeCallRecord(BaseModel):
     voice_session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     call_id: str = Field(min_length=1)
+    direction: Literal["outbound", "inbound"] = "outbound"
+    route_id: str | None = None
+    gateway_voice_session_id: str | None = None
     status: BridgeCallStatus = "created"
     contact: dict[str, Any] = Field(default_factory=dict)
     projection: dict[str, Any] = Field(default_factory=dict)
@@ -281,6 +328,8 @@ class DidwwBridgeCallRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     to_number_redacted: str | None = None
     from_number_redacted: str | None = None
+    did_redacted: str | None = None
+    caller_redacted: str | None = None
     ari_channel_id: str | None = None
     ari_bridge_id: str | None = None
     ari_external_media_channel_id: str | None = None
@@ -300,8 +349,13 @@ class DidwwBridgeCallRecord(BaseModel):
         "voice_session_id",
         "request_id",
         "call_id",
+        "direction",
+        "route_id",
+        "gateway_voice_session_id",
         "to_number_redacted",
         "from_number_redacted",
+        "did_redacted",
+        "caller_redacted",
         "ari_channel_id",
         "ari_bridge_id",
         "ari_external_media_channel_id",
@@ -322,6 +376,9 @@ class DidwwBridgeCallRecord(BaseModel):
             "voice_session_id": self.voice_session_id,
             "request_id": self.request_id,
             "call_id": self.call_id,
+            "direction": self.direction,
+            "route_id": self.route_id,
+            "gateway_voice_session_id": self.gateway_voice_session_id,
             "status": self.status,
             "transcript_events": [
                 event.model_dump(mode="json") for event in self.transcript_events
@@ -338,10 +395,14 @@ class DidwwBridgeCallRecord(BaseModel):
                 "contact": sanitize_voice_metadata(self.contact),
                 "to_number": self.to_number_redacted,
                 "from_number": self.from_number_redacted,
+                "did": self.did_redacted,
+                "caller": self.caller_redacted,
                 "ari_channel_id": self.ari_channel_id,
                 "ari_bridge_id": self.ari_bridge_id,
                 "ari_external_media_channel_id": self.ari_external_media_channel_id,
                 "rtp_port": self.rtp_port,
+                "route_id": self.route_id,
+                "gateway_voice_session_id": self.gateway_voice_session_id,
             },
             "error": self.error,
             "created_at": self.created_at.isoformat(),
@@ -377,6 +438,43 @@ class DidwwBridgeStore:
                 metadata=sanitize_voice_metadata(payload.metadata),
                 to_number_redacted=redact_phone_number(payload.to_number),
                 from_number_redacted=redact_phone_number(payload.from_number),
+            )
+            _mapping(raw, "calls")[record.voice_session_id] = record.model_dump(mode="json")
+            request_index[record.request_id] = record.voice_session_id
+            self._atomic_write(raw)
+            return record, True
+
+    def create_inbound_call(
+        self,
+        payload: InboundPhoneCallStartRequest,
+    ) -> tuple[DidwwBridgeCallRecord, bool]:
+        with self._lock:
+            raw = self._read_raw()
+            request_index = _mapping(raw, "request_index")
+            existing_id = request_index.get(payload.request_id)
+            if isinstance(existing_id, str):
+                return self._require(raw, existing_id), False
+            call_id = f"inbound-{_sanitize_call_id(payload.bridge_call_id)}"
+            record = DidwwBridgeCallRecord(
+                voice_session_id=payload.voice_session_id,
+                request_id=payload.request_id,
+                call_id=call_id,
+                direction="inbound",
+                route_id=payload.route_id,
+                gateway_voice_session_id=payload.gateway_voice_session_id,
+                status="connecting",
+                contact={
+                    "id": payload.route_id,
+                    "name": payload.route_id,
+                    "direction": "inbound",
+                },
+                projection=sanitize_voice_metadata(payload.projection),
+                realtime=sanitize_voice_metadata(payload.realtime),
+                metadata=sanitize_voice_metadata(payload.metadata),
+                did_redacted=payload.did_redacted,
+                caller_redacted=payload.caller_redacted,
+                to_number_redacted=payload.did_redacted,
+                from_number_redacted=payload.caller_redacted,
             )
             _mapping(raw, "calls")[record.voice_session_id] = record.model_dump(mode="json")
             request_index[record.request_id] = record.voice_session_id
@@ -491,7 +589,9 @@ class DidwwBridgeStore:
     ) -> DidwwBridgeCallRecord:
         def mutate(record: DidwwBridgeCallRecord) -> None:
             record.status = normalize_voice_session_status(status, default="ended")
-            record.summary = _optional_text(summary) or record.summary
+            sanitized_summary = _debug_snippet(summary)
+            if sanitized_summary is not None:
+                record.summary = sanitized_summary
             if decisions is not None:
                 record.decisions = [_normalize_list_item(item) for item in decisions if _normalize_list_item(item)]
             if action_items is not None:
@@ -499,7 +599,7 @@ class DidwwBridgeStore:
                     _normalize_list_item(item) for item in action_items if _normalize_list_item(item)
                 ]
             if error is not None:
-                record.error = str(error)
+                record.error = _debug_snippet(error)
             record.ended_at = record.ended_at or datetime.now(UTC)
 
         return self._mutate(voice_session_id, mutate)
@@ -643,11 +743,84 @@ class AsteriskAriClient:
             ),
         )
 
+    async def start_external_media_for_inbound(
+        self,
+        *,
+        call_id: str,
+        inbound_channel_id: str,
+        external_host: str,
+        event_websocket: Any | None = None,
+    ) -> AsteriskCallHandles:
+        bridge_id = _ari_id("bridge", call_id)
+        external_media_channel_id = _ari_id("media", call_id)
+
+        try:
+            await self._request(
+                "POST",
+                f"/bridges/{bridge_id}",
+                params={"type": "mixing", "name": bridge_id},
+            )
+            await self.answer_channel(inbound_channel_id)
+            external_media = await self._request(
+                "POST",
+                "/channels/externalMedia",
+                params={
+                    "channelId": external_media_channel_id,
+                    "app": self.config.asterisk_ari_app,
+                    "appArgs": call_id,
+                    "external_host": external_host,
+                    "format": self.config.media_format,
+                    "direction": "both",
+                },
+            )
+            external_media_local_addr = _unicast_rtp_local_addr(external_media)
+            if event_websocket is not None:
+                await self._wait_for_stasis_channels(
+                    event_websocket,
+                    {external_media_channel_id},
+                    timeout_seconds=self.config.call_timeout_seconds,
+                )
+            await self._request(
+                "POST",
+                f"/bridges/{bridge_id}/addChannel",
+                params={"channel": inbound_channel_id},
+            )
+            await self._request(
+                "POST",
+                f"/bridges/{bridge_id}/addChannel",
+                params={"channel": external_media_channel_id},
+            )
+        except Exception:
+            await self.hangup_channel(external_media_channel_id)
+            await self.hangup_channel(inbound_channel_id)
+            await self.destroy_bridge(bridge_id)
+            raise
+        return AsteriskCallHandles(
+            call_channel_id=inbound_channel_id,
+            bridge_id=bridge_id,
+            external_media_channel_id=external_media_channel_id,
+            external_media_local_address=(
+                external_media_local_addr[0] if external_media_local_addr is not None else None
+            ),
+            external_media_local_port=(
+                external_media_local_addr[1] if external_media_local_addr is not None else None
+            ),
+        )
+
     async def hangup_channel(self, channel_id: str | None) -> None:
         if not channel_id:
             return
         try:
             await self._request("DELETE", f"/channels/{channel_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+
+    async def answer_channel(self, channel_id: str | None) -> None:
+        if not channel_id:
+            return
+        try:
+            await self._request("POST", f"/channels/{channel_id}/answer")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
@@ -1114,6 +1287,24 @@ class VoiceMediaControllerClient:
             f"/voice-sessions/{voice_session_id}/queries/{query_id}/timeout",
         )
 
+    async def create_inbound_phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/voice-sessions/inbound-phone-calls",
+            json=payload,
+        )
+
+    async def sync_voice_session(
+        self,
+        voice_session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/voice-sessions/{voice_session_id}/bridge-result",
+            json=payload,
+        )
+
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if self.base_url is None:
             raise RuntimeError("voice media controller URL is not configured")
@@ -1297,6 +1488,7 @@ class DidwwSipBridgeService:
         self.rtp_endpoint_factory = rtp_endpoint_factory or (lambda: RtpUdpEndpoint(config))
         self.start_background_tasks = start_background_tasks
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._semaphore = asyncio.Semaphore(config.max_concurrent_calls)
 
     def create_app(self) -> Starlette:
@@ -1359,6 +1551,23 @@ class DidwwSipBridgeService:
             record = service.store.complete(voice_session_id, status="ended")
             return JSONResponse(record.response_payload())
 
+        @asynccontextmanager
+        async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+            listener_task: asyncio.Task[None] | None = None
+            if service.start_background_tasks and service.config.enable_inbound_phone_calls:
+                listener_task = asyncio.create_task(service._run_inbound_phone_listener())
+                service._track_background_task(listener_task)
+            try:
+                yield
+            finally:
+                if listener_task is not None:
+                    listener_task.cancel()
+                    await asyncio.gather(listener_task, return_exceptions=True)
+                for task in list(service._background_tasks):
+                    task.cancel()
+                if service._background_tasks:
+                    await asyncio.gather(*service._background_tasks, return_exceptions=True)
+
         return Starlette(
             debug=False,
             routes=[
@@ -1371,7 +1580,213 @@ class DidwwSipBridgeService:
                     methods=["POST"],
                 ),
             ],
+            lifespan=lifespan,
         )
+
+    def _track_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.add(task)
+
+        def discard(completed: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(completed)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("didww_bridge_background_task_failed")
+
+        task.add_done_callback(discard)
+
+    def _inbound_gateway_client(self) -> VoiceMediaControllerClient:
+        return VoiceMediaControllerClient(
+            base_url=self.config.inbound_gateway_url,
+            token_env=self.config.inbound_gateway_token_env,
+            timeout_seconds=self.config.request_timeout_seconds,
+        )
+
+    async def _run_inbound_phone_listener(self) -> None:
+        if not self.config.enable_inbound_phone_calls:
+            return
+        if not self.config.inbound_gateway_url:
+            logger.info("inbound phone listener disabled because gateway url is not configured")
+            return
+
+        gateway_client = self._inbound_gateway_client()
+        handled_channels: set[str] = set()
+        try:
+            async with self.ari_client.event_stream() as websocket:
+                while True:
+                    try:
+                        raw = await websocket.recv()
+                    except Exception as exc:
+                        logger.exception("inbound_phone_listener_recv_failed: %s", exc)
+                        return
+                    event = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+                    if str(event.get("type") or "") != "StasisStart":
+                        continue
+                    context = _extract_inbound_stasis_context(event)
+                    if context is None:
+                        continue
+                    channel_id = str(context.get("asterisk_channel_id") or "").strip()
+                    if not channel_id or channel_id in handled_channels:
+                        continue
+                    handled_channels.add(channel_id)
+                    task = asyncio.create_task(
+                        self._handle_inbound_stasis_start(context, gateway_client)
+                    )
+                    self._track_background_task(task)
+        except Exception:
+            logger.exception("inbound_phone_listener_failed")
+
+    async def _handle_inbound_stasis_start(
+        self,
+        context: dict[str, Any],
+        gateway_client: VoiceMediaControllerClient,
+    ) -> None:
+        asterisk_channel_id = str(context.get("asterisk_channel_id") or "").strip()
+        bridge_call_id = str(context.get("bridge_call_id") or "").strip()
+        did = str(context.get("did") or "").strip()
+        route_id = str(context.get("route_id") or "").strip() or None
+        caller_number = str(context.get("caller_number") or "").strip()
+        sip_headers = context.get("sip_headers") if isinstance(context.get("sip_headers"), dict) else {}
+        if not asterisk_channel_id:
+            return
+        request_payload: dict[str, Any] = {
+            "did": did or None,
+            "called_number": did or None,
+            "caller_number": caller_number or None,
+            "asterisk_channel_id": asterisk_channel_id,
+            "bridge_call_id": bridge_call_id or asterisk_channel_id,
+            "route_id": route_id,
+            "sip_headers": sanitize_voice_metadata(sip_headers or {}),
+        }
+        try:
+            response = await gateway_client.create_inbound_phone_call(request_payload)
+            payload = InboundPhoneCallStartRequest.model_validate(
+                {
+                    "voice_session_id": response["voice_session_id"],
+                    "request_id": response["request_id"],
+                    "gateway_voice_session_id": response["voice_session_id"],
+                    "route_id": response["route"]["route_id"],
+                    "asterisk_channel_id": response["route"]["asterisk_channel_id"],
+                    "bridge_call_id": response["route"]["bridge_call_id"],
+                    "projection": response["projection"],
+                    "realtime": response["realtime_session_config"],
+                    "route": response["route"],
+                    "inbound_instructions": response.get("inbound_instructions", {}),
+                    "metadata": {
+                        "route": response["route"],
+                        "inbound_instructions": response.get("inbound_instructions", {}),
+                    },
+                    "did_redacted": response["route"]["did"]["redacted"],
+                    "caller_redacted": response["route"]["caller"]["redacted"],
+                }
+            )
+        except Exception as exc:
+            logger.info(
+                "inbound_phone_call.provisioning_failed channel_id=%s bridge_call_id=%s "
+                "route_id=%s did_sha256=%s caller_sha256=%s reason=%s",
+                _debug_log_value(asterisk_channel_id),
+                _debug_log_value(bridge_call_id),
+                _debug_log_value(route_id),
+                _debug_log_value(_hash_identity(did) if did else None),
+                _debug_log_value(_hash_identity(caller_number) if caller_number else None),
+                _debug_log_value(_debug_snippet(exc)),
+            )
+            await self.ari_client.hangup_channel(asterisk_channel_id)
+            return
+
+        record, created = self.store.create_inbound_call(payload)
+        self._append_debug_event(
+            record.voice_session_id,
+            "inbound_phone_call.provisioned",
+            metadata={
+                "route_id": record.route_id,
+                "gateway_voice_session_id": record.gateway_voice_session_id,
+                "did_redacted": record.did_redacted,
+                "caller_redacted": record.caller_redacted,
+                "asterisk_channel_id": asterisk_channel_id,
+                "bridge_call_id": bridge_call_id,
+                "created": created,
+            },
+        )
+        if created:
+            self._start_inbound_background_call(record, payload)
+
+    def _start_inbound_background_call(
+        self,
+        record: DidwwBridgeCallRecord,
+        payload: InboundPhoneCallStartRequest,
+    ) -> None:
+        task = asyncio.create_task(self.run_inbound_call(record, payload))
+        self._track_background_task(task)
+
+    async def run_inbound_call(
+        self,
+        record: DidwwBridgeCallRecord,
+        payload: InboundPhoneCallStartRequest,
+    ) -> None:
+        async with self._semaphore:
+            rtp = self.rtp_endpoint_factory()
+            try:
+                await rtp.start()
+                if rtp.port is None:
+                    raise RuntimeError("RTP endpoint did not bind a port")
+                external_host = f"{self.config.external_media_host}:{rtp.port}"
+                async with self.realtime_factory(payload.projection, payload.realtime) as realtime:
+                    media_controller = VoiceMediaControllerClient.from_realtime(
+                        self.config,
+                        payload.realtime,
+                    )
+                    async with self.ari_client.event_stream() as ari_events:
+                        handles = await self.ari_client.start_external_media_for_inbound(
+                            call_id=record.call_id,
+                            inbound_channel_id=payload.asterisk_channel_id,
+                            external_host=external_host,
+                            event_websocket=ari_events,
+                        )
+                        self.store.attach_asterisk(
+                            record.voice_session_id,
+                            ari_channel_id=handles.call_channel_id,
+                            ari_bridge_id=handles.bridge_id,
+                            ari_external_media_channel_id=handles.external_media_channel_id,
+                            rtp_port=rtp.port,
+                        )
+                        if handles.external_media_local_addr is not None:
+                            rtp.remote_addr = handles.external_media_local_addr
+                        initial_instructions = initial_inbound_call_instructions(
+                            payload.inbound_instructions,
+                            payload.projection,
+                        )
+                        self._append_debug_event(
+                            record.voice_session_id,
+                            "bridge.response.initial_greeting_requested",
+                            metadata={
+                                "reason": "inbound_call_started",
+                                **_instruction_debug_metadata(initial_instructions),
+                            },
+                        )
+                        await realtime.request_response(initial_instructions)
+                        await self._bridge_media_until_done(
+                            record.voice_session_id,
+                            handles,
+                            rtp,
+                            realtime,
+                            media_controller,
+                            ari_events=ari_events,
+                        )
+            except Exception as exc:
+                logger.exception(
+                    "didww_bridge_inbound_call_failed voice_session_id=%s",
+                    record.voice_session_id,
+                )
+                self.store.complete(record.voice_session_id, status="failed", error=str(exc))
+            finally:
+                rtp.close()
+                latest = self.store.get(record.voice_session_id)
+                if latest is not None:
+                    await self._sync_inbound_voice_session_to_gateway(latest, payload.realtime)
+                    await self._cleanup_asterisk(latest)
 
     async def run_call(self, record: DidwwBridgeCallRecord, payload: PhoneCallStartRequest) -> None:
         async with self._semaphore:
@@ -2906,6 +3321,41 @@ class DidwwSipBridgeService:
         await self.ari_client.hangup_channel(record.ari_channel_id)
         await self.ari_client.destroy_bridge(record.ari_bridge_id)
 
+    async def _sync_inbound_voice_session_to_gateway(
+        self,
+        record: DidwwBridgeCallRecord,
+        realtime: dict[str, Any],
+    ) -> None:
+        if record.direction != "inbound":
+            return
+        voice_session_id = record.gateway_voice_session_id or record.voice_session_id
+        if not voice_session_id:
+            return
+        controller = VoiceMediaControllerClient.from_realtime(self.config, realtime)
+        if not controller.configured:
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_sync_skipped",
+                metadata={"reason": "voice media controller URL is not configured"},
+            )
+            return
+        try:
+            await controller.sync_voice_session(voice_session_id, record.response_payload())
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_synced",
+                metadata={"gateway_voice_session_id": voice_session_id},
+            )
+        except Exception as exc:
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_sync_failed",
+                metadata={
+                    "gateway_voice_session_id": voice_session_id,
+                    "reason": _debug_snippet(exc),
+                },
+            )
+
     def _append_debug_event(
         self,
         voice_session_id: str,
@@ -2933,11 +3383,14 @@ class DidwwSipBridgeService:
     ) -> None:
         task = asyncio.create_task(self.run_call(record, payload))
         self._tasks[record.call_id] = task
+        self._track_background_task(task)
 
         def discard(completed: asyncio.Task[None]) -> None:
             self._tasks.pop(record.call_id, None)
             try:
                 completed.result()
+            except asyncio.CancelledError:
+                return
             except Exception:
                 logger.exception("didww_bridge_background_task_failed call_id=%s", record.call_id)
 
@@ -2983,6 +3436,18 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         port=_env_int("DIDWW_SIP_BRIDGE_PORT", 11888),
         runtime_dir=resolved_runtime_dir,
         bridge_token_env=_env("DIDWW_SIP_BRIDGE_TOKEN_ENV", "DIDWW_SIP_BRIDGE_TOKEN"),
+        enable_inbound_phone_calls=_env_bool(
+            "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS",
+            False,
+        ),
+        inbound_gateway_url=_env_optional(
+            "DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL",
+            None,
+        ),
+        inbound_gateway_token_env=_env(
+            "DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV",
+            "VOICE_MEDIA_CONTROLLER_TOKEN",
+        ),
         openai_api_key_env=_env("OPENAI_REALTIME_API_KEY_ENV", "OPENAI_API_KEY"),
         openai_realtime_model=_env("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
         openai_realtime_api_base_url=_env(
@@ -3043,7 +3508,28 @@ def main(argv: list[str] | None = None) -> None:
     uvicorn.run(create_app(config), host=config.host, port=config.port)
 
 
+def initial_inbound_call_instructions(
+    inbound_instructions: dict[str, Any],
+    projection: dict[str, Any],
+) -> str:
+    route_prompt = _optional_text(inbound_instructions.get("route_prompt")) or (
+        _extract_projected_task_prompt(projection) or ""
+    )
+    startup_text = _optional_text(inbound_instructions.get("startup_text"))
+    opening = startup_text or route_prompt or "<missing>"
+    return (
+        "Start the inbound phone call now. Greet the caller naturally using the supplied "
+        "startup text when present, then continue from the route prompt. Do not use "
+        "outbound startup wording, do not narrate internal handoff or context checks, "
+        "and do not ask for the same script or instructions again.\n\n"
+        f"Caller-facing opening:\n{opening}\n\n"
+        f"Route prompt:\n{route_prompt or '<missing>'}"
+    )
+
+
 def projection_to_instructions(projection: dict[str, Any]) -> str:
+    if _projection_is_inbound(projection):
+        return _inbound_projection_to_instructions(projection)
     instructions = [
         "You are the same Truman agent represented by this projected voice session.",
         "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
@@ -3094,6 +3580,71 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
     if isinstance(context, str) and context.strip():
         instructions.append(f"Context:\n{context.strip()}")
     return "\n\n".join(instructions)
+
+
+def _inbound_projection_to_instructions(projection: dict[str, Any]) -> str:
+    instructions = [
+        "You are the same Truman agent represented by this projected voice session.",
+        "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
+        (
+            "Inbound startup contract: treat the supplied route prompt as the caller-facing "
+            "starting context. If the route includes startup text, greet the caller with it "
+            "naturally. Do not use outbound startup wording, do not ask for the same script "
+            "or instructions again, and do not narrate context checks or internal handoffs."
+        ),
+        (
+            "Speak like a natural phone participant: keep normal answers to one or two short "
+            "spoken paragraphs unless the caller asks for detail, avoid repeating yourself, "
+            "and pause naturally after a long answer instead of immediately asking whether "
+            "the caller is still there."
+        ),
+        (
+            "Treat short acknowledgements such as ok, okay, uh-huh, good, thanks, and right "
+            "as backchannels unless they include a new request. After a backchannel, do not "
+            "repeat the prior answer; continue only if you were mid-thought, otherwise pause."
+        ),
+        (
+            "Use the query_origin_agent tool only for missing origin-side files, tools, "
+            "repository state, memory, or live session state that is not already in the "
+            "projected task/context. While an origin query is pending, do not fill the call "
+            "with generic startup scaffolding. When the origin answer arrives, give the "
+            "answer directly without recapping the pending state."
+        ),
+        (
+            "If the supplied route prompt is not actionable enough to start and the missing "
+            "data must come from the caller, ask exactly one concise caller-facing "
+            "clarification question, then wait."
+        ),
+        (
+            "Preserve decisions and follow-up actions internally after the call, but do not "
+            "narrate internal bookkeeping, transcript cleanup, or handoff notes aloud."
+        ),
+    ]
+    origin = projection.get("origin")
+    if isinstance(origin, dict):
+        instructions.append(f"Origin: {json.dumps(sanitize_voice_metadata(origin), sort_keys=True)}")
+    caller_metadata = projection.get("caller_metadata")
+    if isinstance(caller_metadata, dict):
+        instructions.append(
+            f"Caller metadata: {json.dumps(sanitize_voice_metadata(caller_metadata), sort_keys=True)}"
+        )
+    prompt = _extract_projected_task_prompt(projection)
+    if isinstance(prompt, str) and prompt.strip():
+        instructions.append(f"Route prompt: {prompt.strip()}")
+    context = projection.get("context")
+    if isinstance(context, str) and context.strip():
+        instructions.append(f"Context:\n{context.strip()}")
+    return "\n\n".join(instructions)
+
+
+def _projection_is_inbound(projection: dict[str, Any]) -> bool:
+    caller_metadata = projection.get("caller_metadata")
+    if isinstance(caller_metadata, dict) and str(caller_metadata.get("direction") or "").strip() == "inbound":
+        return True
+    metadata = projection.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("direction") or "").strip() == "inbound":
+        return True
+    return str(projection.get("direction") or "").strip() == "inbound"
 
 
 def initial_outbound_call_instructions(projection: dict[str, Any]) -> str:
@@ -3472,12 +4023,143 @@ def _ari_id(prefix: str, call_id: str) -> str:
     return f"{prefix}-{allowed}"[:80]
 
 
+def _sanitize_call_id(value: object) -> str:
+    text = "".join(ch for ch in str(value or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    return text or uuid4().hex
+
+
+def _normalize_inbound_phone_number(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = "".join(ch for ch in text if ch.isdigit() or ch == "+")
+    return normalized or None
+
+
+def _hash_identity(value: object) -> str | None:
+    normalized = _normalize_inbound_phone_number(value) or _optional_text(value)
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _ari_event_channel_id(event: dict[str, Any]) -> str | None:
     channel = event.get("channel")
     if isinstance(channel, dict):
         value = channel.get("id")
         return str(value) if value is not None else None
     return None
+
+
+def _ari_event_args(event: dict[str, Any]) -> list[str]:
+    raw_args = event.get("args")
+    if isinstance(raw_args, (list, tuple)):
+        return [str(item).strip() for item in raw_args if str(item).strip()]
+    if isinstance(raw_args, str):
+        return [part.strip() for part in raw_args.split(",") if part.strip()]
+    raw_app_args = event.get("appArgs")
+    if isinstance(raw_app_args, str):
+        return [part.strip() for part in raw_app_args.split(",") if part.strip()]
+    return []
+
+
+def _extract_sip_headers(channelvars: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    for candidate in (
+        channelvars.get("sip_headers"),
+        channelvars.get("SIP_HEADERS"),
+        event.get("sip_headers"),
+        event.get("SIP_HEADERS"),
+    ):
+        if isinstance(candidate, dict):
+            return sanitize_voice_metadata(candidate)
+    return {}
+
+
+def _extract_inbound_stasis_context(event: dict[str, Any]) -> dict[str, Any] | None:
+    if str(event.get("type") or "") != "StasisStart":
+        return None
+    channel = event.get("channel")
+    if not isinstance(channel, dict):
+        return None
+    channel_id = _optional_text(channel.get("id")) or _optional_text(event.get("channel_id"))
+    if not channel_id:
+        return None
+    channelvars_candidate = channel.get("channelvars") or channel.get("variables") or event.get(
+        "channelvars"
+    )
+    channelvars = channelvars_candidate if isinstance(channelvars_candidate, dict) else {}
+    args = _ari_event_args(event)
+    inbound_marker = False
+    did: str | None = None
+    route_id: str | None = None
+    for arg in args:
+        lowered = arg.casefold()
+        if lowered in {"inbound", "inbound-phone", "inbound_phone"}:
+            inbound_marker = True
+            continue
+        if not lowered.startswith("inbound:"):
+            continue
+        inbound_marker = True
+        descriptor = arg.split(":", 1)[1].strip()
+        if not descriptor:
+            continue
+        first, _, second = descriptor.partition(":")
+        maybe_did = _normalize_inbound_phone_number(first)
+        if maybe_did is not None:
+            did = maybe_did
+            if second:
+                route_id = _optional_text(second) or route_id
+        else:
+            route_id = _optional_text(first) or route_id
+            if second:
+                maybe_did = _normalize_inbound_phone_number(second)
+                if maybe_did is not None:
+                    did = maybe_did
+    for key in ("INBOUND_PHONE_CALL", "INBOUND_CALL", "TRUMAN_INBOUND", "INBOUND"):
+        marker = _optional_text(channelvars.get(key))
+        if marker and marker.casefold() in {"1", "true", "yes", "inbound"}:
+            inbound_marker = True
+    if not inbound_marker:
+        return None
+    if did is None:
+        for key in ("DID", "CALLED_NUMBER", "CALLED_DID", "EXTEN", "called_number", "did"):
+            did = _normalize_inbound_phone_number(channelvars.get(key))
+            if did:
+                break
+    if route_id is None:
+        for key in ("INBOUND_ROUTE_ID", "ROUTE_ID", "route_id"):
+            route_id = _optional_text(channelvars.get(key))
+            if route_id:
+                break
+    if did is not None or route_id is not None:
+        inbound_marker = True
+    if did is None and route_id is None:
+        return None
+    caller_number: str | None = None
+    caller = channel.get("caller")
+    if isinstance(caller, dict):
+        caller_number = _normalize_inbound_phone_number(
+            caller.get("number") or caller.get("name")
+        )
+    if caller_number is None:
+        for key in ("CALLERID(num)", "CALLER_NUMBER", "caller_number", "callerid_num"):
+            caller_number = _normalize_inbound_phone_number(channelvars.get(key))
+            if caller_number:
+                break
+    bridge_call_id = (
+        _optional_text(channelvars.get("BRIDGE_CALL_ID"))
+        or _optional_text(event.get("bridge_call_id"))
+        or _optional_text(event.get("bridgeCallId"))
+        or channel_id
+    )
+    return {
+        "asterisk_channel_id": channel_id,
+        "did": did,
+        "route_id": route_id,
+        "caller_number": caller_number,
+        "bridge_call_id": bridge_call_id,
+        "sip_headers": _extract_sip_headers(channelvars, event),
+    }
 
 
 def _ari_channel_state(event: dict[str, Any]) -> str | None:
@@ -3787,6 +4469,20 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     if not value:
         return list(default)
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {name}: {value!r}")
 
 
 if __name__ == "__main__":  # pragma: no cover
