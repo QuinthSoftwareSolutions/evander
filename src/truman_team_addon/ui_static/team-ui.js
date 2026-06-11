@@ -193,7 +193,7 @@ function renderAgentBranch(agentId, seen) {
     <li>
       <div class="hierarchy-node">
         <div class="agent-line">
-          <strong>${escapeHtml(agent.id)}</strong>
+          <strong>${escapeHtml(agentLabel(agent))}</strong>
           <span class="state-pill">${escapeHtml(agent.role)}</span>
         </div>
         <div class="meta-line">${escapeHtml(agent.session_id)}</div>
@@ -219,7 +219,7 @@ function renderAgents() {
           return `
             <li class="agent-item">
               <div class="agent-line">
-                <strong>${escapeHtml(agent.id)}</strong>
+                <strong>${escapeHtml(agentLabel(agent))}</strong>
                 <span class="state-pill ${escapeHtml(agent.status || "active")}">${escapeHtml(agent.status || "active")}</span>
               </div>
               <div class="meta-line">${escapeHtml(agent.role)} - ${escapeHtml(agent.session_id)}</div>
@@ -755,6 +755,10 @@ function payloadForForm(form) {
       manager_session_id: text(data.manager_session_id),
       manager_role: text(data.manager_role) || "manager",
     };
+    const managerDisplayName = text(data.manager_display_name);
+    if (managerDisplayName) {
+      payload.manager_display_name = managerDisplayName;
+    }
     const operatorTarget = text(data.operator_communication_target_id);
     if (operatorTarget) {
       payload.operator_communication_target_id = operatorTarget;
@@ -779,6 +783,10 @@ function payloadForForm(form) {
       lead_role: text(data.lead_role) || "project_lead",
       goals,
     };
+    const leadDisplayName = text(data.lead_display_name);
+    if (leadDisplayName) {
+      payload.lead_display_name = leadDisplayName;
+    }
     const git = gitConfigForForm(data);
     if (git) {
       payload.git = git;
@@ -786,7 +794,7 @@ function payloadForForm(form) {
     return payload;
   }
   if (formId === "register-agent-form") {
-    return {
+    const payload = {
       id: text(data.id),
       team_id: text(data.team_id),
       project_id: text(data.project_id),
@@ -795,6 +803,11 @@ function payloadForForm(form) {
       reports_to_agent_id: text(data.reports_to_agent_id),
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
     };
+    const displayName = text(data.display_name);
+    if (displayName) {
+      payload.display_name = displayName;
+    }
+    return payload;
   }
   if (formId === "create-task-form") {
     const payload = {
@@ -1029,6 +1042,10 @@ function values(collection) {
 
 function text(value) {
   return String(value ?? "").trim();
+}
+
+function agentLabel(agent) {
+  return text(agent?.display_name) || text(agent?.id);
 }
 
 function numberOrZero(value) {

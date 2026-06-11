@@ -148,6 +148,38 @@ def test_valid_team_state_loads() -> None:
     assert state.projects["project"].goals[0].id == "goal-1"
 
 
+def test_persistent_agent_display_name_is_optional_and_trimmed() -> None:
+    agent = PersistentAgent(
+        id="agent",
+        team_id="team",
+        display_name="  Friendly Name  ",
+        role="worker",
+        session_id="session-agent",
+    )
+
+    assert agent.display_name == "Friendly Name"
+
+    legacy_agent = PersistentAgent(
+        id="legacy",
+        team_id="team",
+        role="worker",
+        session_id="session-legacy",
+    )
+
+    assert legacy_agent.display_name is None
+
+
+def test_team_state_accepts_legacy_agents_without_display_name() -> None:
+    payload = _valid_state().model_dump(mode="python", exclude_none=True)
+    for agent in payload["agents"].values():
+        agent.pop("display_name", None)
+
+    validated = TeamState.model_validate(payload)
+
+    assert validated.agents["manager"].display_name is None
+    assert validated.agents["lead"].display_name is None
+
+
 def test_team_state_rejects_missing_manager() -> None:
     with pytest.raises(ValidationError, match="missing manager"):
         TeamState(

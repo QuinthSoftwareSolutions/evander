@@ -29,6 +29,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
+        manager_display_name="  Team Manager  ",
         expected_revision=0,
     )
     repo.create_project(
@@ -37,6 +38,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
+        lead_display_name="Project Lead",
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
@@ -47,6 +49,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         role="backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
+        display_name="Backend Agent",
         expected_revision=2,
     )
     repo.register_agent(
@@ -56,6 +59,7 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         role="worker",
         session_id="session-worker",
         reports_to_agent_id="backend",
+        display_name="  Worker Agent  ",
         expected_revision=3,
     )
     return repo
@@ -79,9 +83,11 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
         name="Team",
         manager_agent_id="manager",
         manager_session_id="session-manager",
+        manager_display_name="  Team Manager  ",
         expected_revision=0,
     )
     assert state.revision == 1
+    assert state.agents["manager"].display_name == "Team Manager"
 
     state = repo.create_project(
         project_id="project",
@@ -89,10 +95,12 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
         name="Project",
         lead_agent_id="lead",
         lead_session_id="session-lead",
+        lead_display_name="Project Lead",
         goals=[ProjectGoal(id="goal", description="Complete project")],
         expected_revision=1,
     )
     assert state.revision == 2
+    assert state.agents["lead"].display_name == "Project Lead"
 
     state = repo.register_agent(
         agent_id="backend",
@@ -101,11 +109,13 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
         role="backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
+        display_name="  Backend Agent  ",
         expected_revision=2,
     )
     assert state.revision == 3
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
+    assert state.agents["backend"].display_name == "Backend Agent"
 
 
 def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> None:

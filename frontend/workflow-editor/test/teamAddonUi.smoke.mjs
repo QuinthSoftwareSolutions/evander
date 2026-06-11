@@ -170,6 +170,7 @@ function applyMutation(state, pathname, payload) {
       id: payload.manager_agent_id,
       team_id: payload.id,
       project_id: null,
+      display_name: payload.manager_display_name ?? null,
       role: payload.manager_role || "manager",
       session_id: payload.manager_session_id,
       reports_to_agent_id: null,
@@ -194,6 +195,7 @@ function applyMutation(state, pathname, payload) {
       id: payload.lead_agent_id,
       team_id: payload.team_id,
       project_id: payload.id,
+      display_name: payload.lead_display_name ?? null,
       role: payload.lead_role || "project_lead",
       session_id: payload.lead_session_id,
       reports_to_agent_id: state.teams[payload.team_id].manager_agent_id,
@@ -211,6 +213,7 @@ function applyMutation(state, pathname, payload) {
       id: payload.id,
       team_id: payload.team_id,
       project_id: payload.project_id,
+      display_name: payload.display_name ?? null,
       role: payload.role,
       session_id: payload.session_id,
       reports_to_agent_id: payload.reports_to_agent_id,
@@ -302,6 +305,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await teamForm.locator('[name="name"]').fill("Team");
   await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
+  await teamForm.locator('[name="manager_display_name"]').fill("Team Manager");
   await teamForm.locator('[name="operator_communication_target_id"]').fill("ops-channel");
   await teamForm.getByRole("button", { name: "Create team" }).click();
   await page.getByText("Saved revision 1.").waitFor({ state: "visible" });
@@ -314,6 +318,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await projectForm.locator('[name="name"]').fill("Project");
   await projectForm.locator('[name="lead_agent_id"]').fill("lead");
   await projectForm.locator('[name="lead_session_id"]').fill("session-lead");
+  await projectForm.locator('[name="lead_display_name"]').fill("Project Lead");
   await projectForm.locator('[name="goal_id"]').fill("goal");
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
@@ -330,10 +335,14 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await agentForm.locator('[name="project_id"]').selectOption("project");
   await agentForm.locator('[name="role"]').fill("backend");
   await agentForm.locator('[name="session_id"]').fill("session-backend");
+  await agentForm.locator('[name="display_name"]').fill("Backend Agent");
   await agentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
   await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
+  await page.getByText("Team Manager").first().waitFor({ state: "visible" });
+  await page.getByText("Project Lead").first().waitFor({ state: "visible" });
+  await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
 
   await openDetails(page, "Create task");
   await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', "backend");
@@ -382,6 +391,9 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   );
   assert.equal(requests[2].payload.ephemeral_policy.max_concurrent, 2);
   assert.deepEqual(requests[5].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
+  assert.equal(requests[0].payload.manager_display_name, "Team Manager");
+  assert.equal(requests[1].payload.lead_display_name, "Project Lead");
+  assert.equal(requests[2].payload.display_name, "Backend Agent");
   assert.equal(requests[0].payload.operator_communication_target_id, "ops-channel");
   assert.deepEqual(requests[1].payload.git, {
     host_repo_path: "/srv/git/project",

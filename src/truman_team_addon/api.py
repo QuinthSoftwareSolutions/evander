@@ -41,6 +41,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             name=_required(payload, "name"),
             manager_agent_id=_required(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
+            manager_display_name=_optional(payload, "manager_display_name"),
             manager_role=_optional(payload, "manager_role") or "manager",
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
@@ -69,6 +70,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             name=_required(payload, "name"),
             lead_agent_id=_required(payload, "lead_agent_id"),
             lead_session_id=_required(payload, "lead_session_id"),
+            lead_display_name=_optional(payload, "lead_display_name"),
             lead_role=_optional(payload, "lead_role") or "project_lead",
             goals=goals,
             git=_optional_git_config(payload),
@@ -104,6 +106,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             role=_required(payload, "role"),
             session_id=_required(payload, "session_id"),
             reports_to_agent_id=_required(payload, "reports_to_agent_id"),
+            display_name=_optional(payload, "display_name"),
             ephemeral_policy=(
                 EphemeralAgentPolicy.model_validate(ephemeral_policy)
                 if ephemeral_policy is not None

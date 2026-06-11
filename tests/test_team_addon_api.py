@@ -69,6 +69,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
+    assert 'name="manager_display_name"' in ui.text
+    assert 'name="lead_display_name"' in ui.text
+    assert 'name="display_name"' in ui.text
     assert 'name="parent_task_id"' in ui.text
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
@@ -95,11 +98,13 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "manager_display_name": "  Team Manager  ",
             "expected_revision": 0,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 1
+    assert response.json()["agents"]["manager"]["display_name"] == "Team Manager"
 
     response = client.post(
         "/api/addons/team-addon/projects",
@@ -109,12 +114,14 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "lead_display_name": "  Project Lead  ",
             "goals": [{"id": "goal", "description": "Ship reviewed work"}],
             "expected_revision": 1,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 2
+    assert response.json()["agents"]["lead"]["display_name"] == "Project Lead"
 
     response = client.post(
         "/api/addons/team-addon/agents",
@@ -125,12 +132,14 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "role": "backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "display_name": "  Backend Agent  ",
             "ephemeral_policy": {"max_concurrent": 2},
             "expected_revision": 2,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 3
+    assert response.json()["agents"]["backend"]["display_name"] == "Backend Agent"
 
     response = client.post(
         "/api/addons/team-addon/tasks",

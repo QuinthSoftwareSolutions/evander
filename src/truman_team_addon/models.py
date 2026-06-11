@@ -188,6 +188,7 @@ class PersistentAgent(TeamModel):
     id: str
     team_id: str
     project_id: str | None = None
+    display_name: str | None = None
     role: str
     session_id: str
     reports_to_agent_id: str | None = None
@@ -200,7 +201,7 @@ class PersistentAgent(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("project_id", "reports_to_agent_id", mode="before")
+    @field_validator("project_id", "display_name", "reports_to_agent_id", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)

@@ -67,6 +67,7 @@
                 <label>Name <input name="name" required /></label>
                 <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
+                <label>Manager display name <input name="manager_display_name" /></label>
                 <label>Manager role <input name="manager_role" value="manager" /></label>
                 <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                 <button type="submit">Create team</button>
@@ -81,6 +82,7 @@
                 <label>Name <input name="name" required /></label>
                 <label>Lead agent ID <input name="lead_agent_id" required /></label>
                 <label>Lead session ID <input name="lead_session_id" required /></label>
+                <label>Lead display name <input name="lead_display_name" /></label>
                 <label>Lead role <input name="lead_role" value="project_lead" /></label>
                 <label>Goal ID <input name="goal_id" /></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
@@ -104,6 +106,7 @@
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
                 <label>Role <input name="role" required /></label>
                 <label>Session ID <input name="session_id" required /></label>
+                <label>Display name <input name="display_name" /></label>
                 <label>Reports to <select name="reports_to_agent_id" required data-options="agents"></select></label>
                 <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
                 <button type="submit">Register agent</button>
