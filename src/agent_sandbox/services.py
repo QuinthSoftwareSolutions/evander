@@ -3115,6 +3115,7 @@ class PrFeedbackService:
             cursor=cursor,
             limit=None,
             persist_session_cursor=False,
+            exclude_ignored_feedback=True,
         )
         return HasPendingFeedbackResponse(
             pending=bool(feedback.feedback),
@@ -3135,6 +3136,7 @@ class PrFeedbackService:
             cursor=cursor,
             limit=limit,
             persist_session_cursor=True,
+            exclude_ignored_feedback=True,
         )
 
     def list_all_feedback(
@@ -3149,6 +3151,7 @@ class PrFeedbackService:
             cursor=None,
             limit=limit,
             persist_session_cursor=False,
+            exclude_ignored_feedback=False,
         )
 
     def _list_feedback(
@@ -3159,6 +3162,7 @@ class PrFeedbackService:
         cursor: str | None,
         limit: int | None,
         persist_session_cursor: bool,
+        exclude_ignored_feedback: bool,
     ) -> ListUnreadFeedbackResponse:
         stream_cursors = {
             (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
@@ -3168,7 +3172,9 @@ class PrFeedbackService:
             )
             for stream in streams
         }
-        ignored_feedback_ids = self._read_ignored_feedback_ids()
+        ignored_feedback_ids = (
+            self._read_ignored_feedback_ids() if exclude_ignored_feedback else None
+        )
         items = [
             PrFeedbackItem.model_validate(pr_feedback_item_payload(item))
             for item in self.store.list_feedback_for_streams(

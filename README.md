@@ -1053,7 +1053,8 @@ Use this when you want the guest to wake only for new review feedback and post t
    `searchCriteria.status`), and pagination continues with `next_cursor`.
    Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
-   For full thread history (including already-consumed items), call `list_all_feedback`.
+   For full thread history, including already-consumed items and agent-authored replies suppressed
+   from wake/unread checks, call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`
    for cron-driven PR polling and ADO tag/metadata updates. Azure DevOps PR tag expressions
    such as `(TagA or TagB) and not TagC` are client-side after the provider list call, so bound
