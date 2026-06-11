@@ -1095,7 +1095,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public download links for staged communication artifacts, used by `teams_post_file` when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. The secret env var must be loaded by both gateway and Admin Web; the link TTL is also capped by the staged artifact expiry. |
-| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
@@ -1171,6 +1171,24 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
+| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Truman session. |
+
+### Inbound phone route keys
+
+Each `inbound_phone_routes` entry is a JSON object with these keys.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `id` | within each `inbound_phone_routes` entry | Stable route identifier used for matching and idempotent provisioning. |
+| `did` | within each `inbound_phone_routes` entry | Normalized inbound DID match value; numbers are reduced to `+` and digits only. |
+| `called_number` | within each `inbound_phone_routes` entry | Optional normalized called-number match value; numbers are reduced to `+` and digits only. |
+| `directory_path` | within each `inbound_phone_routes` entry | Directory scope used to resolve provider overlays and route-specific context. |
+| `origin_session_id` | within each `inbound_phone_routes` entry | Origin Truman session used when the inbound call is projected from an existing agent session. |
+| `target_session_id` | within each `inbound_phone_routes` entry | Alternative target Truman session used when the route should anchor to a different live session. |
+| `allowed_callers` | within each `inbound_phone_routes` entry | Allow-list of normalized caller numbers. |
+| `blocked_callers` | within each `inbound_phone_routes` entry | Optional deny-list of normalized caller numbers. |
+| `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |
+| `startup_text` | within each `inbound_phone_routes` entry | Optional caller-facing startup text for the initial greeting. |
 
 ### DIDWW SIP bridge service keys
 

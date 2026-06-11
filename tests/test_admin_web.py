@@ -9237,12 +9237,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "didww_sip_bridge_url",
         "didww_sip_bridge_token_env",
         "didww_from_number",
+        "inbound_phone_routes",
     }
     phone_call_fields = {field["field_name"]: field for field in phone_calls["fields"]}
     assert phone_call_fields["phone_call_backend"]["label"] == "Phone call backend"
     assert phone_call_fields["retell_from_number"]["label"] == "Retell from number"
     assert phone_call_fields["didww_from_number"]["label"] == "DIDWW from number"
     assert phone_call_fields["didww_sip_bridge_url"]["label"] == "DIDWW SIP bridge URL"
+    assert phone_call_fields["inbound_phone_routes"]["label"] == "Inbound phone routes"
     contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
     contact_list = next(
         section for section in contacts["sections"] if section["title"] == "Contact list"

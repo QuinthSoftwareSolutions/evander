@@ -365,6 +365,61 @@ def test_directory_config_store_allows_phone_provider_fields(tmp_path: Path) -> 
     assert resolution.validation_errors == []
 
 
+def test_directory_config_store_allows_inbound_phone_routes(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "inbound_phone_routes": [
+                {
+                    "id": "ops-main",
+                    "did": " +1 (555) 000-0100 ",
+                    "directory_path": "root/team",
+                    "target_session_id": " ops-session ",
+                    "allowed_callers": [" +1 (555) 000-0200 ", "+15550000200"],
+                    "blocked_callers": ["(555) 000-0999"],
+                    "route_prompt": "Answer inbound calls for the ops team.",
+                    "startup_text": "Thanks for calling ops.",
+                }
+            ]
+        },
+    )
+
+    assert written == {
+        "inbound_phone_routes": [
+            {
+                "id": "ops-main",
+                "did": "+15550000100",
+                "called_number": None,
+                "directory_path": "root/team",
+                "origin_session_id": None,
+                "target_session_id": "ops-session",
+                "allowed_callers": ["+15550000200"],
+                "blocked_callers": ["5550000999"],
+                "route_prompt": "Answer inbound calls for the ops team.",
+                "startup_text": "Thanks for calling ops.",
+            }
+        ]
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["inbound_phone_routes"] == written["inbound_phone_routes"]
+    assert resolution.validation_errors == []
+
+
 def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
     tmp_path: Path,
 ) -> None:

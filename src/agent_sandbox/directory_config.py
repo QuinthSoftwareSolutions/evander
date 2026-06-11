@@ -155,6 +155,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "didww_sip_bridge_url",
             "didww_sip_bridge_token_env",
             "didww_from_number",
+            "inbound_phone_routes",
             "semantic_embedding_dimensions",
             "semantic_embedding_model",
             "semantic_embedding_provider",
