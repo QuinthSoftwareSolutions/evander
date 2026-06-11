@@ -14,6 +14,7 @@ const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
 let state = emptyState();
+let templates = [];
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
@@ -24,11 +25,16 @@ const elements = {
   projectsView: document.querySelector("#projects-view"),
   reviewProfilesView: document.querySelector("#review-profiles-view"),
   releasesView: document.querySelector("#releases-view"),
+  templateSelect: document.querySelector("#template-select"),
+  templatePreview: document.querySelector("#template-preview"),
   refreshButton: document.querySelector("#refresh-button"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   bindForms();
+  elements.templateSelect?.addEventListener("change", () => {
+    renderTemplatePreview();
+  });
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
@@ -64,7 +70,7 @@ const inboxItemLabels = {
 };
 
 function bindForms() {
-  document.querySelectorAll("form[data-endpoint]").forEach((form) => {
+  document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       void submitCreateForm(form);
@@ -91,16 +97,27 @@ async function loadState({ preserveForms = false } = {}) {
   const drafts = preserveForms ? captureFormDrafts() : null;
   setStatus("Loading team state.", "loading");
   try {
-    const response = await fetch(`${API_BASE}/state`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      throw new Error(await responseText(response));
+    const [stateResponse, templatesResponse] = await Promise.all([
+      fetch(`${API_BASE}/state`, {
+        headers: { Accept: "application/json" },
+      }),
+      fetch(`${API_BASE}/templates`, {
+        headers: { Accept: "application/json" },
+      }),
+    ]);
+    if (!stateResponse.ok) {
+      throw new Error(await responseText(stateResponse));
     }
-    state = normalizeState(await response.json());
+    if (!templatesResponse.ok) {
+      throw new Error(await responseText(templatesResponse));
+    }
+    state = normalizeState(await stateResponse.json());
+    templates = normalizeTemplates(await templatesResponse.json());
     render();
     if (drafts) {
       restoreFormDrafts(drafts);
+    } else {
+      renderTemplatePreview();
     }
     setStatus(`Loaded revision ${state.revision}.`, "ok");
   } catch (error) {
@@ -112,6 +129,10 @@ function normalizeState(payload) {
   return { ...emptyState(), ...(payload || {}) };
 }
 
+function normalizeTemplates(payload) {
+  return Array.isArray(payload?.templates) ? payload.templates : [];
+}
+
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   renderSummary();
@@ -120,6 +141,7 @@ function render() {
   renderProjects();
   renderReviewProfiles();
   renderReleases();
+  renderTemplateSetup();
   refreshSelects();
 }
 
@@ -620,6 +642,201 @@ function renderReleases() {
   `;
 }
 
+function renderTemplateSetup() {
+  fillTemplateSelect();
+  renderTemplatePreview();
+}
+
+function fillTemplateSelect() {
+  if (!elements.templateSelect) {
+    return;
+  }
+  const currentValue = elements.templateSelect.value;
+  const options = templates.map((template) => {
+    return [template.id, `${template.name} (${template.id})`];
+  });
+  elements.templateSelect.innerHTML = options.length
+    ? options
+        .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
+        .join("")
+    : `<option value="">No templates available</option>`;
+  elements.templateSelect.disabled = !options.length;
+  if (options.some(([value]) => value === currentValue)) {
+    elements.templateSelect.value = currentValue;
+  } else if (options.length) {
+    elements.templateSelect.value = options[0][0];
+  }
+}
+
+function renderTemplatePreview() {
+  if (!elements.templatePreview) {
+    return;
+  }
+  const template = selectedTemplate();
+  if (!template) {
+    elements.templatePreview.innerHTML = `<p class="empty-state">No templates available.</p>`;
+    return;
+  }
+
+  const leadRole = template.roles.find((role) => role.key === "project_lead");
+  const leafRoles = template.roles
+    .filter((role) => role.reports_to_role_key === (leadRole?.key || template.root_role_key))
+    .map((role) => role.key)
+    .join("/");
+  const hierarchy = leadRole && leafRoles
+    ? `${template.root_role_key} -> ${leadRole.key} -> ${leafRoles}`
+    : template.root_role_key;
+
+  elements.templatePreview.innerHTML = `
+    <div class="template-preview-summary">
+      <div class="meta-line">${escapeHtml(template.description)}</div>
+      <div class="meta-line">Hierarchy: ${escapeHtml(hierarchy)}</div>
+      <div class="meta-line">Required roles: ${escapeHtml(template.required_role_keys.join(", "))}</div>
+    </div>
+
+    <section class="template-preview-section">
+      <h3>Planned roles</h3>
+      <ul class="template-record-list">
+        ${template.roles
+          .map((role) => {
+            const reportsTo = role.reports_to_role_key ? ` reports to ${role.reports_to_role_key}` : "";
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(role.label)}</strong>
+                  <span class="state-pill">${escapeHtml(role.key)}</span>
+                </div>
+                <div class="meta-line">${escapeHtml(role.description)}${escapeHtml(reportsTo)}</div>
+                <div class="meta-line">Max concurrent ephemeral agents: ${role.ephemeral_policy.max_concurrent}</div>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+
+    <section class="template-preview-section">
+      <h3>Required fields</h3>
+      <ul class="template-record-list">
+        ${template.required_fields
+          .map((field) => {
+            const required = field.required === false ? "optional" : "required";
+            const example = field.example ? `Example: ${escapeHtml(field.example)}` : "";
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(field.label)}</strong>
+                  <span class="state-pill ${field.required === false ? "blocked" : "accepted"}">${escapeHtml(required)}</span>
+                </div>
+                <div class="meta-line">${escapeHtml(field.path)}</div>
+                ${field.description ? `<div class="meta-line">${escapeHtml(field.description)}</div>` : ""}
+                ${example ? `<div class="meta-line">${example}</div>` : ""}
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+
+    <section class="template-preview-section">
+      <h3>Project goals</h3>
+      <ul class="template-record-list">
+        ${template.project_goals
+          .map((goal) => {
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(goal.description)}</strong>
+                  <span class="state-pill ${escapeHtml(goal.state)}">${escapeHtml(goal.state)}</span>
+                </div>
+                <div class="meta-line">${escapeHtml(goal.id)}</div>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+
+    <section class="template-preview-section">
+      <h3>Initial tasks</h3>
+      <ul class="template-record-list">
+        ${template.tasks
+          .map((task) => {
+            const dependencyLine = (task.dependency_task_ids || []).length
+              ? `<div class="meta-line">Depends on ${task.dependency_task_ids
+                  .map((dependencyId) => escapeHtml(dependencyId))
+                  .join(", ")}</div>`
+              : "";
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(task.title)}</strong>
+                  <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                </div>
+                <div class="meta-line">${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_role_key)} - creator ${escapeHtml(task.created_by_role_key)} - priority ${task.priority}</div>
+                ${dependencyLine}
+                <div class="meta-line">${escapeHtml(task.description)}</div>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+
+    <section class="template-preview-section">
+      <h3>Review profile</h3>
+      <ul class="template-record-list">
+        ${template.review_profiles
+          .map((profile) => {
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(profile.name)}</strong>
+                  <span class="state-pill">${escapeHtml(profile.id)}</span>
+                </div>
+                <div class="meta-line">${escapeHtml(profile.description)}</div>
+                <div class="meta-line">Applicable roles: ${escapeHtml((profile.applicable_role_keys || []).join(", ") || "all reviewer roles")}</div>
+                ${renderTemplateCriteria(profile.criteria || [])}
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </section>
+
+    <section class="template-preview-section">
+      <h3>Git config</h3>
+      <div class="meta-line">Git is optional. If used, provide a host repo path and exactly one bare repo field.</div>
+      <div class="meta-line">Optional fields: host repo path, bare repo name, bare repo path, base branch, canonical origin URL, provider, canonical release branch prefix.</div>
+    </section>
+  `;
+}
+
+function renderTemplateCriteria(criteria) {
+  if (!criteria.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${criteria
+        .map((criterion) => {
+          const required = criterion.required === false ? "optional" : "required";
+          const description = criterion.description ? ` - ${escapeHtml(criterion.description)}` : "";
+          return `<li>${escapeHtml(criterion.id)}: ${escapeHtml(criterion.label)} (${required})${description}</li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function selectedTemplate() {
+  const selectedId = text(elements.templateSelect?.value);
+  if (selectedId) {
+    return templates.find((template) => template.id === selectedId) || null;
+  }
+  return templates[0] || null;
+}
+
 function refreshSelects() {
   const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
   const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
@@ -673,9 +890,13 @@ function fillSelect(select, options) {
 }
 
 async function submitCreateForm(form) {
-  const endpoint = form.dataset.endpoint;
+  const data = formData(form);
+  const endpoint = endpointForForm(form, data);
   const method = form.dataset.method || "POST";
-  const payload = payloadForForm(form);
+  if (!endpoint) {
+    return;
+  }
+  const payload = payloadForForm(form, data);
   await submitMutation(form, endpoint, method, payload);
 }
 
@@ -744,9 +965,60 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
   }
 }
 
-function payloadForForm(form) {
+function endpointForForm(form, data) {
+  const templateEndpoint = form.dataset.templateEndpoint;
+  if (templateEndpoint) {
+    const templateId = text(data.template_id);
+    if (!templateId) {
+      setStatus("Template is required.", "error");
+      return null;
+    }
+    return templateEndpoint.replace("{template_id}", encodeURIComponent(templateId));
+  }
+  return form.dataset.endpoint || null;
+}
+
+function payloadForForm(form, data = formData(form)) {
   const formId = formIdentifier(form);
-  const data = formData(form);
+  if (formId === "setup-template-form") {
+    const payload = {
+      team: {
+        id: text(data.team_id),
+        name: text(data.team_name),
+        manager_agent_id: text(data.manager_agent_id),
+        manager_session_id: text(data.manager_session_id),
+      },
+      project: {
+        id: text(data.project_id),
+        name: text(data.project_name),
+        lead_agent_id: text(data.project_lead_agent_id),
+        lead_session_id: text(data.project_lead_session_id),
+      },
+      agents: {
+        implementer: {
+          agent_id: text(data.implementer_agent_id),
+          session_id: text(data.implementer_session_id),
+        },
+        reviewer: {
+          agent_id: text(data.reviewer_agent_id),
+          session_id: text(data.reviewer_session_id),
+        },
+        release_operator: {
+          agent_id: text(data.release_operator_agent_id),
+          session_id: text(data.release_operator_session_id),
+        },
+      },
+    };
+    const operatorTarget = text(data.operator_communication_target_id);
+    if (operatorTarget) {
+      payload.team.operator_communication_target_id = operatorTarget;
+    }
+    const git = gitConfigForForm(data);
+    if (git) {
+      payload.project.git = git;
+    }
+    return payload;
+  }
   if (formId === "create-team-form") {
     const payload = {
       id: text(data.id),
@@ -979,6 +1251,7 @@ function restoreFormDrafts(drafts) {
   if (updateTaskForm) {
     syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
   }
+  renderTemplatePreview();
 }
 
 function setFormBusy(form, busy) {

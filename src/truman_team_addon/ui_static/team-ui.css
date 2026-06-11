@@ -364,6 +364,52 @@ textarea {
   margin-top: 0.85rem;
 }
 
+.template-setup-body {
+  display: grid;
+  gap: 0.8rem;
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+}
+
+.template-setup form {
+  border-top: 0;
+  padding: 0;
+}
+
+.template-preview {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.template-preview-summary,
+.template-preview-section {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.template-preview-section {
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.template-preview-section h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.template-record-list {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.template-preview strong,
+.template-preview .meta-line {
+  overflow-wrap: anywhere;
+}
+
 details {
   border: 1px solid var(--line);
   border-radius: 8px;

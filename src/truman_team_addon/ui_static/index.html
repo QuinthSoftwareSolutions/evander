@@ -60,6 +60,43 @@
         <aside class="forms-panel" aria-labelledby="forms-heading">
           <h2 id="forms-heading">Setup</h2>
           <div class="form-stack">
+            <details open class="template-setup">
+              <summary>Setup from template</summary>
+              <div class="template-setup-body">
+                <div id="template-preview" class="template-preview" aria-live="polite"></div>
+                <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
+                  <label>Template <select id="template-select" name="template_id" required></select></label>
+                  <p class="subheading">Team</p>
+                  <label>Team ID <input name="team_id" required /></label>
+                  <label>Team name <input name="team_name" required /></label>
+                  <label>Manager agent ID <input name="manager_agent_id" required /></label>
+                  <label>Manager session ID <input name="manager_session_id" required /></label>
+                  <label>Operator communication target id <input name="operator_communication_target_id" /></label>
+                  <p class="subheading">Project</p>
+                  <label>Project ID <input name="project_id" required /></label>
+                  <label>Project name <input name="project_name" required /></label>
+                  <label>Project lead agent ID <input name="project_lead_agent_id" required /></label>
+                  <label>Project lead session ID <input name="project_lead_session_id" required /></label>
+                  <p class="subheading">Git config (optional)</p>
+                  <label>Host repo path <input name="host_repo_path" /></label>
+                  <label>Bare repo name <input name="bare_repo_name" /></label>
+                  <label>Bare repo path <input name="bare_repo_path" /></label>
+                  <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                  <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                  <label>Provider <input name="provider" /></label>
+                  <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+                  <p class="subheading">Agents</p>
+                  <label>Implementer agent ID <input name="implementer_agent_id" required /></label>
+                  <label>Implementer session ID <input name="implementer_session_id" required /></label>
+                  <label>Reviewer agent ID <input name="reviewer_agent_id" required /></label>
+                  <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
+                  <label>Release operator agent ID <input name="release_operator_agent_id" required /></label>
+                  <label>Release operator session ID <input name="release_operator_session_id" required /></label>
+                  <button type="submit">Materialize template</button>
+                </form>
+              </div>
+            </details>
+
             <details open>
               <summary>Create team</summary>
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
