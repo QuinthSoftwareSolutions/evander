@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-11 - Agents Page Detail Layout
+
+- Moved selected-agent labels into the VM host / worker session details panel
+  and changed Operator steering from a persistent panel into a toolbar-launched
+  dialog.
+
 ## 2026-06-11 - Admin Web Communication Artifact Configuration
 
 - Exposed Teams control-plane communication artifact link settings in Admin Web

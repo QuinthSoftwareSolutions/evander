@@ -892,6 +892,16 @@ function SkillIcon() {
   );
 }
 
+function SteeringIcon() {
+  return (
+    <AgentIcon>
+      <path d="M5.5 6.5h13v8h-5.4L9.2 18v-3.5H5.5z" />
+      <path d="M8.5 9.5h7" />
+      <path d="M8.5 12h4.5" />
+    </AgentIcon>
+  );
+}
+
 export function AgentsPage() {
   const {
     canControlWorkflowRuns,
@@ -912,6 +922,7 @@ export function AgentsPage() {
   const [agentPrompt, setAgentPrompt] = useState("");
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
   const [showPromptForm, setShowPromptForm] = useState(false);
+  const [showOperatorSteeringDialog, setShowOperatorSteeringDialog] = useState(false);
   const [operatorSteeringContext, setOperatorSteeringContext] = useState<OperatorSteeringContext | null>(null);
   const [operatorSteeringNotes, setOperatorSteeringNotes] = useState<OperatorSteeringNote[]>([]);
   const [operatorSteeringDraft, setOperatorSteeringDraft] = useState("");
@@ -1786,6 +1797,98 @@ export function AgentsPage() {
     ? `${agentLog.startLine}-${agentLog.endLine} of ${agentLog.totalLines}`
     : `${agentLog.loadedLines || agentLog.returnedLines || 0} visible`;
 
+  function renderOperatorSteeringPanel() {
+    return (
+      <div className="operator-steering-panel">
+        {!operatorSteeringSessionId ? (
+          <div className="empty-state compact-empty-state">No linked session.</div>
+        ) : !canReadWorkflowRuns ? (
+          <div className="empty-state compact-empty-state">Permission required: workflow_runs.read.</div>
+        ) : operatorSteeringInitialLoading ? (
+          <div className="empty-state compact-empty-state">Loading steering context.</div>
+        ) : operatorSteeringContext ? (
+          <>
+            <dl className="property-grid agent-steering-context-grid">
+              <div>
+                <dt>Session</dt>
+                <dd>{operatorSteeringContext.session_id}</dd>
+              </div>
+              <div>
+                <dt>Dispatch</dt>
+                <dd>{operatorSteeringContext.dispatch_id}</dd>
+              </div>
+              <div>
+                <dt>Model</dt>
+                <dd>{operatorSteeringContext.model ?? "Unknown"}</dd>
+              </div>
+              <div>
+                <dt>Expires</dt>
+                <dd>{formatTimestamp(operatorSteeringContext.expires_at)}</dd>
+              </div>
+            </dl>
+            <label className="field-stack operator-steering-form">
+              <span>Steering note</span>
+              <textarea
+                rows={3}
+                maxLength={2000}
+                value={operatorSteeringDraft}
+                placeholder="Move from exploration to implementation."
+                disabled={!canControlWorkflowRuns || !privilegedUnlocked || operatorSteeringSubmitting}
+                onChange={(event) => {
+                  setOperatorSteeringDraft(event.target.value);
+                  if (operatorSteeringError) setOperatorSteeringError(null);
+                }}
+              />
+            </label>
+            <div className="operator-steering-actions">
+              <button
+                type="button"
+                className="admin-action-button primary compact"
+                disabled={!operatorSteeringCanSubmit}
+                onClick={() => void submitOperatorSteeringNote()}
+              >
+                {operatorSteeringSubmitting ? "Queuing..." : "Queue note"}
+              </button>
+              {canControlWorkflowRuns && !privilegedUnlocked ? (
+                <span className="operator-steering-lock">Privileged operations locked</span>
+              ) : null}
+              {!canControlWorkflowRuns ? (
+                <span className="operator-steering-lock">Permission required: workflow_runs.control</span>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <div className="empty-state compact-empty-state">No active model dispatch for this session.</div>
+        )}
+        {operatorSteeringError ? <div className="runtime-run-error">{operatorSteeringError}</div> : null}
+        {operatorSteeringNotes.length > 0 ? (
+          <div className="operator-steering-notes">
+            {operatorSteeringNotes.slice(0, 4).map((note) => {
+              const cancelling = operatorSteeringCancellingId === note.note_id;
+              return (
+                <div className={`operator-steering-note status-${note.status}`} key={note.note_id}>
+                  <span>{operatorSteeringNoteSummary(note)}</span>
+                  {note.provider ? <span>{note.provider}{note.provider_endpoint ? ` / ${note.provider_endpoint}` : ""}</span> : null}
+                  {note.error ? <span className="missing">{note.error}</span> : null}
+                  {note.status === "pending" && canControlWorkflowRuns ? (
+                    <button
+                      type="button"
+                      className="admin-action-button compact"
+                      disabled={!privilegedUnlocked || cancelling}
+                      onClick={() => void cancelOperatorSteeringNote(note)}
+                    >
+                      {cancelling ? "Cancelling..." : "Cancel"}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="feature-page agents-page">
       <section className="feature-sidebar">
@@ -1854,6 +1957,7 @@ export function AgentsPage() {
                         setShowPromptForm(false);
                         setShowEditForm(false);
                         setShowSkillInstallForm(false);
+                        setShowOperatorSteeringDialog(false);
                       }}
                     >
                       <div className="feature-list-title-row vm-list-item-row">
@@ -2018,6 +2122,19 @@ export function AgentsPage() {
                   </button>
                 </Tooltip>
               ) : null}
+              <Tooltip content="Queue or review operator steering notes.">
+                <button
+                  type="button"
+                  className={`admin-icon-button${showOperatorSteeringDialog ? " primary" : ""}`}
+                  onClick={() => {
+                    setShowOperatorSteeringDialog(true);
+                    void refreshOperatorSteering();
+                  }}
+                  aria-label="Operator steering"
+                >
+                  <SteeringIcon />
+                </button>
+              </Tooltip>
               {showDestroy ? (
                 <Tooltip content={selectedAgent.backend === "container_worker_vm" ? "Delete the worker target and linked session." : "Destroy the VM and remove the linked session."}>
                   <button
@@ -2645,6 +2762,45 @@ export function AgentsPage() {
           </div>
         ) : null}
 
+        {showOperatorSteeringDialog && selectedAgent ? (
+          <div className="modal-backdrop" role="presentation">
+            <section
+              className="modal-card agent-crud-modal agent-steering-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="operator-steering-dialog-title"
+            >
+              <div className="modal-header">
+                <div>
+                  <h2 id="operator-steering-dialog-title">Operator steering</h2>
+                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id} / {operatorSteeringMeta}</p>
+                </div>
+                <div className="agent-steering-modal-actions">
+                  <button
+                    className="admin-action-button compact"
+                    type="button"
+                    aria-label="Refresh operator steering"
+                    onClick={() => void refreshOperatorSteering()}
+                    disabled={operatorSteeringLoading || !operatorSteeringSessionId || !canReadWorkflowRuns}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    className="admin-action-button compact"
+                    type="button"
+                    onClick={() => setShowOperatorSteeringDialog(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div className="modal-body">
+                {renderOperatorSteeringPanel()}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
         {selectedAgent ? (
           <>
             <div className="feature-grid">
@@ -2772,131 +2928,22 @@ export function AgentsPage() {
                       ) : null}
                     </>
                   )}
-                </dl>
-	              </article>
-	            </div>
-
-	            <article className="panel agent-steering-panel">
-	              <div className="panel-header">
-	                <div>
-	                  <h3>Operator steering</h3>
-	                  <span className="panel-meta">{operatorSteeringMeta}</span>
-	                </div>
-	                <button
-	                  className="admin-action-button compact"
-	                  type="button"
-	                  aria-label="Refresh operator steering"
-	                  onClick={() => void refreshOperatorSteering()}
-	                  disabled={operatorSteeringLoading || !operatorSteeringSessionId || !canReadWorkflowRuns}
-	                >
-	                  Refresh
-	                </button>
-	              </div>
-	              <div className="operator-steering-panel">
-	                {!operatorSteeringSessionId ? (
-	                  <div className="empty-state compact-empty-state">No linked session.</div>
-	                ) : !canReadWorkflowRuns ? (
-	                  <div className="empty-state compact-empty-state">Permission required: workflow_runs.read.</div>
-	                ) : operatorSteeringInitialLoading ? (
-	                  <div className="empty-state compact-empty-state">Loading steering context.</div>
-	                ) : operatorSteeringContext ? (
-	                  <>
-	                    <dl className="property-grid agent-steering-context-grid">
-	                      <div>
-	                        <dt>Session</dt>
-	                        <dd>{operatorSteeringContext.session_id}</dd>
-	                      </div>
-	                      <div>
-	                        <dt>Dispatch</dt>
-	                        <dd>{operatorSteeringContext.dispatch_id}</dd>
-	                      </div>
-	                      <div>
-	                        <dt>Model</dt>
-	                        <dd>{operatorSteeringContext.model ?? "Unknown"}</dd>
-	                      </div>
-	                      <div>
-	                        <dt>Expires</dt>
-	                        <dd>{formatTimestamp(operatorSteeringContext.expires_at)}</dd>
-	                      </div>
-	                    </dl>
-	                    <label className="field-stack operator-steering-form">
-	                      <span>Steering note</span>
-	                      <textarea
-	                        rows={3}
-	                        maxLength={2000}
-	                        value={operatorSteeringDraft}
-	                        placeholder="Move from exploration to implementation."
-	                        disabled={!canControlWorkflowRuns || !privilegedUnlocked || operatorSteeringSubmitting}
-	                        onChange={(event) => {
-	                          setOperatorSteeringDraft(event.target.value);
-	                          if (operatorSteeringError) setOperatorSteeringError(null);
-	                        }}
-	                      />
-	                    </label>
-	                    <div className="operator-steering-actions">
-	                      <button
-	                        type="button"
-	                        className="admin-action-button primary compact"
-	                        disabled={!operatorSteeringCanSubmit}
-	                        onClick={() => void submitOperatorSteeringNote()}
-	                      >
-	                        {operatorSteeringSubmitting ? "Queuing..." : "Queue note"}
-	                      </button>
-	                      {canControlWorkflowRuns && !privilegedUnlocked ? (
-	                        <span className="operator-steering-lock">Privileged operations locked</span>
-	                      ) : null}
-	                      {!canControlWorkflowRuns ? (
-	                        <span className="operator-steering-lock">Permission required: workflow_runs.control</span>
-	                      ) : null}
-	                    </div>
-	                  </>
-	                ) : (
-	                  <div className="empty-state compact-empty-state">No active model dispatch for this session.</div>
-	                )}
-	                {operatorSteeringError ? <div className="runtime-run-error">{operatorSteeringError}</div> : null}
-	                {operatorSteeringNotes.length > 0 ? (
-	                  <div className="operator-steering-notes">
-	                    {operatorSteeringNotes.slice(0, 4).map((note) => {
-	                      const cancelling = operatorSteeringCancellingId === note.note_id;
-	                      return (
-	                        <div className={`operator-steering-note status-${note.status}`} key={note.note_id}>
-	                          <span>{operatorSteeringNoteSummary(note)}</span>
-	                          {note.provider ? <span>{note.provider}{note.provider_endpoint ? ` / ${note.provider_endpoint}` : ""}</span> : null}
-	                          {note.error ? <span className="missing">{note.error}</span> : null}
-	                          {note.status === "pending" && canControlWorkflowRuns ? (
-	                            <button
-	                              type="button"
-	                              className="admin-action-button compact"
-	                              disabled={!privilegedUnlocked || cancelling}
-	                              onClick={() => void cancelOperatorSteeringNote(note)}
-	                            >
-	                              {cancelling ? "Cancelling..." : "Cancel"}
-	                            </button>
-	                          ) : null}
-	                        </div>
-	                      );
-	                    })}
-	                  </div>
-	                ) : null}
-	              </div>
-	            </article>
-
-	            {selectedLabels.length > 0 ? (
-	              <article className="panel compact-panel">
-	                <div className="panel-header">
-                  <h3>Labels</h3>
-                  <span className="panel-meta">{selectedLabels.length} entries</span>
-                </div>
-                <dl className="property-grid vm-label-grid">
-                  {selectedLabels.map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{key}</dt>
-                      <dd>{value}</dd>
+                  {selectedLabels.length > 0 ? (
+                    <div className="agent-labels-property field-span-2">
+                      <dt>Labels</dt>
+                      <dd className="agent-inline-label-list">
+                        {selectedLabels.map(([key, value]) => (
+                          <span className="agent-inline-label" key={key}>
+                            <strong>{key}</strong>
+                            <span>{value}</span>
+                          </span>
+                        ))}
+                      </dd>
                     </div>
-                  ))}
+                  ) : null}
                 </dl>
               </article>
-            ) : null}
+            </div>
 
             {selectedMetadata ? (
               <details className="panel compact-disclosure">
