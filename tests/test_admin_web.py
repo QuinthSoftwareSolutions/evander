@@ -66,7 +66,12 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteGateExecutionStore,
 )
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from agent_sandbox.communication_artifact_links import (
+    issue_communication_artifact_download_link,
+)
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
@@ -5535,6 +5540,65 @@ def test_admin_web_artifact_key_ending_download_resolves_metadata(
     assert detail_response.json()["key"] == "runs/foo/download"
     assert download_response.status_code == 200
     assert download_response.content == b"published archive"
+
+
+def test_admin_web_public_communication_artifact_download_requires_signed_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "admin-secret")
+    monkeypatch.setenv("TEAM_LINK_SECRET", "link-secret")
+    config_path = write_config(tmp_path)
+    service = AdminService(config_path)
+    team_directory = DirectoryService(service.runtime.directories).create(
+        parent="root", name="team"
+    )
+    DirectoryConfigStore(
+        service.runtime.directories, runtime_dir=service.config.runtime_dir
+    ).write(
+        team_directory.path,
+        domain="providers",
+        payload={"communication_artifact_link_secret_env": "TEAM_LINK_SECRET"},
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            directory_path=team_directory.path,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    record = CommunicationArtifactStore(service.config.runtime_dir).stage(
+        provider="workspace",
+        session_id="session-1",
+        content=b"report bytes",
+        original_filename="report.txt",
+        mime_type="text/plain",
+    )
+    link = issue_communication_artifact_download_link(
+        artifact_id=record.artifact_id,
+        artifact_expires_at=record.expires_at,
+        public_base_url="https://control.example.test",
+        secret_env="TEAM_LINK_SECRET",
+        ttl_seconds=3600,
+    )
+    client = TestClient(create_app(service))
+
+    missing_token = client.get(f"/public/communication-artifacts/{record.artifact_id}")
+    bad_token = client.get(
+        f"/public/communication-artifacts/{record.artifact_id}?token=tampered"
+    )
+    downloaded = client.get(
+        f"/public/communication-artifacts/{record.artifact_id}?token={link.token}"
+    )
+
+    assert missing_token.status_code == 403
+    assert bad_token.status_code == 403
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"report bytes"
+    assert downloaded.headers["content-disposition"] == 'attachment; filename="report.txt"'
 
 
 def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> None:

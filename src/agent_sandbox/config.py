@@ -272,6 +272,15 @@ class GatewayConfig(BaseModel):
     communication_file_allowed_extensions: list[str] = Field(default_factory=list)
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
+    communication_artifact_public_base_url: str | None = None
+    communication_artifact_link_secret_env: str = Field(
+        default="AGENT_SANDBOX_COMMUNICATION_ARTIFACT_LINK_SECRET",
+        min_length=1,
+    )
+    communication_artifact_link_ttl_seconds: int = Field(
+        default=7 * 24 * 60 * 60,
+        ge=1,
+    )
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
     mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
@@ -603,6 +612,14 @@ class GatewayConfig(BaseModel):
         if value is None:
             return None
         text = str(value).strip()
+        return text or None
+
+    @field_validator("communication_artifact_public_base_url", mode="before")
+    @classmethod
+    def normalize_communication_artifact_public_base_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().rstrip("/")
         return text or None
 
     @field_validator("teams_delegated_scopes", mode="before")

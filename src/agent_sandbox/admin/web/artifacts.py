@@ -11,6 +11,13 @@ from starlette.routing import BaseRoute, Route
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import json_error
 from agent_sandbox.artifact_spaces import ArtifactSpaceConflictError
+from agent_sandbox.communication_artifact_links import (
+    CommunicationArtifactLinkError,
+    PUBLIC_COMMUNICATION_ARTIFACT_DOWNLOAD_PREFIX,
+    communication_artifact_link_secret_env,
+    verify_communication_artifact_download_token,
+)
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 
 
 def artifact_routes(service: AdminService) -> list[BaseRoute]:
@@ -52,6 +59,37 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
         return FileResponse(
             artifact.blob_path,
             media_type=artifact.metadata.mime_type,
+            filename=artifact.metadata.filename,
+        )
+
+    async def download_communication_artifact(request: Request) -> FileResponse | JSONResponse:
+        artifact_id = request.path_params.get("artifact_id", "")
+        token = str(request.query_params.get("token") or "").strip()
+        if not token:
+            return json_error("Invalid or expired artifact download link", status_code=403)
+        try:
+            artifact = CommunicationArtifactStore(service.config.runtime_dir).get(artifact_id)
+        except ValueError:
+            return json_error("Invalid or expired artifact download link", status_code=403)
+        except FileNotFoundError as exc:
+            return json_error(str(exc), status_code=404)
+        try:
+            resolved_config = service.runtime.provider_config.resolve_for_session_id(
+                artifact.metadata.session_id
+            )
+        except ValueError:
+            resolved_config = service.config
+        try:
+            verify_communication_artifact_download_token(
+                artifact_id=artifact_id,
+                token=token,
+                secret_env=communication_artifact_link_secret_env(resolved_config),
+            )
+        except (CommunicationArtifactLinkError, ValueError):
+            return json_error("Invalid or expired artifact download link", status_code=403)
+        return FileResponse(
+            artifact.blob_path,
+            media_type=artifact.metadata.mime_type or "application/octet-stream",
             filename=artifact.metadata.filename,
         )
 
@@ -169,6 +207,11 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
         Route(
             "/api/admin/artifact-space-versions/latest",
             latest_artifact_space_versions,
+            methods=["GET"],
+        ),
+        Route(
+            f"{PUBLIC_COMMUNICATION_ARTIFACT_DOWNLOAD_PREFIX}/{{artifact_id:str}}",
+            download_communication_artifact,
             methods=["GET"],
         ),
         Route("/api/admin/artifact-downloads/{key:path}", download_artifact, methods=["GET"]),

@@ -1313,6 +1313,9 @@ adapters perform provider API calls under the active session policy.
   `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,
   `email_create_draft_with_attachments`, `email_send_approved_with_attachments`,
   Azure DevOps PR comment/reply/review tools, and Azure DevOps backlog comment/text tools.
+  Teams sends inline image artifacts through Graph hosted content. Non-image Teams artifacts are
+  posted as signed control-plane download links when `communication_artifact_public_base_url` and
+  the shared `communication_artifact_link_secret_env` secret are configured.
   Keep `communication_file_send_enabled: false` unless the session is explicitly allowed to
   send files.
 - **Approval behavior:** set `communication_file_require_approval_for_send: true` before enabling

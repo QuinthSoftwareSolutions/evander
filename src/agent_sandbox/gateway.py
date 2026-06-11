@@ -53,6 +53,12 @@ from agent_sandbox.communication_artifacts import (
     normalize_safe_filename,
     validate_artifact_id,
 )
+from agent_sandbox.communication_artifact_links import (
+    CommunicationArtifactLinkError,
+    communication_artifact_link_secret_env,
+    communication_artifact_public_base_url,
+    issue_communication_artifact_download_link,
+)
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
@@ -1446,6 +1452,108 @@ def create_server(context: RuntimeContext) -> FastMCP:
             }
             for artifact in _load_artifacts(artifact_ids)
         ]
+
+    _TEAMS_INLINE_IMAGE_MIME_TYPES = {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+
+    def _artifact_mime_type(artifact: dict[str, Any]) -> str:
+        return str(artifact.get("mime_type") or "").split(";", 1)[0].strip().lower()
+
+    def _artifact_is_inline_teams_image(artifact: dict[str, Any]) -> bool:
+        return _artifact_mime_type(artifact) in _TEAMS_INLINE_IMAGE_MIME_TYPES
+
+    def _artifact_has_teams_reference_url(artifact: dict[str, Any]) -> bool:
+        candidates: list[Any] = [artifact.get("contentUrl"), artifact.get("content_url")]
+        metadata = artifact.get("metadata")
+        if isinstance(metadata, dict):
+            candidates.extend([metadata.get("contentUrl"), metadata.get("content_url")])
+            attachment_ref = metadata.get("attachment_ref")
+            if isinstance(attachment_ref, dict):
+                candidates.extend(
+                    [attachment_ref.get("contentUrl"), attachment_ref.get("content_url")]
+                )
+                ref_metadata = attachment_ref.get("metadata")
+                if isinstance(ref_metadata, dict):
+                    candidates.extend(
+                        [ref_metadata.get("contentUrl"), ref_metadata.get("content_url")]
+                    )
+        return any(
+            str(candidate or "").strip().startswith(("http://", "https://"))
+            for candidate in candidates
+        )
+
+    def _artifact_expires_at(artifact: dict[str, Any]) -> datetime:
+        raw_value = artifact.get("expires_at")
+        if isinstance(raw_value, datetime):
+            value = raw_value
+        else:
+            text = str(raw_value or "").strip()
+            if not text:
+                raise ToolError("Communication file artifact does not include an expiry")
+            try:
+                value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ToolError("Communication file artifact has an invalid expiry") from exc
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _teams_artifacts_with_public_download_links(
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        resolved_config = context.resolve_provider_config_for_session(session_id)
+        updated_artifacts: list[dict[str, Any]] = []
+        published_links: list[dict[str, Any]] = []
+        audit_links: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            updated = dict(artifact)
+            if (
+                not _artifact_is_inline_teams_image(updated)
+                and not _artifact_has_teams_reference_url(updated)
+            ):
+                try:
+                    link = issue_communication_artifact_download_link(
+                        artifact_id=str(updated.get("artifact_id") or ""),
+                        artifact_expires_at=_artifact_expires_at(updated),
+                        public_base_url=communication_artifact_public_base_url(resolved_config),
+                        secret_env=communication_artifact_link_secret_env(resolved_config),
+                        ttl_seconds=resolved_config.communication_artifact_link_ttl_seconds,
+                    )
+                except CommunicationArtifactLinkError as exc:
+                    raise ToolError(str(exc)) from exc
+                updated["download_url"] = link.url
+                published_links.append(
+                    {
+                        "artifact_id": link.artifact_id,
+                        "filename": str(
+                            updated.get("normalized_safe_filename")
+                            or updated.get("filename")
+                            or link.artifact_id
+                        ),
+                        "url": link.url,
+                        "expires_at": link.expires_at.isoformat(),
+                    }
+                )
+                audit_links.append(
+                    {
+                        "artifact_id": link.artifact_id,
+                        "filename": str(
+                            updated.get("normalized_safe_filename")
+                            or updated.get("filename")
+                            or link.artifact_id
+                        ),
+                        "byte_count": int(updated.get("byte_count") or 0),
+                        "mime_type": updated.get("mime_type"),
+                        "expires_at": link.expires_at.isoformat(),
+                    }
+                )
+            updated_artifacts.append(updated)
+        return updated_artifacts, published_links, audit_links
 
     def _require_ado_artifact_send(
         session: Any, artifact_payloads: list[dict[str, Any]]
@@ -8309,6 +8417,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             approval = context.policy.require_communication_file_send_approval(
                 session, request_id=request_id, payload=approval_payload
             )
+            artifacts, published_links, published_link_audit = (
+                _teams_artifacts_with_public_download_links(session_id, artifacts)
+            )
             service = context.teams_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Teams adapter does not support file posts")
@@ -8316,11 +8427,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
             result = service.post_file(
                 message, send_target, session_id, artifacts, thread_id=thread_id
             )
+            if published_links:
+                result["published_links"] = published_links
             response = CommunicationSendMessageWithAttachmentsResponse(
                 provider="teams",
                 status=str(result.get("status", "posted")),
                 message_id=result.get("message_id"),
                 artifact_ids=artifact_ids,
+                published_links=published_links,
                 result=result,
             )
             audit_success(
@@ -8336,6 +8450,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     ),
                     "message_id": response.message_id,
                     "artifacts": _artifact_audit_summaries(artifact_ids),
+                    "published_links": published_link_audit,
                 },
             )
             return response.model_dump(mode="json")

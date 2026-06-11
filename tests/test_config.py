@@ -468,6 +468,17 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
     ]
 
 
+def test_communication_artifact_link_defaults_are_control_plane_scoped() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.communication_artifact_public_base_url is None
+    assert (
+        config.communication_artifact_link_secret_env
+        == "AGENT_SANDBOX_COMMUNICATION_ARTIFACT_LINK_SECRET"
+    )
+    assert config.communication_artifact_link_ttl_seconds == 7 * 24 * 60 * 60
+
+
 def test_openai_provider_defaults_remain_public_mode() -> None:
     config = GatewayConfig.model_validate({})
 
