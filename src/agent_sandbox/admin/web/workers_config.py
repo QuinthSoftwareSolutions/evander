@@ -67,6 +67,11 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
 _COMMUNICATION_FILE_POLICY_FIELDS: tuple[tuple[str, str], ...] = tuple(
     ("policy", field_name) for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 )
+_COMMUNICATION_ARTIFACT_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "communication_artifact_public_base_url"),
+    ("providers", "communication_artifact_link_secret_env"),
+    ("providers", "communication_artifact_link_ttl_seconds"),
+)
 _ASSISTANT_SETTINGS_DOMAIN = "assistant_settings"
 _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"),
@@ -106,6 +111,15 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "container_worker_guest_openai_base_url"): (
         "Container-visible OpenAI base URL"
     ),
+    ("providers", "communication_artifact_public_base_url"): (
+        "Communication artifact public base URL"
+    ),
+    ("providers", "communication_artifact_link_secret_env"): (
+        "Communication artifact link secret env"
+    ),
+    ("providers", "communication_artifact_link_ttl_seconds"): (
+        "Communication artifact link TTL seconds"
+    ),
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
@@ -118,6 +132,18 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ),
     ("policy", "mcp_tool_policies"): (
         "Directory-scoped MCP tool deny, approval requirement, approval default, and hard-limit rules."
+    ),
+    ("providers", "communication_artifact_public_base_url"): (
+        "Public Admin Web or control-plane origin used to build signed download links for "
+        "non-image Teams file sends. Teams recipients must be able to reach this URL."
+    ),
+    ("providers", "communication_artifact_link_secret_env"): (
+        "Host environment variable name containing the HMAC secret for communication artifact "
+        "download links. The value must be loaded by both gateway and Admin Web."
+    ),
+    ("providers", "communication_artifact_link_ttl_seconds"): (
+        "Maximum lifetime for signed communication artifact download links, capped by the "
+        "staged artifact expiry."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."
@@ -302,6 +328,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "container_worker_mssql_port"),
             ),
             ("container_worker_",),
+        ),
+        (
+            "Communication artifacts",
+            _COMMUNICATION_ARTIFACT_PROVIDER_FIELDS,
+            ("communication_artifact_",),
         ),
         ("GitHub", (("providers", "github_token_env"),), ("github_",)),
         (
