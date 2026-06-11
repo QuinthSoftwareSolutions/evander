@@ -89,6 +89,7 @@ def artifact_routes(service: AdminService) -> list[BaseRoute]:
             return json_error("Invalid or expired artifact download link", status_code=403)
         return FileResponse(
             artifact.blob_path,
+            headers={"Cache-Control": "no-store"},
             media_type=artifact.metadata.mime_type or "application/octet-stream",
             filename=artifact.metadata.filename,
         )

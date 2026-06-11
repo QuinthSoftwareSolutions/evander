@@ -11,6 +11,8 @@ material. Newer entries are added incrementally as changes land.
   `teams_post_file` can share non-image files through the control plane without
   requiring SharePoint/OneDrive upload scopes. Teams image artifacts continue to
   use inline Graph hosted content.
+- Marked signed public communication artifact downloads as `Cache-Control:
+  no-store` so bearer-token artifact URLs are not cacheable past their expiry.
 
 ## 2026-06-11 - Agents Page Steering Refresh Stability
 

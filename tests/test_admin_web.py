@@ -5599,6 +5599,7 @@ def test_admin_web_public_communication_artifact_download_requires_signed_token(
     assert downloaded.status_code == 200
     assert downloaded.content == b"report bytes"
     assert downloaded.headers["content-disposition"] == 'attachment; filename="report.txt"'
+    assert downloaded.headers["cache-control"] == "no-store"
 
 
 def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> None:
