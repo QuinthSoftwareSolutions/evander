@@ -269,6 +269,11 @@ button.runtime-filter-button.active {
   color: var(--muted);
 }
 
+.summary-empty-state {
+  grid-column: 1 / -1;
+  margin-top: 0.25rem;
+}
+
 .hierarchy-list,
 .agent-list,
 .task-list,
@@ -362,6 +367,12 @@ button.runtime-filter-button.active {
   gap: 0.9rem;
 }
 
+.runtime-filter-summary {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .runtime-section {
   display: grid;
   gap: 0.5rem;
@@ -370,12 +381,15 @@ button.runtime-filter-button.active {
 .runtime-section h3 {
   margin: 0.1rem 0 0;
   font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 
 .runtime-count {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 700;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .runtime-list {
