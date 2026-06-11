@@ -5,11 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
-## 2026-06-11 - Team Add-on Review & Delivery Guardrails
+## 2026-06-11 - Team Add-on Review & Delivery Workspace
 
-- Pinned the bundled Team Add-on UI contract in the Admin API test so the served
-  HTML, script, and stylesheet all expose the Review & Delivery workspace hooks
-  used by the operator surface.
+- Added a dedicated Team Add-on Review & Delivery workspace that groups
+  deliverables by team, project, and delivery state while surfacing task,
+  producer, artifact, Git promotion, review, criterion, and release-package
+  details.
+- Added workspace-local review decision submission through the existing review
+  decision endpoint, including findings and criterion result payloads.
+- Extended focused smoke coverage for pending, accepted, rejected, and blocked
+  review/delivery states, status filters, Git refs, release inclusion, criterion
+  results, and workspace review decision submission.
 - Documented the dedicated Review & Delivery workspace in the Team Add-ons guide
   while keeping the existing setup forms and Admin Web integration model intact.
 

@@ -73,6 +73,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'id="review-delivery-view"' in ui.text
     assert 'id="delivery-filter-blocked"' in ui.text
     assert 'name="parent_task_id"' in ui.text
+    assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
 
