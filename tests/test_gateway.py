@@ -1869,6 +1869,77 @@ def test_inbound_phone_call_provisioning_rejects_blocked_caller_without_creating
     assert blocked_number not in audit_text
 
 
+def test_inbound_phone_bridge_result_updates_voice_session_and_reconciles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEAM_CONTROLLER_TOKEN", "team-token")
+    context, _team_path = _build_inbound_phone_runtime(
+        tmp_path,
+        token_env="TEAM_CONTROLLER_TOKEN",
+        route_id="ops-main",
+        session_id="team-origin",
+        did="+1 (555) 000-0100",
+        caller_number="+1 (555) 000-0200",
+        route_prompt="Answer inbound calls for ops.",
+    )
+    client = TestClient(create_app(context))
+
+    provisioned = client.post(
+        "/voice-sessions/inbound-phone-calls",
+        json={
+            "did": "+1 (555) 000-0100",
+            "caller_number": "+1 (555) 000-0200",
+            "asterisk_channel_id": "SIP/abc-0005",
+            "bridge_call_id": "bridge-5",
+        },
+        headers={"Authorization": "Bearer team-token"},
+    )
+    assert provisioned.status_code == 201
+    voice_session_id = provisioned.json()["voice_session_id"]
+
+    synced = client.post(
+        f"/voice-sessions/{voice_session_id}/bridge-result",
+        json={
+            "call_id": "inbound-bridge-5",
+            "status": "ended",
+            "transcript_events": [
+                {
+                    "sequence": 1,
+                    "speaker": "caller",
+                    "text": "Can ops confirm the deployment?",
+                },
+                {
+                    "sequence": 2,
+                    "speaker": "assistant",
+                    "text": "Ops will check the deployment window.",
+                },
+            ],
+            "summary": "Inbound caller asked ops to confirm the deployment.",
+            "decisions": ["Check the deployment window"],
+            "action_items": ["Follow up with ops"],
+        },
+        headers={"Authorization": "Bearer team-token"},
+    )
+
+    assert synced.status_code == 200
+    assert synced.json()["status"] == "ended"
+    assert synced.json()["reconciliation_status"] == "scheduled"
+    record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+    assert record is not None
+    assert record.status == "ended"
+    assert record.bridge_session_id == "inbound-bridge-5"
+    assert record.transcript == (
+        "caller: Can ops confirm the deployment?\n"
+        "assistant: Ops will check the deployment window."
+    )
+    assert record.reconciliation_status == "scheduled"
+    scheduled = context.wake_store.list_requests(session_id="team-origin")
+    assert len(scheduled) == 1
+    assert scheduled[0].request_id == f"voice-session-reconcile:{voice_session_id}"
+    assert "Inbound caller asked ops" in scheduled[0].resume_prompt.prompt
+
+
 def test_inbound_phone_call_provisioning_rejects_missing_route_with_root_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

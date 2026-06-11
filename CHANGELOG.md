@@ -11,6 +11,9 @@ material. Newer entries are added incrementally as changes land.
   events so the DIDWW SIP bridge can provision fixed inbound routes through the
   gateway, answer the inbound channel, create the `ExternalMedia` bridge, and
   send a route-specific opening to OpenAI Realtime.
+- Synced terminal inbound bridge results back to the gateway so accepted calls
+  update the gateway-owned voice-session store and schedule the originating
+  agent's reconciliation wake.
 - Extended the bridge store and call record payloads to keep inbound route
   metadata redacted, including DID/caller hashes and route identifiers, while
   preserving outbound call behavior.

@@ -119,7 +119,9 @@ Directory-scoped config is rooted at `root`:
    When `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true`, the same bridge also
    listens for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`
    events and provisions fixed routes through the gateway using
-   `VOICE_MEDIA_CONTROLLER_TOKEN`.
+   `VOICE_MEDIA_CONTROLLER_TOKEN`. After the inbound call reaches a terminal
+   bridge state, it syncs the sanitized result back to the gateway so the
+   originating Truman session receives the normal voice-session reconciliation.
 
    Optional Teams meeting voice sessions require the Windows-hosted bridge in
    `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`

@@ -13,6 +13,7 @@ def test_root_only_config_docs_describe_root_as_live_baseline() -> None:
     assert "Configure `root` directory overlays directly" in operations
     assert "is the live top-level layer" in operations
     assert "/voice-sessions/inbound-phone-calls" in operations
+    assert "/voice-sessions/{voice_session_id}/bridge-result" in operations
     assert "Legacy gateway YAML import keys" in configuration_reference
     assert "is not the live runtime baseline" in configuration_reference
     assert "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS" in configuration_reference

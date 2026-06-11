@@ -958,6 +958,10 @@ The bridge routes fixed inbound calls from Asterisk by sending the DID to
 `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`. When the bridge accepts an inbound
 `StasisStart`, it POSTs to `POST /voice-sessions/inbound-phone-calls` using the token named by
 `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` (default `VOICE_MEDIA_CONTROLLER_TOKEN`).
+After the call ends, the bridge POSTs the sanitized terminal bridge result to
+`POST /voice-sessions/{voice_session_id}/bridge-result`; the gateway merges the transcript,
+summary, decisions, and action items into `runtime/voice-sessions-store.json` and schedules the
+same-origin reconciliation wake.
 
 The gateway resolves exactly one configured route by route id or DID, requires the configured
 origin or target session to exist and remain active in the same directory, and enforces caller
@@ -1006,7 +1010,8 @@ there is no Asterisk license fee, but DIDWW call/trunk usage and OpenAI Realtime
 Inbound handling stays host-local as well: the bridge only enables its long-lived inbound listener
 when `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true` and uses
 `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` plus `VOICE_MEDIA_CONTROLLER_TOKEN` to provision calls
-through the gateway after matching a route.
+through the gateway after matching a route. Terminal inbound results use the same controller URL and
+token to sync the final bridge payload back to the gateway for voice-session reconciliation.
 The bridge sends G.711 audio to OpenAI Realtime, so its Asterisk `ExternalMedia` RTP settings must
 use a static payload codec. The default is A-law/PCMA:
 `DIDWW_SIP_BRIDGE_MEDIA_FORMAT=alaw`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE=8`, and

@@ -1094,13 +1094,6 @@ class OpenAIRealtimeSession:
                 "Do not mention internal agent handoffs."
             )
 
-    async def create_inbound_phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/voice-sessions/inbound-phone-calls",
-            json=payload,
-        )
-
     async def recv_json(self) -> dict[str, Any]:
         if self.websocket is None:
             raise RuntimeError("Realtime websocket is not connected")
@@ -1292,6 +1285,24 @@ class VoiceMediaControllerClient:
         return await self._request(
             "POST",
             f"/voice-sessions/{voice_session_id}/queries/{query_id}/timeout",
+        )
+
+    async def create_inbound_phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/voice-sessions/inbound-phone-calls",
+            json=payload,
+        )
+
+    async def sync_voice_session(
+        self,
+        voice_session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/voice-sessions/{voice_session_id}/bridge-result",
+            json=payload,
         )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -1672,17 +1683,15 @@ class DidwwSipBridgeService:
                 }
             )
         except Exception as exc:
-            self._append_debug_event(
-                asterisk_channel_id or bridge_call_id or "inbound-unknown",
-                "inbound_phone_call.provisioning_failed",
-                metadata={
-                    "asterisk_channel_id": asterisk_channel_id,
-                    "bridge_call_id": bridge_call_id,
-                    "route_id": route_id,
-                    "did_sha256": _hash_identity(did) if did else None,
-                    "caller_sha256": _hash_identity(caller_number) if caller_number else None,
-                    "reason": _debug_snippet(exc),
-                },
+            logger.info(
+                "inbound_phone_call.provisioning_failed channel_id=%s bridge_call_id=%s "
+                "route_id=%s did_sha256=%s caller_sha256=%s reason=%s",
+                _debug_log_value(asterisk_channel_id),
+                _debug_log_value(bridge_call_id),
+                _debug_log_value(route_id),
+                _debug_log_value(_hash_identity(did) if did else None),
+                _debug_log_value(_hash_identity(caller_number) if caller_number else None),
+                _debug_log_value(_debug_snippet(exc)),
             )
             await self.ari_client.hangup_channel(asterisk_channel_id)
             return
@@ -1776,6 +1785,7 @@ class DidwwSipBridgeService:
                 rtp.close()
                 latest = self.store.get(record.voice_session_id)
                 if latest is not None:
+                    await self._sync_inbound_voice_session_to_gateway(latest, payload.realtime)
                     await self._cleanup_asterisk(latest)
 
     async def run_call(self, record: DidwwBridgeCallRecord, payload: PhoneCallStartRequest) -> None:
@@ -3310,6 +3320,41 @@ class DidwwSipBridgeService:
         await self.ari_client.hangup_channel(record.ari_external_media_channel_id)
         await self.ari_client.hangup_channel(record.ari_channel_id)
         await self.ari_client.destroy_bridge(record.ari_bridge_id)
+
+    async def _sync_inbound_voice_session_to_gateway(
+        self,
+        record: DidwwBridgeCallRecord,
+        realtime: dict[str, Any],
+    ) -> None:
+        if record.direction != "inbound":
+            return
+        voice_session_id = record.gateway_voice_session_id or record.voice_session_id
+        if not voice_session_id:
+            return
+        controller = VoiceMediaControllerClient.from_realtime(self.config, realtime)
+        if not controller.configured:
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_sync_skipped",
+                metadata={"reason": "voice media controller URL is not configured"},
+            )
+            return
+        try:
+            await controller.sync_voice_session(voice_session_id, record.response_payload())
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_synced",
+                metadata={"gateway_voice_session_id": voice_session_id},
+            )
+        except Exception as exc:
+            self._append_debug_event(
+                record.voice_session_id,
+                "inbound_phone_call.gateway_sync_failed",
+                metadata={
+                    "gateway_voice_session_id": voice_session_id,
+                    "reason": _debug_snippet(exc),
+                },
+            )
 
     def _append_debug_event(
         self,

@@ -25,6 +25,7 @@ from agent_sandbox.didww_sip_bridge import (
     RealtimeFunctionCall,
     RtpPacket,
     RtpUdpEndpoint,
+    VoiceMediaControllerClient,
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
@@ -390,6 +391,66 @@ def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -
     assert requests[2].url.params["format"] == "alaw"
     assert requests[3].url.path == "/ari/bridges/bridge-didww-test/addChannel"
     assert requests[4].url.path == "/ari/bridges/bridge-didww-test/addChannel"
+
+
+def test_voice_media_controller_client_provisions_and_syncs_inbound_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/voice-sessions/inbound-phone-calls":
+            return httpx.Response(
+                201,
+                json={
+                    "voice_session_id": "voice-inbound-1",
+                    "request_id": "inbound-phone:ops-main:SIP/abc-0001",
+                },
+            )
+        if request.url.path == "/voice-sessions/voice-inbound-1/bridge-result":
+            return httpx.Response(
+                200,
+                json={
+                    "voice_session_id": "voice-inbound-1",
+                    "status": "ended",
+                    "reconciliation_status": "scheduled",
+                },
+            )
+        return httpx.Response(404, json={"error": "unexpected path"})
+
+    async def run() -> tuple[dict[str, Any], dict[str, Any]]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            controller = VoiceMediaControllerClient(
+                base_url="http://gateway.local/",
+                token_env="VOICE_MEDIA_CONTROLLER_TOKEN",
+                timeout_seconds=1,
+                http_client=client,
+            )
+            provisioned = await controller.create_inbound_phone_call(
+                {
+                    "did": "+15550000100",
+                    "caller_number": "+15550000200",
+                    "asterisk_channel_id": "SIP/abc-0001",
+                    "bridge_call_id": "bridge-1",
+                }
+            )
+            synced = await controller.sync_voice_session(
+                "voice-inbound-1",
+                {"status": "ended", "transcript": "caller: hello"},
+            )
+            return provisioned, synced
+
+    provisioned, synced = asyncio.run(run())
+
+    assert provisioned["voice_session_id"] == "voice-inbound-1"
+    assert synced["reconciliation_status"] == "scheduled"
+    assert [request.url.path for request in requests] == [
+        "/voice-sessions/inbound-phone-calls",
+        "/voice-sessions/voice-inbound-1/bridge-result",
+    ]
+    assert all(request.headers["authorization"] == "Bearer controller-token" for request in requests)
 
 
 def test_asterisk_ari_client_waits_for_stasis_before_bridge_add(
@@ -908,6 +969,7 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
+    monkeypatch.setenv("VOICE_MEDIA_CONTROLLER_TOKEN", "controller-token")
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     service = DidwwSipBridgeService(
         _config(tmp_path).model_copy(
@@ -922,6 +984,31 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
         start_background_tasks=False,
     )
     events: list[str] = []
+    synced_results: list[dict[str, Any]] = []
+
+    async def fake_sync_voice_session(
+        self: VoiceMediaControllerClient,
+        voice_session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        synced_results.append(
+            {
+                "base_url": self.base_url,
+                "voice_session_id": voice_session_id,
+                "payload": payload,
+            }
+        )
+        return {
+            "voice_session_id": voice_session_id,
+            "status": payload.get("status"),
+            "reconciliation_status": "scheduled",
+        }
+
+    monkeypatch.setattr(
+        VoiceMediaControllerClient,
+        "sync_voice_session",
+        fake_sync_voice_session,
+    )
 
     class FakeWebSocket:
         def __init__(self) -> None:
@@ -1070,6 +1157,12 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
     assert record.caller_redacted == "***0200"
     assert record.ari_channel_id == "SIP/abc-0001"
     assert record.ari_external_media_channel_id == "media-inbound-1"
+    assert synced_results[0]["base_url"] == "http://gateway.local"
+    assert synced_results[0]["voice_session_id"] == "voice-inbound-1"
+    synced_payload = synced_results[0]["payload"]
+    assert synced_payload["voice_session_id"] == "voice-inbound-1"
+    assert synced_payload["direction"] == "inbound"
+    assert synced_payload["metadata"]["ari_channel_id"] == "SIP/abc-0001"
     assert response_payload["direction"] == "inbound"
     assert response_payload["metadata"]["to_number"] == "***0100"
     assert response_payload["metadata"]["from_number"] == "***0200"

@@ -9642,6 +9642,40 @@ def create_app(context: RuntimeContext) -> Starlette:
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    async def sync_voice_session_from_bridge(request: Request) -> JSONResponse:
+        voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+        record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
+        if record is None:
+            return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+        auth_error = voice_controller_auth_error(request, record.directory_path)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("voice session bridge result payload must be an object")
+            updated = context.voice_session_store.update_from_bridge_payload(
+                voice_session_id,
+                payload,
+            )
+            if updated.status in {"ended", "failed"}:
+                context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
+                updated = context.voice_session_store.get_by_voice_session_id(
+                    voice_session_id
+                ) or updated
+            return JSONResponse(
+                {
+                    "voice_session_id": updated.voice_session_id,
+                    "status": updated.status,
+                    "reconciliation_status": updated.reconciliation_status,
+                    "reconciliation_request_id": updated.reconciliation_request_id,
+                }
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     async def get_voice_query(request: Request) -> JSONResponse:
         voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
         record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
@@ -9698,6 +9732,11 @@ def create_app(context: RuntimeContext) -> Starlette:
             Route(
                 "/voice-sessions/{voice_session_id}/queries",
                 create_voice_query,
+                methods=["POST"],
+            ),
+            Route(
+                "/voice-sessions/{voice_session_id}/bridge-result",
+                sync_voice_session_from_bridge,
                 methods=["POST"],
             ),
             Route(
