@@ -223,7 +223,9 @@ textarea {
   color: var(--muted);
 }
 
-.hierarchy-list,
+.hierarchy-view,
+.hierarchy-tree,
+.hierarchy-children,
 .agent-list,
 .task-list,
 .goal-list,
@@ -233,6 +235,149 @@ textarea {
   list-style: none;
   margin: 0.75rem 0 0;
   padding: 0;
+}
+
+.hierarchy-view {
+  display: grid;
+  gap: 1rem;
+}
+
+.hierarchy-team {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f4f8f6 100%);
+}
+
+.hierarchy-team-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.hierarchy-team-header h3 {
+  margin: 0;
+}
+
+.hierarchy-chart {
+  margin-top: 0.9rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.hierarchy-tree {
+  display: grid;
+  gap: 0.9rem;
+  width: max-content;
+  min-width: 100%;
+}
+
+.hierarchy-branch {
+  position: relative;
+}
+
+.hierarchy-children {
+  margin: 0.75rem 0 0 1.05rem;
+  padding: 0.75rem 0 0 1rem;
+  border-left: 2px solid var(--line);
+  display: grid;
+  gap: 0.8rem;
+}
+
+.hierarchy-children > .hierarchy-branch::before {
+  content: "";
+  position: absolute;
+  left: -1rem;
+  top: 1.15rem;
+  width: 1rem;
+  border-top: 2px solid var(--line);
+}
+
+.hierarchy-node-card {
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+  width: min(100%, 21rem);
+  min-width: 15rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px var(--shadow);
+}
+
+.hierarchy-node-card:hover,
+.hierarchy-node-card:focus,
+.hierarchy-node-card:focus-visible,
+.hierarchy-node-card:focus-within {
+  border-color: var(--accent);
+}
+
+.hierarchy-node-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hierarchy-node-card--warning {
+  border-color: rgba(154, 107, 19, 0.4);
+  background: linear-gradient(180deg, rgba(154, 107, 19, 0.08) 0%, rgba(154, 107, 19, 0.03) 100%);
+}
+
+.hierarchy-node-summary {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.hierarchy-node-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.hierarchy-node-title strong,
+.hierarchy-node-role,
+.hierarchy-node-id {
+  overflow-wrap: anywhere;
+}
+
+.hierarchy-node-id {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.hierarchy-node-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.hierarchy-node-details {
+  display: grid;
+  gap: 0.18rem;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    max-height 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.hierarchy-node-card:is(:hover, :focus, :focus-visible, :focus-within) .hierarchy-node-details {
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line);
+  max-height: 24rem;
+  opacity: 1;
+}
+
+.hierarchy-fallbacks {
+  margin-top: 1rem;
 }
 
 .review-profiles-view,
@@ -247,14 +392,6 @@ textarea {
   font-size: 0.82rem;
 }
 
-.hierarchy-list ul {
-  list-style: none;
-  margin: 0.35rem 0 0 1rem;
-  padding: 0 0 0 0.75rem;
-  border-left: 2px solid var(--line);
-}
-
-.hierarchy-node,
 .agent-item,
 .task-item,
 .project-block,
@@ -264,14 +401,12 @@ textarea {
   background: var(--panel);
 }
 
-.hierarchy-node,
 .agent-item,
 .task-item,
 .record-item {
   padding: 0.65rem;
 }
 
-.hierarchy-list li + li,
 .agent-list li + li,
 .task-list li + li,
 .goal-list li + li,
@@ -358,6 +493,28 @@ textarea {
   color: var(--red);
 }
 
+.state-pill.active,
+.state-pill.paused,
+.state-pill.archived {
+  background: rgba(36, 112, 75, 0.12);
+  color: var(--green);
+}
+
+.state-pill.paused {
+  background: rgba(154, 107, 19, 0.12);
+  color: var(--amber);
+}
+
+.state-pill.warning {
+  background: rgba(154, 107, 19, 0.12);
+  color: var(--amber);
+}
+
+.state-pill.archived {
+  background: rgba(163, 61, 61, 0.12);
+  color: var(--red);
+}
+
 .form-stack {
   display: grid;
   gap: 0.6rem;
@@ -413,6 +570,10 @@ label textarea {
   .summary-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .hierarchy-node-card {
+    width: min(100%, 19rem);
+  }
 }
 
 @media (max-width: 640px) {
@@ -435,6 +596,19 @@ label textarea {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .hierarchy-team-header {
+    display: grid;
+  }
+
+  .hierarchy-chart {
+    overflow-x: auto;
+  }
+
+  .hierarchy-node-card {
+    width: min(100%, 16.5rem);
+    min-width: 0;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -455,5 +629,13 @@ label textarea {
 
   .project-block {
     background: linear-gradient(180deg, #1a2522 0%, #17201e 100%);
+  }
+
+  .hierarchy-team {
+    background: linear-gradient(180deg, #19221f 0%, #16201d 100%);
+  }
+
+  .hierarchy-node-card--warning {
+    background: linear-gradient(180deg, rgba(221, 177, 93, 0.14) 0%, rgba(221, 177, 93, 0.06) 100%);
   }
 }

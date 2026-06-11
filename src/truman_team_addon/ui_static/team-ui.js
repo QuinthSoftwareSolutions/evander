@@ -166,13 +166,41 @@ function renderHierarchy() {
       const hierarchy = teamHierarchyGraph(team);
       return `
         <article class="hierarchy-team">
-          <p class="section-label">${escapeHtml(team.id)}</p>
-          <h3>${escapeHtml(team.name)}</h3>
-          <ul class="hierarchy-list">${hierarchy.nodes.map((node) => renderHierarchyNode(node)).join("")}</ul>
+          <div class="hierarchy-team-header">
+            <div>
+              <p class="section-label">${escapeHtml(team.id)}</p>
+              <h3>${escapeHtml(team.name)}</h3>
+            </div>
+            ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+          </div>
+          <div class="hierarchy-chart">
+            ${renderHierarchyForest(hierarchy.roots)}
+            ${
+              hierarchy.orphanRoots.length
+                ? `
+                  <section class="hierarchy-fallbacks" aria-label="Unreached agents">
+                    <p class="subheading">Unreached agents</p>
+                    ${renderHierarchyForest(hierarchy.orphanRoots)}
+                  </section>
+                `
+                : ""
+            }
+          </div>
         </article>
       `;
     })
     .join("");
+}
+
+function renderHierarchyForest(nodes) {
+  if (!nodes.length) {
+    return `<p class="empty-state">No reporting tree.</p>`;
+  }
+  return `
+    <ol class="hierarchy-tree">
+      ${nodes.map((node) => renderHierarchyNode(node)).join("")}
+    </ol>
+  `;
 }
 
 function renderHierarchyNode(node) {
@@ -180,31 +208,59 @@ function renderHierarchyNode(node) {
     return "";
   }
   if (node.kind === "agent") {
-    const details = renderHierarchyDetails(node.agentData);
-    const children = (node.children || []).map((child) => renderHierarchyNode(child)).join("");
+    const children = (node.children || []).length
+      ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child)).join("")}</ol>`
+      : "";
     return `
-      <li>
-        <div class="hierarchy-node">
-          <div class="agent-line">
-            <strong>${escapeHtml(node.agentData.label)}</strong>
-            <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
+      <li class="hierarchy-branch">
+        <article class="hierarchy-node-card" tabindex="0">
+          <div class="hierarchy-node-summary">
+            <div class="hierarchy-node-title">
+              <strong>${escapeHtml(node.agentData.label)}</strong>
+              ${
+                node.agentData.label !== node.agentData.id
+                  ? `<span class="hierarchy-node-id">${escapeHtml(node.agentData.id)}</span>`
+                  : ""
+              }
+            </div>
+            <div class="hierarchy-node-subtitle">
+              <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
+              <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
+            </div>
           </div>
-          <div class="meta-line">${escapeHtml(node.agentData.role)} - ${escapeHtml(node.agentData.id)}</div>
-          ${details ? `<div class="meta-line">${details}</div>` : ""}
-        </div>
-        ${children ? `<ul>${children}</ul>` : ""}
+          <div class="hierarchy-node-details">${renderHierarchyDetails(node.agentData)}</div>
+        </article>
+        ${children}
       </li>
     `;
   }
   if (node.kind === "missing-manager" || node.kind === "missing-subordinate" || node.kind === "cycle") {
+    const detailLines = [];
+    if (node.parentId) {
+      detailLines.push(`Referenced by ${node.parentId}`);
+    }
+    if (node.teamId) {
+      detailLines.push(`Team ${node.teamId}`);
+    }
     return `
-      <li>
-        <div class="hierarchy-node">
-          <div class="agent-line">
-            <strong>${escapeHtml(node.label)}</strong>
+      <li class="hierarchy-branch">
+        <article class="hierarchy-node-card hierarchy-node-card--warning" tabindex="0">
+          <div class="hierarchy-node-summary">
+            <div class="hierarchy-node-title">
+              <strong>${escapeHtml(node.label)}</strong>
+            </div>
+            <div class="hierarchy-node-subtitle">
+              <span class="state-pill warning">warning</span>
+            </div>
           </div>
-          ${node.parentId ? `<div class="meta-line">Referenced by ${escapeHtml(node.parentId)}</div>` : ""}
-        </div>
+          ${
+            detailLines.length
+              ? `<div class="hierarchy-node-details">${detailLines
+                  .map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`)
+                  .join("")}</div>`
+              : ""
+          }
+        </article>
       </li>
     `;
   }
@@ -305,29 +361,14 @@ function agentCardData(agent) {
   const projectId = text(agent?.project_id);
   const projectName = projectLabel(projectId);
   const reportsToId = text(agent?.reports_to_agent_id);
-  const details = [];
-
-  if (text(agent?.session_id)) {
-    details.push(`Session ${text(agent.session_id)}`);
-  }
-  if (projectId) {
-    details.push(`Project ${projectName}${projectName && projectName !== projectId ? ` (${projectId})` : ""}`);
-  }
-  details.push(`Reports to ${reportsToId || "operator"}`);
-  details.push(`Direct subordinates ${directSubordinateIds.length}`);
-  details.push(`Open tasks ${taskStats.openCount}`);
-  details.push(`Blocked/waiting ${taskStats.blockedWaitingCount}`);
-  details.push(`Pending inbox ${pendingInboxCount(agent.id)}`);
-  if (runtime.present && runtime.summary) {
-    details.push(`Runtime ${runtime.summary}`);
-  }
-  details.push(`Ephemeral max ${ephemeralCapacity(agent)}`);
+  const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
 
   return {
     id: text(agent?.id),
     label: agentLabel(agent),
     role: text(agent?.role),
     status: agentStatus(agent),
+    sessionId: text(agent?.session_id),
     projectId: projectId || null,
     projectLabel: projectName || projectId || null,
     reportsToLabel: reportsToId || "operator",
@@ -336,7 +377,7 @@ function agentCardData(agent) {
     inboxCount: pendingInboxCount(agent.id),
     runtime,
     ephemeralCapacity: ephemeralCapacity(agent),
-    details,
+    ephemeralCurrentCount,
   };
 }
 
@@ -388,10 +429,36 @@ function runtimeSummary(agentId) {
 }
 
 function renderHierarchyDetails(agentData) {
-  if (!agentData || !agentData.details || !agentData.details.length) {
-    return "";
+  const lines = [];
+
+  if (agentData.id) {
+    lines.push(`Agent ${agentData.id}`);
   }
-  return escapeHtml(agentData.details.join(" - "));
+  if (agentData.sessionId) {
+    lines.push(`Session ${agentData.sessionId}`);
+  }
+  if (agentData.projectId) {
+    const projectText =
+      agentData.projectLabel && agentData.projectLabel !== agentData.projectId
+        ? `${agentData.projectLabel} (${agentData.projectId})`
+        : agentData.projectId;
+    lines.push(`Project ${projectText}`);
+  }
+  lines.push(`Reports to ${agentData.reportsToLabel || "operator"}`);
+  lines.push(`Direct subordinates ${agentData.directSubordinateCount}`);
+  lines.push(`Open tasks ${agentData.taskStats.openCount}`);
+  lines.push(`Blocked/waiting ${agentData.taskStats.blockedWaitingCount}`);
+  lines.push(`Pending inbox ${agentData.inboxCount}`);
+  if (agentData.runtime?.present) {
+    const runtimeParts = [`Runtime ${agentData.runtime.status}`];
+    if (agentData.runtime.summary) {
+      runtimeParts.push(agentData.runtime.summary);
+    }
+    lines.push(runtimeParts.join(" - "));
+  }
+  lines.push(`Ephemeral ${agentData.ephemeralCurrentCount} / ${agentData.ephemeralCapacity}`);
+
+  return lines.map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`).join("");
 }
 
 function teamHierarchyGraph(team) {
@@ -400,32 +467,32 @@ function teamHierarchyGraph(team) {
   const teamAgents = values(state.agents)
     .filter((agent) => text(agent?.team_id) === teamId)
     .sort(byId);
-  const reachable = new Set();
+  const seen = new Set();
 
-  function buildNode(agentId, ancestry) {
+  function buildNode(agentId, ancestry = {}) {
     const agent = state.agents?.[agentId];
     if (!agent) {
       return {
         kind: "missing-subordinate",
         id: agentId,
-        parentId: ancestry?.parentId || null,
+        parentId: ancestry.parentId || null,
+        teamId,
         label: `Missing subordinate ${agentId}`,
       };
     }
-    if (ancestry?.path?.has(agentId)) {
+    if (ancestry.path?.has(agentId) || seen.has(agentId)) {
       return {
         kind: "cycle",
         id: agentId,
-        parentId: ancestry?.parentId || null,
+        parentId: ancestry.parentId || null,
+        teamId,
         label: `Cycle detected at ${agentLabel(agent)}`,
       };
     }
-    if (reachable.has(agentId)) {
-      return null;
-    }
-    reachable.add(agentId);
 
-    const nextPath = new Set(ancestry?.path || []);
+    seen.add(agentId);
+
+    const nextPath = new Set(ancestry.path || []);
     nextPath.add(agentId);
     const childIds = uniqueTextList(agent.subordinate_agent_ids);
     const children = [];
@@ -436,6 +503,7 @@ function teamHierarchyGraph(team) {
           kind: "missing-subordinate",
           id: childId,
           parentId: agentId,
+          teamId,
           label: `Missing subordinate ${childId}`,
         });
         return;
@@ -445,6 +513,7 @@ function teamHierarchyGraph(team) {
           kind: "missing-subordinate",
           id: childId,
           parentId: agentId,
+          teamId,
           label: `Subordinate ${childId} belongs to another team`,
         });
         return;
@@ -462,38 +531,40 @@ function teamHierarchyGraph(team) {
       children,
       directSubordinateCount: childIds.length,
       reachableSubordinateCount: children.filter((child) => child?.kind === "agent").length,
-      isArchived: agentStatus(agent) === "archived",
     };
   }
 
-  const nodes = [];
+  const roots = [];
+  const orphanRoots = [];
   if (managerId) {
     const manager = state.agents?.[managerId];
     if (manager && text(manager.team_id) === teamId) {
       const root = buildNode(managerId, { path: new Set(), parentId: null });
       if (root) {
-        nodes.push(root);
+        roots.push(root);
       }
     } else {
-      nodes.push({
+      roots.push({
         kind: "missing-manager",
         id: managerId,
+        teamId,
         label: `Missing manager ${managerId}`,
       });
     }
   } else {
-    nodes.push({
+    roots.push({
       kind: "missing-manager",
       id: "",
+      teamId,
       label: "Missing manager",
     });
   }
 
   teamAgents.forEach((agent) => {
-    if (!reachable.has(agent.id) && agent.id !== managerId) {
+    if (!seen.has(agent.id) && agent.id !== managerId) {
       const root = buildNode(agent.id, { path: new Set(), parentId: null });
       if (root) {
-        nodes.push(root);
+        orphanRoots.push(root);
       }
     }
   });
@@ -501,7 +572,8 @@ function teamHierarchyGraph(team) {
   return {
     teamId,
     managerId: managerId || null,
-    nodes,
+    roots,
+    orphanRoots,
   };
 }
 
@@ -518,6 +590,15 @@ function uniqueTextList(value) {
     result.push(entry);
   });
   return result;
+}
+
+function activeEphemeralAssignmentsForAgent(agentId) {
+  return values(state.ephemeral_assignments).filter((assignment) => {
+    return (
+      assignment?.parent_agent_id === agentId &&
+      ["requested", "spawn_pending", "running"].includes(text(assignment?.state))
+    );
+  });
 }
 
 function renderAgentInbox(agentId) {
@@ -1309,7 +1390,7 @@ function text(value) {
 }
 
 function agentLabel(agent) {
-  return text(agent?.display_name) || text(agent?.id);
+  return text(agent?.display_name) || text(agent?.name) || text(agent?.id);
 }
 
 function numberOrZero(value) {
