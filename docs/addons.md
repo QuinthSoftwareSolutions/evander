@@ -139,7 +139,9 @@ The template uses a fixed hierarchy:
 - `manager -> project_lead -> release_operator`
 
 It also seeds one project goal, two initial tasks, and one review profile with
-criteria for `scope`, `tests`, `risk`, and `handoff`.
+criteria for `scope`, `tests`, `risk`, and `handoff`. Generated goal, task,
+and review-profile ids are prefixed with the concrete `project.id`, so separate
+projects can be materialized from the same template without colliding.
 
 Setup is atomic. The request must include `expected_revision`; stale revisions
 fail without changing state, and duplicate ids are rejected before any write.

@@ -459,10 +459,19 @@ function materializationDuplicateError(state, payload) {
   if (implementerAgentId && state.agents[implementerAgentId]) ids.push(implementerAgentId);
   if (reviewerAgentId && state.agents[reviewerAgentId]) ids.push(reviewerAgentId);
   if (releaseOperatorAgentId && state.agents[releaseOperatorAgentId]) ids.push(releaseOperatorAgentId);
-  if (state.review_profiles["auto-dev-review"]) ids.push("auto-dev-review");
-  if (state.tasks["implement-scoped-slice"]) ids.push("implement-scoped-slice");
-  if (state.tasks["release-handoff"]) ids.push("release-handoff");
+  if (projectId) {
+    const reviewProfileId = materializedTemplateRecordId(projectId, "auto-dev-review");
+    const implementTaskId = materializedTemplateRecordId(projectId, "implement-scoped-slice");
+    const releaseTaskId = materializedTemplateRecordId(projectId, "release-handoff");
+    if (state.review_profiles[reviewProfileId]) ids.push(reviewProfileId);
+    if (state.tasks[implementTaskId]) ids.push(implementTaskId);
+    if (state.tasks[releaseTaskId]) ids.push(releaseTaskId);
+  }
   return ids.length ? `duplicate ids: ${Array.from(new Set(ids)).join(", ")}` : null;
+}
+
+function materializedTemplateRecordId(projectId, templateRecordId) {
+  return `${projectId}-${templateRecordId}`;
 }
 
 function applyTemplateMaterialization(state, payload, template) {
@@ -500,7 +509,10 @@ function applyTemplateMaterialization(state, payload, template) {
     team_id: team.id,
     name: project.name,
     lead_agent_id: projectLead,
-    goals: template.project_goals.map((goal) => ({ ...goal })),
+    goals: template.project_goals.map((goal) => ({
+      ...goal,
+      id: materializedTemplateRecordId(project.id, goal.id),
+    })),
     git: project.git || null,
     status: "active",
   };
@@ -548,8 +560,11 @@ function applyTemplateMaterialization(state, payload, template) {
     ephemeral_policy: { max_concurrent: 1 },
     status: "active",
   };
-  state.review_profiles["auto-dev-review"] = {
-    id: "auto-dev-review",
+  const reviewProfileId = materializedTemplateRecordId(project.id, "auto-dev-review");
+  const implementTaskId = materializedTemplateRecordId(project.id, "implement-scoped-slice");
+  const releaseTaskId = materializedTemplateRecordId(project.id, "release-handoff");
+  state.review_profiles[reviewProfileId] = {
+    id: reviewProfileId,
     team_id: team.id,
     project_id: project.id,
     name: "Auto-Dev Delivery Review",
@@ -561,8 +576,8 @@ function applyTemplateMaterialization(state, payload, template) {
     created_at: "2026-06-09T00:00:00Z",
     updated_at: "2026-06-09T00:00:00Z",
   };
-  state.tasks["implement-scoped-slice"] = {
-    id: "implement-scoped-slice",
+  state.tasks[implementTaskId] = {
+    id: implementTaskId,
     owner_agent_id: implementer.agent_id,
     project_id: project.id,
     priority: 10,
@@ -577,8 +592,8 @@ function applyTemplateMaterialization(state, payload, template) {
     created_at: "2026-06-09T00:00:00Z",
     updated_at: "2026-06-09T00:00:00Z",
   };
-  state.tasks["release-handoff"] = {
-    id: "release-handoff",
+  state.tasks[releaseTaskId] = {
+    id: releaseTaskId,
     owner_agent_id: releaseOperator.agent_id,
     project_id: project.id,
     priority: 20,
@@ -588,7 +603,7 @@ function applyTemplateMaterialization(state, payload, template) {
       "Package release notes, verify artifacts, and hand off the reviewed result.",
     created_by_agent_id: projectLead,
     parent_task_id: null,
-    dependency_task_ids: ["implement-scoped-slice"],
+    dependency_task_ids: [implementTaskId],
     deliverable_ids: [],
     created_at: "2026-06-09T00:00:00Z",
     updated_at: "2026-06-09T00:00:00Z",
@@ -607,8 +622,8 @@ function applyTemplateMaterialization(state, payload, template) {
       reviewer: reviewer.agent_id,
       release_operator: releaseOperator.agent_id,
     },
-    created_review_profile_ids: ["auto-dev-review"],
-    created_task_ids: ["implement-scoped-slice", "release-handoff"],
+    created_review_profile_ids: [reviewProfileId],
+    created_task_ids: [implementTaskId, releaseTaskId],
     revision: state.revision,
   };
 }
@@ -864,7 +879,10 @@ test("team add-on UI renders the auto-dev squad template preview and materialize
   });
   assert.equal(state.revision, 1);
   assert.equal(state.teams["team-auto-dev-squad"].project_ids[0], "project-auto-dev-squad");
-  assert.equal(state.review_profiles["auto-dev-review"].criteria[0].id, "scope");
+  assert.equal(
+    state.review_profiles["project-auto-dev-squad-auto-dev-review"].criteria[0].id,
+    "scope",
+  );
 
   await fillAutoDevSquadForm(page);
   await page.locator("#setup-template-form").getByRole("button", { name: "Materialize template" }).click();

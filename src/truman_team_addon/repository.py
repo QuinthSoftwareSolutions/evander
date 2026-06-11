@@ -468,13 +468,25 @@ class TeamStateRepository:
         git = _project_git_config(project_input.get("git"))
 
         role_inputs = _materialize_role_inputs(template, normalized_inputs, team_input, project_input)
+        goal_ids = {
+            goal.id: _materialized_template_record_id(project_id, goal.id)
+            for goal in template.project_goals
+        }
+        review_profile_ids = {
+            profile.id: _materialized_template_record_id(project_id, profile.id)
+            for profile in template.review_profiles
+        }
+        task_ids = {
+            task.id: _materialized_template_record_id(project_id, task.id)
+            for task in template.tasks
+        }
         concrete_ids = [
             team_id,
             project_id,
             *[role_input["agent_id"] for role_input in role_inputs.values()],
-            *[goal.id for goal in template.project_goals],
-            *[profile.id for profile in template.review_profiles],
-            *[task.id for task in template.tasks],
+            *goal_ids.values(),
+            *review_profile_ids.values(),
+            *task_ids.values(),
         ]
         _ensure_unique(concrete_ids, "materialization ids")
         _ensure_unique(
@@ -489,9 +501,11 @@ class TeamStateRepository:
             "team_id": team_id,
             "project_id": project_id,
             "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
-            "goal_ids": [goal.id for goal in template.project_goals],
-            "review_profile_ids": [profile.id for profile in template.review_profiles],
-            "task_ids": [task.id for task in template.tasks],
+            "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
+            "review_profile_ids": [
+                review_profile_ids[profile.id] for profile in template.review_profiles
+            ],
+            "task_ids": [task_ids[task.id] for task in template.tasks],
             "errors": [],
         }
 
@@ -507,9 +521,13 @@ class TeamStateRepository:
             for role_key, role_input in role_inputs.items():
                 _require_absent(state.agents, role_input["agent_id"], "agent")
             for profile in template.review_profiles:
-                _require_absent(state.review_profiles, profile.id, "review profile")
+                _require_absent(
+                    state.review_profiles,
+                    review_profile_ids[profile.id],
+                    "review profile",
+                )
             for task in template.tasks:
-                _require_absent(state.tasks, task.id, "task")
+                _require_absent(state.tasks, task_ids[task.id], "task")
 
             now = utc_now()
             manager_role_input = role_inputs[root_role_key]
@@ -530,7 +548,10 @@ class TeamStateRepository:
                 updated_at=now,
             )
 
-            project_goals = [goal.model_copy(deep=True) for goal in template.project_goals]
+            project_goals = [
+                goal.model_copy(update={"id": goal_ids[goal.id]}, deep=True)
+                for goal in template.project_goals
+            ]
             state.projects[project_id] = Project(
                 id=project_id,
                 team_id=team_id,
@@ -584,7 +605,7 @@ class TeamStateRepository:
 
             for profile_template in template.review_profiles:
                 profile = ReviewProfile(
-                    id=profile_template.id,
+                    id=review_profile_ids[profile_template.id],
                     team_id=team_id,
                     project_id=project_id if profile_template.project_scoped else None,
                     name=profile_template.name,
@@ -602,9 +623,12 @@ class TeamStateRepository:
             for task_template in template.tasks:
                 owner_agent_id = role_agent_ids[task_template.owner_role_key]
                 created_by_agent_id = role_agent_ids[task_template.created_by_role_key]
-                dependency_task_ids = list(task_template.dependency_task_ids)
-                state.tasks[task_template.id] = AgentTask(
-                    id=task_template.id,
+                dependency_task_ids = [
+                    task_ids[dependency_id]
+                    for dependency_id in task_template.dependency_task_ids
+                ]
+                state.tasks[task_ids[task_template.id]] = AgentTask(
+                    id=task_ids[task_template.id],
                     owner_agent_id=owner_agent_id,
                     project_id=project_id,
                     priority=task_template.priority,
@@ -612,7 +636,11 @@ class TeamStateRepository:
                     title=task_template.title,
                     description=task_template.description,
                     created_by_agent_id=created_by_agent_id,
-                    parent_task_id=task_template.parent_task_id,
+                    parent_task_id=(
+                        task_ids[task_template.parent_task_id]
+                        if task_template.parent_task_id is not None
+                        else None
+                    ),
                     dependency_task_ids=dependency_task_ids,
                     created_at=now,
                     updated_at=now,
@@ -1874,6 +1902,10 @@ def _project_git_config(value: object) -> ProjectGitConfig | None:
     if host_repo_path is None:
         return None
     return ProjectGitConfig.model_validate({**git_payload, "host_repo_path": host_repo_path})
+
+
+def _materialized_template_record_id(project_id: str, template_record_id: str) -> str:
+    return f"{project_id}-{template_record_id}"
 
 
 def _ordered_template_roles(template: TeamTemplate) -> list[Any]:

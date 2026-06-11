@@ -270,12 +270,15 @@ def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> Non
         "project-auto-dev-squad"
     ]
     assert body["projects"]["project-auto-dev-squad"]["goals"][0]["id"] == (
-        "auto-dev-reviewed-delivery"
+        "project-auto-dev-squad-auto-dev-reviewed-delivery"
     )
-    assert body["tasks"]["release-handoff"]["dependency_task_ids"] == [
-        "implement-scoped-slice"
+    assert body["tasks"]["project-auto-dev-squad-release-handoff"]["dependency_task_ids"] == [
+        "project-auto-dev-squad-implement-scoped-slice"
     ]
-    assert body["review_profiles"]["auto-dev-review"]["criteria"][0]["id"] == "scope"
+    assert (
+        body["review_profiles"]["project-auto-dev-squad-auto-dev-review"]["criteria"][0]["id"]
+        == "scope"
+    )
 
 
 def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(
