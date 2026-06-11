@@ -23,6 +23,7 @@ from agent_sandbox.events.provider_models import (
 from agent_sandbox.gateway import (
     _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
+    _MCP_REQUEST_CONTEXT,
     _resolve_session_id_from_context,
     create_app,
     create_server,
@@ -96,6 +97,86 @@ def _make_request_context(
             request=SimpleNamespace(query_params=query_params, headers=headers)
         )
     )
+
+
+def _mcp_initialize_session(
+    client: TestClient,
+    *,
+    session_id: str,
+) -> str:
+    response = client.post(
+        "/mcp",
+        headers={
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+            "x-agent-sandbox-session-id": session_id,
+        },
+        content=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "clientInfo": {"name": "pytest", "version": "1.0"},
+                    "capabilities": {},
+                },
+            }
+        ),
+    )
+    assert response.status_code == 200
+    payload = _mcp_response_payload(response)
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 1
+    session_id_header = response.headers.get("mcp-session-id")
+    assert session_id_header
+    return session_id_header
+
+
+def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
+    data_lines = [
+        line.removeprefix("data: ").strip()
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert data_lines, response.text
+    return json.loads(data_lines[-1])
+
+
+def _mcp_list_tool_names(
+    client: TestClient,
+    *,
+    mcp_session_id: str,
+    query_params: dict[str, str] | None = None,
+) -> list[str]:
+    response = client.post(
+        "/mcp",
+        params=query_params or {},
+        headers={
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+            "mcp-session-id": mcp_session_id,
+        },
+        content=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            }
+        ),
+    )
+    assert response.status_code == 200
+    payload = _mcp_response_payload(response)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if tools is None and isinstance(payload, dict):
+        tools = payload.get("tools")
+    return [
+        tool["name"]
+        for tool in tools or []
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+    ]
 
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:
@@ -434,6 +515,71 @@ def test_create_server_injects_approval_request_id_into_public_tool_schemas(
         assert properties["approval_request_id"]["default"] is None
 
 
+def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    with TestClient(create_app(context)) as client:
+        mcp_session_id = _mcp_initialize_session(
+            client,
+            session_id="session-1",
+        )
+
+        tool_names = _mcp_list_tool_names(
+            client,
+            mcp_session_id=mcp_session_id,
+            query_params={"session_id": "session-1"},
+        )
+
+    assert "get_workflow_snapshot" in tool_names
+    assert "run_script" not in tool_names
+
+
+def test_gateway_list_tools_uses_tool_approval_lease_visibility(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    lease = context.tool_approval_leases.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    server = create_server(context)
+    request = SimpleNamespace(
+        headers={"mcp-session-id": "transport-1"},
+        query_params={
+            "session_id": "session-1",
+            "workflow_run_id": "workflow-run-1",
+            "mcp_tool_approval_lease_id": lease.lease_id,
+        },
+        url=SimpleNamespace(
+            query=(
+                "session_id=session-1&workflow_run_id=workflow-run-1&"
+                f"mcp_tool_approval_lease_id={lease.lease_id}"
+            )
+        ),
+    )
+    token = _MCP_REQUEST_CONTEXT.set(request)
+    try:
+        visible_tool_names = [tool.name for tool in server._tool_manager.list_tools()]
+        _revoke_lease_with_provider(
+            context.config.runtime_dir,
+            lease_id=lease.lease_id,
+            session_id="session-1",
+            workflow_run_id="workflow-run-1",
+        )
+        hidden_tool_names = [tool.name for tool in server._tool_manager.list_tools()]
+    finally:
+        _MCP_REQUEST_CONTEXT.reset(token)
+
+    assert "get_workflow_snapshot" in visible_tool_names
+    assert "get_workflow_snapshot" not in hidden_tool_names
+
+
 def test_tool_approval_lease_from_request_context_allows_only_matching_run(
     tmp_path: Path,
 ) -> None:
@@ -699,6 +845,34 @@ def test_get_workflow_snapshot_requires_allowed_tool(tmp_path: Path) -> None:
 
     with pytest.raises(ToolError, match="Tool get_workflow_snapshot is not allowed"):
         _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+
+
+def test_run_script_still_fails_directly_when_hidden_from_mcp_manifest(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool run_script is not allowed"):
+        _call_tool(
+            server,
+            "run_script",
+            {"session_id": "session-1", "script_name": "deploy-review", "parameters": []},
+        )
+
+    audit_events = read_audit_events(context.config.audit_log_path)
+    run_script_events = [
+        event
+        for event in audit_events
+        if event.get("event_type") == "tool_call"
+        and event.get("tool_name") == ToolName.RUN_SCRIPT.value
+    ]
+    assert run_script_events
+    assert run_script_events[-1]["decision"] == "denied"
+    assert "run_script" in str(run_script_events[-1]["result"]["error"])
 
 
 def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
