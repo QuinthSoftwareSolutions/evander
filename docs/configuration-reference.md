@@ -1388,6 +1388,9 @@ Approval-required tool policy:
   Values can come from inherited directory `policy.json` overlays or from the session manifest.
 - This list does not grant access. A tool must also be present in `allowed_tools`, and normal policy
   checks run before approval gating.
+- Session-scoped MCP `tools/list` responses and policy summaries still show approval-required tools
+  as available, but mark them as requiring approval. The visibility layer is informational only and
+  does not replace server-side enforcement.
 - The gateway creates `mcp_tool_invocation` approval requests for gated calls made without
   `approval_request_id`; approved retries must use the exact same payload and the generated request
   id.
@@ -1409,7 +1412,8 @@ MCP tool approval policy:
 - Approval grants default to `ttl_seconds: 3600`, `max_uses: 1`, and `payload_mode: exact`.
 - Session-specific approval settings may relax those defaults only until a directory hard rule
   clamps them. Directory `denied` rules are inherited downward and cannot be undone by descendant
-  directories or session policy.
+  directories or session policy. Session-scoped MCP manifests hide denied tools, but direct
+  invocation still enforces the denial and writes the usual policy error and audit record.
 - `effect:session:approve-mcp-tools-for-run` respects these rules: denied tools, tools that require
   per-invocation approval, and tools that force exact payload matching cannot be approved by a
   workflow-run lease.
