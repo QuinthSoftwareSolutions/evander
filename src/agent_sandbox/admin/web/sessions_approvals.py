@@ -245,6 +245,7 @@ def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str
     payload["allowed_tools"] = [
         tool.value if isinstance(tool, ToolName) else str(tool) for tool in summary.allowed_tools
     ]
+    payload["tool_summary"] = service.runtime.policy.allowed_tool_summary_for_session(summary)
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")
         for option in service._approval_notification_target_options(summary)

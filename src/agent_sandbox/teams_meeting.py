@@ -434,6 +434,13 @@ class TeamsMeetingService:
                 str(prompt or "").strip()
                 or "Join this Teams meeting as a projected live voice session for the originating Truman agent."
             )
+            tool_summary = None
+            tool_policy = getattr(self.runtime, "policy", None)
+            if tool_policy is not None:
+                try:
+                    tool_summary = tool_policy.allowed_tool_summary_for_session(origin_session)
+                except Exception:
+                    tool_summary = None
             voice_projection = VoiceProjectionService().build_projection(
                 session=origin_session,
                 prompt=voice_prompt,
@@ -442,6 +449,7 @@ class TeamsMeetingService:
                     "meeting_session_id": resolved_session_id,
                     "join_url_sha256": _sha256(normalized_join_url),
                 },
+                tool_summary=tool_summary,
             )
             voice_record, _created = self.runtime.voice_session_store.prepare_session(
                 origin_session_id=origin_session.session_id,

@@ -11376,6 +11376,15 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert response.status_code == 200
     assert rename_response.status_code == 400
     assert response.json()["effective_tool_policy"]["allowed_tools"] == ["run_script"]
+    assert response.json()["effective_tool_policy"]["tool_summary"]["session_id"] == "lab-session"
+    assert any(
+        item["tool_name"] == "run_script"
+        for item in response.json()["effective_tool_policy"]["tool_summary"]["available_tools"]
+    )
+    assert any(
+        item["tool_name"] == "assistant_read_status"
+        for item in response.json()["effective_tool_policy"]["tool_summary"]["unavailable_tools"]
+    )
     assert (
         response.json()["effective_tool_policy"]["tool_argument_policies"][
             "create_ado_backlog_item"
