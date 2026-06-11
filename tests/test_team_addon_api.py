@@ -64,7 +64,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     response = enabled.get("/api/addons/team-addon/state")
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 0
+    state = response.json()
+    assert state["revision"] == 0
+    assert state["runtime_operations"]["agents"] == []
+    assert state["runtime_operations"]["attention"] == []
 
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
@@ -185,6 +188,12 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     state = response.json()
     assert state["revision"] == 7
     assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
+    assert "runtime_operations" in state
+    assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
+        "backend",
+        "lead",
+        "manager",
+    }
 
 
 def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> None:
