@@ -9703,6 +9703,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             return None
         effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
+        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(session)
         inherited_approval_required_tools: list[str] = []
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
@@ -9742,6 +9743,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
+            "tool_summary": tool_summary,
             "inherited_approval_required_tools": inherited_approval_required_tools,
             "approval_required_tools": approval_required_tools,
             "approval_tool_settings": approval_tool_settings,

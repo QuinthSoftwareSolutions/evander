@@ -1233,6 +1233,7 @@ class IssueGitAdminService:
             "vm_name": manifest.vm_id,
             "directory_path": manifest.directory_path,
             "metadata": dict(manifest.metadata),
+            "tool_summary": self._deps.runtime.policy.allowed_tool_summary_for_session(manifest),
             "created_at": manifest.created_at.isoformat(),
             "expires_at": manifest.expires_at.isoformat(),
             "model": manifest.model,
