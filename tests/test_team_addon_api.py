@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -7,6 +8,19 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from truman_team_addon.models import (
+    AgentActionRecord,
+    AgentInboxItem,
+    AgentRuntime,
+    EphemeralAssignment,
+    EphemeralAssignmentState,
+    GitPromotionRecord,
+    ReleasePackage,
+    TeamInboxItemState,
+    TeamInboxItemType,
+    TeamRecordState,
+    TeamTaskState,
+)
 from truman_team_addon.repository import TeamStateRepository
 
 
@@ -37,6 +51,174 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
+
+
+def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role="backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+    repo.create_or_reprioritize_task(
+        task_id="blocked-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Blocked task",
+        description="This task is blocked.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.BLOCKED,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="dependency-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Dependency task",
+        description="This task is still open.",
+        created_by_agent_id="lead",
+    )
+    repo.create_or_reprioritize_task(
+        task_id="waiting-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=3,
+        title="Waiting task",
+        description="This task waits on another task.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependency-task"],
+    )
+    repo.record_deliverable(
+        deliverable_id="deliverable",
+        task_id="waiting-task",
+        producer_agent_id="backend",
+        summary="Waiting task deliverable.",
+        artifact_refs=["artifacts/backend.tar.gz"],
+    )
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    lease_until = datetime(2099, 1, 1, tzinfo=UTC)
+    next_wake_at = datetime(2000, 1, 1, tzinfo=UTC)
+
+    def _mutate(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            wake_leased_until=lease_until,
+            active_dispatch_id="dispatch-backend",
+            wake_reason="inbox",
+            last_wake_at=now - timedelta(minutes=5),
+            next_wake_at=next_wake_at,
+            no_progress_count=4,
+            last_progress_at=now - timedelta(minutes=10),
+            updated_at=now,
+        )
+        state.inbox["inbox-1"] = AgentInboxItem(
+            id="inbox-1",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="waiting-task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            state=TeamInboxItemState.PENDING,
+            payload={"question": "Status update?"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.inbox["escalation-1"] = AgentInboxItem(
+            id="escalation-1",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="waiting-task",
+            item_type=TeamInboxItemType.ESCALATION,
+            state=TeamInboxItemState.PENDING,
+            payload={"reason": "blocked too long"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.action_records["action-1"] = AgentActionRecord(
+            id="action-1",
+            agent_id="backend",
+            dispatch_id="dispatch-backend",
+            action={"type": "build"},
+            success=False,
+            error="build failed",
+            created_at=now,
+        )
+        state.release_packages["release-1"] = ReleasePackage(
+            id="release-1",
+            project_id="project",
+            deliverable_ids=["deliverable"],
+            artifact_refs=["artifacts/backend.tar.gz"],
+            feature_branches=["team/team/features/waiting-task"],
+            release_branch="team/team/releases/release-1",
+            canonical_branch="team/releases/release-1",
+            git_promotion_record_ids=["promotion-1"],
+            state=TeamRecordState.BLOCKED,
+            error="manual hold",
+            created_at=now,
+        )
+        state.git_promotions["promotion-1"] = GitPromotionRecord(
+            id="promotion-1",
+            project_id="project",
+            actor_agent_id="backend",
+            source_branch="team/team/features/waiting-task",
+            target_branch="team/team/releases/release-1",
+            promotion_kind="release",
+            task_id="waiting-task",
+            deliverable_id="deliverable",
+            release_package_id="release-1",
+            state="failed",
+            commit_sha="abc123",
+            outputs={"reason": "merge conflict"},
+            error="merge conflict",
+            created_at=now,
+            updated_at=now,
+        )
+        state.ephemeral_assignments["ephemeral-failed"] = EphemeralAssignment(
+            id="ephemeral-failed",
+            parent_agent_id="backend",
+            project_id="project",
+            task_id="waiting-task",
+            session_id="session-backend-ephemeral",
+            title="Failed ephemeral work",
+            prompt="Run the failing ephemeral task.",
+            state=EphemeralAssignmentState.FAILED,
+            error="spawn failed",
+            created_at=now,
+            updated_at=now,
+        )
+        state.ephemeral_assignments["ephemeral-cleanup"] = EphemeralAssignment(
+            id="ephemeral-cleanup",
+            parent_agent_id="backend",
+            project_id="project",
+            task_id="waiting-task",
+            session_id="session-backend-cleanup",
+            title="Cleanup ephemeral work",
+            prompt="Clean up the ephemeral task.",
+            state=EphemeralAssignmentState.CLEANUP_PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_mutate)
+    return repo
 
 
 def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> None:
@@ -79,6 +261,13 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "renderRuntimeOperations" in script.text
+    assert "runtimeOperationsView" in script.text
+    assert "data-runtime-filter" in script.text
+    assert "needs_attention" in script.text
+    assert "due_leased_agents" in script.text
+    assert "blocked_waiting_work" in script.text
+    assert "ephemeral_work" in script.text
     assert "dependency_task_ids" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
@@ -86,6 +275,57 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
     assert ".team-shell" in stylesheet.text
+
+
+def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/state")
+    assert response.status_code == 200
+    state = response.json()
+
+    agents = {row["id"]: row for row in state["runtime_operations"]["agents"]}
+    assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
+        "backend",
+        "lead",
+        "manager",
+    }
+    backend = agents["backend"]
+    assert backend["wake_due"] is True
+    assert backend["lease_active"] is True
+    assert backend["active_dispatch_id"] == "dispatch-backend"
+    assert backend["wake_reason"] == "inbox"
+
+    attention = {row["kind"]: row for row in state["runtime_operations"]["attention"]}
+    assert set(attention) == {
+        "blocked_task",
+        "waiting_dependency_task",
+        "pending_inbox_item",
+        "pending_escalation",
+        "failed_action_record",
+        "failed_git_promotion",
+        "blocked_release_package",
+        "failed_ephemeral_assignment",
+        "cleanup_pending_ephemeral_assignment",
+    }
+    assert attention["blocked_task"]["id"] == "blocked-task"
+    assert attention["blocked_task"]["state"] == "blocked"
+    assert attention["waiting_dependency_task"]["id"] == "waiting-task"
+    assert attention["waiting_dependency_task"]["dependency_status"] == "waiting"
+    assert attention["pending_inbox_item"]["inbox_item_id"] == "inbox-1"
+    assert attention["pending_escalation"]["inbox_item_id"] == "escalation-1"
+    assert attention["failed_action_record"]["dispatch_id"] == "dispatch-backend"
+    assert attention["failed_action_record"]["error"] == "build failed"
+    assert attention["failed_git_promotion"]["promotion_id"] == "promotion-1"
+    assert attention["failed_git_promotion"]["release_package_id"] == "release-1"
+    assert attention["blocked_release_package"]["release_package_id"] == "release-1"
+    assert attention["blocked_release_package"]["state"] == "blocked"
+    assert attention["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
+    assert attention["failed_ephemeral_assignment"]["state"] == "failed"
+    assert attention["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
+    assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
