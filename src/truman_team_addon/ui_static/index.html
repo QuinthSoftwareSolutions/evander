@@ -29,6 +29,43 @@
             <div id="summary-grid" class="summary-grid"></div>
           </section>
 
+          <section class="content-panel review-delivery-panel" aria-labelledby="review-delivery-heading">
+            <div class="review-delivery-header">
+              <div>
+                <p class="subheading">Workspace</p>
+                <h2 id="review-delivery-heading">Review &amp; Delivery</h2>
+              </div>
+              <div class="review-delivery-filters" role="toolbar" aria-label="Review and delivery filters">
+                <button type="button" id="delivery-filter-all" class="delivery-filter is-active" data-filter="all">
+                  All
+                </button>
+                <button type="button" id="delivery-filter-pending" class="delivery-filter" data-filter="pending">
+                  Pending
+                </button>
+                <button
+                  type="button"
+                  id="delivery-filter-waiting-for-review"
+                  class="delivery-filter"
+                  data-filter="waiting_for_review"
+                >
+                  Waiting for review
+                </button>
+                <button type="button" id="delivery-filter-accepted" class="delivery-filter" data-filter="accepted">
+                  Accepted
+                </button>
+                <button type="button" id="delivery-filter-rejected" class="delivery-filter" data-filter="rejected">
+                  Rejected
+                </button>
+                <button type="button" id="delivery-filter-blocked" class="delivery-filter" data-filter="blocked">
+                  Blocked
+                </button>
+              </div>
+            </div>
+            <div id="review-delivery-view" class="review-delivery-view">
+              <p class="empty-state">Review &amp; Delivery rows render here.</p>
+            </div>
+          </section>
+
           <section class="content-grid">
             <div class="content-panel" aria-labelledby="hierarchy-heading">
               <h2 id="hierarchy-heading">Hierarchy</h2>

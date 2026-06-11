@@ -185,6 +185,12 @@ textarea {
   padding: 1rem;
 }
 
+.review-delivery-panel {
+  background:
+    linear-gradient(180deg, rgba(23, 111, 122, 0.05) 0%, rgba(23, 111, 122, 0.01) 100%),
+    var(--panel);
+}
+
 .forms-panel {
   position: sticky;
   top: 1rem;
@@ -245,6 +251,230 @@ textarea {
   padding-left: 1.1rem;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.review-delivery-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.review-delivery-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.delivery-filter {
+  min-height: 1.9rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.delivery-filter:hover {
+  background: rgba(23, 111, 122, 0.08);
+  border-color: rgba(23, 111, 122, 0.22);
+  color: var(--accent-strong);
+}
+
+.delivery-filter.is-active,
+.delivery-filter[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.review-delivery-view {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 0.9rem;
+}
+
+.delivery-team,
+.delivery-project,
+.delivery-bucket,
+.delivery-row,
+.delivery-detail {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.delivery-team,
+.delivery-project,
+.delivery-bucket {
+  padding: 0.8rem;
+}
+
+.delivery-team {
+  background: linear-gradient(180deg, rgba(23, 111, 122, 0.06) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.delivery-team + .delivery-team {
+  margin-top: 0.15rem;
+}
+
+.delivery-project + .delivery-project,
+.delivery-bucket + .delivery-bucket,
+.delivery-row + .delivery-row,
+.delivery-detail + .delivery-detail {
+  margin-top: 0.55rem;
+}
+
+.delivery-buckets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.delivery-bucket {
+  display: grid;
+  gap: 0.45rem;
+  background: var(--panel-alt);
+}
+
+.delivery-bucket h3,
+.delivery-bucket h4,
+.delivery-project h3,
+.delivery-project h4,
+.delivery-team h3,
+.delivery-team h4 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+.delivery-bucket-title,
+.delivery-project-title,
+.delivery-team-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.delivery-bucket-title strong,
+.delivery-project-title strong,
+.delivery-team-title strong {
+  overflow-wrap: anywhere;
+}
+
+.delivery-bucket-count {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.delivery-row-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.delivery-row {
+  padding: 0.75rem;
+  background: var(--panel);
+}
+
+.delivery-row-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.delivery-row-header strong,
+.delivery-row-title strong {
+  overflow-wrap: anywhere;
+}
+
+.delivery-row-body {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
+
+.delivery-row-title,
+.delivery-row-meta,
+.delivery-row-links,
+.delivery-row-artifacts,
+.delivery-row-git,
+.delivery-row-reviews,
+.delivery-row-releases {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.delivery-row-meta,
+.delivery-row-links,
+.delivery-row-artifacts,
+.delivery-row-git,
+.delivery-row-reviews,
+.delivery-row-releases {
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.delivery-detail {
+  padding: 0.6rem 0.7rem;
+  background: var(--panel-alt);
+}
+
+.delivery-detail .state-pill {
+  margin-left: 0.35rem;
+}
+
+.delivery-detail strong,
+.delivery-detail code,
+.delivery-row code {
+  overflow-wrap: anywhere;
+}
+
+.delivery-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+  margin-top: 0.45rem;
+}
+
+.delivery-detail-grid > div {
+  min-width: 0;
+}
+
+.delivery-detail-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.delivery-detail-value {
+  overflow-wrap: anywhere;
+}
+
+.delivery-detail-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.delivery-detail-list li {
+  padding: 0.38rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  overflow-wrap: anywhere;
 }
 
 .hierarchy-list ul {
@@ -352,10 +582,20 @@ textarea {
 }
 
 .state-pill.rejected,
-.state-pill.blocked,
 .state-pill.failed {
   background: rgba(163, 61, 61, 0.12);
   color: var(--red);
+}
+
+.state-pill.rejected {
+  border: 1px solid rgba(163, 61, 61, 0.3);
+  background: rgba(163, 61, 61, 0.18);
+}
+
+.state-pill.blocked {
+  border: 1px solid rgba(154, 107, 19, 0.3);
+  background: rgba(154, 107, 19, 0.16);
+  color: var(--amber);
 }
 
 .form-stack {
@@ -401,8 +641,22 @@ label textarea {
 @media (max-width: 1180px) {
   .team-layout,
   .content-grid,
-  .project-columns {
+  .project-columns,
+  .delivery-buckets,
+  .delivery-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .review-delivery-header,
+  .delivery-row-header,
+  .delivery-team-title,
+  .delivery-project-title,
+  .delivery-bucket-title {
+    display: grid;
+  }
+
+  .review-delivery-filters {
+    justify-content: flex-start;
   }
 
   .forms-panel {
@@ -424,12 +678,29 @@ label textarea {
   .agent-line,
   .task-line,
   .record-line,
-  .project-header {
+  .project-header,
+  .review-delivery-header,
+  .delivery-row-header,
+  .delivery-team-title,
+  .delivery-project-title,
+  .delivery-bucket-title {
     display: grid;
   }
 
   .team-header-actions {
     justify-content: start;
+  }
+
+  .review-delivery-filters {
+    justify-content: start;
+  }
+
+  .delivery-filter {
+    width: fit-content;
+  }
+
+  .delivery-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .summary-grid {
@@ -455,5 +726,20 @@ label textarea {
 
   .project-block {
     background: linear-gradient(180deg, #1a2522 0%, #17201e 100%);
+  }
+
+  .review-delivery-panel,
+  .delivery-team,
+  .delivery-row,
+  .delivery-detail {
+    background: var(--panel);
+  }
+
+  .delivery-team {
+    background: linear-gradient(180deg, rgba(68, 166, 180, 0.12) 0%, rgba(0, 0, 0, 0) 100%);
+  }
+
+  .delivery-bucket {
+    background: var(--panel-alt);
   }
 }
