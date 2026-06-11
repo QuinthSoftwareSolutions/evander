@@ -997,7 +997,13 @@ state, live tools, or memory that is not in the projected context. The bridge cr
 voice query through the gateway, the gateway schedules a same-context wake for the originating
 agent, and the origin agent answers with `submit_voice_query_response`. The voice call keeps going
 silently while that answer is pending; it does not generate generic startup or context-check filler.
-When the answer arrives, the bridge injects it back into the Realtime conversation.
+When the answer arrives, the bridge injects it back into the Realtime conversation. If the caller is
+speaking, or if their audio input turn has not produced its final transcript yet, the bridge queues
+the origin-query answer instead of creating assistant speech immediately. After the caller turn
+completes, the projected agent first acknowledges or briefly responds to the latest caller turn,
+then transitions to the queued answer with caller-facing wording such as "I heard back on the
+earlier question." Normal origin-query answers, failures, and timeouts do not barge in; only the
+existing caller-speech cancellation path interrupts playback.
 
 ### DIDWW SIP/OpenAI Realtime bridge
 
