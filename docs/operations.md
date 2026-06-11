@@ -667,6 +667,9 @@ A transport-terminated warning without client-visible failure can be expected fo
   by directory policy or missing from `allowed_tools` are omitted, approval-required tools remain
   visible with approval metadata in policy summaries, and direct calls still enforce policy even
   when a tool is hidden from the manifest.
+- Once an MCP transport session is bound to a Truman session, later `/mcp` requests on that
+  transport must omit `session_id` or repeat the same value. A conflicting `session_id` is rejected
+  instead of switching the manifest to another session.
 - Required MCP arguments: none beyond the session binding.
 - Optional MCP arguments:
   - `include_runs` (default `false`) includes the current workflow run snapshot alongside the

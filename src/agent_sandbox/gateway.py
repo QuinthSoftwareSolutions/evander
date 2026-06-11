@@ -461,22 +461,28 @@ def _ambient_session_id_from_request(
         return None
     headers = getattr(request, "headers", None)
     query_params = getattr(request, "query_params", None)
+    raw_query = str(getattr(getattr(request, "url", None), "query", "") or "").strip()
     transport_session_id = _string_from_headers(headers, "mcp-session-id")
+    declared_session_id: str | None = None
     if query_params is not None:
         candidate = str(query_params.get("session_id") or "").strip()
         if candidate:
-            if transport_session_id and transport_session_map is not None:
-                transport_session_map[transport_session_id] = candidate
-            return candidate
-    candidate = _string_from_headers(headers, "x-agent-sandbox-session-id")
-    if candidate:
-        if transport_session_id and transport_session_map is not None:
-            transport_session_map[transport_session_id] = candidate
-        return candidate
+            declared_session_id = candidate
+    if declared_session_id is None:
+        declared_session_id = _string_from_raw_query(raw_query, "session_id")
+    if declared_session_id is None:
+        declared_session_id = _string_from_headers(headers, "x-agent-sandbox-session-id")
     if transport_session_id and transport_session_map is not None:
-        candidate = str(transport_session_map.get(transport_session_id) or "").strip()
-        if candidate:
-            return candidate
+        bound_session_id = str(transport_session_map.get(transport_session_id) or "").strip()
+        if bound_session_id:
+            if declared_session_id and declared_session_id != bound_session_id:
+                raise ToolError(_SESSION_ID_CONTEXT_CONFLICT_MESSAGE)
+            return bound_session_id
+        if declared_session_id:
+            transport_session_map[transport_session_id] = declared_session_id
+            return declared_session_id
+    if declared_session_id:
+        return declared_session_id
     return None
 
 
@@ -1145,6 +1151,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         streamable_http_path="/mcp",
     )
     transport_session_map: dict[str, str] = {}
+    setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     semantic_adapter = GatewaySemanticAdapter(context)
 
     def draft_recipients_from_payload(payload: dict[str, Any]) -> list[str]:
@@ -9173,13 +9180,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
     return server
 
 
-def _install_mcp_http_logging(app: Starlette) -> None:
+def _install_mcp_http_logging(
+    app: Starlette,
+    *,
+    transport_session_map: dict[str, str] | None = None,
+) -> None:
     class McpHttpLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):  # type: ignore[override]
             if request.url.path != "/mcp":
                 return await call_next(request)
 
             token = _MCP_REQUEST_CONTEXT.set(request)
+            declared_session_id = _ambient_session_id_from_request(
+                request,
+                transport_session_map=None,
+            )
             logger.info(
                 "gateway_mcp_request method=%s path=%s query=%s accept=%s content_type=%s mcp_session_id=%s protocol_version=%s",
                 request.method,
@@ -9191,7 +9206,37 @@ def _install_mcp_http_logging(app: Starlette) -> None:
                 request.headers.get("mcp-protocol-version", ""),
             )
             try:
+                request_transport_session_id = _string_from_headers(
+                    request.headers,
+                    "mcp-session-id",
+                )
+                if (
+                    transport_session_map is not None
+                    and request_transport_session_id
+                    and declared_session_id
+                ):
+                    bound_session_id = str(
+                        transport_session_map.get(request_transport_session_id) or ""
+                    ).strip()
+                    if bound_session_id and bound_session_id != declared_session_id:
+                        return JSONResponse(
+                            {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE},
+                            status_code=409,
+                        )
                 response = await call_next(request)
+                response_transport_session_id = str(
+                    response.headers.get("mcp-session-id") or ""
+                ).strip()
+                if (
+                    transport_session_map is not None
+                    and declared_session_id
+                    and response_transport_session_id
+                ):
+                    bound_session_id = str(
+                        transport_session_map.get(response_transport_session_id) or ""
+                    ).strip()
+                    if not bound_session_id:
+                        transport_session_map[response_transport_session_id] = declared_session_id
                 logger.info(
                     "gateway_mcp_response method=%s path=%s status=%s content_type=%s mcp_session_id=%s",
                     request.method,
@@ -9438,7 +9483,10 @@ def create_app(context: RuntimeContext) -> Starlette:
         ],
         lifespan=lifespan,
     )
-    _install_mcp_http_logging(app)
+    _install_mcp_http_logging(
+        app,
+        transport_session_map=getattr(server, "_agent_sandbox_transport_session_map", None),
+    )
     return app
 
 

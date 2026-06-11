@@ -386,6 +386,21 @@ def test_resolve_session_id_from_context_reads_ambient_query_param_then_header()
         _resolve_session_id_from_context(None, mapped_ctx, transport_session_map=transport_map)
         == "query-session"
     )
+    conflict_ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(
+                query_params={"session_id": "other-session"},
+                headers={"mcp-session-id": "transport-1"},
+            )
+        )
+    )
+    with pytest.raises(ToolError, match="session_id is bound"):
+        _resolve_session_id_from_context(
+            None,
+            conflict_ctx,
+            transport_session_map=transport_map,
+        )
+    assert transport_map == {"transport-1": "query-session"}
 
 
 def test_resolve_session_id_from_context_rejects_conflicting_explicit_value() -> None:
@@ -536,6 +551,55 @@ def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
 
     assert "get_workflow_snapshot" in tool_names
     assert "run_script" not in tool_names
+
+
+def test_gateway_mcp_tools_list_rejects_conflicting_bound_transport_session(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-2",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+
+    with TestClient(create_app(context)) as client:
+        mcp_session_id = _mcp_initialize_session(
+            client,
+            session_id="session-1",
+        )
+        bound_tool_names = _mcp_list_tool_names(client, mcp_session_id=mcp_session_id)
+
+        conflict_response = client.post(
+            "/mcp",
+            params={"session_id": "session-2"},
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": mcp_session_id,
+            },
+            content=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/list",
+                    "params": {},
+                }
+            ),
+        )
+
+    assert "get_workflow_snapshot" in bound_tool_names
+    assert "run_script" not in bound_tool_names
+    assert conflict_response.status_code == 409
+    assert conflict_response.json()["error"] == (
+        "session_id is bound by the MCP connection; omit it or use the connected session"
+    )
 
 
 def test_gateway_list_tools_uses_tool_approval_lease_visibility(
