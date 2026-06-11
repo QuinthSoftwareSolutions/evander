@@ -25,6 +25,7 @@ from .models import (
     TeamTaskState,
     team_state_payload,
 )
+from .templates import get_template, template_catalog
 from .repository import TeamStateConflictError, TeamStateRepository
 
 
@@ -33,6 +34,35 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_state(_request: Request) -> JSONResponse:
         return JSONResponse(team_state_payload(repository.read()))
+
+    async def list_templates(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "templates": [
+                    template.model_dump(mode="json") for template in template_catalog()
+                ]
+            }
+        )
+
+    async def get_template_details(request: Request) -> JSONResponse:
+        template = get_template(request.path_params["template_id"])
+        if template is None:
+            return JSONResponse({"error": "template not found"}, status_code=404)
+        return JSONResponse(template.model_dump(mode="json"))
+
+    async def materialize_template(request: Request) -> JSONResponse:
+        template_id = request.path_params["template_id"]
+        if get_template(template_id) is None:
+            return JSONResponse({"error": "template not found"}, status_code=404)
+        payload = await _read_payload(request)
+        state, result = repository.materialize_template(
+            template_id,
+            inputs=payload,
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = team_state_payload(state)
+        response_payload["materialized"] = result
+        return JSONResponse(response_payload, status_code=201)
 
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -312,6 +342,17 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     return [
         Route("/state", _with_errors(get_state), methods=["GET"]),
+        Route("/templates", _with_errors(list_templates), methods=["GET"]),
+        Route(
+            "/templates/{template_id}",
+            _with_errors(get_template_details),
+            methods=["GET"],
+        ),
+        Route(
+            "/templates/{template_id}/materialize",
+            _with_errors(materialize_template),
+            methods=["POST"],
+        ),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
