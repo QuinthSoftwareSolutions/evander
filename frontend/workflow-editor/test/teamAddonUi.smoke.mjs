@@ -402,6 +402,93 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   });
 });
 
+test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByText("Loaded revision 8.").waitFor({ state: "visible" });
+
+  assert.equal(await page.locator(".hierarchy-team").count(), 1);
+  assert.equal(await page.locator(".hierarchy-children").count(), 3);
+
+  const managerCard = page.locator(".hierarchy-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Ops Manager$/ }),
+  });
+  const leadCard = page.locator(".hierarchy-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^lead$/ }),
+  });
+  const backendCard = page.locator(".hierarchy-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  const workerCard = page.locator(".hierarchy-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^worker$/ }),
+  });
+
+  await managerCard.waitFor({ state: "visible" });
+  await leadCard.waitFor({ state: "visible" });
+  await backendCard.waitFor({ state: "visible" });
+  await workerCard.waitFor({ state: "visible" });
+
+  assert.equal(await page.locator(".hierarchy-node-card--warning").count(), 0);
+  assert.equal(await managerCard.locator(".hierarchy-node-title strong").textContent(), "Ops Manager");
+  assert.equal(await leadCard.locator(".hierarchy-node-title strong").textContent(), "lead");
+  assert.equal(await backendCard.locator(".hierarchy-node-title strong").textContent(), "Backend Worker");
+  assert.equal(await workerCard.locator(".hierarchy-node-title strong").textContent(), "worker");
+  assert.equal(await managerCard.locator(".hierarchy-node-id").count(), 1);
+  assert.equal(await backendCard.locator(".hierarchy-node-id").count(), 1);
+  assert.equal(await leadCard.locator(".hierarchy-node-id").count(), 0);
+  assert.equal(await workerCard.locator(".hierarchy-node-id").count(), 0);
+
+  await backendCard.hover();
+  const backendDetails = backendCard.locator(".hierarchy-node-details");
+  await backendDetails.getByText("Agent backend").waitFor({ state: "visible" });
+  await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
+  await backendDetails.getByText("Project Project (project)").waitFor({ state: "visible" });
+  await backendDetails.getByText("Reports to lead").waitFor({ state: "visible" });
+  await backendDetails.getByText("Direct subordinates 1").waitFor({ state: "visible" });
+  await backendDetails.getByText("Open tasks 2").waitFor({ state: "visible" });
+  await backendDetails.getByText("Blocked/waiting 1").waitFor({ state: "visible" });
+  await backendDetails.getByText("Pending inbox 1").waitFor({ state: "visible" });
+  await backendDetails.getByText("Runtime busy - dispatch dispatch-42 - wake poll").waitFor({
+    state: "visible",
+  });
+  await backendDetails.getByText("Ephemeral 1 / 3").waitFor({ state: "visible" });
+
+  await backendCard.focus();
+  await backendDetails.getByText("Session session-backend").waitFor({ state: "visible" });
+
+  await page.locator("#agents-view .agent-item", { hasText: "Ops Manager" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#agents-view .agent-item", { hasText: "Backend Worker" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#agents-view .agent-item").count(), 4);
+  await page.locator("#agents-view").getByText("Build API").waitFor({ state: "visible" });
+
+  const orgChartState = await page.locator("#hierarchy-view").innerText();
+  assert.match(orgChartState, /Ops Manager/);
+  assert.match(orgChartState, /\blead\b/);
+  assert.match(orgChartState, /Backend Worker/);
+  assert.match(orgChartState, /\bworker\b/);
+});
+
+test("team add-on UI renders hierarchy warnings for missing and cyclical references", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededMalformedHierarchyState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByText("Loaded revision 3.").waitFor({ state: "visible" });
+
+  await page.getByText("Missing manager ghost-manager").waitFor({ state: "visible" });
+  await page.getByText("Cycle detected at alpha").waitFor({ state: "visible" });
+  await page.getByText("Missing subordinate missing-subordinate").waitFor({ state: "visible" });
+  assert.ok(await page.locator(".hierarchy-node-card--warning").count() >= 2);
+});
+
 test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
   const { port } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
@@ -554,6 +641,192 @@ function seededGitState() {
         task_id: "task",
         payload: { question: "What is the status?" },
         state: "pending",
+      },
+    },
+  };
+}
+
+function seededOrgChartState() {
+  return {
+    revision: 8,
+    teams: {
+      team: {
+        id: "team",
+        name: "Team",
+        manager_agent_id: "manager",
+        operator_communication_target_id: "ops-channel",
+        project_ids: ["project"],
+        archived: false,
+      },
+    },
+    projects: {
+      project: {
+        id: "project",
+        team_id: "team",
+        name: "Project",
+        lead_agent_id: "lead",
+        goals: [],
+        git: {
+          host_repo_path: "/srv/git/project",
+          bare_repo_name: "project.git",
+          base_branch: "main",
+        },
+        status: "active",
+      },
+    },
+    agents: {
+      manager: {
+        id: "manager",
+        team_id: "team",
+        project_id: null,
+        display_name: "Ops Manager",
+        role: "manager",
+        session_id: "session-manager",
+        reports_to_agent_id: null,
+        subordinate_agent_ids: ["lead"],
+        ephemeral_policy: { max_concurrent: 2 },
+        status: "active",
+      },
+      lead: {
+        id: "lead",
+        team_id: "team",
+        project_id: "project",
+        role: "project_lead",
+        session_id: "session-lead",
+        reports_to_agent_id: "manager",
+        subordinate_agent_ids: ["backend"],
+        ephemeral_policy: { max_concurrent: 1 },
+        status: "paused",
+      },
+      backend: {
+        id: "backend",
+        team_id: "team",
+        project_id: "project",
+        display_name: "Backend Worker",
+        role: "backend",
+        session_id: "session-backend",
+        reports_to_agent_id: "lead",
+        subordinate_agent_ids: ["worker"],
+        ephemeral_policy: { max_concurrent: 3 },
+        status: "active",
+      },
+      worker: {
+        id: "worker",
+        team_id: "team",
+        project_id: "project",
+        role: "worker",
+        session_id: "session-worker",
+        reports_to_agent_id: "backend",
+        subordinate_agent_ids: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "archived",
+      },
+    },
+    agent_runtimes: {
+      backend: {
+        active_dispatch_id: "dispatch-42",
+        wake_reason: "poll",
+        next_wake_at: "2026-06-11T09:00:00Z",
+        wake_leased_until: "2026-06-11T09:05:00Z",
+        last_wake_at: "2026-06-11T08:55:00Z",
+      },
+    },
+    tasks: {
+      task_open: {
+        id: "task_open",
+        owner_agent_id: "backend",
+        project_id: "project",
+        priority: 5,
+        state: "in_progress",
+        title: "Build API",
+        description: "Implement backend service.",
+        created_by_agent_id: "lead",
+        deliverable_ids: [],
+        created_at: "2026-06-11T08:00:00Z",
+        updated_at: "2026-06-11T08:15:00Z",
+      },
+      task_blocked: {
+        id: "task_blocked",
+        owner_agent_id: "backend",
+        project_id: "project",
+        priority: 4,
+        state: "blocked",
+        title: "Resolve dependency",
+        description: "Waiting on upstream work.",
+        created_by_agent_id: "manager",
+        deliverable_ids: [],
+        created_at: "2026-06-11T08:10:00Z",
+        updated_at: "2026-06-11T08:20:00Z",
+      },
+      task_waiting: {
+        id: "task_waiting",
+        owner_agent_id: "worker",
+        project_id: "project",
+        priority: 1,
+        state: "waiting_for_review",
+        title: "Review docs",
+        description: "Needs approval.",
+        created_by_agent_id: "backend",
+        deliverable_ids: [],
+        created_at: "2026-06-11T08:30:00Z",
+        updated_at: "2026-06-11T08:45:00Z",
+      },
+    },
+    inbox: {
+      "inbox-1": {
+        id: "inbox-1",
+        recipient_agent_id: "backend",
+        item_type: "status_request",
+        sender_agent_id: "lead",
+        task_id: "task_open",
+        payload: { question: "Status?" },
+        state: "pending",
+      },
+    },
+    ephemeral_assignments: {
+      assignment_1: {
+        id: "assignment_1",
+        parent_agent_id: "backend",
+        state: "running",
+      },
+    },
+  };
+}
+
+function seededMalformedHierarchyState() {
+  return {
+    revision: 3,
+    teams: {
+      broken_team: {
+        id: "broken-team",
+        name: "Broken Team",
+        manager_agent_id: "ghost-manager",
+        project_ids: [],
+        archived: false,
+      },
+    },
+    agents: {
+      alpha: {
+        id: "alpha",
+        team_id: "broken-team",
+        project_id: null,
+        role: "manager",
+        session_id: "session-alpha",
+        reports_to_agent_id: null,
+        subordinate_agent_ids: ["beta"],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "active",
+      },
+      beta: {
+        id: "beta",
+        team_id: "broken-team",
+        project_id: null,
+        role: "worker",
+        session_id: "session-beta",
+        reports_to_agent_id: "alpha",
+        subordinate_agent_ids: ["alpha", "missing-subordinate"],
+        ephemeral_policy: { max_concurrent: 0 },
+        status: "active",
       },
     },
   };
