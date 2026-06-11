@@ -2466,6 +2466,7 @@ def test_realtime_origin_query_answer_waits_for_caller_transcript_completion(
                     "type": "conversation.item.input_audio_transcription.completed",
                     "transcript": "What changed?",
                 },
+                {"type": "response.done", "response": {"id": "resp-2"}},
             ]
             self.responses: list[str | None] = []
             self.injected: list[dict[str, object]] = []
@@ -2543,9 +2544,20 @@ def test_realtime_origin_query_answer_waits_for_caller_transcript_completion(
     realtime = asyncio.run(run())
 
     assert realtime.injected[0]["answer"] == "The file was checked."
+    assert realtime.responses[0] is None
+    assert len(realtime.responses) == 2
+    assert "lookup result is available" in str(realtime.responses[1])
     assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
         "response.create"
     )
+    latest = store.get("voice-1")
+    assert latest is not None
+    queued_reasons = [
+        event.metadata["reason"]
+        for event in latest.debug_events
+        if event.event_type == "bridge.response.queued"
+    ]
+    assert "caller_turn_incomplete" in queued_reasons
 
 
 def test_realtime_idle_origin_query_answer_requests_response_immediately(
@@ -2664,6 +2676,7 @@ def test_realtime_queued_origin_results_are_flushed_fifo_after_caller_turn_compl
                     "transcript": "What changed and what else changed?",
                 },
                 {"type": "response.done", "response": {"id": "resp-2"}},
+                {"type": "response.done", "response": {"id": "resp-3"}},
             ]
             self.responses: list[str | None] = []
             self.injected: list[dict[str, object]] = []

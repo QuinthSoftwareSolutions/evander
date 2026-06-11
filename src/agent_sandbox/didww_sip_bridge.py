@@ -1532,6 +1532,7 @@ class DidwwSipBridgeService:
         last_assistant_audio_at: float | None = None
         current_caller_utterance_id = 0
         caller_speech_active = False
+        caller_turn_incomplete = False
         caller_speech_started_at: float | None = None
         caller_speech_started_during_assistant = False
         barge_cancelled_utterance_id: int | None = None
@@ -1653,6 +1654,15 @@ class DidwwSipBridgeService:
             ):
                 return True
             return any(_is_origin_query_response_key(request.key) for request in pending_responses)
+
+        def response_blocked_by_caller_turn(request: BridgeResponseRequest) -> bool:
+            return caller_turn_incomplete and _is_origin_query_response_key(request.key)
+
+        def first_blocked_origin_response_index() -> int | None:
+            for index, pending in enumerate(pending_responses):
+                if response_blocked_by_caller_turn(pending):
+                    return index
+            return None
 
         def discard_pending_response_key(key: str) -> int:
             before = len(pending_responses)
@@ -1862,11 +1872,12 @@ class DidwwSipBridgeService:
 
         async def handle_speech_started(event: dict[str, Any]) -> None:
             nonlocal current_caller_utterance_id
-            nonlocal caller_speech_active, caller_speech_started_at
+            nonlocal caller_speech_active, caller_speech_started_at, caller_turn_incomplete
             nonlocal caller_speech_started_during_assistant
             await cancel_idle_prompt(reason="caller_speech_started", reset_period=True)
             current_caller_utterance_id += 1
             caller_speech_active = True
+            caller_turn_incomplete = True
             caller_speech_started_at = loop.time()
             audio_active = assistant_audio_active()
             caller_speech_started_during_assistant = (
@@ -1942,8 +1953,30 @@ class DidwwSipBridgeService:
                         },
                     )
                     return
-                if response_active or assistant_speaking:
+                if response_blocked_by_caller_turn(request):
                     pending_responses.append(request)
+                    if key:
+                        pending_response_keys.add(key)
+                    self._append_debug_event(
+                        voice_session_id,
+                        "bridge.response.queued",
+                        metadata={
+                            "reason": "caller_turn_incomplete",
+                            "request_reason": request.reason,
+                            "request_key": request.key,
+                            "queued_count": len(pending_responses),
+                            "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                            **_instruction_debug_metadata(instructions),
+                        },
+                    )
+                    return
+                if response_active or assistant_speaking:
+                    insert_at = len(pending_responses)
+                    if request.reason == "caller_turn_completed":
+                        blocked_index = first_blocked_origin_response_index()
+                        if blocked_index is not None:
+                            insert_at = blocked_index
+                    pending_responses.insert(insert_at, request)
                     if key:
                         pending_response_keys.add(key)
                     self._append_debug_event(
@@ -1997,10 +2030,12 @@ class DidwwSipBridgeService:
             return removed
 
         async def mark_caller_turn_completed(transcript_text: str) -> None:
-            nonlocal caller_speech_active, caller_speech_started_during_assistant, last_caller_turn
+            nonlocal caller_speech_active, caller_speech_started_during_assistant
+            nonlocal caller_turn_incomplete, last_caller_turn
             await cancel_idle_prompt(reason="caller_transcript_completed", reset_period=True)
             last_caller_turn = transcript_text
             caller_speech_active = False
+            caller_turn_incomplete = False
             is_backchannel = _is_backchannel_transcript(
                 transcript_text,
                 phrases=self.config.backchannel_phrases,
@@ -2096,6 +2131,20 @@ class DidwwSipBridgeService:
                 response_active = False
                 last_response_request = None
                 if not pending_responses:
+                    return False
+                if response_blocked_by_caller_turn(pending_responses[0]):
+                    self._append_debug_event(
+                        voice_session_id,
+                        "bridge.response.blocked",
+                        metadata={
+                            "reason": "caller_turn_incomplete",
+                            "request_reason": pending_responses[0].reason,
+                            "request_key": pending_responses[0].key,
+                            "queued_count": len(pending_responses),
+                            "last_caller_turn_snippet": _debug_snippet(last_caller_turn),
+                            **_instruction_debug_metadata(pending_responses[0].instructions),
+                        },
+                    )
                     return False
                 request = pending_responses.pop(0)
                 if request.key:
