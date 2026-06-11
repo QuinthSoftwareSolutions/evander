@@ -44,6 +44,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
 
     assert disabled.get("/api/addons/team-addon/state").status_code == 404
+    assert disabled.get("/api/addons/team-addon/timeline").status_code == 404
     assert disabled.get("/addons/team-addon/").status_code == 404
 
     admin_state = enabled.get("/api/admin/state")
@@ -66,6 +67,19 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert response.status_code == 200
     assert response.json()["revision"] == 0
 
+    timeline = enabled.get("/api/addons/team-addon/timeline")
+    assert timeline.status_code == 200
+    assert timeline.json() == {
+        "revision": 0,
+        "derived": True,
+        "audit_log": False,
+        "timestampless_count": 0,
+        "entries": [],
+        "source": "derived_from_current_team_state",
+        "description": "Derived timeline from the current TeamState snapshot.",
+        "filters": {},
+    }
+
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
@@ -83,6 +97,130 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
     assert ".team-shell" in stylesheet.text
+
+
+def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 2,
+        },
+    )
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+            "created_by_agent_id": "lead",
+            "state": "accepted",
+            "expected_revision": 3,
+        },
+    )
+    assert response.status_code == 201
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={
+            "title": "Build backend v2",
+            "expected_revision": 4,
+        },
+    )
+    assert response.status_code == 200
+    response = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "deliverable",
+            "task_id": "task",
+            "producer_agent_id": "backend",
+            "summary": "Backend task is ready.",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+            "state": "accepted",
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/review-requests/review/decision",
+        json={
+            "state": "accepted",
+            "expected_revision": 7,
+        },
+    )
+    assert response.status_code == 200
+
+    timeline = client.get(
+        "/api/addons/team-addon/timeline",
+        params=[
+            ("type", "task"),
+            ("type", "review"),
+            ("status", "accepted"),
+            ("attention_needed", "false"),
+            ("agent_id", "lead"),
+        ],
+    )
+
+    assert timeline.status_code == 200
+    payload = timeline.json()
+    assert payload["derived"] is True
+    assert payload["audit_log"] is False
+    assert payload["source"] == "derived_from_current_team_state"
+    assert payload["filters"] == {
+        "agent_id": "lead",
+        "type": ["task", "review"],
+        "status": ["accepted"],
+        "attention_needed": False,
+    }
+    assert payload["timestampless_count"] == 0
+    assert payload["entries"][0]["id"] == "task:task:created"
+    assert {entry["id"] for entry in payload["entries"]} == {
+        "task:task:created",
+        "task:task:updated",
+        "review:review:created",
+        "review:review:decision",
+    }
+    assert all(entry["status"] == "accepted" for entry in payload["entries"])
+    assert all(entry["attention_needed"] is False for entry in payload["entries"])
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
