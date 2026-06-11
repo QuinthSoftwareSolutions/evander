@@ -118,10 +118,10 @@ Admin Web public access:
 
 - `agent_sandbox_admin_web_caddy_enabled: false` by default. Set it to `true` on deployments that
   expose Admin Web through Caddy.
-- The managed Caddy config proxies `/`, `/index.html`, `/api/*`, and `/healthz` to the local Admin
-  Web Python service, while serving hashed frontend assets from `frontend/workflow-editor/dist`
-  directly. The proxied document entrypoints let Admin Web inject the configured title and branding
-  payload before the React app starts.
+- The managed Caddy config proxies `/`, `/index.html`, `/api/*`, `/public/*`, and `/healthz` to
+  the local Admin Web Python service, while serving hashed frontend assets from
+  `frontend/workflow-editor/dist` directly. The proxied document entrypoints let Admin Web inject
+  the configured title and branding payload before the React app starts.
 - Admin Web branding still comes from `agent_sandbox_admin_web_env` at runtime. For custom local
   logo files, set `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` and use relative logo paths so Caddy
   reaches them through the proxied `/api/admin/branding/assets/...` route.
@@ -345,8 +345,8 @@ The verification role checks:
 - selected systemd units are enabled and active
 - disabled units remain installed but not enabled/started
 - Admin Web responds on the configured host port
-- when enabled, managed Caddy is active, proxies `/`, `/index.html`, and `/healthz`, and serves one
-  built JS asset plus one built CSS asset through retried local TLS/SNI resolution
+- when enabled, managed Caddy is active, proxies `/`, `/index.html`, `/public/*`, and `/healthz`,
+  and serves one built JS asset plus one built CSS asset through retried local TLS/SNI resolution
 - for `full`: libvirt network `agent-sandbox` exists
 - for `full` when firewall is enabled: nftables table `inet agent_sandbox` exists
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
