@@ -1667,6 +1667,8 @@ class DidwwSipBridgeService:
             return any(_is_origin_query_response_key(request.key) for request in pending_responses)
 
         def response_blocked_by_caller_turn(request: BridgeResponseRequest) -> bool:
+            # Caller speech can still barge in, but origin-query results must stay queued
+            # until the caller turn has a final transcript.
             return caller_turn_incomplete and _is_origin_query_response_key(request.key)
 
         def first_blocked_origin_response_index() -> int | None:
