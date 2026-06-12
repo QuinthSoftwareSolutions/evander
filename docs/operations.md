@@ -232,6 +232,10 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   any workflow changes remain unsaved.
 - Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
   graph metadata by trigger events plus gate/effect execution records over the selected period.
+- Admin Web also exposes workflow failure clusters under **Reports**. That report groups repeated
+  stored run failures by graph, node, and normalized error signature, strips volatile IDs and
+  timestamps from the signature, and treats the active/recent/resolved label as a heuristic triage
+  signal only. Inspect a representative workflow run detail before taking remediation steps.
 - Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
   [conformance-reports.md](conformance-reports.md) for the trigger/effect artifact names,
   regeneration commands, and report states.

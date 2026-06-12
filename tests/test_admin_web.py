@@ -31,6 +31,9 @@ from agent_sandbox.admin.service import (
     CapacitySessionSummaryPayload,
     CapacityWorkerTelemetryEntryPayload,
     CapacityWorkerTelemetrySummaryPayload,
+    WorkflowFailureClusterExamplePayload,
+    WorkflowFailureClusterPayload,
+    WorkflowFailureClusterReportPayload,
     WorkflowRunRecentNodeActivityPayload,
     WorkflowRunSnapshotPayload,
 )
@@ -40,11 +43,13 @@ from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
+    AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
     WORKFLOW_RUNS_READ_PERMISSION,
+    WORKFLOW_VIEWER_GROUP_ID,
 )
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.capacity_health import (
@@ -369,6 +374,54 @@ def _complete_azure_login(
     return client.get(
         f"/api/auth/azure-sso/callback?code=test-code&state={state}",
         follow_redirects=False,
+    )
+
+
+def _workflow_failure_cluster_example(
+    *,
+    event_id: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+    occurred_at: datetime | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    error_summary: str | None = None,
+    run_state: str | None = None,
+    artifact_ids: list[str] | None = None,
+) -> WorkflowFailureClusterExamplePayload:
+    return WorkflowFailureClusterExamplePayload(
+        event_id=event_id,
+        trace_id=trace_id,
+        session_id=session_id,
+        occurred_at=occurred_at,
+        started_at=started_at,
+        finished_at=finished_at,
+        error_summary=error_summary,
+        run_state=run_state,
+        run_detail_href=f"#workflow?event_id={event_id}",
+        api_run_detail_href=f"/api/workflow-editor/run-detail?event_id={event_id}",
+        artifact_ids=list(artifact_ids or []),
+    )
+
+
+def _workflow_failure_cluster_report(
+    clusters: list[WorkflowFailureClusterPayload],
+    *,
+    generated_at: datetime,
+    period_start: datetime,
+    period_end: datetime,
+    recent_threshold_seconds: int | None = None,
+    limit: int = 100,
+    has_more: bool = False,
+) -> WorkflowFailureClusterReportPayload:
+    return WorkflowFailureClusterReportPayload(
+        generated_at=generated_at,
+        period_start=period_start,
+        period_end=period_end,
+        recent_threshold_seconds=recent_threshold_seconds,
+        limit=limit,
+        has_more=has_more,
+        clusters=clusters,
     )
 
 
@@ -3749,6 +3802,344 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     assert graph_denied.json()["error"] == "Permission required: workflow_runs.read"
     assert detail_denied.status_code == 403
     assert detail_denied.json()["error"] == "Permission required: workflow_runs.read"
+
+
+@pytest.mark.parametrize(
+    ("query_params", "expected_error"),
+    [
+        ({"start": "not-a-date"}, "start must be an ISO-8601 datetime."),
+        ({"limit": "0"}, "limit must be between 1 and 500."),
+        ({"recent_seconds": "0"}, "recent_seconds must be greater than 0."),
+    ],
+)
+def test_admin_web_workflow_failure_clusters_rejects_invalid_query_params(
+    tmp_path: Path,
+    query_params: dict[str, str],
+    expected_error: str,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/reports/workflow-failure-clusters", params=query_params)
+
+    assert response.status_code == 400
+    assert response.json()["error"] == expected_error
+
+
+def test_admin_web_workflow_failure_clusters_returns_empty_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: _workflow_failure_cluster_report(
+            [],
+            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            recent_threshold_seconds=86400,
+            limit=100,
+            has_more=False,
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/reports/workflow-failure-clusters")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["clusters"] == []
+    assert payload["has_more"] is False
+    assert payload["limit"] == 100
+    assert payload["recent_threshold_seconds"] == 86400
+
+
+def test_admin_web_workflow_failure_clusters_requires_workflow_runs_read_for_root_without_graphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: pytest.fail("report generation should not be reached"),
+    )
+
+    _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com",
+        group_id=WORKFLOW_VIEWER_GROUP_ID,
+        directory_path="root/ops",
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    response = client.get("/api/admin/reports/workflow-failure-clusters")
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Permission required: workflow_runs.read"
+
+
+def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_exposes_example_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    graphs = [
+        {
+            "id": "graph-ops",
+            "name": "Ops workflow",
+            "description": "Ops graph",
+            "directory_path": "root/ops",
+            "node_ids": ["ops-trigger", "ops-effect"],
+        },
+        {
+            "id": "graph-other",
+            "name": "Other workflow",
+            "description": "Other graph",
+            "directory_path": "root/other",
+            "node_ids": ["other-trigger", "other-effect"],
+        },
+    ]
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=graphs),
+    )
+    captured_kwargs: dict[str, object] = {}
+
+    visible_cluster = WorkflowFailureClusterPayload(
+        cluster_id="cluster-visible",
+        graph_id="graph-ops",
+        graph_name="Ops workflow",
+        graph_description="Ops graph",
+        directory_path="root/ops",
+        node_id="ops-effect",
+        node_display_name="Ops effect",
+        node_type="effect:agent:prompt",
+        effect_type="effect:agent:prompt",
+        source_kind="effect",
+        error_signature="Branch update rejected for refs/heads/agents/abc123",
+        error_signature_key="branch update rejected for refs/heads/agents/<suffix>",
+        count=2,
+        first_seen_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc),
+        latest_error_summary="Branch update rejected for refs/heads/agents/abc123",
+        state="recent",
+        event_ids=["evt-visible-new", "evt-visible-old"],
+        trace_ids=["trace-visible"],
+        session_ids=["session-visible"],
+        pr_ids=["42"],
+        ado_item_ids=["100"],
+        issue_ids=["200"],
+        artifact_ids=["artifact-visible"],
+        examples=[
+            _workflow_failure_cluster_example(
+                event_id="evt-visible-new",
+                trace_id="trace-visible-new",
+                session_id="session-visible",
+                occurred_at=datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc),
+                started_at=datetime(2026, 5, 18, 8, 59, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc),
+                error_summary="Branch update rejected for refs/heads/agents/abc123",
+                run_state="errored",
+                artifact_ids=["artifact-visible"],
+            )
+        ],
+    )
+    hidden_cluster = WorkflowFailureClusterPayload(
+        cluster_id="cluster-hidden",
+        graph_id="graph-other",
+        graph_name="Other workflow",
+        graph_description="Other graph",
+        directory_path="root/other",
+        node_id="other-effect",
+        node_display_name="Other effect",
+        node_type="effect:agent:prompt",
+        effect_type="effect:agent:prompt",
+        source_kind="effect",
+        error_signature="Branch update rejected for refs/heads/agents/xyz789",
+        error_signature_key="branch update rejected for refs/heads/agents/<suffix>",
+        count=1,
+        first_seen_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+        latest_error_summary="Branch update rejected for refs/heads/agents/xyz789",
+        state="active",
+        event_ids=["evt-hidden"],
+        trace_ids=["trace-hidden"],
+        session_ids=["session-hidden"],
+        pr_ids=["43"],
+        ado_item_ids=["101"],
+        issue_ids=["201"],
+        artifact_ids=["artifact-hidden"],
+        examples=[
+            _workflow_failure_cluster_example(
+                event_id="evt-hidden",
+                trace_id="trace-hidden",
+                session_id="session-hidden",
+                occurred_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+                started_at=datetime(2026, 5, 18, 9, 59, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+                error_summary="Branch update rejected for refs/heads/agents/xyz789",
+                run_state="errored",
+                artifact_ids=["artifact-hidden"],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: captured_kwargs.update(kwargs)
+        or _workflow_failure_cluster_report(
+            [visible_cluster, hidden_cluster],
+            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            recent_threshold_seconds=7200,
+            limit=7,
+            has_more=True,
+        ),
+    )
+
+    _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id=AUDITOR_GROUP_ID, directory_path="root/ops"
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    response = client.get(
+        "/api/admin/reports/workflow-failure-clusters",
+        params={
+            "start": "2026-05-17T12:00:00Z",
+            "end": "2026-05-18T12:00:00Z",
+            "limit": "7",
+            "recent_seconds": "7200",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs["period_start"] == datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    assert captured_kwargs["period_end"] == datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc)
+    assert captured_kwargs["limit"] == 7
+    assert captured_kwargs["recent_threshold_seconds"] == 7200
+
+    payload = response.json()
+    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == ["cluster-visible"]
+    cluster = payload["clusters"][0]
+    assert cluster["graph_id"] == "graph-ops"
+    assert cluster["node_id"] == "ops-effect"
+    assert cluster["event_ids"] == ["evt-visible-new", "evt-visible-old"]
+    assert cluster["examples"][0]["run_detail_href"] == "#workflow?event_id=evt-visible-new"
+    assert (
+        cluster["examples"][0]["api_run_detail_href"]
+        == "/api/workflow-editor/run-detail?event_id=evt-visible-new"
+    )
+
+
+def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_root_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(
+            graphs=[
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "description": "Ops graph",
+                    "directory_path": "root/ops",
+                    "node_ids": ["ops-trigger", "ops-effect"],
+                }
+            ]
+        ),
+    )
+
+    unassigned_cluster = WorkflowFailureClusterPayload(
+        cluster_id="cluster-unassigned",
+        graph_id="root",
+        graph_name="Unassigned",
+        graph_description=None,
+        directory_path="root",
+        node_id="root",
+        node_display_name="Unassigned",
+        node_type=None,
+        source_kind="trigger",
+        error_signature="Deleted workflow node failed",
+        error_signature_key="deleted workflow node failed",
+        count=1,
+        first_seen_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        latest_error_summary="Deleted workflow node failed",
+        state="historical",
+        event_ids=["evt-unassigned"],
+        examples=[
+            _workflow_failure_cluster_example(
+                event_id="evt-unassigned",
+                occurred_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+                error_summary="Deleted workflow node failed",
+                run_state="errored",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: _workflow_failure_cluster_report(
+            [unassigned_cluster],
+            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id=AUDITOR_GROUP_ID, directory_path="root"
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    response = client.get("/api/admin/reports/workflow-failure-clusters")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == [
+        "cluster-unassigned"
+    ]
+    cluster = payload["clusters"][0]
+    assert cluster["graph_id"] == "root"
+    assert cluster["graph_name"] == "Unassigned"
+    assert cluster["node_id"] == "root"
 
 
 def test_admin_web_workflow_run_controls_require_workflow_runs_control(
@@ -8375,6 +8766,24 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     monkeypatch.setattr(service, "list_vms", lambda **kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(graphs=[]),
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: _workflow_failure_cluster_report(
+            [],
+            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            recent_threshold_seconds=86400,
+            limit=100,
+            has_more=False,
+        ),
+    )
     client = TestClient(create_app(service))
 
     responses = {
@@ -8388,6 +8797,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
         "workers": client.get("/api/workers"),
         "configuration": client.get("/api/configuration/state"),
         "reports": client.get("/api/admin/reports/workflow-graph-activity"),
+        "failure_clusters": client.get("/api/admin/reports/workflow-failure-clusters"),
         "conformance_reports": client.get("/api/admin/reports/conformance"),
     }
 
@@ -8411,6 +8821,8 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert responses["configuration"].json()["selected_directory_path"] == "root"
     assert responses["reports"].status_code == 200
     assert isinstance(responses["reports"].json()["graphs"], list)
+    assert responses["failure_clusters"].status_code == 200
+    assert isinstance(responses["failure_clusters"].json()["clusters"], list)
     assert responses["conformance_reports"].status_code == 200
     assert len(responses["conformance_reports"].json()["reports"]) == 2
 

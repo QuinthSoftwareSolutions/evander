@@ -43,6 +43,17 @@ material. Newer entries are added incrementally as changes land.
 - Changed approval detail diagnostics to prioritize the latest blocked retry so
   operators see the most recent failed attempt first.
 
+## 2026-06-12 - Admin Web Workflow Failure Cluster Docs
+
+- Documented the new workflow failure cluster report added to the Admin
+  Web/API surface in the operations guide and user manual as a read-only
+  triage view over stored run activity.
+- Noted that normalized failure signatures remove volatile IDs and timestamps
+  and that the active/recent/resolved labels are heuristic signals that should
+  be validated against representative workflow run detail before remediation.
+- Kept root/unassigned failure clusters visible in the Admin Web/API report for
+  users with root workflow-run read access when workflow graphs exist.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced

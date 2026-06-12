@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
@@ -542,7 +542,9 @@ class WorkflowEditorGraphMetadata(BaseModel):
         try:
             return DirectoryPath(segments=directory_path).as_posix()
         except ValueError as exc:
-            raise ValueError(f"Workflow graph has invalid directory path: {directory_path}") from exc
+            raise ValueError(
+                f"Workflow graph has invalid directory path: {directory_path}"
+            ) from exc
 
     @computed_field(return_type=list[str])
     @property
@@ -643,9 +645,7 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
-    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(
-        default_factory=list
-    )
+    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(default_factory=list)
 
 
 class WorkflowRunSearchFilterPayload(BaseModel):
@@ -1057,6 +1057,76 @@ class WorkflowGraphActivityReportPayload(BaseModel):
     period_start: datetime
     period_end: datetime
     graphs: list[WorkflowGraphActivityGraphPayload] = Field(default_factory=list)
+
+
+WorkflowFailureClusterState = Literal["active", "recent", "resolved", "historical"]
+WorkflowFailureClusterSourceKind = Literal["trigger", "effect", "gate"]
+
+
+class WorkflowFailureClusterExamplePayload(BaseModel):
+    event_id: str | None = None
+    trace_id: str | None = None
+    session_id: str | None = None
+    occurred_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_summary: str | None = None
+    run_state: str | None = None
+    run_detail_href: str | None = None
+    api_run_detail_href: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+
+
+class WorkflowFailureClusterPayload(BaseModel):
+    cluster_id: str
+    graph_id: str | None = None
+    graph_name: str | None = None
+    graph_description: str | None = None
+    directory_path: str | None = None
+    node_id: str | None = None
+    node_display_name: str | None = None
+    node_type: str | None = None
+    trigger_type: str | None = None
+    effect_type: str | None = None
+    gate_type: str | None = None
+    source_kind: WorkflowFailureClusterSourceKind
+    error_signature: str
+    error_signature_key: str
+    count: int
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    latest_error_summary: str | None = None
+    state: WorkflowFailureClusterState
+    event_ids: list[str] = Field(default_factory=list)
+    trace_ids: list[str] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+    pr_ids: list[str] = Field(default_factory=list)
+    ado_item_ids: list[str] = Field(default_factory=list)
+    issue_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    examples: list[WorkflowFailureClusterExamplePayload] = Field(default_factory=list)
+
+
+class WorkflowFailureClusterReportPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    generated_at: datetime
+    period_start: datetime
+    period_end: datetime
+    recent_threshold_seconds: int | None = None
+    limit: int = 100
+    has_more: bool = False
+    clusters: list[WorkflowFailureClusterPayload] = Field(default_factory=list)
+
+
+WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX = 100
+WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT = 3
+WORKFLOW_FAILURE_CLUSTER_DEFAULT_RECENT_THRESHOLD_SECONDS = 24 * 60 * 60
+WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY: dict[str, int] = {
+    "active": 0,
+    "recent": 1,
+    "resolved": 2,
+    "historical": 3,
+}
 
 
 class ConformanceRequirementSnippetPayload(BaseModel):
@@ -1920,9 +1990,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:session:revoke-mcp-tool-approval-lease": (
         "Revoke a workflow-run-scoped MCP tool approval lease for one agent session."
     ),
-    "effect:session:renew-if-expired": (
-        "Renew an expired or soon-expiring session."
-    ),
+    "effect:session:renew-if-expired": ("Renew an expired or soon-expiring session."),
     "effect:artifact:stage": "Copy a file or directory from /home/agent into the session artifacts folder.",
     "effect:artifact:publish-artifacts": (
         "Compress and publish the session artifacts folder to the durable artifact store."
@@ -5153,6 +5221,103 @@ def _read_merged_json_objects(*paths: Path | None) -> dict[str, object]:
     for path in paths:
         payload.update(_read_json_object(path))
     return payload
+
+
+_WORKFLOW_FAILURE_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_WORKFLOW_FAILURE_ISO_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b"
+)
+_WORKFLOW_FAILURE_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{12,}\b")
+_WORKFLOW_FAILURE_URL_RE = re.compile(r"(?P<url>(?:https?|ssh|git)://[^\s'\"`<>]+)")
+_WORKFLOW_FAILURE_TEMP_PATH_RE = re.compile(
+    r"(?P<path>(?:/tmp|/var/tmp|/private/tmp|/run/user/\d+)/[^\s'\"`<>]+)"
+)
+_WORKFLOW_FAILURE_AGENT_REF_RE = re.compile(r"\b(?:refs/(?:heads|remotes)/)?agents/[^\s'\"`<>]+")
+_WORKFLOW_FAILURE_LABELLED_ID_RE = re.compile(
+    r"(?i)\b(?P<label>trace|session|thread|execution|event|request|correlation|"
+    r"approval_request|dispatch|artifact|pr|issue|ado_item)(?:_id)?\b(?P<sep>\s*[:=]\s*)"
+    r"(?P<value>[^\s,;)\]}]+)"
+)
+_WORKFLOW_FAILURE_WS_RE = re.compile(r"\s+")
+_WORKFLOW_FAILURE_ID_PLACEHOLDERS: dict[str, str] = {
+    "trace": "<trace_id>",
+    "session": "<session_id>",
+    "thread": "<thread_id>",
+    "execution": "<execution_id>",
+    "event": "<event_id>",
+    "request": "<request_id>",
+    "correlation": "<correlation_id>",
+    "approval_request": "<approval_request_id>",
+    "dispatch": "<dispatch_id>",
+    "artifact": "<artifact_id>",
+    "pr": "<pr_id>",
+    "issue": "<issue_id>",
+    "ado_item": "<ado_item_id>",
+}
+
+
+def _workflow_failure_replace_url(match: re.Match[str]) -> str:
+    url = match.group("url")
+    try:
+        split = urlsplit(url)
+    except ValueError:
+        return "<url>"
+    return urlunsplit((split.scheme, split.netloc, split.path, "", ""))
+
+
+def _workflow_failure_replace_labelled_id(match: re.Match[str]) -> str:
+    label = match.group("label").lower()
+    placeholder = _WORKFLOW_FAILURE_ID_PLACEHOLDERS.get(label, f"<{label}_id>")
+    return f"{label}_id={placeholder}"
+
+
+def _workflow_failure_fallback_text(outputs: Mapping[str, object]) -> str:
+    error_class = _coerce_optional_string(outputs.get("error_class"))
+    source_kind = (
+        _coerce_optional_string(outputs.get("source_kind"))
+        or _coerce_optional_string(outputs.get("node_type"))
+        or _coerce_optional_string(outputs.get("effect_type"))
+        or _coerce_optional_string(outputs.get("gate_type"))
+        or _coerce_optional_string(outputs.get("trigger_type"))
+    )
+    if error_class and source_kind:
+        return f"{error_class} {source_kind}"
+    if error_class:
+        return error_class
+    if source_kind:
+        return source_kind
+    return "workflow failure"
+
+
+def _normalize_workflow_failure_signature(
+    error_text: object | None, outputs: object | None = None
+) -> tuple[str, str]:
+    output_payload = outputs if isinstance(outputs, Mapping) else {}
+    summary = _coerce_optional_string(error_text)
+    if summary is None:
+        summary = _coerce_optional_string(output_payload.get("error_message"))
+    if summary is None:
+        summary = _coerce_optional_string(output_payload.get("message"))
+    if summary is None:
+        summary = _workflow_failure_fallback_text(output_payload)
+
+    normalized = summary
+    normalized = _WORKFLOW_FAILURE_URL_RE.sub(_workflow_failure_replace_url, normalized)
+    normalized = _WORKFLOW_FAILURE_TEMP_PATH_RE.sub("<temp_path>", normalized)
+    normalized = _WORKFLOW_FAILURE_AGENT_REF_RE.sub("<agent_ref>", normalized)
+    normalized = _WORKFLOW_FAILURE_LABELLED_ID_RE.sub(
+        _workflow_failure_replace_labelled_id, normalized
+    )
+    normalized = _WORKFLOW_FAILURE_UUID_RE.sub("<uuid>", normalized)
+    normalized = _WORKFLOW_FAILURE_ISO_TIMESTAMP_RE.sub("<timestamp>", normalized)
+    normalized = _WORKFLOW_FAILURE_LONG_HEX_RE.sub("<hex>", normalized)
+    normalized = _WORKFLOW_FAILURE_WS_RE.sub(" ", normalized).strip()
+    if not normalized:
+        normalized = _workflow_failure_fallback_text(output_payload)
+    key = _WORKFLOW_FAILURE_WS_RE.sub(" ", normalized).strip().casefold()
+    return normalized, key
 
 
 def _collect_workflow_keyed_values(payload: Any, *, key_suffix: str | None = None) -> list[str]:
@@ -8843,8 +9008,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             (
                 candidate
                 for candidate in execution_records
-                if str(getattr(candidate, "execution_id", "") or "").strip()
-                == current_execution_id
+                if str(getattr(candidate, "execution_id", "") or "").strip() == current_execution_id
             ),
             None,
         )
@@ -9408,12 +9572,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if rule.long_context_input_tokens_over is not None:
             long_context = {
                 "input_tokens_over": rule.long_context_input_tokens_over,
-                "input_multiplier": _admin_decimal_payload(
-                    rule.long_context_input_multiplier
-                ),
-                "output_multiplier": _admin_decimal_payload(
-                    rule.long_context_output_multiplier
-                ),
+                "input_multiplier": _admin_decimal_payload(rule.long_context_input_multiplier),
+                "output_multiplier": _admin_decimal_payload(rule.long_context_output_multiplier),
             }
         return {
             "id": rule.id,
@@ -9425,9 +9585,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "currency": rule.currency,
             "rates_per_1m_tokens": {
                 "input": _admin_decimal_payload(rule.input_per_1m_tokens),
-                "cached_input": _admin_decimal_payload(
-                    rule.cached_input_per_1m_tokens
-                ),
+                "cached_input": _admin_decimal_payload(rule.cached_input_per_1m_tokens),
                 "output": _admin_decimal_payload(rule.output_per_1m_tokens),
             },
             "batch_multiplier": _admin_decimal_payload(rule.batch_multiplier),
@@ -10342,7 +10500,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
         )
 
-    def _agent_session_policy_payload(self, session: SessionManifest | None) -> dict[str, Any] | None:
+    def _agent_session_policy_payload(
+        self, session: SessionManifest | None
+    ) -> dict[str, Any] | None:
         if session is None:
             return None
         labels = _normalize_session_labels(session.metadata.get("labels"))
@@ -10364,7 +10524,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             },
             "approval_notification_target_ids": list(session.approval_notification_target_ids),
             "approval_notification_target_options": [
-                option.model_dump(mode="json") for option in self._approval_notification_target_options(session)
+                option.model_dump(mode="json")
+                for option in self._approval_notification_target_options(session)
             ],
             "tool_argument_policies": {
                 tool_name: [rule.model_dump(mode="json") for rule in rules]
@@ -10439,9 +10600,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
 
         approval_tool_settings = {
-            tool.value: self.runtime.policy.approval_grant_settings_for_tool(session, tool).model_dump(
-                mode="json"
-            )
+            tool.value: self.runtime.policy.approval_grant_settings_for_tool(
+                session, tool
+            ).model_dump(mode="json")
             for tool in ToolName
         }
         mcp_tool_policies = {
@@ -10515,9 +10676,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return {candidate for candidate in candidates if candidate}
 
     @staticmethod
-    def _agent_prompt_queue_record_matches(
-        record: Any, *, candidates: set[str]
-    ) -> bool:
+    def _agent_prompt_queue_record_matches(record: Any, *, candidates: set[str]) -> bool:
         record_values = {
             str(value or "").strip()
             for value in (
@@ -10579,14 +10738,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return AgentPromptQueueSummary(
             record_count=len(matches),
             coalesced_count=sum(
-                max(1, int(getattr(record, "coalesced_count", 1) or 1))
-                for record in matches
+                max(1, int(getattr(record, "coalesced_count", 1) or 1)) for record in matches
             ),
             oldest_created_at=min(getattr(record, "created_at") for record in matches),
             newest_updated_at=max(getattr(record, "updated_at") for record in matches),
             records=[
-                self._agent_prompt_queue_record_payload(record)
-                for record in matches[:record_limit]
+                self._agent_prompt_queue_record_payload(record) for record in matches[:record_limit]
             ],
             truncated_count=max(0, len(matches) - record_limit),
             read_error=read_error,
@@ -10772,7 +10929,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         *,
         fallback_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, str | None]:
-        container_worker = metadata.get("container_worker") if isinstance(metadata, Mapping) else None
+        container_worker = (
+            metadata.get("container_worker") if isinstance(metadata, Mapping) else None
+        )
         image: str | None = None
         image_alias: str | None = None
         if isinstance(container_worker, Mapping):
@@ -10873,7 +11032,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         display_image_ref, image_ref_sanitized = self._runtime_image_ref_display_details(image_ref)
         raw_template_alias = template.get("template_alias")
-        template_alias = _coerce_optional_string(raw_template_alias) if isinstance(raw_template_alias, str) else None
+        template_alias = (
+            _coerce_optional_string(raw_template_alias)
+            if isinstance(raw_template_alias, str)
+            else None
+        )
         return {
             "backend": "libvirt_vm",
             "kind": "libvirt_vm_template",
@@ -11123,9 +11286,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         if selected_backend == "libvirt_vm":
             return (
-                self._agent_records_with_prompt_queue(records)
-                if include_prompt_queue
-                else records
+                self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
             )
 
         container_repository = self._container_worker_execution_repository()
@@ -11176,11 +11337,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
-        return (
-            self._agent_records_with_prompt_queue(records)
-            if include_prompt_queue
-            else records
-        )
+        return self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(
@@ -11336,7 +11493,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         from agent_sandbox.effects.providers.agent_session import default_agent_provider_for_config
 
         requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
-        agent_provider = requested_agent_provider or default_agent_provider_for_config(backend.config)
+        agent_provider = requested_agent_provider or default_agent_provider_for_config(
+            backend.config
+        )
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,
@@ -11834,11 +11993,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session_policy_fields:
             update.update(_session_policy_update_from_payload(session, session_policy_fields))
         if "approval_notification_target_ids" in update:
-            update["approval_notification_target_ids"] = _resolve_session_approval_notification_target_ids(
-                self.runtime,
-                self.config,
-                session,
-                update["approval_notification_target_ids"],
+            update["approval_notification_target_ids"] = (
+                _resolve_session_approval_notification_target_ids(
+                    self.runtime,
+                    self.config,
+                    session,
+                    update["approval_notification_target_ids"],
+                )
             )
         if "email_mailboxes" in body:
             update["email_mailbox_allowlist"] = (
@@ -14298,6 +14459,21 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             limit=limit,
         )
 
+    def read_workflow_failure_clusters_report(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+        recent_threshold_seconds: int | None = None,
+    ) -> WorkflowFailureClusterReportPayload:
+        return self._read_workflow_failure_clusters_report(
+            period_start=period_start,
+            period_end=period_end,
+            limit=limit,
+            recent_threshold_seconds=recent_threshold_seconds,
+        )
+
     def read_conformance_reports(self) -> ConformanceReportsPayload:
         return self._read_conformance_reports()
 
@@ -16338,7 +16514,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             trace_id_field="trace_id",
             error_field="error",
         )
-        recent_node_activity.sort(key=lambda item: (item.activity_at, item.activity_key), reverse=True)
+        recent_node_activity.sort(
+            key=lambda item: (item.activity_at, item.activity_key), reverse=True
+        )
         recent_node_activity = recent_node_activity[:200]
 
         runs = [
@@ -17004,7 +17182,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return updated
 
         def _dismiss_store(store: Any, *, node_id_field: str) -> int:
-            dismiss_failed_records_for_node = getattr(store, "dismiss_failed_records_for_node", None)
+            dismiss_failed_records_for_node = getattr(
+                store, "dismiss_failed_records_for_node", None
+            )
             if callable(dismiss_failed_records_for_node):
                 return dismiss_failed_records_for_node(
                     normalized_node_id,
@@ -17555,6 +17735,605 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             period_start=start_at,
             period_end=end_at,
             graphs=graphs,
+        )
+
+    def _read_workflow_failure_clusters_report(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+        recent_threshold_seconds: int | None = None,
+    ) -> WorkflowFailureClusterReportPayload:
+        now = _utc_now()
+        end_at = _as_utc(period_end) if period_end is not None else now
+        start_at = _as_utc(period_start) if period_start is not None else end_at - timedelta(days=1)
+        if start_at > end_at:
+            raise ValueError("Workflow failure cluster period_start must be before period_end.")
+
+        normalized_limit = (
+            WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX
+            if limit is None
+            else max(1, min(WORKFLOW_FAILURE_CLUSTER_LIMIT_MAX, int(limit)))
+        )
+        normalized_recent_threshold_seconds = (
+            WORKFLOW_FAILURE_CLUSTER_DEFAULT_RECENT_THRESHOLD_SECONDS
+            if recent_threshold_seconds is None
+            else max(1, int(recent_threshold_seconds))
+        )
+        recent_threshold = timedelta(seconds=normalized_recent_threshold_seconds)
+
+        document = self._read_workflow_editor_document()
+        node_metadata: dict[str, dict[str, str | None]] = {}
+        graph_metadata_by_id: dict[str, dict[str, str | None]] = {}
+        node_to_graph_id: dict[str, str] = {}
+        for raw_node in document.config.get("triggers", []):
+            if not isinstance(raw_node, dict):
+                continue
+            node_id = str(raw_node.get("id") or "").strip()
+            if not node_id:
+                continue
+            node_metadata[node_id] = {
+                "node_type": _coerce_optional_string(raw_node.get("type")),
+                "display_name": _coerce_optional_string(raw_node.get("display_name")),
+            }
+        for collection_name in ("gates", "effects", "queries"):
+            nodes = document.config.get(collection_name)
+            if not isinstance(nodes, list):
+                continue
+            for raw_node in nodes:
+                if not isinstance(raw_node, dict):
+                    continue
+                node_id = str(raw_node.get("id") or "").strip()
+                if not node_id:
+                    continue
+                node_metadata[node_id] = {
+                    "node_type": _coerce_optional_string(raw_node.get("type")),
+                    "display_name": _coerce_optional_string(raw_node.get("display_name")),
+                }
+
+        for graph in document.graphs:
+            graph_id = graph.id.strip()
+            if not graph_id:
+                continue
+            graph_metadata_by_id[graph_id] = {
+                "graph_id": graph_id,
+                "graph_name": graph.name,
+                "graph_description": graph.description,
+                "directory_path": graph.directory_path,
+            }
+            for node_id in graph.node_ids:
+                node_to_graph_id.setdefault(node_id, graph_id)
+
+        root_graph_metadata = {
+            "graph_id": "root",
+            "graph_name": "Unassigned",
+            "graph_description": None,
+            "directory_path": "root",
+        }
+
+        def graph_context_for_node(node_id: str) -> tuple[str, dict[str, str | None]]:
+            graph_id = node_to_graph_id.get(node_id)
+            if graph_id is None:
+                return "root", root_graph_metadata
+            graph_metadata = graph_metadata_by_id.get(graph_id)
+            if graph_metadata is None:
+                return "root", root_graph_metadata
+            return graph_id, graph_metadata
+
+        def normalize_record_payload(record: object) -> dict[str, Any]:
+            if isinstance(record, BaseModel):
+                return record.model_dump(mode="json")
+            if isinstance(record, dict):
+                return dict(record)
+            return {}
+
+        def latest_of(*values: object) -> datetime | None:
+            parsed_values = [
+                parsed
+                for parsed in (_coerce_optional_datetime(value) for value in values)
+                if parsed is not None
+            ]
+            return max(parsed_values) if parsed_values else None
+
+        def dedupe(values: list[str]) -> list[str]:
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for value in values:
+                if value in seen:
+                    continue
+                seen.add(value)
+                deduped.append(value)
+            return deduped
+
+        def collect_keyed_values(*payloads: object, suffixes: tuple[str, ...]) -> list[str]:
+            values: list[str] = []
+            for payload in payloads:
+                for suffix in suffixes:
+                    values.extend(_collect_workflow_keyed_values(payload, key_suffix=suffix))
+            return dedupe(values)
+
+        def collect_artifact_ids(*payloads: object) -> list[str]:
+            values: list[str] = []
+            for payload in payloads:
+                values.extend(_collect_workflow_artifact_ids(payload))
+            return dedupe(values)
+
+        def payload_sources(raw_record: dict[str, Any]) -> tuple[object, ...]:
+            return (
+                raw_record,
+                raw_record.get("resolved_config"),
+                raw_record.get("input_payload"),
+                raw_record.get("outputs"),
+                raw_record.get("payload"),
+                raw_record.get("inputs_by_source"),
+            )
+
+        def normalize_error_signature(
+            raw_record: dict[str, Any],
+            *,
+            source_kind: WorkflowFailureClusterSourceKind,
+            node_type: str | None,
+            error_text: object | None = None,
+        ) -> tuple[str, str, str | None]:
+            outputs = raw_record.get("outputs")
+            signature_outputs = dict(outputs) if isinstance(outputs, dict) else {}
+            signature_outputs["source_kind"] = source_kind
+            if node_type:
+                signature_outputs["node_type"] = node_type
+            if source_kind == "trigger":
+                signature_outputs.setdefault(
+                    "trigger_type",
+                    _coerce_optional_string(raw_record.get("trigger_type")),
+                )
+            elif source_kind == "effect":
+                signature_outputs.setdefault(
+                    "effect_type",
+                    _coerce_optional_string(raw_record.get("effect_type")),
+                )
+            elif source_kind == "gate":
+                signature_outputs.setdefault(
+                    "gate_type",
+                    _coerce_optional_string(raw_record.get("gate_type")),
+                )
+            summary, key = _normalize_workflow_failure_signature(error_text, signature_outputs)
+            return _coerce_optional_string(error_text) or summary, summary, key
+
+        failure_statuses = {"failed", "error_routed"}
+        activity_records: list[dict[str, Any]] = []
+
+        def register_record(
+            raw_record: dict[str, Any],
+            *,
+            source_kind: WorkflowFailureClusterSourceKind,
+            record_key: str,
+        ) -> None:
+            node_field = {
+                "trigger": "trigger_id",
+                "effect": "effect_id",
+                "gate": "gate_id",
+            }[source_kind]
+            type_field = {
+                "trigger": "trigger_type",
+                "effect": "effect_type",
+                "gate": "gate_type",
+            }[source_kind]
+            node_id = _coerce_optional_string(raw_record.get(node_field))
+            if node_id is None:
+                return
+            if source_kind == "trigger":
+                activity_at = latest_of(
+                    raw_record.get("delivered_at"),
+                    raw_record.get("inflight_at"),
+                    raw_record.get("occurred_at"),
+                )
+            else:
+                activity_at = latest_of(raw_record.get("finished_at"), raw_record.get("started_at"))
+            if activity_at is None:
+                return
+
+            node_info = node_metadata.get(node_id, {})
+            graph_id, graph_info = graph_context_for_node(node_id)
+            raw_status = _coerce_optional_string(raw_record.get("status"))
+            node_type = (
+                _coerce_optional_string(raw_record.get(type_field))
+                or _coerce_optional_string(node_info.get("node_type"))
+            )
+            display_name = _coerce_optional_string(node_info.get("display_name"))
+            linked_payloads = payload_sources(raw_record)
+            session_ids = collect_keyed_values(*linked_payloads, suffixes=("session_id", "session_ids"))
+            pr_ids = collect_keyed_values(*linked_payloads, suffixes=("pr_id", "pr_ids"))
+            ado_item_ids = collect_keyed_values(
+                *linked_payloads,
+                suffixes=("ado_item_id", "ado_item_ids", "work_item_id", "work_item_ids"),
+            )
+            issue_ids = collect_keyed_values(*linked_payloads, suffixes=("issue_id", "issue_ids"))
+            artifact_ids = collect_artifact_ids(*linked_payloads)
+            raw_error: str | None = _coerce_optional_string(raw_record.get("error"))
+            if raw_error is None:
+                raw_error = _coerce_optional_string(raw_record.get("binding_error"))
+            if raw_error is None and isinstance(raw_record.get("outputs"), dict):
+                outputs = raw_record.get("outputs")
+                raw_error = _coerce_optional_string(outputs.get("error_message"))
+            if raw_error is None and isinstance(raw_record.get("outputs"), dict):
+                outputs = raw_record.get("outputs")
+                raw_error = _coerce_optional_string(outputs.get("message"))
+            if raw_error is None:
+                raw_error = _coerce_optional_string(raw_record.get("clear_reason"))
+            error_text, error_signature, error_signature_key = normalize_error_signature(
+                raw_record,
+                source_kind=source_kind,
+                node_type=node_type,
+                error_text=raw_error,
+            )
+            failure_candidate = (
+                (source_kind == "trigger" and bool(raw_error))
+                or (source_kind == "effect" and raw_status in failure_statuses)
+                or (source_kind == "gate" and raw_status == "failed")
+            )
+            success_activity = not failure_candidate
+            event_id = _coerce_optional_string(raw_record.get("event_id"))
+            if source_kind != "trigger" and event_id is None:
+                event_id = _coerce_optional_string(raw_record.get("execution_id"))
+            record = {
+                "activity_at": activity_at,
+                "event_id": event_id,
+                "trace_id": _coerce_optional_string(raw_record.get("trace_id")),
+                "session_ids": session_ids,
+                "pr_ids": pr_ids,
+                "ado_item_ids": ado_item_ids,
+                "issue_ids": issue_ids,
+                "artifact_ids": artifact_ids,
+                "error_text": error_text,
+                "error_signature": error_signature,
+                "error_signature_key": error_signature_key,
+                "failure_candidate": failure_candidate,
+                "success_activity": success_activity,
+                "dismissed": bool(raw_record.get("dismissed_at")),
+                "cleared": bool(
+                    raw_record.get("cleared_at")
+                    or (source_kind == "trigger" and raw_record.get("clear_reason"))
+                ),
+                "raw_status": raw_status,
+                "graph_id": graph_id,
+                "graph_name": graph_info["graph_name"],
+                "graph_description": graph_info["graph_description"],
+                "directory_path": graph_info["directory_path"],
+                "node_id": node_id,
+                "node_display_name": display_name,
+                "node_type": node_type,
+                "source_kind": source_kind,
+                "trigger_type": _coerce_optional_string(raw_record.get("trigger_type"))
+                if source_kind == "trigger"
+                else None,
+                "effect_type": _coerce_optional_string(raw_record.get("effect_type"))
+                if source_kind == "effect"
+                else None,
+                "gate_type": _coerce_optional_string(raw_record.get("gate_type"))
+                if source_kind == "gate"
+                else None,
+                "started_at": _coerce_optional_datetime(raw_record.get("started_at")),
+                "finished_at": _coerce_optional_datetime(raw_record.get("finished_at")),
+                "occurred_at": _coerce_optional_datetime(raw_record.get("occurred_at")),
+                "record_key": record_key,
+                "payload": raw_record,
+            }
+            activity_records.append(record)
+
+        stores = self._workflow_run_store_paths()
+        if self._workflow_uses_sqlite_store(stores):
+            start_text = datetime_to_storage(start_at)
+            end_text = datetime_to_storage(end_at)
+            db_path = Path(stores["orchestration_store_path"])
+            ensure_orchestration_schema(db_path)
+            with connect_orchestration_db(db_path) as connection:
+                for row in connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM trigger_events
+                    WHERE COALESCE(delivered_at, inflight_at, occurred_at) BETWEEN ? AND ?
+                    ORDER BY COALESCE(delivered_at, inflight_at, occurred_at) ASC, event_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    raw_record = json_loads_object(row["payload_json"])
+                    register_record(
+                        raw_record,
+                        source_kind="trigger",
+                        record_key=str(
+                            _coerce_optional_string(raw_record.get("event_id"))
+                            or _coerce_optional_string(raw_record.get("trigger_id"))
+                            or ""
+                        ),
+                    )
+                for row in connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM effect_executions
+                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    raw_record = json_loads_object(row["payload_json"])
+                    register_record(
+                        raw_record,
+                        source_kind="effect",
+                        record_key=str(
+                            _coerce_optional_string(raw_record.get("execution_id"))
+                            or _coerce_optional_string(raw_record.get("event_id"))
+                            or ""
+                        ),
+                    )
+                for row in connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM gate_executions
+                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    raw_record = json_loads_object(row["payload_json"])
+                    register_record(
+                        raw_record,
+                        source_kind="gate",
+                        record_key=str(
+                            _coerce_optional_string(raw_record.get("execution_id"))
+                            or _coerce_optional_string(raw_record.get("event_id"))
+                            or ""
+                        ),
+                    )
+        else:
+            queue_payload = _read_json_object(stores["event_queue_store_path"])
+            effect_payload = _read_json_object(stores["effect_execution_store_path"])
+            gate_payload = _read_json_object(stores["gate_execution_store_path"])
+
+            for record_key, raw_record in queue_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                activity_at = latest_of(
+                    raw_record.get("delivered_at"),
+                    raw_record.get("inflight_at"),
+                    raw_record.get("occurred_at"),
+                )
+                if activity_at is None or not (start_at <= activity_at <= end_at):
+                    continue
+                register_record(
+                    raw_record,
+                    source_kind="trigger",
+                    record_key=str(_coerce_optional_string(raw_record.get("event_id")) or record_key),
+                )
+
+            for record_key, raw_record in effect_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                activity_at = latest_of(raw_record.get("finished_at"), raw_record.get("started_at"))
+                if activity_at is None or not (start_at <= activity_at <= end_at):
+                    continue
+                register_record(
+                    raw_record,
+                    source_kind="effect",
+                    record_key=str(
+                        _coerce_optional_string(raw_record.get("execution_id")) or record_key
+                    ),
+                )
+
+            for record_key, raw_record in gate_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                activity_at = latest_of(raw_record.get("finished_at"), raw_record.get("started_at"))
+                if activity_at is None or not (start_at <= activity_at <= end_at):
+                    continue
+                register_record(
+                    raw_record,
+                    source_kind="gate",
+                    record_key=str(_coerce_optional_string(raw_record.get("execution_id")) or record_key),
+                )
+
+        activity_records.sort(
+            key=lambda item: (
+                item["activity_at"] or datetime.min.replace(tzinfo=UTC),
+                item["source_kind"],
+                item["node_id"],
+                item["event_id"] or item["record_key"],
+            ),
+            reverse=True,
+        )
+
+        latest_success_at_by_node_source: dict[tuple[str, str, str], datetime] = {}
+        clusters: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+
+        def cluster_key(record: dict[str, Any]) -> tuple[str, str, str, str, str]:
+            return (
+                str(record["graph_id"]),
+                str(record["node_id"]),
+                str(record["source_kind"]),
+                str(record["node_type"] or ""),
+                str(record["error_signature_key"]),
+            )
+
+        for record in activity_records:
+            node_source_key = (
+                str(record["graph_id"]),
+                str(record["node_id"]),
+                str(record["source_kind"]),
+            )
+            if record["success_activity"]:
+                latest_success_at_by_node_source.setdefault(
+                    node_source_key, record["activity_at"]
+                )
+            if not record["failure_candidate"]:
+                continue
+
+            key = cluster_key(record)
+            cluster = clusters.get(key)
+            if cluster is None:
+                cluster = {
+                    "cluster_id": hashlib.sha256("|".join(key).encode("utf-8")).hexdigest()[:16],
+                    "graph_id": record["graph_id"],
+                    "graph_name": record["graph_name"],
+                    "graph_description": record["graph_description"],
+                    "directory_path": record["directory_path"],
+                    "node_id": record["node_id"],
+                    "node_display_name": record["node_display_name"],
+                    "node_type": record["node_type"],
+                    "trigger_type": record["trigger_type"],
+                    "effect_type": record["effect_type"],
+                    "gate_type": record["gate_type"],
+                    "source_kind": record["source_kind"],
+                    "error_signature": record["error_signature"],
+                    "error_signature_key": record["error_signature_key"],
+                    "count": 0,
+                    "first_seen_at": record["activity_at"],
+                    "last_seen_at": record["activity_at"],
+                    "latest_error_summary": record["error_signature"],
+                    "state": "historical",
+                    "event_ids": [],
+                    "trace_ids": [],
+                    "session_ids": [],
+                    "pr_ids": [],
+                    "ado_item_ids": [],
+                    "issue_ids": [],
+                    "artifact_ids": [],
+                    "examples": [],
+                    "_example_limit": WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT,
+                    "_latest_failure_at": record["activity_at"],
+                    "_latest_failure_dismissed": bool(record["dismissed"]),
+                    "_latest_failure_cleared": bool(record["cleared"]),
+                    "_latest_failure_status": record["raw_status"],
+                    "_node_source_key": node_source_key,
+                }
+                clusters[key] = cluster
+            else:
+                if record["activity_at"] < cluster["first_seen_at"]:
+                    cluster["first_seen_at"] = record["activity_at"]
+            cluster["count"] += 1
+            if record["activity_at"] > cluster["last_seen_at"]:
+                cluster["last_seen_at"] = record["activity_at"]
+                cluster["latest_error_summary"] = record["error_signature"]
+                cluster["_latest_failure_at"] = record["activity_at"]
+                cluster["_latest_failure_dismissed"] = bool(record["dismissed"])
+                cluster["_latest_failure_cleared"] = bool(record["cleared"])
+                cluster["_latest_failure_status"] = record["raw_status"]
+            elif cluster.get("_latest_failure_at") is None:
+                cluster["_latest_failure_at"] = record["activity_at"]
+                cluster["_latest_failure_dismissed"] = bool(record["dismissed"])
+                cluster["_latest_failure_cleared"] = bool(record["cleared"])
+                cluster["_latest_failure_status"] = record["raw_status"]
+
+            for value in [record["event_id"]]:
+                if value and value not in cluster["event_ids"]:
+                    cluster["event_ids"].append(value)
+            for value in [record["trace_id"]]:
+                if value and value not in cluster["trace_ids"]:
+                    cluster["trace_ids"].append(value)
+            for value in record["session_ids"]:
+                if value not in cluster["session_ids"]:
+                    cluster["session_ids"].append(value)
+            for value in record["pr_ids"]:
+                if value not in cluster["pr_ids"]:
+                    cluster["pr_ids"].append(value)
+            for value in record["ado_item_ids"]:
+                if value not in cluster["ado_item_ids"]:
+                    cluster["ado_item_ids"].append(value)
+            for value in record["issue_ids"]:
+                if value not in cluster["issue_ids"]:
+                    cluster["issue_ids"].append(value)
+            for value in record["artifact_ids"]:
+                if value not in cluster["artifact_ids"]:
+                    cluster["artifact_ids"].append(value)
+            if len(cluster["examples"]) < cluster["_example_limit"]:
+                cluster["examples"].append(
+                    WorkflowFailureClusterExamplePayload(
+                        event_id=record["event_id"],
+                        trace_id=record["trace_id"],
+                        session_id=record["session_ids"][0] if record["session_ids"] else None,
+                        occurred_at=record["activity_at"],
+                        started_at=record["started_at"],
+                        finished_at=record["finished_at"],
+                        error_summary=record["error_signature"],
+                        run_state="errored" if record["failure_candidate"] else "active",
+                        run_detail_href=(
+                            f"#workflow?event_id={record['event_id']}"
+                            if record["event_id"]
+                            else None
+                        ),
+                        api_run_detail_href=(
+                            f"/api/workflow-editor/run-detail?event_id={record['event_id']}"
+                            if record["event_id"]
+                            else None
+                        ),
+                        artifact_ids=list(record["artifact_ids"]),
+                    )
+                )
+
+        cluster_payloads: list[WorkflowFailureClusterPayload] = []
+        for cluster in clusters.values():
+            latest_failure_at = cluster.pop("_latest_failure_at", None)
+            latest_failure_dismissed = bool(cluster.pop("_latest_failure_dismissed", False))
+            latest_failure_cleared = bool(cluster.pop("_latest_failure_cleared", False))
+            latest_failure_status = _coerce_optional_string(
+                cluster.pop("_latest_failure_status", None)
+            )
+            node_source_key = cluster.pop("_node_source_key", None)
+            latest_success_at = (
+                latest_success_at_by_node_source.get(node_source_key)
+                if isinstance(node_source_key, tuple)
+                else None
+            )
+            if (
+                latest_failure_at is not None
+                and latest_success_at is not None
+                and latest_success_at > latest_failure_at
+            ):
+                cluster["state"] = "resolved"
+            elif latest_failure_dismissed or latest_failure_cleared:
+                cluster["state"] = "historical"
+            elif latest_failure_status == "failed":
+                cluster["state"] = "active"
+            elif latest_failure_at is not None and latest_failure_at >= end_at - recent_threshold:
+                cluster["state"] = "recent"
+            else:
+                cluster["state"] = "historical"
+
+            cluster["examples"] = list(cluster["examples"])
+
+        cluster_items = list(clusters.values())
+        cluster_items.sort(
+            key=lambda item: (
+                item["last_seen_at"] or datetime.min.replace(tzinfo=UTC),
+                item["cluster_id"],
+            ),
+            reverse=True,
+        )
+        cluster_items.sort(
+            key=lambda item: WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY.get(
+                str(item["state"]), len(WORKFLOW_FAILURE_CLUSTER_STATE_PRIORITY)
+            )
+        )
+
+        limited_clusters = cluster_items[:normalized_limit]
+        has_more = len(cluster_items) > len(limited_clusters)
+        for cluster in limited_clusters:
+            cluster_payloads.append(
+                WorkflowFailureClusterPayload.model_validate(
+                    {
+                        key: value
+                        for key, value in cluster.items()
+                        if not key.startswith("_")
+                    }
+                )
+            )
+
+        return WorkflowFailureClusterReportPayload(
+            generated_at=now,
+            period_start=start_at,
+            period_end=end_at,
+            recent_threshold_seconds=normalized_recent_threshold_seconds,
+            limit=normalized_limit,
+            has_more=has_more,
+            clusters=cluster_payloads,
         )
 
     def _read_conformance_reports(self) -> ConformanceReportsPayload:
@@ -20494,9 +21273,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def agent_create_options(self, directory_path: str | None = None) -> dict[str, Any]:
         normalized_directory = self._normalize_directory_path(directory_path)
         vm_defaults = self.resolve_vm_defaults(normalized_directory)
-        provider_config = self.runtime.provider_config.resolve_for_directory(
-            normalized_directory
-        )
+        provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
         libvirt_templates = [
             {"alias": alias, "image_ref": image_ref}
             for alias, image_ref in sorted(vm_defaults.libvirt_vm_templates.items())

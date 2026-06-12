@@ -485,7 +485,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(worker_config_routes(service, auth, dashboard_cache))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
     routes.extend(pr_integration_routes(service, auth))
-    routes.extend(report_routes(service, dashboard_cache))
+    routes.extend(report_routes(service, auth, dashboard_cache))
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))
