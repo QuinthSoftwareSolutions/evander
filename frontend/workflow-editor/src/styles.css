@@ -6073,6 +6073,62 @@ select {
   border-radius: 0;
 }
 
+.tool-visibility-page .feature-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.tool-visibility-page .feature-sidebar-header {
+  margin-bottom: 0.85rem;
+}
+
+.tool-visibility-page .feature-sidebar .field-stack input {
+  border-radius: 0;
+}
+
+.tool-visibility-page .feature-toolbar {
+  gap: 1rem;
+}
+
+.tool-visibility-page .tool-visibility-summary-grid,
+.tool-visibility-page .tool-visibility-grid {
+  align-items: start;
+}
+
+.tool-visibility-page .tool-visibility-filter-actions {
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.tool-visibility-page .tool-visibility-filter-actions .field-stack {
+  margin-bottom: 0;
+  min-width: min(15rem, 100%);
+}
+
+.tool-visibility-page .tool-visibility-filter-actions .field-stack input,
+.tool-visibility-page .tool-visibility-filter-actions .field-stack select {
+  border-radius: 0;
+}
+
+.tool-visibility-page .tool-visibility-detail-panel {
+  min-height: 0;
+}
+
+.tool-visibility-page .tool-visibility-detail-stack {
+  gap: 0.9rem;
+}
+
+.tool-visibility-page .detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
 .session-overview-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
