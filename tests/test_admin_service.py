@@ -40,6 +40,7 @@ from agent_sandbox.messaging.targets import (
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -2647,6 +2648,317 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert refreshed_record.outputs["thread_id"] == "thread-real-container-1"
     assert refreshed_session is not None
     assert refreshed_session.metadata["agent_thread_id"] == "thread-real-container-1"
+
+
+def test_submit_operator_steering_interrupts_container_waiting_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_sandbox.effects.providers.agent_prompt import (
+        CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY,
+    )
+    from agent_sandbox.operator_steering import operator_steering_note_store
+
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {"image": "runner:steer-image"},
+            },
+        )
+    )
+    legacy_note = operator_steering_note_store(service.config.runtime_dir).create_note(
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        worker_execution_id="agent-old-1",
+        message="Old relay-delivered note.",
+    )
+    register_model_usage_correlation_context(
+        runtime_dir=service.config.runtime_dir,
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        workflow_run_id="workflow-steer",
+        effect_id="effect-steer",
+        directory_path="root",
+        model="gpt-5.2-codex",
+        execution_backend="container_worker_vm",
+    )
+
+    execution_store = service._operator_steering_execution_store()
+    now = datetime.now(UTC)
+    execution_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="workflow-exec-steer",
+            idempotency_key="event-steer::effect-steer",
+            event_id="event-steer",
+            trace_id="workflow-steer",
+            source_node_id="effect-steer",
+            source_trigger_type="manual",
+            effect_id="effect-steer",
+            effect_type="effect:agent:prompt",
+            status="waiting",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash="hash-steer",
+            resolved_config={
+                "target": "container-session",
+                "session_id": "container-session",
+                "prompt": "Original workflow prompt",
+                "model": "gpt-5.2-codex",
+                "directory_path": "root",
+                "execution_backend": "container_worker_vm",
+            },
+            input_payload={"prompt": "Original workflow prompt"},
+            outputs={
+                "dispatch_id": "dispatch-steer",
+                "thread_id": "dispatch-steer",
+                "success": True,
+                "queued": False,
+                "output_mode": "on_completion",
+                "execution_backend": "container_worker_vm",
+                "execution_id": "agent-old-1",
+                "session_id": "container-session",
+            },
+        )
+    )
+
+    class InterruptBackend:
+        def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory("root")
+            self.stopped: list[str] = []
+            self.started_specs: list[object] = []
+            self.annotated_records: list[ContainerWorkerExecutionRecord] = []
+            old_record = ContainerWorkerExecutionRecord(
+                execution_id="agent-old-1",
+                session_id="container-session",
+                worker_job_id="worker-job-old",
+                worker_url="http://worker.invalid",
+                target_name="agent-old-1",
+                directory_path="root",
+                last_status="running",
+            )
+            self.repository = SimpleNamespace(
+                get=lambda execution_id: old_record if execution_id == "agent-old-1" else None,
+                put=self.annotated_records.append,
+            )
+
+        def get_log_snapshot(self, execution_id: str, *, lines: int = 120) -> str:
+            assert execution_id == "agent-old-1"
+            assert lines == 120
+            return "working\nsession id: thread-steer-real\n"
+
+        def stop(self, execution_id: str):
+            self.stopped.append(execution_id)
+            return SimpleNamespace(execution_id=execution_id)
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            self.started_specs.append(spec)
+            return SimpleNamespace(execution_id=spec.target_name)
+
+    backend = InterruptBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **kwargs: backend, service),
+    )
+
+    result = service.submit_operator_steering_note(
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        worker_execution_id="agent-old-1",
+        message="Switch to implementation now.",
+        created_by="operator@example.com",
+    )
+
+    refreshed = execution_store.get_execution("workflow-exec-steer")
+
+    assert result["mode"] == "interrupt_and_resume"
+    assert result["note"].status == "delivered"
+    assert result["note"].provider == "container_worker_vm"
+    assert result["interrupt"]["interrupted_execution_id"] == "agent-old-1"
+    assert result["interrupt"]["replacement_execution_id"] == backend.started_specs[0].target_name
+    assert backend.stopped == ["agent-old-1"]
+    assert len(backend.started_specs) == 1
+    started_spec = backend.started_specs[0]
+    assert started_spec.session_id == "container-session"
+    assert started_spec.directory_path == "root"
+    assert started_spec.image == "runner:steer-image"
+    assert started_spec.metadata["dispatch_id"] == "dispatch-steer"
+    assert started_spec.metadata["operator_steering"] == "interrupt_and_resume"
+    assert started_spec.metadata["interrupted_execution_id"] == "agent-old-1"
+    assert "Switch to implementation now." in str(started_spec.command)
+    assert "thread-steer-real" in str(started_spec.command)
+    assert refreshed is not None
+    assert refreshed.status == "waiting"
+    assert CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY not in refreshed.outputs
+    assert refreshed.outputs["execution_id"] == started_spec.target_name
+    assert refreshed.outputs["worker_execution_id"] == started_spec.target_name
+    assert refreshed.outputs["thread_id"] == "thread-steer-real"
+    assert refreshed.outputs["interrupted_execution_id"] == "agent-old-1"
+    assert refreshed.outputs["interrupted_execution_ids"] == ["agent-old-1"]
+    assert refreshed.outputs["operator_interrupt_count"] == 1
+    assert refreshed.outputs["cancelled_legacy_operator_steering_note_ids"] == [
+        legacy_note.note_id
+    ]
+    cancelled_legacy = operator_steering_note_store(service.config.runtime_dir).get_note(
+        legacy_note.note_id
+    )
+    assert cancelled_legacy is not None
+    assert cancelled_legacy.status == "cancelled"
+    assert backend.annotated_records
+    assert backend.annotated_records[0].metadata["interrupted_by_operator"] is True
+    assert (
+        backend.annotated_records[0].metadata["interrupt_replaced_by_execution_id"]
+        == started_spec.target_name
+    )
+
+
+def test_submit_operator_steering_failure_after_stop_fails_waiting_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_sandbox.effects.providers.agent_prompt import (
+        CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY,
+    )
+
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {"image": "runner:steer-image"},
+            },
+        )
+    )
+    register_model_usage_correlation_context(
+        runtime_dir=service.config.runtime_dir,
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        workflow_run_id="workflow-steer",
+        effect_id="effect-steer",
+        directory_path="root",
+        model="gpt-5.2-codex",
+        execution_backend="container_worker_vm",
+    )
+    execution_store = service._operator_steering_execution_store()
+    now = datetime.now(UTC)
+    execution_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="workflow-exec-steer",
+            idempotency_key="event-steer::effect-steer",
+            event_id="event-steer",
+            trace_id="workflow-steer",
+            source_node_id="effect-steer",
+            source_trigger_type="manual",
+            effect_id="effect-steer",
+            effect_type="effect:agent:prompt",
+            status="waiting",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash="hash-steer",
+            resolved_config={
+                "target": "container-session",
+                "session_id": "container-session",
+                "prompt": "Original workflow prompt",
+                "model": "gpt-5.2-codex",
+                "directory_path": "root",
+                "execution_backend": "container_worker_vm",
+            },
+            input_payload={"prompt": "Original workflow prompt"},
+            outputs={
+                "dispatch_id": "dispatch-steer",
+                "thread_id": "thread-existing",
+                "success": True,
+                "queued": False,
+                "output_mode": "on_completion",
+                "execution_backend": "container_worker_vm",
+                "execution_id": "agent-old-1",
+                "session_id": "container-session",
+            },
+        )
+    )
+
+    class FailingReplacementBackend:
+        def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory("root")
+            self.repository = SimpleNamespace(get=lambda execution_id: None, put=lambda record: None)
+            self.stopped: list[str] = []
+
+        def get_log_snapshot(self, execution_id: str, *, lines: int = 120) -> str:
+            return ""
+
+        def stop(self, execution_id: str):
+            self.stopped.append(execution_id)
+            return SimpleNamespace(execution_id=execution_id)
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            del spec
+            raise RuntimeError("replacement unavailable")
+
+    backend = FailingReplacementBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **kwargs: backend, service),
+    )
+
+    with pytest.raises(RuntimeError, match="could not start the replacement"):
+        service.submit_operator_steering_note(
+            session_id="container-session",
+            dispatch_id="dispatch-steer",
+            worker_execution_id="agent-old-1",
+            message="Switch to implementation now.",
+        )
+
+    refreshed = execution_store.get_execution("workflow-exec-steer")
+
+    assert backend.stopped == ["agent-old-1"]
+    assert refreshed is not None
+    assert refreshed.status == "failed"
+    assert CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY not in refreshed.outputs
+    assert refreshed.outputs["success"] is False
+    assert refreshed.outputs["operator_steering_failed"] is True
+    assert refreshed.outputs["execution_id"] == "agent-old-1"
+    assert "replacement unavailable" in refreshed.error
+
+
+def test_container_waiting_reconciliation_skips_operator_interrupt_in_progress() -> None:
+    from agent_sandbox.effects.providers.agent_prompt import (
+        CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY,
+        AgentPromptEffectProvider,
+    )
+
+    record = SimpleNamespace(
+        outputs={
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-old-1",
+            "session_id": "container-session",
+            CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY: True,
+        }
+    )
+    worker = SimpleNamespace()
+
+    assert AgentPromptEffectProvider._reconcile_container_waiting_record(
+        worker=worker,
+        record=record,
+    ) == 0
 
 
 def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispatch_fails(

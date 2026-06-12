@@ -11,6 +11,17 @@ material. Newer entries are added incrementally as changes land.
   with the Claude runner command instead of falling back to the Codex command
   when a busy-session prompt drains from `queued-agent-prompts.json`.
 
+## 2026-06-12 - Container Agent Steering Interrupts
+
+- Changed Admin Web Operator steering for container worker agents to interrupt
+  the active worker execution and immediately start a replacement execution with
+  the steering instruction, while keeping the same logical workflow waiting
+  record and dispatch.
+- Added interrupt-in-progress workflow reconciliation protection so stopping the
+  old worker job does not make prompt effects look completed or failed before
+  the replacement job is registered. Replacement startup failures now fail the
+  original waiting record so workflows see the real steering failure.
+
 ## 2026-06-11 - Agents Page Detail Layout
 
 - Moved selected-agent labels into the VM host / worker session details panel

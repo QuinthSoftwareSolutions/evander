@@ -181,7 +181,8 @@ Common tasks:
 9. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
    agent thread when available.
-10. Use **Operator steering** to queue a note for the selected session's active model dispatch.
+10. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
+    or to queue a legacy relay-delivered note for non-container sessions.
 11. Use lifecycle actions only after confirming the target and directory are correct.
 
 Notes:
