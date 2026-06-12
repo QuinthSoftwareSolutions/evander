@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Admin Agent Prompt Queue Visibility
+
+- Added read-only prompt queue summaries to Admin Web agent records and surfaced
+  queued prompt counts, coalesced counts, timestamps, queue keys, and prompt
+  previews on the Agents page.
+
 ## 2026-06-12 - Voice Wake Cleanup
 
 - Disabled pending `voice_session_query` wake requests when

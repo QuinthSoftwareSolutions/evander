@@ -14,6 +14,7 @@ import type {
   AgentListResponse,
   AgentLogResponse,
   AgentLogView,
+  AgentPromptQueueSummary,
   AgentRecord,
   AgentPolicyUpdateRequest,
   AgentSessionPolicy,
@@ -796,6 +797,29 @@ function timestampRank(value: string | null): number {
   if (!value) return 0;
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : 0;
+}
+
+const EMPTY_PROMPT_QUEUE_SUMMARY: AgentPromptQueueSummary = {
+  record_count: 0,
+  coalesced_count: 0,
+  oldest_created_at: null,
+  newest_updated_at: null,
+  records: [],
+  truncated_count: 0,
+  read_error: null,
+};
+
+function promptQueueForAgent(agent: AgentRecord | null | undefined): AgentPromptQueueSummary {
+  return agent?.prompt_queue ?? EMPTY_PROMPT_QUEUE_SUMMARY;
+}
+
+function promptQueueSummaryText(summary: AgentPromptQueueSummary): string {
+  if (summary.read_error) return "Queue unavailable";
+  if (summary.record_count === 0) return "0 queued";
+  if (summary.coalesced_count === summary.record_count) {
+    return `${summary.record_count} queued`;
+  }
+  return `${summary.record_count} records / ${summary.coalesced_count} prompts`;
 }
 
 function AgentIcon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
@@ -1771,6 +1795,7 @@ export function AgentsPage() {
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
   const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
+  const selectedPromptQueue = promptQueueForAgent(selectedAgent);
   const canMutate = busyAction === null && privilegedUnlocked;
   const showStart = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.start && powerState !== "running";
   const showShutdown = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.shutdown && powerState === "running";
@@ -1962,6 +1987,7 @@ export function AgentsPage() {
                 <div className="section-label agent-list-heading">{backendLabel(backend)}</div>
                 {group.map((item) => {
                   const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
+                  const queueSummary = promptQueueForAgent(item);
                   return (
                     <button
                       key={agentKey(item)}
@@ -1986,6 +2012,11 @@ export function AgentsPage() {
                       </div>
                       {runtimeImageSummary ? (
                         <div className="feature-list-meta agent-list-item-meta">{runtimeImageSummary}</div>
+                      ) : null}
+                      {queueSummary.record_count > 0 || queueSummary.read_error ? (
+                        <div className="feature-list-meta agent-list-item-meta">
+                          Prompt queue: {promptQueueSummaryText(queueSummary)}
+                        </div>
                       ) : null}
                     </button>
                   );
@@ -2838,6 +2869,10 @@ export function AgentsPage() {
                     <dd>{selectedAgent.directory_path}</dd>
                   </div>
                   <div>
+                    <dt>Prompt queue</dt>
+                    <dd>{promptQueueSummaryText(selectedPromptQueue)}</dd>
+                  </div>
+                  <div>
                     <dt>Updated</dt>
                     <dd>{formatTimestamp(selectedAgent.updated_at)}</dd>
                   </div>
@@ -2959,6 +2994,58 @@ export function AgentsPage() {
                 </dl>
               </article>
             </div>
+
+            {selectedPromptQueue.record_count > 0 || selectedPromptQueue.read_error ? (
+              <article className="panel agent-prompt-queue-panel">
+                <div className="panel-header">
+                  <h3>Prompt queue</h3>
+                  <span className="panel-meta">{promptQueueSummaryText(selectedPromptQueue)}</span>
+                </div>
+                {selectedPromptQueue.read_error ? (
+                  <div className="callout error-callout">{selectedPromptQueue.read_error}</div>
+                ) : null}
+                {selectedPromptQueue.record_count > 0 ? (
+                  <>
+                    <dl className="property-grid agent-prompt-queue-summary-grid">
+                      <div>
+                        <dt>Oldest queued</dt>
+                        <dd>{formatTimestamp(selectedPromptQueue.oldest_created_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Newest update</dt>
+                        <dd>{formatTimestamp(selectedPromptQueue.newest_updated_at)}</dd>
+                      </div>
+                    </dl>
+                    <div className="agent-prompt-queue-list">
+                      {selectedPromptQueue.records.map((record) => (
+                        <div className="agent-prompt-queue-row" key={record.queue_key}>
+                          <div className="agent-prompt-queue-row-main">
+                            <strong>{record.queue_key}</strong>
+                            <span>{record.effect_id}</span>
+                          </div>
+                          <div className="agent-prompt-queue-row-meta">
+                            <span>{record.session_id ?? "No session"}</span>
+                            <span>{record.target}</span>
+                            <span>{formatTimestamp(record.updated_at)}</span>
+                            <span>
+                              {record.coalesced_count} prompt{record.coalesced_count === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          {record.prompt_preview ? (
+                            <p className="agent-prompt-queue-preview">{record.prompt_preview}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                      {selectedPromptQueue.truncated_count > 0 ? (
+                        <div className="empty-state compact-empty-state">
+                          {selectedPromptQueue.truncated_count} additional queued record{selectedPromptQueue.truncated_count === 1 ? "" : "s"} not shown.
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+              </article>
+            ) : null}
 
             {selectedMetadata ? (
               <details className="panel compact-disclosure">
