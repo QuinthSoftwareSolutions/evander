@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Disabled pending `voice_session_query` wake requests when
   `submit_voice_query_response` answers or fails the delegated query, preventing
   stale query wakes after the active voice session already received the answer.
+- Kept that cleanup active for retryable voice query wakes after failed or
+  timed-out dispatch attempts.
 - Stopped automatic `voice_session_reconciliation` wake scheduling from phone
   result polling, voice bridge sync, and Teams meeting completion paths.
 

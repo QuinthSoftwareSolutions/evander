@@ -1251,7 +1251,8 @@ def disable_pending_voice_query_wake(
         return False
     if not request.enabled:
         return False
-    if request_id in wake_store.latest_dispatch_by_request_id():
+    latest_dispatch = wake_store.latest_dispatch_by_request_id().get(request_id)
+    if latest_dispatch is not None and latest_dispatch.status == "dispatched":
         return False
     request.enabled = False
     request.next_run_at = None
