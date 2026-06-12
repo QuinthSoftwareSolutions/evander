@@ -436,6 +436,28 @@ Workflow graph activity:
 5. Select a graph to inspect activity count, run count, node count, latest activity, status counts,
    user IDs, and active node breakdown.
 
+PR integration preflight:
+
+1. Open **Reports**.
+2. Select **PR integration preflight**.
+3. Enter the Azure DevOps repo, mode, PR ids, and directory path. Pairwise mode checks every
+   unordered PR pair in the submitted set.
+4. Provide `repo_source` only when you want to override the directory-scoped
+   `ado_worker.ado_repo_source`; otherwise leave it blank and the report uses the directory setting.
+5. Click **Run report**.
+6. Review `status`, `summary_text`, participants, checks, warnings, and errors.
+
+Status meanings:
+
+- `clean`: the merge simulation was clean.
+- `conflict`: one or more checks found content conflicts.
+- `missing_ref`: a PR source or target commit/ref could not be resolved locally.
+- `stale_target_branch`: the branch moved after Azure DevOps recorded the target commit.
+- `repo_error`: the selected repo source could not be resolved or queried.
+- `provider_error`: Azure DevOps metadata lookup failed.
+
+The preflight is read-only and does not resolve conflicts or change PR completion policy.
+
 Conformance:
 
 1. Select **Conformance**.

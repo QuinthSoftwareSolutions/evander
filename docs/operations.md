@@ -1635,6 +1635,95 @@ names with case-insensitive `and`, `or`, `not`, and parentheses, for example
 with an operator. Keep polling bounded with `status`, `source_ref_name`,
 `target_ref_name`, `min_time`/`max_time`, `top`, `skip`, or `cursor`.
 
+### Read-only PR integration preflight
+
+Use the preflight when you need to check whether one PR, every pair in a related
+set of PRs, or a proposed merge order will conflict before you take any action
+on the branch.
+Admin Web exposes the same check under **Reports > PR integration preflight**
+and calls:
+
+```bash
+POST /api/admin/pr-integration-preflight
+```
+
+Request body fields:
+
+- `provider`: use `azure_devops`, `azure-devops`, or `ado`; the endpoint
+  normalizes them to Azure DevOps only.
+- `repo`: the Azure DevOps repo identifier.
+- `mode`: `single`, `pairwise`, or `ordered`. Pairwise mode checks every
+  unordered PR pair in the submitted set.
+- `pr_ids`: an array of PR ids, or a comma/newline-delimited string in the UI.
+- `directory_path`: defaults to `root`.
+- `repo_source`: optional; omit it when the selected directory already defines
+  `ado_worker.ado_repo_source`.
+- `organization_url` and `project`: optional Azure DevOps overrides.
+
+The response includes `status`, `summary_text`, `participants`, `checks`,
+`warnings`, and `errors`. Status values are:
+
+- `clean`: the merge simulation was clean.
+- `conflict`: one or more merge checks found content conflicts.
+- `missing_ref`: a source or target commit/ref could not be resolved locally.
+- `stale_target_branch`: the target branch moved since Azure DevOps recorded it.
+- `repo_error`: the local repository could not be resolved or queried.
+- `provider_error`: the Azure DevOps lookup failed.
+
+Example request and conflict summary:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8100/api/admin/pr-integration-preflight \
+  -H 'content-type: application/json' \
+  -d '{
+    "provider": "azure_devops",
+    "repo": "repo-1",
+    "directory_path": "root/team-a",
+    "repo_source": "/work/repo",
+    "mode": "ordered",
+    "pr_ids": ["17", "18"]
+  }'
+```
+
+```json
+{
+  "status": "conflict",
+  "summary_text": "ordered preflight found conflict for PRs 17, 18: 2 conflicted paths.",
+  "participants": [
+    {
+      "pr_id": "17",
+      "source_commit": "1111111",
+      "target_commit": "aaaaaaa",
+      "status": "clean"
+    },
+    {
+      "pr_id": "18",
+      "source_commit": "2222222",
+      "target_commit": "aaaaaaa",
+      "status": "conflict",
+      "explanation": "merge conflict on 2 paths: src/app.py, tests/test_app.py"
+    }
+  ],
+  "checks": [
+    {
+      "index": 1,
+      "pr_ids": ["17"],
+      "status": "clean",
+      "explanation": "merged cleanly"
+    },
+    {
+      "index": 2,
+      "pr_ids": ["17", "18"],
+      "status": "conflict",
+      "conflicted_paths": ["src/app.py", "tests/test_app.py"]
+    }
+  ]
+}
+```
+
+This is read-only: it does not update refs, resolve conflicts, push branches,
+or change PR completion policy.
+
 Use `query:session:list` when the workflow should route by pack-owned session
 metadata instead of a platform-specific PR binding. For PR collaboration packs,
 common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
