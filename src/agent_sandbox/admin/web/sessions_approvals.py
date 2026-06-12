@@ -773,15 +773,15 @@ def session_approval_routes(
             return json_error("Request body must be a JSON object.")
         try:
             resume_at = _parse_datetime(payload.get("resume_at")) if "resume_at" in payload else None
-            if resume_at is not None and "run_now" in payload:
-                return json_error("Provide either resume_at or run_now=true, not both.")
             if "run_now" in payload:
                 run_now_raw = payload.get("run_now")
                 if not isinstance(run_now_raw, bool):
                     return json_error("run_now must be a boolean.")
                 run_now = bool(run_now_raw)
+                if resume_at is not None and run_now:
+                    return json_error("Provide either resume_at or run_now=true, not both.")
             else:
-                run_now = True
+                run_now = resume_at is None
             if resume_at is None and not run_now:
                 return json_error("Either resume_at or run_now=true is required.")
             updated = service.retry_scheduled_wake(

@@ -602,6 +602,8 @@ def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_
     assert failure_entry["retry_available"] is True
     assert "\n" not in (failure_entry["failure_reason"] or "")
     assert "second line" in (failure_entry["failure_reason"] or "")
+    assert "token=secret" not in (failure_entry["failure_reason"] or "")
+    assert "token=[redacted]" in (failure_entry["failure_reason"] or "")
 
 
 def test_list_ledger_entries_returns_no_rows_for_nonpositive_limit(

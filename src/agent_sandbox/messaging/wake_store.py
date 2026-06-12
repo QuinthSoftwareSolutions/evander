@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
@@ -1065,6 +1066,12 @@ class WakeRequestStore:
         if not text:
             return None
         text = " ".join(text.split())
+        text = re.sub(r"(?i)\bbearer\s+[^,\s;]+", "Bearer [redacted]", text)
+        text = re.sub(
+            r"(?i)\b(secret|token|private|password|api[_-]?key|authorization)(\s*[=:]\s*)[^,\s;]+",
+            lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+            text,
+        )
         if len(text) <= limit:
             return text
         if limit <= 3:

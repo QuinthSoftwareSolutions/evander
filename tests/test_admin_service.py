@@ -12558,10 +12558,12 @@ def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
     assert updated["status"] == "pending"
     assert updated["enabled"] is True
     assert updated["next_run_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert updated["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
     assert updated["failure_reason"] is None
     assert updated["last_error"] is None
     assert updated["latest_dispatch"]["status"] == "failed"
     assert request is not None
+    assert request.schedule.resume_at == retry_at
     retry_history = request.resume_prompt.metadata["retry_history"]
     assert retry_history[0]["previous_status"] == "failed"
     assert retry_history[0]["previous_failure_reason"] is not None

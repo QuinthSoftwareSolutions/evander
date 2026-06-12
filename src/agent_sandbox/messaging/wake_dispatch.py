@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import time
 from collections.abc import Mapping
@@ -58,6 +59,12 @@ def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
     if not text:
         return None
     text = " ".join(text.split())
+    text = re.sub(r"(?i)\bbearer\s+[^,\s;]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"(?i)\b(secret|token|private|password|api[_-]?key|authorization)(\s*[=:]\s*)[^,\s;]+",
+        lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+        text,
+    )
     if len(text) <= limit:
         return text
     if limit <= 3:

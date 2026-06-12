@@ -1190,6 +1190,52 @@ def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
     assert "not retryable" in response.json()["error"]
 
 
+def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    failed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work",
+        resume_at=datetime.now(UTC) + timedelta(minutes=10),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed-reschedule",
+            request_id=failed.request_id,
+            session_id="issue-14086-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work"),
+            dispatched_at=datetime.now(UTC),
+            error="resume failed secret=abc123",
+        )
+    )
+    retry_at = datetime.now(UTC) + timedelta(hours=1)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
+        json={"resume_at": retry_at.isoformat()},
+    )
+
+    assert response.status_code == 200
+    item = response.json()["item"]
+    assert item["request_id"] == failed.request_id
+    assert item["status"] == "pending"
+    assert item["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert item["next_run_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert item["failure_reason"] is None
+
+
 def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

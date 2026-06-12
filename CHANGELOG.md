@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Scheduled Wake Delivery Ledger
+
+- Added a durable scheduled-wake ledger over the existing wake request store,
+  including pending, due, dispatching, dispatched, failed, missed/late, and
+  completed/acknowledged states with dispatch evidence and redacted operator
+  failure summaries.
+- Added Admin API and Sessions page views for filtering recent scheduled wakes
+  and retrying or rescheduling failed and missed wake requests.
+- Added a scheduled-wake lateness threshold so overdue wakes are visible and
+  recoverable without reading host logs.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced

@@ -9520,11 +9520,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         now = _utc_now()
         validated_resume_at = None
+        updated_schedule = request.schedule
         if resume_at is not None:
-            validated_resume_at = WakeScheduleDefinition(resume_at=resume_at).resume_at
+            updated_schedule = WakeScheduleDefinition(resume_at=resume_at)
+            validated_resume_at = updated_schedule.resume_at
             next_run_at = validated_resume_at or now
         else:
             next_run_at = now
+        self._enforce_wake_schedule_guardrails(
+            session_id=request.session_id,
+            schedule=updated_schedule,
+            enabled=True,
+            exclude_request_id=request.request_id,
+        )
 
         metadata = dict(request.resume_prompt.metadata or {})
         existing_history = metadata.get("retry_history")
@@ -9543,6 +9551,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         metadata["retry_history"] = retry_history[-10:]
         request.resume_prompt.metadata = metadata
+        request.schedule = updated_schedule
         request.enabled = True
         request.next_run_at = next_run_at
         request.status = "due" if next_run_at <= now else "pending"

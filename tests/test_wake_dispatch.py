@@ -293,8 +293,8 @@ def test_resume_binding_sanitizes_failure_stdout_stderr_and_exit_code(
     assert result.error is not None
     assert "exit_code=2" in result.error
     latest = wake_store.latest_dispatch_by_request_id()["wake-failed"]
-    assert latest.metadata["stdout"] == "line one secret=abc123"
-    assert latest.metadata["stderr"] == "line two private=xyz789"
+    assert latest.metadata["stdout"] == "line one secret=[redacted]"
+    assert latest.metadata["stderr"] == "line two private=[redacted]"
     assert "\n" not in latest.error
     assert "\n" not in latest.metadata["stdout"]
     assert "\n" not in latest.metadata["stderr"]
