@@ -416,7 +416,7 @@ def test_voice_media_controller_client_provisions_and_syncs_inbound_call(
                 json={
                     "voice_session_id": "voice-inbound-1",
                     "status": "ended",
-                    "reconciliation_status": "scheduled",
+                    "reconciliation_status": "not_requested",
                 },
             )
         return httpx.Response(404, json={"error": "unexpected path"})
@@ -446,7 +446,7 @@ def test_voice_media_controller_client_provisions_and_syncs_inbound_call(
     provisioned, synced = asyncio.run(run())
 
     assert provisioned["voice_session_id"] == "voice-inbound-1"
-    assert synced["reconciliation_status"] == "scheduled"
+    assert synced["reconciliation_status"] == "not_requested"
     assert [request.url.path for request in requests] == [
         "/voice-sessions/inbound-phone-calls",
         "/voice-sessions/voice-inbound-1/bridge-result",
@@ -1002,7 +1002,7 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
         return {
             "voice_session_id": voice_session_id,
             "status": payload.get("status"),
-            "reconciliation_status": "scheduled",
+            "reconciliation_status": "not_requested",
         }
 
     monkeypatch.setattr(

@@ -1954,6 +1954,7 @@ def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
     query_id = response.json()["query_id"]
     scheduled = context.wake_store.list_requests(session_id="session-1")
     assert scheduled[0].request_id == f"voice-query:{query_id}"
+    assert scheduled[0].enabled is True
 
     server = create_server(context)
     result = _call_tool(
@@ -1973,6 +1974,10 @@ def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
         "voice_session_id": voice_record.voice_session_id,
         "status": "answered",
     }
+    disabled_wake = context.wake_store.get_request(f"voice-query:{query_id}")
+    assert disabled_wake is not None
+    assert disabled_wake.enabled is False
+    assert disabled_wake.next_run_at is None
     get_response = client.get(
         f"/voice-sessions/{voice_record.voice_session_id}/queries/{query_id}",
         headers={"Authorization": "Bearer controller-token"},
@@ -2144,7 +2149,7 @@ def test_inbound_phone_call_provisioning_rejects_blocked_caller_without_creating
     assert blocked_number not in audit_text
 
 
-def test_inbound_phone_bridge_result_updates_voice_session_and_reconciles(
+def test_inbound_phone_bridge_result_updates_voice_session_without_auto_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2199,7 +2204,7 @@ def test_inbound_phone_bridge_result_updates_voice_session_and_reconciles(
 
     assert synced.status_code == 200
     assert synced.json()["status"] == "ended"
-    assert synced.json()["reconciliation_status"] == "scheduled"
+    assert synced.json()["reconciliation_status"] == "not_requested"
     record = context.voice_session_store.get_by_voice_session_id(voice_session_id)
     assert record is not None
     assert record.status == "ended"
@@ -2208,11 +2213,8 @@ def test_inbound_phone_bridge_result_updates_voice_session_and_reconciles(
         "caller: Can ops confirm the deployment?\n"
         "assistant: Ops will check the deployment window."
     )
-    assert record.reconciliation_status == "scheduled"
-    scheduled = context.wake_store.list_requests(session_id="team-origin")
-    assert len(scheduled) == 1
-    assert scheduled[0].request_id == f"voice-session-reconcile:{voice_session_id}"
-    assert "Inbound caller asked ops" in scheduled[0].resume_prompt.prompt
+    assert record.reconciliation_status == "not_requested"
+    assert context.wake_store.list_requests(session_id="team-origin") == []
 
 
 def test_inbound_phone_call_provisioning_rejects_missing_route_with_root_token(

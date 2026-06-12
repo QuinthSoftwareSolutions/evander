@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Voice Wake Cleanup
+
+- Disabled pending `voice_session_query` wake requests when
+  `submit_voice_query_response` answers or fails the delegated query, preventing
+  stale query wakes after the active voice session already received the answer.
+- Stopped automatic `voice_session_reconciliation` wake scheduling from phone
+  result polling, voice bridge sync, and Teams meeting completion paths.
+
 ## 2026-06-12 - Ansible Worker Config Preservation
 
 - Changed the Ansible control-plane deploy role so worker/global JSON config

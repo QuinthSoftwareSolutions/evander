@@ -1002,9 +1002,6 @@ class OpenAIRealtimePhoneCallService:
                     record.voice_session_id,
                     bridge_payload,
                 )
-        if record.status in {"ended", "failed"} and self.reconciler is not None:
-            self.reconciler.schedule_reconciliation(record.voice_session_id)
-            record = self.store.get_by_voice_session_id(record.voice_session_id) or record
         return voice_phone_call_result_payload(record)
 
     def _find_record(
@@ -1235,6 +1232,32 @@ class VoiceQueryDelegator:
             query.query_id,
             wake_request_id=request_id,
         )
+
+
+def disable_pending_voice_query_wake(
+    *,
+    query: VoiceQueryRecord,
+    wake_store: WakeRequestRepository,
+) -> bool:
+    request_id = str(query.wake_request_id or f"voice-query:{query.query_id}").strip()
+    if not request_id:
+        return False
+    request = wake_store.get_request(request_id)
+    if request is None:
+        return False
+    if request.session_id != query.origin_session_id:
+        return False
+    if request.source != "voice_session_query":
+        return False
+    if not request.enabled:
+        return False
+    if request_id in wake_store.latest_dispatch_by_request_id():
+        return False
+    request.enabled = False
+    request.next_run_at = None
+    request.updated_at = datetime.now(UTC)
+    wake_store.upsert_request(request)
+    return True
 
 
 def realtime_session_config(config: Any) -> dict[str, Any]:

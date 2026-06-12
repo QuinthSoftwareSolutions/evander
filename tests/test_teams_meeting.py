@@ -343,7 +343,9 @@ def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
     assert voice_record.meeting_id == "meeting-1"
 
 
-def test_teams_meeting_stop_reconciles_projected_agent_speech(tmp_path: Path) -> None:
+def test_teams_meeting_stop_completes_projected_agent_speech_without_auto_reconciliation(
+    tmp_path: Path,
+) -> None:
     from agent_sandbox.teams_meeting import TeamsMeetingService
 
     context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
@@ -406,6 +408,8 @@ def test_teams_meeting_stop_reconciles_projected_agent_speech(tmp_path: Path) ->
     assert voice_record.transcript == (
         "Can you commit to Friday?\nassistant: I can commit to Friday."
     )
+    assert voice_record.reconciliation_status == "not_requested"
+    assert context.wake_store.list_requests(session_id="origin-session") == []
     assert "partial status" not in voice_record.transcript
 
 

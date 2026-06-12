@@ -627,9 +627,6 @@ class TeamsMeetingService:
             transcript=transcript,
             summary="Teams meeting ended; review the transcript for decisions and follow-up.",
         )
-        reconciler = getattr(self.runtime, "voice_session_reconciler", None)
-        if reconciler is not None:
-            reconciler.schedule_reconciliation(voice_session_id)
 
 
 def build_teams_meeting_bridge_client(config: Any) -> TeamsMeetingBridgeClient:

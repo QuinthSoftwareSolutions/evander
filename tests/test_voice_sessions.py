@@ -18,6 +18,7 @@ from agent_sandbox.voice_sessions import (
     VoiceQueryDelegator,
     VoiceSessionReconciler,
     VoiceSessionStore,
+    disable_pending_voice_query_wake,
     voice_query_payload,
 )
 
@@ -245,11 +246,38 @@ def test_voice_query_delegator_schedules_origin_agent_wake_and_completes(
     scheduled = wake_store.list_requests(session_id="session-1")
     assert len(scheduled) == 1
     assert scheduled[0].request_id == f"voice-query:{query.query_id}"
+    assert scheduled[0].enabled is True
     assert "submit_voice_query_response" in scheduled[0].resume_prompt.prompt
     assert completed.status == "answered"
     assert completed.answer == "The migration adds the voice query table."
+    assert disable_pending_voice_query_wake(query=completed, wake_store=wake_store) is True
+    disabled_request = wake_store.get_request(f"voice-query:{query.query_id}")
+    assert disabled_request is not None
+    assert disabled_request.enabled is False
+    assert disabled_request.next_run_at is None
     payload = voice_query_payload(completed)
     assert payload["citations"] == ["migrations/voice.sql"]
+
+    failed_query = VoiceQueryDelegator(
+        store=store,
+        wake_store=wake_store,
+    ).create_query_and_wake_origin(
+        session_record.voice_session_id,
+        question="Can you inspect the deployment log?",
+    )
+    failed = store.complete_query(
+        failed_query.query_id,
+        origin_session_id="session-1",
+        answer="The deployment log is unavailable.",
+        status="failed",
+    )
+
+    assert failed.status == "failed"
+    assert disable_pending_voice_query_wake(query=failed, wake_store=wake_store) is True
+    failed_request = wake_store.get_request(f"voice-query:{failed_query.query_id}")
+    assert failed_request is not None
+    assert failed_request.enabled is False
+    assert failed_request.next_run_at is None
 
 
 def test_voice_session_retry_clears_terminal_failure_fields(tmp_path: Path) -> None:
@@ -293,7 +321,7 @@ def test_voice_session_retry_clears_terminal_failure_fields(tmp_path: Path) -> N
     assert retried.ended_at is None
 
 
-def test_openai_realtime_phone_backend_starts_bridge_and_reconciles(
+def test_openai_realtime_phone_backend_starts_bridge_without_auto_reconciliation(
     tmp_path: Path,
 ) -> None:
     store = VoiceSessionStore(tmp_path / "voice-sessions.json")
@@ -336,11 +364,8 @@ def test_openai_realtime_phone_backend_starts_bridge_and_reconciles(
     assert bridge.start_calls[0]["realtime"]["model"] == "gpt-realtime-2"
     assert result["status"] == "ended"
     assert result["transcript"] == "Jonathan: approve item 123"
-    assert result["reconciliation_status"] == "scheduled"
-    scheduled = wake_store.list_requests(session_id="session-1")
-    assert len(scheduled) == 1
-    assert scheduled[0].request_id.startswith("voice-session-reconcile:")
-    assert "Approve item 123" in scheduled[0].resume_prompt.prompt
+    assert result["reconciliation_status"] == "not_requested"
+    assert wake_store.list_requests(session_id="session-1") == []
     assert bridge.start_calls[0]["projection"]["tool_summary"] == _projected_tool_summary(
         "session-1"
     )
