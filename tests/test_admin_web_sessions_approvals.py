@@ -27,6 +27,8 @@ from agent_sandbox.models import (
     ApprovalStatus,
     SessionManifest,
     ToolName,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
 )
 
 
@@ -1058,6 +1060,134 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
     assert update_resume_response.json()["item"]["schedule_kind"] == "resume_at"
     assert delete_response.status_code == 200
     assert delete_response.json()["ok"] is True
+
+
+def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    failed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work",
+        resume_at=datetime.now(UTC) + timedelta(minutes=10),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=failed.request_id,
+            session_id="issue-14086-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work"),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+    completed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Already finished",
+        resume_at=datetime.now(UTC) + timedelta(minutes=20),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-14086-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished"),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-14086-session"},
+    )
+    client = TestClient(create_app(service))
+
+    list_response = client.get(
+        "/api/admin/scheduled-wakes",
+        params={
+            "session_id": "issue-14086-session",
+            "statuses": "failed,completed_or_acknowledged",
+            "include_completed": "false",
+        },
+    )
+    retry_response = client.post(
+        f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
+        json={"run_now": True},
+    )
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert [item["request_id"] for item in list_payload["items"]] == [failed.request_id]
+    item = list_payload["items"][0]
+    assert item["prompt_summary"] == "Resume work"
+    assert item["redacted_prompt"] == "[redacted]"
+    assert item["failure_reason"] is not None
+    assert "\n" not in item["failure_reason"]
+    assert retry_response.status_code == 200
+    retry_item = retry_response.json()["item"]
+    assert retry_item["request_id"] == failed.request_id
+    assert retry_item["enabled"] is True
+    assert retry_item["latest_dispatch"]["status"] == "failed"
+    assert retry_item["failure_reason"] is None
+    assert retry_item["last_error"] is None
+
+
+def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    completed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Already finished",
+        resume_at=datetime.now(UTC) + timedelta(minutes=20),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-14086-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished"),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-14086-session"},
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/scheduled-wakes/{completed.request_id}/retry",
+        json={"run_now": True},
+    )
+
+    assert response.status_code == 409
+    assert "not retryable" in response.json()["error"]
 
 
 def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:

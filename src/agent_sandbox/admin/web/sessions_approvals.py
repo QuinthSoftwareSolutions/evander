@@ -269,6 +269,41 @@ def _wake_schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+_WAKE_LEDGER_STATUSES = {
+    "pending",
+    "due",
+    "dispatching",
+    "queued",
+    "dispatched",
+    "failed",
+    "missed_or_late",
+    "completed_or_acknowledged",
+    "cancelled",
+}
+
+
+def _parse_wake_statuses(value: str | None) -> list[str] | None:
+    if value is None or not value.strip():
+        return None
+    statuses: list[str] = []
+    seen: set[str] = set()
+    for part in value.split(","):
+        normalized = part.strip().lower()
+        if not normalized:
+            continue
+        if normalized not in _WAKE_LEDGER_STATUSES:
+            raise ValueError(f"Invalid wake status: {part.strip()}")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        statuses.append(normalized)
+    return statuses or None
+
+
+def _wake_ledger_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return _iso(item)
+
+
 def session_approval_routes(
     service: AdminService,
     auth: AdminWebAuth,
@@ -657,6 +692,22 @@ def session_approval_routes(
             return json_error(str(exc), status_code=400)
         return JSONResponse({"items": [_wake_schedule_payload(item) for item in items]})
 
+    async def list_scheduled_wakes(request: Request) -> JSONResponse:
+        params = request.query_params
+        limit = _parse_int(params.get("limit"))
+        try:
+            items = service.list_scheduled_wake_ledger(
+                statuses=_parse_wake_statuses(params.get("statuses")),
+                session_id=params.get("session_id"),
+                limit=100 if limit is None else limit,
+                include_completed=_parse_bool(
+                    params.get("include_completed"), default=True
+                ),
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse({"items": [_wake_ledger_payload(item) for item in items]})
+
     async def create_wake_schedule(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -710,6 +761,42 @@ def session_approval_routes(
             return json_error(str(exc), status_code=status_code)
         return JSONResponse({"item": _wake_schedule_payload(updated.model_dump(mode="json"))})
 
+    async def retry_scheduled_wake(request: Request) -> JSONResponse:
+        request_id = request.path_params.get("request_id", "")
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        try:
+            resume_at = _parse_datetime(payload.get("resume_at")) if "resume_at" in payload else None
+            if resume_at is not None and "run_now" in payload:
+                return json_error("Provide either resume_at or run_now=true, not both.")
+            if "run_now" in payload:
+                run_now_raw = payload.get("run_now")
+                if not isinstance(run_now_raw, bool):
+                    return json_error("run_now must be a boolean.")
+                run_now = bool(run_now_raw)
+            else:
+                run_now = True
+            if resume_at is None and not run_now:
+                return json_error("Either resume_at or run_now=true is required.")
+            updated = service.retry_scheduled_wake(
+                request_id,
+                resume_at=resume_at,
+                run_now=run_now,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "not retryable" in message.lower():
+                return json_error(message, status_code=409)
+            status_code = 404 if "not found" in message.lower() else 400
+            return json_error(message, status_code=status_code)
+        return JSONResponse({"item": _wake_ledger_payload(updated)})
+
     async def remove_wake_schedule(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
         try:
@@ -755,6 +842,11 @@ def session_approval_routes(
             methods=["GET"],
         ),
         Route(
+            "/api/admin/scheduled-wakes",
+            list_scheduled_wakes,
+            methods=["GET"],
+        ),
+        Route(
             "/api/admin/sessions/{session_id:str}/wake-schedules",
             create_wake_schedule,
             methods=["POST"],
@@ -763,6 +855,11 @@ def session_approval_routes(
             "/api/admin/sessions/wake-schedules/{request_id:str}",
             update_wake_schedule,
             methods=["PATCH"],
+        ),
+        Route(
+            "/api/admin/scheduled-wakes/{request_id:str}/retry",
+            retry_scheduled_wake,
+            methods=["POST"],
         ),
         Route(
             "/api/admin/sessions/wake-schedules/{request_id:str}",
