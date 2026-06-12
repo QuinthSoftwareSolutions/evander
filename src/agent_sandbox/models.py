@@ -2815,11 +2815,28 @@ class WakeScheduledRequest(BaseModel):
     resume_prompt: WakeResumePromptPayload
     resume_mode: str = Field(default="same_context")
     enabled: bool = True
+    status: str = Field(default="pending")
+    status_reason: str | None = None
+    status_updated_at: datetime | None = None
+    last_dispatch_id: str | None = None
+    last_dispatch_status: str | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+    completed_at: datetime | None = None
+    completion_evidence: dict[str, Any] = Field(default_factory=dict)
     source: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return "pending"
+        return normalized
 
     @field_validator("resume_mode")
     @classmethod
