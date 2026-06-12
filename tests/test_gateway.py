@@ -32,6 +32,9 @@ from agent_sandbox.gateway import (
 )
 from agent_sandbox.admin.web.chat import ChatStore
 from agent_sandbox.models import (
+    AgentPromptQueueRecord,
+    AgentPromptQueueSummary,
+    AgentRecord,
     ApprovalStatus,
     DiscordCommandEnvelope,
     ListPullRequestsResponse,
@@ -1390,7 +1393,33 @@ def test_assistant_list_agents_defaults_to_all_directories(
     def fake_list_agents(self: AdminService, **kwargs: Any) -> list[object]:
         del self
         list_agents_kwargs.update(kwargs)
-        return []
+        return [
+            AgentRecord(
+                agent_id="agent-1",
+                backend="container_worker_vm",
+                target_name="container-target",
+                session_id="target-session",
+                directory_path="root/team-a",
+                status="running",
+                prompt_queue=AgentPromptQueueSummary(
+                    record_count=1,
+                    coalesced_count=1,
+                    records=[
+                        AgentPromptQueueRecord(
+                            queue_key="pr-feedback:target-session:thread-1",
+                            effect_id="effect-agent-enqueue-prompt-1",
+                            target="target-session",
+                            vm_name="container-target",
+                            session_id="target-session",
+                            created_at=datetime(2026, 6, 12, 4, 30, tzinfo=UTC),
+                            updated_at=datetime(2026, 6, 12, 4, 31, tzinfo=UTC),
+                            prompt_preview="queued operator prompt",
+                            prompt_length=22,
+                        )
+                    ],
+                ),
+            )
+        ]
 
     monkeypatch.setattr(AdminService, "list_agents", fake_list_agents)
     server = create_server(context)
@@ -1403,8 +1432,12 @@ def test_assistant_list_agents_defaults_to_all_directories(
 
     assert list_agents_kwargs["directory_path"] == "root"
     assert list_agents_kwargs["all_directories"] is True
+    assert list_agents_kwargs["include_prompt_queue"] is False
     assert result["all_directories"] is True
     assert result["directory_path"] is None
+    assert result["count"] == 1
+    assert "prompt_queue" not in result["agents"][0]
+    assert "queued operator prompt" not in json.dumps(result)
 
 
 def test_assistant_read_config_returns_directory_global_and_worker_config(

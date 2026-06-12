@@ -2812,9 +2812,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 include_inactive=include_inactive,
                 backend=backend,
                 all_directories=list_all_directories,
+                include_prompt_queue=False,
             )
             agents = [
-                record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
+                record.model_dump(mode="json", exclude={"prompt_queue"})
+                if hasattr(record, "model_dump")
+                else {
+                    key: value
+                    for key, value in dict(record).items()
+                    if key != "prompt_queue"
+                }
                 for record in records
             ]
             result = {

@@ -108,6 +108,42 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
           stop: false,
           destroy: false,
         },
+        prompt_queue: {
+          record_count: 2,
+          coalesced_count: 4,
+          oldest_created_at: "2026-05-18T10:02:00Z",
+          newest_updated_at: "2026-05-18T10:04:00Z",
+          truncated_count: 0,
+          read_error: null,
+          records: [
+            {
+              queue_key: "pr-feedback:session-1:thread-38610",
+              effect_id: "effect-agent-enqueue-prompt-2",
+              target: "session-1",
+              vm_name: "agent-1",
+              session_id: "session-1",
+              created_at: "2026-05-18T10:02:00Z",
+              updated_at: "2026-05-18T10:04:00Z",
+              coalesced_count: 3,
+              prompt_preview: "Address the latest PR feedback.",
+              prompt_length: 31,
+              metadata: {},
+            },
+            {
+              queue_key: "scheduled-wake:session-1",
+              effect_id: "scheduled-wake:session-1",
+              target: "session-1",
+              vm_name: "agent-1",
+              session_id: "session-1",
+              created_at: "2026-05-18T10:03:00Z",
+              updated_at: "2026-05-18T10:03:00Z",
+              coalesced_count: 1,
+              prompt_preview: "Resume from queue.",
+              prompt_length: 18,
+              metadata: {},
+            },
+          ],
+        },
       },
     ],
     directory_path: "root/team",
@@ -335,9 +371,14 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
   await assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM template dotnet \/ dotnet-agent\.qcow2/);
+  await assert.match(await page.locator(".agent-list-item.selected").innerText(), /Prompt queue: 2 records \/ 4 prompts/);
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
+  await assert.match(await page.locator(".feature-content").innerText(), /Prompt queue/);
+  await assert.match(await page.locator(".feature-content").innerText(), /2 records \/ 4 prompts/);
+  await assert.match(await page.locator(".feature-content").innerText(), /pr-feedback:session-1:thread-38610/);
+  await assert.match(await page.locator(".feature-content").innerText(), /effect-agent-enqueue-prompt-2/);
   await assert.match(await page.locator(".agent-inline-label").filter({ hasText: "vm-type" }).innerText(), /issue/);
   assert.equal(await page.locator(".panel-header h3").filter({ hasText: /^Labels$/ }).count(), 0);
   const steeringButton = page.getByRole("button", { name: "Operator steering" });

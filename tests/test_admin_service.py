@@ -39,7 +39,10 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+from agent_sandbox.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 from agent_sandbox.model_usage.runtime import register_model_usage_correlation_context
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
@@ -245,6 +248,93 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].backend == "container_worker_vm"
     assert agents[0].status == "prepared"
     assert agents[0].host["labels"] == {"role": "demo"}
+
+
+def test_list_agents_includes_matching_prompt_queue_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="pr-feedback:container-session:thread-1",
+            target="container-session",
+            vm_name="container-target",
+            session_id="container-session",
+            prompt="First queued feedback",
+            effect_id="effect-agent-enqueue-prompt-1",
+            created_at=datetime(2026, 6, 12, 4, 30, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 12, 4, 31, tzinfo=UTC),
+            coalesced_count=3,
+        )
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="scheduled-wake:container-session",
+            target="container-session",
+            vm_name="container-target",
+            session_id="container-session",
+            prompt="Second queued wake prompt",
+            effect_id="scheduled-wake:container-session",
+            created_at=datetime(2026, 6, 12, 4, 32, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 12, 4, 33, tzinfo=UTC),
+        )
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="pr-feedback:other-session:thread-1",
+            target="other-session",
+            vm_name="other-target",
+            session_id="other-session",
+            prompt="Unrelated queued feedback",
+            effect_id="effect-agent-enqueue-prompt-1",
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    list_kwargs = {
+        "directory_path": "root",
+        "direct_only": True,
+        "include_inactive": True,
+        "reconcile_containers": False,
+    }
+
+    unprivileged_agents = service.list_agents(**list_kwargs)
+    assert len(unprivileged_agents) == 1
+    assert unprivileged_agents[0].prompt_queue.record_count == 0
+    assert unprivileged_agents[0].prompt_queue.records == []
+
+    agents = service.list_agents(**list_kwargs, include_prompt_queue=True)
+
+    assert len(agents) == 1
+    queue = agents[0].prompt_queue
+    assert queue.record_count == 2
+    assert queue.coalesced_count == 4
+    assert queue.oldest_created_at == datetime(2026, 6, 12, 4, 30, tzinfo=UTC)
+    assert queue.newest_updated_at == datetime(2026, 6, 12, 4, 33, tzinfo=UTC)
+    assert queue.truncated_count == 0
+    assert [record.queue_key for record in queue.records] == [
+        "scheduled-wake:container-session",
+        "pr-feedback:container-session:thread-1",
+    ]
+    assert queue.records[0].prompt_preview == "Second queued wake prompt"
+    assert queue.records[1].coalesced_count == 3
 
 
 @pytest.mark.parametrize(

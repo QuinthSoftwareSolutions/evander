@@ -916,6 +916,30 @@ class VmActionResult(BaseModel):
     remote_url: str | None = None
 
 
+class AgentPromptQueueRecord(BaseModel):
+    queue_key: str
+    effect_id: str
+    target: str
+    vm_name: str
+    session_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    coalesced_count: int = 1
+    prompt_preview: str | None = None
+    prompt_length: int = 0
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentPromptQueueSummary(BaseModel):
+    record_count: int = 0
+    coalesced_count: int = 0
+    oldest_created_at: datetime | None = None
+    newest_updated_at: datetime | None = None
+    records: list[AgentPromptQueueRecord] = Field(default_factory=list)
+    truncated_count: int = 0
+    read_error: str | None = None
+
+
 class AgentRecord(BaseModel):
     agent_id: str
     backend: str
@@ -929,6 +953,7 @@ class AgentRecord(BaseModel):
     effective_tool_policy: dict[str, Any] | None = None
     host: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    prompt_queue: AgentPromptQueueSummary = Field(default_factory=AgentPromptQueueSummary)
 
 
 class WorkerSummary(BaseModel):

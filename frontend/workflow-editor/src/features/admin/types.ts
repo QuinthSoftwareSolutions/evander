@@ -102,6 +102,30 @@ export type AgentCapabilities = {
   destroy: boolean;
 };
 
+export type AgentPromptQueueRecord = {
+  queue_key: string;
+  effect_id: string;
+  target: string;
+  vm_name: string;
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+  coalesced_count: number;
+  prompt_preview: string | null;
+  prompt_length: number;
+  metadata: Record<string, string>;
+};
+
+export type AgentPromptQueueSummary = {
+  record_count: number;
+  coalesced_count: number;
+  oldest_created_at: string | null;
+  newest_updated_at: string | null;
+  records: AgentPromptQueueRecord[];
+  truncated_count: number;
+  read_error: string | null;
+};
+
 export type AgentRecord = {
   agent_id: string;
   backend: AgentBackend;
@@ -114,6 +138,7 @@ export type AgentRecord = {
   updated_at: string | null;
   host: Record<string, unknown>;
   capabilities: AgentCapabilities;
+  prompt_queue?: AgentPromptQueueSummary;
 };
 
 export type AgentExecutionRecord = {

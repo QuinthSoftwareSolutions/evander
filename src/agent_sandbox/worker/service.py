@@ -64,6 +64,10 @@ _CODEX_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
 _CODEX_TOOL_SUMMARY_LIMIT = 240
+_SESSION_MESSAGE_ARTIFACTS = {
+    "no response requested",
+    "no response requested.",
+}
 
 
 class WorkerDaemon:
@@ -499,6 +503,8 @@ class WorkerDaemon:
                 for message in _codex_messages_from_session_event(event):
                     if not message:
                         continue
+                    if _is_session_message_artifact(message):
+                        continue
                     if message in seen:
                         continue
                     seen.add(message)
@@ -541,7 +547,11 @@ class WorkerDaemon:
                 ):
                     continue
                 for message in _claude_messages_from_session_event(event):
-                    if not message or message in seen:
+                    if (
+                        not message
+                        or _is_session_message_artifact(message)
+                        or message in seen
+                    ):
                         continue
                     seen.add(message)
                     messages.append(message)
@@ -1493,6 +1503,11 @@ def _codex_messages_from_session_event(event: object) -> list[str]:
             )
         ]
     return []
+
+
+def _is_session_message_artifact(message: str) -> bool:
+    normalized = " ".join(message.strip().split()).casefold()
+    return normalized in _SESSION_MESSAGE_ARTIFACTS
 
 
 def _claude_messages_from_session_event(event: object) -> list[str]:

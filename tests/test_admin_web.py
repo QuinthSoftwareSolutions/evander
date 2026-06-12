@@ -10517,6 +10517,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "omit_vm_state": True,
             "summary_only": True,
             "backend": "all",
+            "include_prompt_queue": True,
         },
         {
             "directory_path": "root/team-a",
@@ -10526,6 +10527,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "omit_vm_state": False,
             "summary_only": False,
             "backend": "all",
+            "include_prompt_queue": True,
         },
         {
             "directory_path": "root/team-a",
@@ -10535,6 +10537,7 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "omit_vm_state": False,
             "summary_only": False,
             "backend": "all",
+            "include_prompt_queue": True,
         },
     ]
 
