@@ -6,20 +6,13 @@ agent_sandbox_repo_accept_newhostkey: true
 agent_sandbox_repo_ssh_private_key: ""
 agent_sandbox_repo_ssh_private_key_path: "/home/{{ agent_sandbox_run_user }}/.ssh/agent-sandbox-repo-deploy-key"
 agent_sandbox_manage_workflow_config: true
-# Worker/global JSON config is operator-editable in the Admin GUI. Keep this true for
-# fully Ansible-managed hosts; set false to create missing files but preserve live edits.
-agent_sandbox_force_render_worker_config: true
 agent_sandbox_repo_managed_base_tracked_config_paths:
   - config/admin-web.env
-  - config/discord-ingest/config.json
   - config/firewall.env
-  - config/teams-ingest/config.json
 agent_sandbox_repo_managed_workflow_config_paths:
-  - config/trigger-orchestrator/config.json
   - config/workflow-packs/agent-container-worker.v1.json
   - "{{ agent_sandbox_workflow_layout_path }}"
 agent_sandbox_repo_managed_workflow_untracked_config_paths:
-  - config/trigger-orchestrator/config.json
   - config/workflow-packs/agent-container-worker.v1.json
   - "{{ agent_sandbox_workflow_layout_path }}"
 agent_sandbox_repo_managed_generated_tracked_paths:
@@ -37,13 +30,11 @@ agent_sandbox_repo_managed_tracked_config_paths: >-
 agent_sandbox_repo_managed_base_untracked_config_paths:
   - config/admin-web.env
   - config/ado-worker.env
-  - config/discord-wake/config.json
   - config/firewall.env
   - config/gateway.env
   - config/http-target-relay.env
   - config/openai-relay.env
   - config/npm-audit-facade.env
-  - config/scheduled-wake/config.json
 agent_sandbox_repo_managed_untracked_config_paths: >-
   {{
     agent_sandbox_repo_managed_base_untracked_config_paths

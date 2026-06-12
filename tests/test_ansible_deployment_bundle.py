@@ -649,6 +649,7 @@ def test_worker_global_live_configs_are_operator_local() -> None:
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
         "config/teams-meeting-ingest/config.json",
+        "config/trigger-orchestrator/config.json",
     ]
     example_paths = [
         "config/ado-worker/config.json.example",
@@ -677,6 +678,33 @@ def test_worker_global_live_configs_are_operator_local() -> None:
     ).stdout.splitlines()
     assert not set(local_config_paths).intersection(tracked)
     assert set(example_paths).issubset(tracked)
+
+
+def test_ansible_worker_global_config_render_only_creates_missing_files() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    worker_config_paths = [
+        "config/ado-worker/config.json",
+        "config/discord-ingest/config.json",
+        "config/discord-wake/config.json",
+        "config/scheduled-wake/config.json",
+        "config/teams-ingest/config.json",
+        "config/trigger-orchestrator/config.json",
+    ]
+
+    assert "agent_sandbox_force_render_worker_config" not in defaults
+    assert "agent_sandbox_force_render_worker_config" not in service_config
+    assert "force: false" in service_config
+    assert "Render managed worker/global JSON config" in service_config
+    for path in worker_config_paths:
+        assert f'path: "{path}"' in service_config
+        assert f"  - {path}" not in defaults
 
 
 def test_ansible_env_template_shell_quotes_values() -> None:

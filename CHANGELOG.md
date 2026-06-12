@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Ansible Worker Config Preservation
+
+- Changed the Ansible control-plane deploy role so worker/global JSON config
+  files are created only when missing and are never overwritten on rerun.
+- Stopped pre-checkout cleanup from deleting ignored worker config files before
+  the non-overwriting render step can preserve Admin Web edits.
+
 ## 2026-06-12 - Queued Claude Container Prompts
 
 - Fixed queued container-worker prompt dispatch so Claude-backed sessions resume
