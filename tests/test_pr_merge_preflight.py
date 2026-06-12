@@ -69,6 +69,17 @@ def _pr(
     )
 
 
+def _assert_repo_clean(repo: Path) -> None:
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    worktree_lines = [
+        line
+        for line in _git(repo, "worktree", "list", "--porcelain").stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+    assert len(worktree_lines) == 1
+
+
 def test_single_preflight_reports_clean_merge(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -177,8 +188,7 @@ def test_pairwise_preflight_reports_conflict_and_leaves_repo_clean(tmp_path: Pat
     assert _git(repo, "rev-parse", "main").stdout.strip() == before_main
     assert _git(repo, "rev-parse", "feat-a").stdout.strip() == before_feat_a
     assert _git(repo, "rev-parse", "feat-b").stdout.strip() == before_feat_b
-    assert not (repo / ".git" / "MERGE_HEAD").exists()
-    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    _assert_repo_clean(repo)
 
 
 def test_ordered_preflight_reports_failing_step_and_cleans_up(tmp_path: Path) -> None:
@@ -221,8 +231,7 @@ def test_ordered_preflight_reports_failing_step_and_cleans_up(tmp_path: Path) ->
     assert _git(repo, "rev-parse", "main").stdout.strip() == before_main
     assert _git(repo, "rev-parse", "feat-a").stdout.strip() == before_feat_a
     assert _git(repo, "rev-parse", "feat-b").stdout.strip() == before_feat_b
-    assert not (repo / ".git" / "MERGE_HEAD").exists()
-    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    _assert_repo_clean(repo)
 
 
 def test_missing_source_commit_or_ref_reports_missing_ref(tmp_path: Path) -> None:
