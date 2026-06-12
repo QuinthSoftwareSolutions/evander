@@ -402,6 +402,7 @@ class GatewayConfig(BaseModel):
     wake_poll_interval_seconds: float = Field(default=30.0, gt=0)
     wake_jitter_seconds: float = Field(default=5.0, ge=0)
     wake_cooldown_seconds: float = Field(default=60.0, ge=0)
+    wake_schedule_late_threshold_seconds: float = Field(default=300.0, ge=0)
     wake_session_cooldown_path: Path = Path(
         "/var/lib/agent-sandbox/wake-session-cooldown.json"
     )
@@ -992,6 +993,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
     cooldown_seconds: float = Field(default=60.0, ge=0)
+    late_threshold_seconds: float = Field(default=300.0, ge=0)
     lock_path: Path | None = None
     session_cooldown_path: Path | None = None
     busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")

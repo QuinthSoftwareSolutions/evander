@@ -1148,6 +1148,24 @@ class WakeRequestStore:
         *,
         latest_dispatch: WakeDispatchRecord | None,
     ) -> str:
+        current_status = self._normalize_status(request.status) or "pending"
+        if current_status in {
+            "due",
+            "queued",
+            "dispatched",
+            "failed",
+            "missed_or_late",
+            "completed_or_acknowledged",
+        }:
+            return current_status
+        if current_status == "dispatching":
+            derived_status, _reason = self._derived_due_status(
+                request,
+                now_utc=datetime.now(UTC),
+                grace=timedelta(0),
+                latest_dispatch=latest_dispatch,
+            )
+            return derived_status
         derived_status, _reason = self._derived_due_status(
             request,
             now_utc=datetime.now(UTC),

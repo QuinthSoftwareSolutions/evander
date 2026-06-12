@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -79,40 +79,53 @@ class ScheduledWakeWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> ScheduledWakeCycleResult:
-        if not self.worker_config.directories:
-            return ScheduledWakeCycleResult(
-                requests_due=0,
-                wakes_dispatched=0,
-                next_sleep_seconds=compute_next_sleep_seconds(
-                    poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                    jitter_seconds=self.worker_config.jitter_seconds,
-                    cooldown_seconds=self.worker_config.cooldown_seconds,
-                    activity_detected=0,
-                ),
-            )
-        wake_store = getattr(self.runtime, "wake_store", None)
-        if wake_store is None:
-            return ScheduledWakeCycleResult(
-                requests_due=0,
-                wakes_dispatched=0,
-                next_sleep_seconds=compute_next_sleep_seconds(
-                    poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                    jitter_seconds=self.worker_config.jitter_seconds,
-                    cooldown_seconds=self.worker_config.cooldown_seconds,
-                    activity_detected=0,
-                ),
-            )
         now_utc = datetime.now(UTC)
+        wake_store = getattr(self.runtime, "wake_store", None)
+        if wake_store is not None:
+            wake_store.mark_request_due_or_missed(
+                now_utc=now_utc,
+                late_after=timedelta(
+                    seconds=max(0.0, self.config.wake_schedule_late_threshold_seconds)
+                ),
+            )
+        if not self.worker_config.directories or wake_store is None:
+            return ScheduledWakeCycleResult(
+                requests_due=0,
+                wakes_dispatched=0,
+                next_sleep_seconds=compute_next_sleep_seconds(
+                    poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                    jitter_seconds=self.worker_config.jitter_seconds,
+                    cooldown_seconds=self.worker_config.cooldown_seconds,
+                    activity_detected=0,
+                ),
+            )
         requests_due = 0
         wakes_dispatched = 0
         for request in wake_store.find_due_requests(now_utc=now_utc):
             session = self.runtime.session_repository.get_session(request.session_id)
             if session is None:
+                self._mark_request_missed_or_late_if_needed(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    reason=(
+                        f"Scheduled wake missed because session {request.session_id} is unavailable."
+                    ),
+                )
                 continue
             if not any(
                 directory_is_within_scope(session.directory_path, scope)
                 for scope in self.worker_config.directories
             ):
+                self._mark_request_missed_or_late_if_needed(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    reason=(
+                        "Scheduled wake missed because session "
+                        f"{request.session_id} is outside the worker directory scope."
+                    ),
+                )
                 continue
             requests_due += 1
             if self._dispatch_request(request=request, session=session, now_utc=now_utc):
@@ -157,6 +170,11 @@ class ScheduledWakeWorker:
     ) -> bool:
         wake_store = self.runtime.wake_store
         source = "scheduled_cron" if (request.schedule.cron or "").strip() else "scheduled_once"
+        wake_metadata: dict[str, Any] = {"schedule_cron": request.schedule.cron}
+        late_seconds = self._request_late_seconds(request, now_utc=now_utc)
+        if late_seconds is not None:
+            wake_metadata["was_late"] = True
+            wake_metadata["late_seconds"] = late_seconds
         binding = SessionWakeBinding(
             session_id=session.session_id,
             vm_id=session.vm_id,
@@ -169,12 +187,37 @@ class ScheduledWakeWorker:
             source=f"scheduled_wake:{source}",
         )
         if self.dispatcher.is_host_disabled(binding):
+            self._mark_request_missed_or_late_if_needed(
+                wake_store=wake_store,
+                request=request,
+                now_utc=now_utc,
+                reason=(
+                    "Scheduled wake missed because host wake dispatch is disabled "
+                    f"for {binding.vm_id or binding.session_id}."
+                ),
+            )
             return False
         if is_session_in_cooldown(
             path=scoped_config.wake_session_cooldown_path,
             session_id=binding.session_id,
         ):
+            self._mark_request_missed_or_late_if_needed(
+                wake_store=wake_store,
+                request=request,
+                now_utc=now_utc,
+                reason=(
+                    f"Scheduled wake missed because session {binding.session_id} is still cooling down."
+                ),
+            )
             return False
+        dispatch_reason = "dispatch attempt started"
+        if late_seconds is not None:
+            dispatch_reason = f"{dispatch_reason} ({late_seconds:.3f}s late)"
+        wake_store.mark_request_dispatching(
+            request.request_id,
+            now_utc=now_utc,
+            reason=dispatch_reason,
+        )
         if session_is_container_worker_vm(session):
             dispatch = self.dispatcher.resume_container_binding(
                 session,
@@ -184,10 +227,18 @@ class ScheduledWakeWorker:
                 dispatch_source=source,
                 request_id=request.request_id,
                 scheduled_for=request.next_run_at or request.schedule.resume_at,
-                wake_metadata={"schedule_cron": request.schedule.cron},
+                wake_metadata=wake_metadata,
             )
         else:
             if not binding.vm_id:
+                self._mark_request_missed_or_late_if_needed(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    reason=(
+                        f"Scheduled wake missed because session {binding.session_id} has no usable VM binding."
+                    ),
+                )
                 return False
             agent_state = probe_agent_dispatch_state(
                 session_id=binding.session_id,
@@ -201,6 +252,14 @@ class ScheduledWakeWorker:
                         session_id=binding.session_id,
                         cooldown_seconds=scoped_config.wake_cooldown_seconds,
                     )
+                self._mark_request_missed_or_late_if_needed(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    reason=(
+                        f"Scheduled wake missed because session {binding.session_id} is busy or unavailable."
+                    ),
+                )
                 return False
             dispatch = self.dispatcher.resume_binding(
                 binding,
@@ -210,7 +269,7 @@ class ScheduledWakeWorker:
                 dispatch_source=source,
                 request_id=request.request_id,
                 scheduled_for=request.next_run_at or request.schedule.resume_at,
-                wake_metadata={"schedule_cron": request.schedule.cron},
+                wake_metadata=wake_metadata,
             )
         dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
         if dispatch_handled:
@@ -237,6 +296,37 @@ class ScheduledWakeWorker:
             )
         return dispatch_handled
 
+    def _request_late_seconds(
+        self, request: WakeScheduledRequest, *, now_utc: datetime
+    ) -> float | None:
+        scheduled_for = request.next_run_at or request.schedule.resume_at
+        if scheduled_for is None:
+            return None
+        late_seconds = (now_utc - scheduled_for).total_seconds()
+        if late_seconds <= 0:
+            return None
+        return round(late_seconds, 3)
+
+    def _mark_request_missed_or_late_if_needed(
+        self,
+        *,
+        wake_store: Any,
+        request: WakeScheduledRequest,
+        now_utc: datetime,
+        reason: str,
+    ) -> None:
+        late_after_seconds = max(0.0, self.config.wake_schedule_late_threshold_seconds)
+        late_seconds = self._request_late_seconds(request, now_utc=now_utc)
+        if late_seconds is None or late_seconds <= late_after_seconds:
+            return
+        request.status = "missed_or_late"
+        request.status_reason = reason
+        request.status_updated_at = now_utc
+        request.last_error = reason
+        request.last_error_at = now_utc
+        request.updated_at = now_utc
+        wake_store.upsert_request(request)
+
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "scheduled-wake" / "config.json"
@@ -255,6 +345,7 @@ def _load_scheduled_wake_worker_global_config(
             "poll_interval_seconds": source.wake_poll_interval_seconds,
             "jitter_seconds": source.wake_jitter_seconds,
             "cooldown_seconds": source.wake_cooldown_seconds,
+            "late_threshold_seconds": source.wake_schedule_late_threshold_seconds,
             "lock_path": source.runtime_dir / "scheduled-wake.lock",
             "session_cooldown_path": source.wake_session_cooldown_path,
             "busy_check_script_path": source.host_busy_check_script_path,
@@ -290,6 +381,7 @@ def build_scheduled_wake_worker(
             "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
             "wake_jitter_seconds": worker_config.jitter_seconds,
             "wake_cooldown_seconds": worker_config.cooldown_seconds,
+            "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
             "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,
             "host_resume_script_path": worker_config.resume_script_path,
