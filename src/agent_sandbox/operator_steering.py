@@ -230,6 +230,60 @@ class OperatorSteeringNoteStore:
             )
         return note
 
+    def create_delivered_note(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        message: str,
+        provider: str,
+        provider_endpoint: str,
+        worker_execution_id: str | None = None,
+        created_by: str | None = None,
+        now: datetime | None = None,
+    ) -> OperatorSteeringNote:
+        timestamp = now or utc_now()
+        note = OperatorSteeringNote(
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            worker_execution_id=worker_execution_id,
+            message=message,
+            status="delivered",
+            created_by=created_by,
+            created_at=timestamp,
+            updated_at=timestamp,
+            delivered_at=timestamp,
+            provider=provider,
+            provider_endpoint=provider_endpoint,
+            delivery_attempts=1,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO operator_steering_notes(
+                    note_id,
+                    session_id,
+                    dispatch_id,
+                    worker_execution_id,
+                    status,
+                    message,
+                    created_by,
+                    created_at,
+                    updated_at,
+                    delivered_at,
+                    cancelled_at,
+                    provider,
+                    provider_endpoint,
+                    error,
+                    delivery_attempts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                self._row_values(note),
+            )
+        return note
+
     def get_note(self, note_id: object) -> OperatorSteeringNote | None:
         normalized_note_id = _optional_text(note_id)
         if normalized_note_id is None:
@@ -475,4 +529,3 @@ class OperatorSteeringNoteStore:
 
 def operator_steering_note_store(runtime_dir: Path | str) -> OperatorSteeringNoteStore:
     return OperatorSteeringNoteStore(Path(runtime_dir) / "operator-steering-notes.db")
-

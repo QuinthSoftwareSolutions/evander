@@ -78,7 +78,16 @@ type OperatorSteeringNoteListResponse = {
 
 type OperatorSteeringNoteMutationResponse = {
   directory_path: string;
+  mode?: "queued_note" | "interrupt_and_resume" | string;
   note: OperatorSteeringNote;
+  interrupt?: {
+    session_id: string;
+    dispatch_id: string;
+    interrupted_execution_id: string;
+    replacement_execution_id: string;
+    thread_id: string | null;
+    message: string;
+  };
 };
 
 type BackendFilter = "all" | AgentBackend;
@@ -1500,14 +1509,18 @@ export function AgentsPage() {
           }),
         },
       );
-      setOperatorSteeringNotes((current) => [
-        payload.note,
-        ...current.filter((note) => note.note_id !== payload.note.note_id),
-      ]);
+      if (payload.note) {
+        setOperatorSteeringNotes((current) => [
+          payload.note,
+          ...current.filter((note) => note.note_id !== payload.note.note_id),
+        ]);
+      }
       setOperatorSteeringDraft("");
-      const actionMessage = `${selectedAgent.target_name}: queued steering note for ${shortDispatchId(payload.note.dispatch_id)}`;
+      const actionMessage = payload.interrupt
+        ? `${selectedAgent.target_name}: interrupted ${shortDispatchId(payload.interrupt.interrupted_execution_id)} and resumed as ${shortDispatchId(payload.interrupt.replacement_execution_id)}`
+        : `${selectedAgent.target_name}: queued steering note for ${shortDispatchId(payload.note.dispatch_id)}`;
       setActionLog((current) => [{ at: new Date().toISOString(), message: actionMessage, tone: "info" as const }, ...current].slice(0, 30));
-      setStatus("Queued operator steering note.");
+      setStatus(payload.interrupt ? "Interrupted agent and sent steering note." : "Queued operator steering note.");
       setError(null);
     } catch (reason: unknown) {
       if (isApiAuthError(reason)) {
@@ -1827,7 +1840,7 @@ export function AgentsPage() {
               </div>
             </dl>
             <label className="field-stack operator-steering-form">
-              <span>Steering note</span>
+              <span>{selectedAgent?.backend === "container_worker_vm" ? "Steering instruction" : "Steering note"}</span>
               <textarea
                 rows={3}
                 maxLength={2000}
@@ -1847,7 +1860,9 @@ export function AgentsPage() {
                 disabled={!operatorSteeringCanSubmit}
                 onClick={() => void submitOperatorSteeringNote()}
               >
-                {operatorSteeringSubmitting ? "Queuing..." : "Queue note"}
+                {operatorSteeringSubmitting
+                  ? (selectedAgent?.backend === "container_worker_vm" ? "Interrupting..." : "Queuing...")
+                  : (selectedAgent?.backend === "container_worker_vm" ? "Interrupt and steer" : "Queue note")}
               </button>
               {canControlWorkflowRuns && !privilegedUnlocked ? (
                 <span className="operator-steering-lock">Privileged operations locked</span>

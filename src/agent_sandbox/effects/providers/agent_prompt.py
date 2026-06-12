@@ -60,6 +60,7 @@ _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY = "interrupt_in_progress"
 
 
 def _prompt_error_outputs(
@@ -511,6 +512,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def _reconcile_container_waiting_record(cls, *, worker: Any, record: Any) -> int:
+        if bool(record.outputs.get(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY)):
+            return 0
         execution_id = str(record.outputs.get("execution_id") or "").strip()
         session_id = str(record.outputs.get("session_id") or "").strip()
         if not execution_id or not session_id:

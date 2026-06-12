@@ -5,6 +5,28 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Queued Claude Container Prompts
+
+- Fixed queued container-worker prompt dispatch so Claude-backed sessions resume
+  with the Claude runner command instead of falling back to the Codex command
+  when a busy-session prompt drains from `queued-agent-prompts.json`.
+- Resolved queued Claude prompts with the Claude default model when no queued or
+  session model is configured, and registered their model-usage correlation with
+  the selected agent harness.
+
+## 2026-06-12 - Container Agent Steering Interrupts
+
+- Changed Admin Web Operator steering for container worker agents to interrupt
+  the active worker execution and immediately start a replacement execution with
+  the steering instruction, while keeping the same logical workflow waiting
+  record and dispatch.
+- Added interrupt-in-progress workflow reconciliation protection so stopping the
+  old worker job does not make prompt effects look completed or failed before
+  the replacement job is registered. Replacement startup failures now fail the
+  original waiting record so workflows see the real steering failure.
+- Persisted delivered container steering interrupts in `operator-steering-notes.db`
+  so Admin Web history survives refreshes.
+
 ## 2026-06-12 - Team Add-on Template and Timeline Fixes
 
 - Applied template-defined ephemeral concurrency policies when materializing
@@ -62,6 +84,7 @@ material. Newer entries are added incrementally as changes land.
   other records have no timestamp.
 - Documented the derived-current-state boundary, timestamp-missing behavior,
   and the fact that the view is not a persisted audit log.
+>>>>>>> main
 
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
@@ -88,6 +111,7 @@ material. Newer entries are added incrementally as changes land.
 - Added an operator-facing inbound route example with caller allow/block policy
   and clarified the failure handling for route misses, caller rejection, missing
   sessions, bridge setup failures, and hangup/reconciliation cases.
+>>>>>>> main
 
 ## 2026-06-11 - Agents Page Detail Layout
 

@@ -12,6 +12,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_gateway_url,
     container_prompt_command,
     container_worker_image_for_session,
+    default_agent_model_for_provider,
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
@@ -260,7 +261,6 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
 
         dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-        model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         execution_id = safe_effect_execution_id("agent", session_id)
         record_metadata = getattr(record, "metadata", {})
         workflow_run_id = (
@@ -285,6 +285,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record=record,
             session=session,
         )
+        from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=config,
+        )
+        model = str(
+            record.model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, config)
+        ).strip()
         try:
             handle = backend.start(
                 backend.prepare(
@@ -298,6 +309,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             prompt=record.prompt,
                             model=model,
                             resume_thread_id=effective_resume_thread_id,
+                            agent_provider=agent_harness,
                             resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,
                             web_search_enabled=bool(
@@ -307,6 +319,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",
                             "dispatch_id": dispatch_id,
+                            "agent_provider": agent_harness,
                             "queued": True,
                         },
                     )
@@ -323,6 +336,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             dispatch_id=dispatch_id,
             execution_id=handle.execution_id,
             model=model,
+            agent_harness=agent_harness,
             effective_resume_thread_id=effective_resume_thread_id,
         ):
             try:
@@ -344,6 +358,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id: str,
         execution_id: str,
         model: str,
+        agent_harness: str,
         effective_resume_thread_id: str | None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
@@ -382,6 +397,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "directory_path": directory_path,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "agent_provider": agent_harness,
             "queue_key": queue_key,
         }
         outputs = {
@@ -450,6 +466,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 directory_path=directory_path,
                 model=model,
                 trace_id=execution_record.trace_id,
+                agent_harness=agent_harness,
             )
         self._publish_started_event_for_waiting_record(
             worker=worker,

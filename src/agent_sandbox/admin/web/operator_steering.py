@@ -118,7 +118,7 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             )
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
-            note = service.create_operator_steering_note(
+            result = service.submit_operator_steering_note(
                 session_id=session_id,
                 dispatch_id=dispatch_id,
                 worker_execution_id=str(payload.get("worker_execution_id") or "").strip() or None,
@@ -129,12 +129,11 @@ def operator_steering_routes(service: AdminService, auth: AdminWebAuth) -> list[
             return json_error(str(exc))
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
-        return JSONResponse(
-            {
-                "directory_path": directory_path,
-                "note": note.model_dump(mode="json"),
-            }
-        )
+        response_payload = {"directory_path": directory_path, **dict(result)}
+        note = response_payload.get("note")
+        if hasattr(note, "model_dump"):
+            response_payload["note"] = note.model_dump(mode="json")
+        return JSONResponse(response_payload)
 
     async def cancel_note(request: Request) -> JSONResponse:
         try:

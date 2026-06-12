@@ -79,9 +79,9 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   `query:model-usage:list`; it records only usage/provider/correlation metadata
   and does not persist prompt or completion text.
 - `operator-steering-notes.db`: host-side operator steering notes keyed by
-  session and prompt dispatch. Admin Web creates, lists, and cancels pending
-  notes; the model relay marks notes delivered when an eligible upstream
-  generation request is accepted.
+  session and prompt dispatch for legacy relay-delivered steering. Container
+  worker steering interrupts the active worker execution and resumes it as a new
+  worker job instead of waiting for the next model request.
 - `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
   used by `query:model-usage:list` for query-time cost estimates. Override with
   `AGENT_SANDBOX_MODEL_PRICING_PATH` when operating from a different rate card.
@@ -176,15 +176,25 @@ catalog before writing and writes atomically to either
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
-## Operator Steering Notes
+## Operator Steering
 
 When inspecting a workflow run in Admin Web, agent links that include both a
-`session_id` and `dispatch_id` can accept an operator steering note after
-workflow-run control permission and privileged operations unlock. The note is
-stored on the host and is delivered once, on the next eligible model-generation
-HTTP request for the same active session and dispatch.
+`session_id` and `dispatch_id` can accept operator steering after workflow-run
+control permission and privileged operations unlock.
 
-Delivery is intentionally best-effort and non-interrupting:
+For `container_worker_vm` sessions, Operator steering interrupts the active
+worker execution and immediately starts a replacement worker job with the
+steering instruction. The workflow waiting record keeps the same logical
+dispatch and is updated to point at the replacement execution, so workflow nodes
+do not see the interrupted job as completed or failed. If the replacement job
+cannot be started after the active job was stopped, the original waiting record
+is failed so the workflow sees the real steering failure.
+
+For legacy relay-delivered steering, the note is stored on the host and is
+delivered once, on the next eligible model-generation HTTP request for the same
+active session and dispatch.
+
+Legacy relay delivery is intentionally best-effort and non-interrupting:
 
 - A note cannot alter a model call that is already in progress.
 - The relay does not poll the agent or add background context checks.
