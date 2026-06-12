@@ -110,6 +110,88 @@ or keyboard focus on an agent node reveals operational details from the add-on
 state payload, including session, project, reports-to, task, inbox, runtime
 wake, and ephemeral-capacity information when those records are available.
 
+### Template Catalog And Setup Flow
+
+The bundled Team Add-on exposes a built-in template catalog at
+`/api/addons/team-addon/templates`. The Admin Web `Teams` tab includes a
+`Setup from template` panel that loads that catalog, previews the selected
+template, and materializes it with one optimistic request to
+`POST /api/addons/team-addon/templates/auto-dev-squad/materialize`.
+
+The current built-in template is `auto-dev-squad`, an opinionated
+manager/project-lead/implementer/reviewer/release-operator squad for reviewed
+auto-dev delivery. The preview shows the planned role hierarchy, review rubric,
+project goal, starter tasks, optional Git fields, and the concrete inputs that
+must be supplied before creation.
+
+Required inputs are:
+
+- `team.id` and `team.name`
+- `team.manager_agent_id` and `team.manager_session_id`
+- `project.id` and `project.name`
+- `project.lead_agent_id` and `project.lead_session_id`
+- `agents.implementer.agent_id` and `agents.implementer.session_id`
+- `agents.reviewer.agent_id` and `agents.reviewer.session_id`
+- `agents.release_operator.agent_id` and `agents.release_operator.session_id`
+
+Optional inputs are:
+
+- `team.operator_communication_target_id`
+- `project.git.host_repo_path`
+- one of `project.git.bare_repo_name` or `project.git.bare_repo_path`
+- `project.git.base_branch`, `project.git.canonical_origin_url`,
+  `project.git.provider`, and `project.git.canonical_release_branch_prefix`
+
+The template uses a fixed hierarchy:
+
+- `manager -> project_lead -> implementer`
+- `manager -> project_lead -> reviewer`
+- `manager -> project_lead -> release_operator`
+
+It also seeds one project goal, two initial tasks, and one review profile with
+criteria for `scope`, `tests`, `risk`, and `handoff`. Generated goal, task,
+and review-profile ids are prefixed with the concrete `project.id`, so separate
+projects can be materialized from the same template without colliding.
+
+Setup is atomic. The request must include `expected_revision`; stale revisions
+fail without changing state, and duplicate ids are rejected before any write.
+The resulting records live only in Team Add-on state. They do not create real
+Truman sessions, VMs, or Git repositories.
+
+Example request shape:
+
+```json
+{
+  "expected_revision": 0,
+  "team": {
+    "id": "team-auto-dev-squad",
+    "name": "Auto-Dev Squad",
+    "manager_agent_id": "manager-auto-dev-squad",
+    "manager_session_id": "session-manager-auto-dev-squad"
+  },
+  "project": {
+    "id": "project-auto-dev-squad",
+    "name": "Reviewed Auto-Dev Delivery",
+    "lead_agent_id": "project-lead-auto-dev-squad",
+    "lead_session_id": "session-project-lead-auto-dev-squad"
+  },
+  "agents": {
+    "implementer": {
+      "agent_id": "implementer-auto-dev-squad",
+      "session_id": "session-implementer-auto-dev-squad"
+    },
+    "reviewer": {
+      "agent_id": "reviewer-auto-dev-squad",
+      "session_id": "session-reviewer-auto-dev-squad"
+    },
+    "release_operator": {
+      "agent_id": "release-operator-auto-dev-squad",
+      "session_id": "session-release-operator-auto-dev-squad"
+    }
+  }
+}
+```
+
 When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
@@ -360,6 +442,7 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
    `workflow_packs`. Do not edit checked-in example packs for live operator
    state.
 5. Restart Admin Web and the trigger/effect orchestrator services.
-6. Verify `/api/admin/state` lists `team-addon`, `/addons/team-addon/` serves
-   the add-on UI, and workflow validation recognizes the `effect:team:*` and
-   `query:team:*` node types only after the add-on is enabled.
+6. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
+   returns the built-in catalog, `/addons/team-addon/` serves the add-on UI,
+   and workflow validation recognizes the `effect:team:*` and `query:team:*`
+   node types only after the add-on is enabled.

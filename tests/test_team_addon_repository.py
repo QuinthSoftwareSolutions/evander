@@ -65,6 +65,53 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
     return repo
 
 
+def _auto_dev_squad_inputs(
+    *,
+    suffix: str = "auto-dev-squad",
+    duplicate_reviewer_id: str | None = None,
+    bad_git: bool = False,
+) -> dict[str, object]:
+    reviewer_agent_id = duplicate_reviewer_id or f"reviewer-{suffix}"
+    project_git: dict[str, object] = {
+        "host_repo_path": f"/srv/repos/{suffix}",
+        "bare_repo_name": f"{suffix}.git",
+    }
+    if bad_git:
+        project_git["bare_repo_path"] = f"/srv/git/{suffix}.git"
+    return {
+        "team": {
+            "id": f"team-{suffix}",
+            "name": "Auto-Dev Squad",
+            "operator_communication_target_id": "slack://ops-channel",
+        },
+        "project": {
+            "id": f"project-{suffix}",
+            "name": "Reviewed Auto-Dev Delivery",
+            "git": project_git,
+        },
+        "manager": {
+            "agent_id": f"manager-{suffix}",
+            "session_id": f"session-manager-{suffix}",
+        },
+        "project_lead": {
+            "agent_id": f"project-lead-{suffix}",
+            "session_id": f"session-project-lead-{suffix}",
+        },
+        "implementer": {
+            "agent_id": f"implementer-{suffix}",
+            "session_id": f"session-implementer-{suffix}",
+        },
+        "reviewer": {
+            "agent_id": reviewer_agent_id,
+            "session_id": f"session-reviewer-{suffix}",
+        },
+        "release_operator": {
+            "agent_id": f"release-operator-{suffix}",
+            "session_id": f"session-release-operator-{suffix}",
+        },
+    }
+
+
 def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
 
@@ -116,6 +163,232 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
     assert state.agents["backend"].display_name == "Backend Agent"
+
+
+def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state, result = repo.materialize_template(
+        "auto-dev-squad",
+        inputs=_auto_dev_squad_inputs(),
+        expected_revision=0,
+    )
+
+    assert result["success"] is True
+    assert result["template_id"] == "auto-dev-squad"
+    assert result["template_name"] == "Auto-Dev Squad"
+    assert result["team_id"] == "team-auto-dev-squad"
+    assert result["project_id"] == "project-auto-dev-squad"
+    assert result["agent_ids"] == {
+        "manager": "manager-auto-dev-squad",
+        "project_lead": "project-lead-auto-dev-squad",
+        "implementer": "implementer-auto-dev-squad",
+        "reviewer": "reviewer-auto-dev-squad",
+        "release_operator": "release-operator-auto-dev-squad",
+    }
+    assert result["goal_ids"] == ["project-auto-dev-squad-auto-dev-reviewed-delivery"]
+    assert result["review_profile_ids"] == ["project-auto-dev-squad-auto-dev-review"]
+    assert result["task_ids"] == [
+        "project-auto-dev-squad-implement-scoped-slice",
+        "project-auto-dev-squad-release-handoff",
+    ]
+    assert result["revision"] == 1
+
+    assert state.revision == 1
+    team = state.teams["team-auto-dev-squad"]
+    assert team.manager_agent_id == "manager-auto-dev-squad"
+    assert team.operator_communication_target_id == "slack://ops-channel"
+    assert team.project_ids == ["project-auto-dev-squad"]
+
+    project = state.projects["project-auto-dev-squad"]
+    assert project.team_id == "team-auto-dev-squad"
+    assert project.lead_agent_id == "project-lead-auto-dev-squad"
+    assert project.git is not None
+    assert project.git.host_repo_path == "/srv/repos/auto-dev-squad"
+    assert project.git.bare_repo_name == "auto-dev-squad.git"
+    assert [goal.id for goal in project.goals] == [
+        "project-auto-dev-squad-auto-dev-reviewed-delivery"
+    ]
+
+    assert state.agents["manager-auto-dev-squad"].subordinate_agent_ids == [
+        "project-lead-auto-dev-squad"
+    ]
+    assert state.agents["project-lead-auto-dev-squad"].subordinate_agent_ids == [
+        "implementer-auto-dev-squad",
+        "reviewer-auto-dev-squad",
+        "release-operator-auto-dev-squad",
+    ]
+    assert state.agents["project-lead-auto-dev-squad"].reports_to_agent_id == "manager-auto-dev-squad"
+    assert state.agents["implementer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+    assert state.agents["reviewer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+    assert state.agents["release-operator-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+
+    profile = state.review_profiles["project-auto-dev-squad-auto-dev-review"]
+    assert profile.team_id == "team-auto-dev-squad"
+    assert profile.project_id == "project-auto-dev-squad"
+    assert [criterion.id for criterion in profile.criteria] == [
+        "scope",
+        "tests",
+        "risk",
+        "handoff",
+    ]
+
+    implement_task = state.tasks["project-auto-dev-squad-implement-scoped-slice"]
+    release_task = state.tasks["project-auto-dev-squad-release-handoff"]
+    assert implement_task.owner_agent_id == "implementer-auto-dev-squad"
+    assert implement_task.created_by_agent_id == "project-lead-auto-dev-squad"
+    assert release_task.owner_agent_id == "release-operator-auto-dev-squad"
+    assert release_task.dependency_task_ids == [
+        "project-auto-dev-squad-implement-scoped-slice"
+    ]
+
+
+def test_repository_materializes_auto_dev_squad_with_team_project_and_agents_shape(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state, result = repo.materialize_template(
+        "auto-dev-squad",
+        inputs={
+            "team": {
+                "id": "team-auto-dev-squad",
+                "name": "Auto-Dev Squad",
+                "operator_communication_target_id": "slack://ops-channel",
+                "manager_agent_id": "manager-auto-dev-squad",
+                "manager_session_id": "session-manager-auto-dev-squad",
+            },
+            "project": {
+                "id": "project-auto-dev-squad",
+                "name": "Reviewed Auto-Dev Delivery",
+                "lead_agent_id": "project-lead-auto-dev-squad",
+                "lead_session_id": "session-project-lead-auto-dev-squad",
+                "git": {
+                    "host_repo_path": "/srv/repos/auto-dev-squad",
+                    "bare_repo_name": "auto-dev-squad.git",
+                },
+            },
+            "agents": {
+                "implementer": {
+                    "agent_id": "implementer-auto-dev-squad",
+                    "session_id": "session-implementer-auto-dev-squad",
+                },
+                "reviewer": {
+                    "agent_id": "reviewer-auto-dev-squad",
+                    "session_id": "session-reviewer-auto-dev-squad",
+                },
+                "release_operator": {
+                    "agent_id": "release-operator-auto-dev-squad",
+                    "session_id": "session-release-operator-auto-dev-squad",
+                },
+            },
+        },
+        expected_revision=0,
+    )
+
+    assert result["success"] is True
+    assert state.projects["project-auto-dev-squad"].lead_agent_id == "project-lead-auto-dev-squad"
+    assert state.agents["manager-auto-dev-squad"].subordinate_agent_ids == [
+        "project-lead-auto-dev-squad"
+    ]
+    assert state.agents["project-lead-auto-dev-squad"].subordinate_agent_ids == [
+        "implementer-auto-dev-squad",
+        "reviewer-auto-dev-squad",
+        "release-operator-auto-dev-squad",
+    ]
+
+
+def test_repository_materialize_template_allows_multiple_unique_squads(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    first_state, first_result = repo.materialize_template(
+        "auto-dev-squad",
+        inputs=_auto_dev_squad_inputs(suffix="alpha"),
+        expected_revision=0,
+    )
+    second_state, second_result = repo.materialize_template(
+        "auto-dev-squad",
+        inputs=_auto_dev_squad_inputs(suffix="beta"),
+        expected_revision=first_state.revision,
+    )
+
+    assert first_result["review_profile_ids"] == ["project-alpha-auto-dev-review"]
+    assert second_result["review_profile_ids"] == ["project-beta-auto-dev-review"]
+    assert second_state.revision == 2
+    assert set(second_state.teams) == {"team-alpha", "team-beta"}
+    assert set(second_state.projects) == {"project-alpha", "project-beta"}
+    assert {
+        "project-alpha-implement-scoped-slice",
+        "project-alpha-release-handoff",
+        "project-beta-implement-scoped-slice",
+        "project-beta-release-handoff",
+    }.issubset(second_state.tasks)
+    assert (
+        second_state.tasks["project-beta-release-handoff"].dependency_task_ids
+        == ["project-beta-implement-scoped-slice"]
+    )
+
+
+def test_repository_materialize_template_rejects_duplicate_ids_without_writing(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    with pytest.raises(ValueError, match="materialization ids contains duplicate ids"):
+        repo.materialize_template(
+            "auto-dev-squad",
+            inputs=_auto_dev_squad_inputs(duplicate_reviewer_id="implementer-auto-dev-squad"),
+            expected_revision=0,
+        )
+
+    state = repo.read()
+    assert state.revision == 0
+    assert state.teams == {}
+    assert state.projects == {}
+    assert state.agents == {}
+    assert state.review_profiles == {}
+    assert state.tasks == {}
+
+
+def test_repository_materialize_template_rejects_stale_revision_without_writing(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    repo.create_team(
+        team_id="existing-team",
+        name="Existing Team",
+        manager_agent_id="existing-manager",
+        manager_session_id="existing-session",
+        expected_revision=0,
+    )
+
+    with pytest.raises(TeamStateConflictError):
+        repo.materialize_template(
+            "auto-dev-squad",
+            inputs=_auto_dev_squad_inputs(),
+            expected_revision=0,
+        )
+
+    state = repo.read()
+    assert state.revision == 1
+    assert state.projects == {}
+
+
+def test_repository_materialize_template_rejects_malformed_git_config(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    with pytest.raises(ValidationError, match="exactly one of bare_repo_name or bare_repo_path must be set"):
+        repo.materialize_template(
+            "auto-dev-squad",
+            inputs=_auto_dev_squad_inputs(bad_git=True),
+            expected_revision=0,
+        )
+
+    assert repo.read().revision == 0
 
 
 def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> None:

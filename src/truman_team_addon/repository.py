@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,7 +49,9 @@ from .models import (
     TeamState,
     TeamTaskState,
     task_payload_with_derived,
+    _ensure_unique,
 )
+from .templates import TeamTemplate, get_template
 
 ADDON_ID = "team-addon"
 STATE_FILE = "state.json"
@@ -446,6 +448,219 @@ class TeamStateRepository:
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
+
+    def materialize_template(
+        self,
+        template_id: str,
+        *,
+        inputs: Mapping[str, Any],
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_template_id = _required_text(template_id, "template_id")
+        template = get_template(normalized_template_id)
+        if template is None:
+            raise ValueError(f"template {normalized_template_id} does not exist")
+
+        normalized_inputs = _mapping(inputs, "inputs")
+        team_input = _required_mapping(normalized_inputs, "team")
+        project_input = _required_mapping(normalized_inputs, "project")
+        team_id = _required_text(team_input.get("id"), "team.id")
+        team_name = _required_text(team_input.get("name"), "team.name")
+        operator_communication_target_id = _optional_text(
+            team_input.get("operator_communication_target_id")
+        )
+        project_id = _required_text(project_input.get("id"), "project.id")
+        project_name = _required_text(project_input.get("name"), "project.name")
+        git = _project_git_config(project_input.get("git"))
+
+        role_inputs = _materialize_role_inputs(template, normalized_inputs, team_input, project_input)
+        goal_ids = {
+            goal.id: _materialized_template_record_id(project_id, goal.id)
+            for goal in template.project_goals
+        }
+        review_profile_ids = {
+            profile.id: _materialized_template_record_id(project_id, profile.id)
+            for profile in template.review_profiles
+        }
+        task_ids = {
+            task.id: _materialized_template_record_id(project_id, task.id)
+            for task in template.tasks
+        }
+        concrete_ids = [
+            team_id,
+            project_id,
+            *[role_input["agent_id"] for role_input in role_inputs.values()],
+            *goal_ids.values(),
+            *review_profile_ids.values(),
+            *task_ids.values(),
+        ]
+        _ensure_unique(concrete_ids, "materialization ids")
+        _ensure_unique(
+            [role_input["session_id"] for role_input in role_inputs.values()],
+            "materialization session ids",
+        )
+
+        result: dict[str, Any] = {
+            "success": False,
+            "template_id": template.id,
+            "template_name": template.name,
+            "team_id": team_id,
+            "project_id": project_id,
+            "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
+            "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
+            "review_profile_ids": [
+                review_profile_ids[profile.id] for profile in template.review_profiles
+            ],
+            "task_ids": [task_ids[task.id] for task in template.tasks],
+            "errors": [],
+        }
+
+        role_agent_ids = {role.key: role_inputs[role.key]["agent_id"] for role in template.roles}
+        root_role_key = template.root_role_key
+        root_role = next(role for role in template.roles if role.key == root_role_key)
+        if root_role.reports_to_role_key is not None:
+            raise ValueError(f"template {template.id} root role must not report upward")
+
+        def _mutate(state: TeamState) -> TeamState:
+            _require_absent(state.teams, team_id, "team")
+            _require_absent(state.projects, project_id, "project")
+            for role_key, role_input in role_inputs.items():
+                _require_absent(state.agents, role_input["agent_id"], "agent")
+            for profile in template.review_profiles:
+                _require_absent(
+                    state.review_profiles,
+                    review_profile_ids[profile.id],
+                    "review profile",
+                )
+            for task in template.tasks:
+                _require_absent(state.tasks, task_ids[task.id], "task")
+
+            now = utc_now()
+            manager_role_input = role_inputs[root_role_key]
+            manager = PersistentAgent(
+                id=manager_role_input["agent_id"],
+                team_id=team_id,
+                role=root_role_key,
+                session_id=manager_role_input["session_id"],
+                reports_to_agent_id=None,
+            )
+            state.agents[manager.id] = manager
+            state.teams[team_id] = Team(
+                id=team_id,
+                name=team_name,
+                manager_agent_id=manager.id,
+                operator_communication_target_id=operator_communication_target_id,
+                created_at=now,
+                updated_at=now,
+            )
+
+            project_goals = [
+                goal.model_copy(update={"id": goal_ids[goal.id]}, deep=True)
+                for goal in template.project_goals
+            ]
+            state.projects[project_id] = Project(
+                id=project_id,
+                team_id=team_id,
+                name=project_name,
+                lead_agent_id=role_agent_ids["project_lead"],
+                goals=project_goals,
+                git=git,
+                created_at=now,
+                updated_at=now,
+            )
+            state.teams[team_id].project_ids = _append_unique(
+                state.teams[team_id].project_ids,
+                project_id,
+            )
+
+            role_objects: dict[str, PersistentAgent] = {
+                root_role_key: manager,
+            }
+            ordered_roles = _ordered_template_roles(template)
+            for role in ordered_roles:
+                if role.key == root_role_key:
+                    continue
+                superior_role_key = role.reports_to_role_key
+                if superior_role_key is None:
+                    raise ValueError(
+                        f"template {template.id} role {role.key} is missing reports_to_role_key"
+                    )
+                superior = role_objects.get(superior_role_key)
+                if superior is None:
+                    raise ValueError(
+                        f"template {template.id} role {role.key} reports to missing role "
+                        f"{superior_role_key}"
+                    )
+                role_agent = PersistentAgent(
+                    id=role_agent_ids[role.key],
+                    team_id=team_id,
+                    project_id=project_id,
+                    role=role.key,
+                    session_id=role_inputs[role.key]["session_id"],
+                    reports_to_agent_id=superior.id,
+                )
+                state.agents[role_agent.id] = role_agent
+                superior.subordinate_agent_ids = _append_unique(
+                    superior.subordinate_agent_ids,
+                    role_agent.id,
+                )
+                role_objects[role.key] = role_agent
+            state.projects[project_id].lead_agent_id = role_agent_ids["project_lead"]
+            state.projects[project_id].updated_at = now
+            state.teams[team_id].updated_at = now
+
+            for profile_template in template.review_profiles:
+                profile = ReviewProfile(
+                    id=review_profile_ids[profile_template.id],
+                    team_id=team_id,
+                    project_id=project_id if profile_template.project_scoped else None,
+                    name=profile_template.name,
+                    description=profile_template.description,
+                    applicable_roles=list(profile_template.applicable_role_keys),
+                    criteria=[
+                        criterion.model_copy(deep=True)
+                        for criterion in profile_template.criteria
+                    ],
+                    created_at=now,
+                    updated_at=now,
+                )
+                state.review_profiles[profile.id] = profile
+
+            for task_template in template.tasks:
+                owner_agent_id = role_agent_ids[task_template.owner_role_key]
+                created_by_agent_id = role_agent_ids[task_template.created_by_role_key]
+                dependency_task_ids = [
+                    task_ids[dependency_id]
+                    for dependency_id in task_template.dependency_task_ids
+                ]
+                state.tasks[task_ids[task_template.id]] = AgentTask(
+                    id=task_ids[task_template.id],
+                    owner_agent_id=owner_agent_id,
+                    project_id=project_id,
+                    priority=task_template.priority,
+                    state=task_template.state,
+                    title=task_template.title,
+                    description=task_template.description,
+                    created_by_agent_id=created_by_agent_id,
+                    parent_task_id=(
+                        task_ids[task_template.parent_task_id]
+                        if task_template.parent_task_id is not None
+                        else None
+                    ),
+                    dependency_task_ids=dependency_task_ids,
+                    created_at=now,
+                    updated_at=now,
+                )
+
+            result["success"] = True
+            result["created_agent_ids"] = dict(result["agent_ids"])
+            return state
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        result["created_team_id"] = team_id
+        result["created_project_id"] = project_id
+        return state, result
 
     def record_review_request(
         self,
@@ -1623,6 +1838,104 @@ def _append_unique(values: list[str], value: str) -> list[str]:
     if value in values:
         return values
     return [*values, value]
+
+
+def _mapping(value: object, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return dict(value)
+
+
+def _required_mapping(payload: Mapping[str, Any], field_name: str) -> dict[str, Any]:
+    if field_name not in payload:
+        raise ValueError(f"{field_name} is required")
+    return _mapping(payload[field_name], field_name)
+
+
+def _materialize_role_inputs(
+    template: TeamTemplate,
+    inputs: Mapping[str, Any],
+    team_input: Mapping[str, Any],
+    project_input: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    nested_agents: Mapping[str, Any] | None = None
+    if "roles" in inputs:
+        nested_agents = _mapping(inputs["roles"], "roles")
+    elif "agents" in inputs:
+        nested_agents = _mapping(inputs["agents"], "agents")
+
+    role_inputs: dict[str, dict[str, Any]] = {}
+    for role in template.roles:
+        raw_role_input: object | None = None
+        if role.key in inputs and role.key not in {"team", "project", "roles", "agents"}:
+            raw_role_input = inputs[role.key]
+        elif nested_agents is not None and role.key in nested_agents:
+            raw_role_input = nested_agents[role.key]
+        elif role.key == "manager" and (
+            "manager_agent_id" in team_input or "manager_session_id" in team_input
+        ):
+            raw_role_input = {
+                "agent_id": team_input.get("manager_agent_id"),
+                "session_id": team_input.get("manager_session_id"),
+            }
+        elif role.key == "project_lead" and (
+            "lead_agent_id" in project_input or "lead_session_id" in project_input
+        ):
+            raw_role_input = {
+                "agent_id": project_input.get("lead_agent_id"),
+                "session_id": project_input.get("lead_session_id"),
+            }
+        if raw_role_input is None:
+            raise ValueError(f"{role.key} is required")
+        role_inputs[role.key] = _mapping(raw_role_input, role.key)
+        role_input = role_inputs[role.key]
+        role_input["agent_id"] = _required_text(
+            role_input.get("agent_id", role_input.get("id")),
+            f"{role.key}.agent_id",
+        )
+        role_input["session_id"] = _required_text(
+            role_input.get("session_id"),
+            f"{role.key}.session_id",
+        )
+    return role_inputs
+
+
+def _project_git_config(value: object) -> ProjectGitConfig | None:
+    if value is None:
+        return None
+    git_payload = _mapping(value, "project.git")
+    host_repo_path = _optional_text(git_payload.get("host_repo_path"))
+    if host_repo_path is None:
+        return None
+    return ProjectGitConfig.model_validate({**git_payload, "host_repo_path": host_repo_path})
+
+
+def _materialized_template_record_id(project_id: str, template_record_id: str) -> str:
+    return f"{project_id}-{template_record_id}"
+
+
+def _ordered_template_roles(template: TeamTemplate) -> list[Any]:
+    ordered: list[Any] = []
+    pending = list(template.roles)
+    while pending:
+        progressed = False
+        for role in list(pending):
+            if role.reports_to_role_key is None or role.reports_to_role_key in {
+                item.key for item in ordered
+            }:
+                ordered.append(role)
+                pending.remove(role)
+                progressed = True
+        if not progressed:
+            unresolved = ", ".join(sorted(role.key for role in pending))
+            raise ValueError(
+                f"template {template.id} has unresolved role ordering: {unresolved}"
+            )
+    if ordered[0].key != template.root_role_key:
+        raise ValueError(
+            f"template {template.id} must start role ordering with {template.root_role_key}"
+        )
+    return ordered
 
 
 def _required_text(value: object, field_name: str) -> str:

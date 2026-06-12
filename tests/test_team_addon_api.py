@@ -52,7 +52,6 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
 
-
 def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
     repo.create_team(
@@ -221,6 +220,54 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
     return repo
 
 
+def _auto_dev_squad_materialization_payload(
+    *,
+    duplicate_reviewer_agent_id: str | None = None,
+    bad_git: bool = False,
+    expected_revision: int = 0,
+) -> dict[str, object]:
+    git_payload: dict[str, object] = {
+        "host_repo_path": "/srv/repos/auto-dev-squad",
+        "bare_repo_name": "auto-dev-squad.git",
+    }
+    if bad_git:
+        git_payload["bare_repo_path"] = "/srv/git/auto-dev-squad.git"
+
+    return {
+        "expected_revision": expected_revision,
+        "team": {
+            "id": "team-auto-dev-squad",
+            "name": "Auto-Dev Squad",
+            "manager_agent_id": "manager-auto-dev-squad",
+            "manager_session_id": "session-manager-auto-dev-squad",
+            "operator_communication_target_id": "slack://ops-channel",
+        },
+        "project": {
+            "id": "project-auto-dev-squad",
+            "name": "Reviewed Auto-Dev Delivery",
+            "lead_agent_id": "project-lead-auto-dev-squad",
+            "lead_session_id": "session-project-lead-auto-dev-squad",
+            "git": git_payload,
+        },
+        "agents": {
+            "implementer": {
+                "agent_id": "implementer-auto-dev-squad",
+                "session_id": "session-implementer-auto-dev-squad",
+            },
+            "reviewer": {
+                "agent_id": (
+                    duplicate_reviewer_agent_id or "reviewer-auto-dev-squad"
+                ),
+                "session_id": "session-reviewer-auto-dev-squad",
+            },
+            "release_operator": {
+                "agent_id": "release-operator-auto-dev-squad",
+                "session_id": "session-release-operator-auto-dev-squad",
+            },
+        },
+    }
+
+
 def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> None:
     disabled = _client(tmp_path / "disabled", enable_team_addon=False)
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
@@ -250,6 +297,19 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert state["revision"] == 0
     assert state["runtime_operations"]["agents"] == []
     assert state["runtime_operations"]["attention"] == []
+
+    catalog = enabled.get("/api/addons/team-addon/templates")
+    assert catalog.status_code == 200
+    assert [template["id"] for template in catalog.json()["templates"]] == [
+        "auto-dev-squad"
+    ]
+
+    template = enabled.get("/api/addons/team-addon/templates/auto-dev-squad")
+    assert template.status_code == 200
+    assert template.json()["root_role_key"] == "manager"
+
+    missing_template = enabled.get("/api/addons/team-addon/templates/missing")
+    assert missing_template.status_code == 404
 
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
@@ -443,6 +503,93 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
         "lead",
         "manager",
     }
+
+
+def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert response.status_code == 201
+    body = response.json()
+
+    assert body["materialized"]["success"] is True
+    assert body["materialized"]["template_id"] == "auto-dev-squad"
+    assert body["materialized"]["revision"] == 1
+    assert body["revision"] == 1
+    assert len(body["agents"]) == 5
+    assert len(body["projects"]) == 1
+    assert len(body["review_profiles"]) == 1
+    assert len(body["tasks"]) == 2
+    assert body["teams"]["team-auto-dev-squad"]["project_ids"] == [
+        "project-auto-dev-squad"
+    ]
+    assert body["projects"]["project-auto-dev-squad"]["goals"][0]["id"] == (
+        "project-auto-dev-squad-auto-dev-reviewed-delivery"
+    )
+    assert body["tasks"]["project-auto-dev-squad-release-handoff"]["dependency_task_ids"] == [
+        "project-auto-dev-squad-implement-scoped-slice"
+    ]
+    assert (
+        body["review_profiles"]["project-auto-dev-squad-auto-dev-review"]["criteria"][0]["id"]
+        == "scope"
+    )
+
+
+def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    duplicate_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(
+            duplicate_reviewer_agent_id="implementer-auto-dev-squad"
+        ),
+    )
+    assert duplicate_response.status_code == 400
+    assert "duplicate ids" in duplicate_response.json()["error"]
+    assert client.get("/api/addons/team-addon/state").json()["revision"] == 0
+
+    success_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert success_response.status_code == 201
+    assert success_response.json()["revision"] == 1
+
+    rerun_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(expected_revision=1),
+    )
+    assert rerun_response.status_code == 400
+    assert client.get("/api/addons/team-addon/state").json()["revision"] == 1
+
+
+def test_team_addon_admin_api_materialize_template_rejects_stale_revision(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "existing-team",
+            "name": "Existing Team",
+            "manager_agent_id": "existing-manager",
+            "manager_session_id": "existing-session",
+            "expected_revision": 0,
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == 1
 
 
 def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> None:
