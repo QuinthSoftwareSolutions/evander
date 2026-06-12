@@ -290,6 +290,9 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert refreshed is not None
     assert refreshed.enabled is False
     assert refreshed.next_run_at is None
+    assert refreshed.status == "dispatched"
+    assert refreshed.last_dispatch_id == "dispatch-one-time-success"
+    assert refreshed.last_dispatch_status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
     assert "session-a" in cooldown_payload
     latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-1"]
@@ -437,6 +440,9 @@ def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_
     assert refreshed.enabled is True
     assert refreshed.next_run_at is not None
     assert refreshed.next_run_at > due_at
+    assert refreshed.status == latest.status
+    assert refreshed.last_dispatch_id == latest.dispatch_id
+    assert refreshed.last_dispatch_status == latest.status
     assert refreshed.last_dispatched_at is not None
 
 
@@ -592,6 +598,9 @@ def test_scheduled_wake_worker_dispatches_due_cron_range_request(
     assert refreshed.enabled is True
     assert refreshed.next_run_at is not None
     assert refreshed.next_run_at > due_at
+    assert refreshed.status == "dispatched"
+    assert refreshed.last_dispatch_id == "dispatch-cron-success"
+    assert refreshed.last_dispatch_status == "dispatched"
     assert refreshed.last_dispatched_at is not None
     assert worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron"].status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())

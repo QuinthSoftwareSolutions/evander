@@ -447,7 +447,14 @@ def _advance_cron_wake_request(
     mark_consumed: bool,
     was_handled: bool,
 ) -> None:
-    request.last_dispatched_at = now_utc if was_handled else request.last_dispatched_at
+    get_request = getattr(wake_store, "get_request", None)
+    if callable(get_request):
+        refreshed = get_request(request.request_id)
+        if refreshed is not None:
+            request = refreshed
+
+    if was_handled and request.last_dispatched_at is None:
+        request.last_dispatched_at = now_utc
     request.updated_at = now_utc
     if mark_consumed:
         request.enabled = False

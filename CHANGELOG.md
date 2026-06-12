@@ -11,6 +11,9 @@ material. Newer entries are added incrementally as changes land.
   including pending, due, dispatching, dispatched, failed, missed/late, and
   completed/acknowledged states with dispatch evidence and redacted operator
   failure summaries.
+- Preserved scheduled-wake dispatch ledger fields while advancing handled wake
+  requests, and marked matching wake requests completed when agent completion
+  watchers publish completion events.
 - Added Admin API and Sessions page views for filtering recent scheduled wakes
   and retrying or rescheduling failed and missed wake requests.
 - Added a scheduled-wake lateness threshold so overdue wakes are visible and
