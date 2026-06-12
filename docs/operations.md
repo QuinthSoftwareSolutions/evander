@@ -673,6 +673,13 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Gateway tool name: `get_workflow_snapshot`.
 - The tool is policy-gated: each session manifest must include `get_workflow_snapshot` in
   `allowed_tools` before calls are accepted.
+- Session-scoped MCP `tools/list` responses follow the same policy visibility rules: tools denied
+  by directory policy or missing from `allowed_tools` are omitted, approval-required tools remain
+  visible with approval metadata in policy summaries, and direct calls still enforce policy even
+  when a tool is hidden from the manifest.
+- Once an MCP transport session is bound to a Truman session, later `/mcp` requests on that
+  transport must omit `session_id` or repeat the same value. A conflicting `session_id` is rejected
+  instead of switching the manifest to another session.
 - Required MCP arguments: none beyond the session binding.
 - Optional MCP arguments:
   - `include_runs` (default `false`) includes the current workflow run snapshot alongside the
@@ -930,6 +937,55 @@ For the `openai_realtime_didww` backend, configure:
 }
 ```
 
+For fixed inbound DIDWW routes, add an `inbound_phone_routes` entry that binds the DID to an
+existing active Truman session in the same directory. Keep the bridge host-local and enable the
+inbound listener only when needed:
+
+```bash
+DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true
+DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL=http://127.0.0.1:8000
+DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV=VOICE_MEDIA_CONTROLLER_TOKEN
+```
+
+```json
+{
+  "phone_call_backend": "openai_realtime_didww",
+  "openai_realtime_model": "gpt-realtime-2",
+  "voice_media_controller_url": "http://127.0.0.1:8000",
+  "voice_media_controller_token_env": "VOICE_MEDIA_CONTROLLER_TOKEN",
+  "didww_sip_bridge_url": "https://your-phone-bridge.example",
+  "didww_sip_bridge_token_env": "DIDWW_SIP_BRIDGE_TOKEN",
+  "didww_from_number": "+15551230000",
+  "inbound_phone_routes": [
+    {
+      "id": "ops-main",
+      "did": "+15551230000",
+      "directory_path": "root/ops",
+      "session_id": "session-1234",
+      "allowed_callers": ["+15551230001"],
+      "blocked_callers": ["+15551239999"],
+      "route_prompt": "Answer inbound calls for the ops team.",
+      "startup_text": "Thanks for calling ops."
+    }
+  ]
+}
+```
+
+The bridge routes fixed inbound calls from Asterisk by sending the DID to
+`Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`. When the bridge accepts an inbound
+`StasisStart`, it POSTs to `POST /voice-sessions/inbound-phone-calls` using the token named by
+`DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` (default `VOICE_MEDIA_CONTROLLER_TOKEN`).
+After the call ends, the bridge POSTs the sanitized terminal bridge result to
+`POST /voice-sessions/{voice_session_id}/bridge-result`; the gateway merges the transcript,
+summary, decisions, and action items into `runtime/voice-sessions-store.json` and schedules the
+same-origin reconciliation wake.
+
+The gateway resolves exactly one configured route by route id or DID, requires the configured
+`session_id` to exist and remain active in the same directory, and enforces caller policy before
+creating the voice-session record. `route_prompt` becomes the projected Realtime task
+prompt; `startup_text` is the caller-facing greeting. Raw DID and caller numbers are normalized
+for matching, but only redacted or hashed forms are stored in audit logs and JSON stores.
+
 Configure the OpenAI Realtime key env var and upstream base URL in the DIDWW SIP bridge service
 environment. The gateway does not pass those credential-routing values through each phone-call
 request.
@@ -951,7 +1007,13 @@ state, live tools, or memory that is not in the projected context. The bridge cr
 voice query through the gateway, the gateway schedules a same-context wake for the originating
 agent, and the origin agent answers with `submit_voice_query_response`. The voice call keeps going
 silently while that answer is pending; it does not generate generic startup or context-check filler.
-When the answer arrives, the bridge injects it back into the Realtime conversation.
+When the answer arrives, the bridge injects it back into the Realtime conversation. If the caller is
+speaking, or if their audio input turn has not produced its final transcript yet, the bridge queues
+the origin-query answer instead of creating assistant speech immediately. After the caller turn
+completes, the projected agent first acknowledges or briefly responds to the latest caller turn,
+then transitions to the queued answer with caller-facing wording such as "I heard back on the
+earlier question." Normal origin-query answers, failures, and timeouts do not barge in; only the
+existing caller-speech cancellation path interrupts playback.
 
 ### DIDWW SIP/OpenAI Realtime bridge
 
@@ -959,6 +1021,8 @@ The built-in bridge service is `agent-sandbox-didww-sip-bridge`. It runs on the 
 and exposes the bridge API consumed by `didww_sip_bridge_url`:
 
 - `POST /phone-calls` starts a projected outbound call.
+- `POST /voice-sessions/inbound-phone-calls` provisions a fixed inbound route when the bridge is
+  configured to listen for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)` events.
 - `GET /voice-sessions/{voice_session_id}` returns status, transcript events, summary, decisions,
   and action items.
 - `POST /voice-sessions/{voice_session_id}/hangup` ends a live call for operator cleanup.
@@ -966,6 +1030,11 @@ and exposes the bridge API consumed by `didww_sip_bridge_url`:
 The bridge uses Asterisk ARI instead of implementing SIP in Python. Asterisk handles DIDWW PJSIP
 trunk registration/auth, outbound SIP dialogs, RTP, NAT, and hangups. Asterisk itself is open-source;
 there is no Asterisk license fee, but DIDWW call/trunk usage and OpenAI Realtime usage still apply.
+Inbound handling stays host-local as well: the bridge only enables its long-lived inbound listener
+when `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true` and uses
+`DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL` plus `VOICE_MEDIA_CONTROLLER_TOKEN` to provision calls
+through the gateway after matching a route. Terminal inbound results use the same controller URL and
+token to sync the final bridge payload back to the gateway for voice-session reconciliation.
 The bridge sends G.711 audio to OpenAI Realtime, so its Asterisk `ExternalMedia` RTP settings must
 use a static payload codec. The default is A-law/PCMA:
 `DIDWW_SIP_BRIDGE_MEDIA_FORMAT=alaw`, `DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE=8`, and
@@ -1001,7 +1070,20 @@ The known-good Asterisk/DIDWW shape for a NATed Azure control-plane host is:
   host-local and should not be opened externally.
 
 The bridge creates `runtime/didww-sip-bridge-store.json`. It stores redacted phone numbers, ARI
-channel IDs, RTP port metadata, transcripts, and terminal summaries; it does not persist raw audio.
+channel IDs, RTP port metadata, route identifiers, transcripts, and terminal summaries; caller and
+DID values are hashed for audit correlation, and it does not persist raw audio.
+
+Inbound failure handling is deterministic:
+
+- Route miss or ambiguous DID: the bridge hangs up the inbound Asterisk channel and records a
+  sanitized provisioning failure.
+- Unauthorized caller: the gateway returns `403`, no voice-session record is exposed, and the audit
+  log contains only route ids plus redacted/hash identity fields.
+- Missing or inactive origin session: the gateway rejects the request before exposing a record.
+- ARI bridge or `ExternalMedia` failure after acceptance: the call record ends as `failed`, the
+  bridge cleans up the Asterisk channels, and reconciliation is not duplicated.
+- Caller hangup before media is bridged: the call record ends as `ended`, and the origin-session
+  reconciliation wake remains idempotent.
 
 Example directory-scoped `contacts.json` overlay:
 

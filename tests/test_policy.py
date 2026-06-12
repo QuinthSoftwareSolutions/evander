@@ -486,6 +486,163 @@ def test_directory_mcp_tool_deny_overrides_session_and_descendant_policy(
         engine.require_tool("s1", ToolName.RUN_SCRIPT)
 
 
+def test_tool_visibility_reports_approval_required_tools_as_available(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        approval_required_tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.RUN_SCRIPT)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert visibility.approval_settings is not None
+    assert visibility.source == "session.allowed_tools"
+    assert any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value
+        and item["requires_approval"] is True
+        for item in summary["available_tools"]
+    )
+    assert ToolName.RUN_SCRIPT.value in summary["approval_required_tools"]
+    assert not any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value for item in summary["unavailable_tools"]
+    )
+
+
+def test_tool_visibility_reports_directory_denials_as_unavailable(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(
+        config,
+        {"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.RUN_SCRIPT)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is False
+    assert visibility.visible is False
+    assert visibility.source == "directory.mcp_tool_policies"
+    assert visibility.reason is not None
+    assert "denied by directory policy" in visibility.reason
+    assert any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value
+        and "denied by directory policy" in item["reason"]
+        for item in summary["unavailable_tools"]
+    )
+
+
+def test_tool_visibility_reports_session_disallowed_tools_with_reason(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.DISCORD_POST_STATUS)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is False
+    assert visibility.visible is False
+    assert visibility.source == "session.allowed_tools"
+    assert visibility.reason == "Tool discord_post_status is not allowed for session s1"
+    assert any(
+        item["tool_name"] == ToolName.DISCORD_POST_STATUS.value
+        and item["reason"] == "Tool discord_post_status is not allowed for session s1"
+        for item in summary["unavailable_tools"]
+    )
+
+
+def test_tool_visibility_keeps_pending_prompts_visible_when_respond_to_agent_is_allowed(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RESPOND_TO_AGENT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.LIST_PENDING_AGENT_PROMPTS)
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.source == "session.allowed_tools.respond_to_agent"
+
+
+def test_tool_visibility_reports_run_scoped_lease_access_without_session_allowlist(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+
+    visibility = engine.tool_visibility_for_session(
+        session,
+        ToolName.RUN_SCRIPT,
+        workflow_run_id="run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+    summary = engine.allowed_tool_summary_for_session(
+        session,
+        workflow_run_id="run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.source == "session_tool_approval_lease"
+    assert visibility.requires_approval is False
+    assert any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value
+        and item["source"] == "session_tool_approval_lease"
+        for item in summary["available_tools"]
+    )
+    assert not any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value for item in summary["unavailable_tools"]
+    )
+
+
 def test_approval_grant_settings_apply_directory_defaults_session_overrides_and_clamps(
     tmp_path: Path,
 ) -> None:

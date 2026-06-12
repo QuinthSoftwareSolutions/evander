@@ -10,6 +10,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import ContactDirectoryConfig
 from agent_sandbox.messaging.wake_store import WakeRequestStore
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.runtime import build_runtime
 from agent_sandbox.voice_sessions import (
     OpenAIRealtimePhoneCallService,
     VoiceMediaBridgeClient,
@@ -71,6 +72,47 @@ def _contacts() -> ContactDirectoryConfig:
     )
 
 
+def make_context(tmp_path: Path, **kwargs: object):
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+        **kwargs,
+    )
+    return build_runtime(config)
+
+
+def _projected_tool_summary(session_id: str) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "available_tools": [
+            {
+                "tool_name": ToolName.MAKE_PHONE_CALL.value,
+                "source": "session.allowed_tools",
+                "requires_approval": False,
+            },
+            {
+                "tool_name": ToolName.GET_PHONE_CALL_RESULT.value,
+                "source": "session.allowed_tools",
+                "requires_approval": True,
+            },
+        ],
+        "approval_required_tools": [ToolName.GET_PHONE_CALL_RESULT.value],
+        "unavailable_tools": [
+            {
+                "tool_name": ToolName.RUN_SCRIPT.value,
+                "source": "session.allowed_tools",
+                "reason": f"Tool run_script is not allowed for session {session_id}",
+            }
+        ],
+        "evaluated": True,
+    }
+
+
 def test_voice_projection_contains_originating_agent_context() -> None:
     projection = VoiceProjectionService().build_projection(
         session=_session(),
@@ -85,6 +127,21 @@ def test_voice_projection_contains_originating_agent_context() -> None:
     assert "Ask which approval item to release." in projection["prompt"]
     assert projection["origin_metadata"]["agent_thread_id"] == "thread-1"
     assert "query_origin_agent" in projection["instructions"]
+    assert projection["tool_summary"]["session_id"] == "session-1"
+    assert projection["tool_summary"]["available_tools"] == [
+        {
+            "tool_name": ToolName.MAKE_PHONE_CALL.value,
+            "source": "session.allowed_tools",
+            "requires_approval": False,
+        },
+        {
+            "tool_name": ToolName.GET_PHONE_CALL_RESULT.value,
+            "source": "session.allowed_tools",
+            "requires_approval": False,
+        },
+    ]
+    assert "Available MCP tools: make_phone_call, get_phone_call_result" in projection["context"]
+    assert "Unavailable MCP tools: <not evaluated>" in projection["context"]
     assert projection["startup_contract"] == {
         "authoritative_first_turn_state": True,
         "complete_objective": True,
@@ -99,6 +156,26 @@ def test_voice_projection_contains_originating_agent_context() -> None:
         "pending_origin_query_fallback": "silent_until_result",
     }
     assert "Origin metadata" in projection["context"]
+
+
+def test_voice_projection_renders_policy_tool_summary_details() -> None:
+    tool_summary = _projected_tool_summary("session-1")
+    projection = VoiceProjectionService().build_projection(
+        session=_session(),
+        prompt="Ask which approval item to release.",
+        channel="phone",
+        metadata={"reason": "approval"},
+        tool_summary=tool_summary,
+    )
+
+    assert projection["tool_summary"] == tool_summary
+    assert "Available MCP tools: make_phone_call, get_phone_call_result (approval required)" in projection[
+        "context"
+    ]
+    assert (
+        "Unavailable MCP tools: run_script (Tool run_script is not allowed for session session-1)"
+        in projection["context"]
+    )
 
 
 def test_voice_projection_instructions_set_natural_phone_behavior() -> None:
@@ -234,6 +311,7 @@ def test_openai_realtime_phone_backend_starts_bridge_and_reconciles(
         store=store,
         bridge_client=bridge,
         reconciler=reconciler,
+        tool_summary_provider=lambda session: _projected_tool_summary(session.session_id),
     )
 
     started = service.make_phone_call(
@@ -263,6 +341,41 @@ def test_openai_realtime_phone_backend_starts_bridge_and_reconciles(
     assert len(scheduled) == 1
     assert scheduled[0].request_id.startswith("voice-session-reconcile:")
     assert "Approve item 123" in scheduled[0].resume_prompt.prompt
+    assert bridge.start_calls[0]["projection"]["tool_summary"] == _projected_tool_summary(
+        "session-1"
+    )
+    assert "Available MCP tools: make_phone_call, get_phone_call_result (approval required)" in bridge.start_calls[0][
+        "projection"
+    ]["context"]
+    assert (
+        "Unavailable MCP tools: run_script (Tool run_script is not allowed for session session-1)"
+        in bridge.start_calls[0]["projection"]["context"]
+    )
+
+
+def test_runtime_phone_call_service_wires_tool_summary_provider(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root",
+            model="gpt-5.4",
+            allowed_tools=[ToolName.MAKE_PHONE_CALL, ToolName.GET_PHONE_CALL_RESULT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    context.policy.allowed_tool_summary_for_session = lambda session: _projected_tool_summary(
+        session.session_id
+    )
+
+    router = context.phone_call_service_for_session("session-1")
+
+    assert router.realtime_service.tool_summary_provider is not None
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    assert router.realtime_service.tool_summary_provider(session) == _projected_tool_summary(
+        "session-1"
+    )
 
 
 def test_voice_media_bridge_client_sends_auth_and_projected_payload(

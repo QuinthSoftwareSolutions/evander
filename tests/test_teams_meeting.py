@@ -321,6 +321,18 @@ def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
     assert join_call["metadata"]["origin_session_id"] == "origin-session"
     voice_session_id = join_call["metadata"]["voice_session_id"]
     assert join_call["projection"]["origin_session_id"] == "origin-session"
+    assert join_call["projection"]["tool_summary"]["session_id"] == "origin-session"
+    assert any(
+        item["tool_name"] == ToolName.TEAMS_MEETING_GET_EVENTS.value
+        for item in join_call["projection"]["tool_summary"]["available_tools"]
+    )
+    assert any(
+        item["tool_name"] == ToolName.TEAMS_MEETING_SPEAK.value
+        and "not allowed" in item["reason"]
+        for item in join_call["projection"]["tool_summary"]["unavailable_tools"]
+    )
+    assert "Available MCP tools: teams_meeting_get_events" in join_call["projection"]["context"]
+    assert "Unavailable MCP tools:" in join_call["projection"]["context"]
     assert join_call["realtime"]["model"] == "gpt-realtime-2"
     binding = context.teams_meeting_store.get_binding("meeting-1")
     assert binding is not None

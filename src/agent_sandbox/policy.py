@@ -59,6 +59,17 @@ class ToolApprovalContext:
     lease_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolVisibility:
+    tool: ToolName
+    available: bool
+    visible: bool
+    source: str
+    reason: str | None = None
+    requires_approval: bool = False
+    approval_settings: ApprovalGrantSettings | None = None
+
+
 _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
     "agent_sandbox_tool_approval_context",
     default=None,
@@ -279,6 +290,158 @@ class PolicyEngine:
             raise PolicyError(f"Expired session: {session_id}")
         return session
 
+    def _tool_requires_approval_for_session(
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        *,
+        effective_policy: EffectivePolicyConfig | None = None,
+    ) -> bool:
+        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+            return False
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
+        required_tools = set(session.approval_required_tools or [])
+        required_tools.update(effective_policy.approval_required_tools)
+        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        if rule is not None and rule.require_approval:
+            return True
+        return tool_name in required_tools
+
+    def _tool_visibility_blocked(
+        self,
+        *,
+        tool_name: ToolName,
+        source: str,
+        reason: str,
+        requires_approval: bool = False,
+    ) -> ToolVisibility:
+        return ToolVisibility(
+            tool=tool_name,
+            available=False,
+            visible=False,
+            source=source,
+            reason=reason,
+            requires_approval=requires_approval,
+        )
+
+    def _tool_visibility_for_session(
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        *,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+        effective_policy: EffectivePolicyConfig | None = None,
+    ) -> ToolVisibility:
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
+        requires_approval = self._tool_requires_approval_for_session(
+            session,
+            tool_name,
+            effective_policy=effective_policy,
+        )
+
+        if tool_name.value.startswith("assistant_"):
+            profile = str(session.metadata.get("capability_profile") or "").strip().lower()
+            if not profile:
+                return self._tool_visibility_blocked(
+                    tool_name=tool_name,
+                    source="session.metadata.capability_profile",
+                    reason=(
+                        f"Session {session.session_id} has no capability profile; "
+                        "assistant tool access is denied by default"
+                    ),
+                    requires_approval=requires_approval,
+                )
+            if tool_name in {
+                ToolName.ASSISTANT_UPSERT_CONFIG,
+                ToolName.ASSISTANT_CREATE_WORKFLOW,
+                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+            }:
+                try:
+                    self._require_assistant_mutation_guardrails(session, tool_name)
+                except PolicyError as exc:
+                    return self._tool_visibility_blocked(
+                        tool_name=tool_name,
+                        source="session.metadata.assistant_mutation_policy",
+                        reason=str(exc),
+                        requires_approval=requires_approval,
+                    )
+
+        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        if rule is not None and rule.denied:
+            return self._tool_visibility_blocked(
+                tool_name=tool_name,
+                source="directory.mcp_tool_policies",
+                reason=(
+                    f"Tool {tool_name.value} is denied by directory policy for session "
+                    f"{session.session_id}"
+                ),
+                requires_approval=requires_approval,
+            )
+
+        has_tool_permission = tool_name in session.allowed_tools
+        source = "session.allowed_tools"
+        if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
+            has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
+            if has_tool_permission:
+                source = "session.allowed_tools.respond_to_agent"
+        if not has_tool_permission:
+            has_tool_permission = self._lease_allows_tool(
+                session_id=session.session_id,
+                tool_name=tool_name,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            )
+            if has_tool_permission:
+                source = "session_tool_approval_lease"
+
+        if not has_tool_permission:
+            return self._tool_visibility_blocked(
+                tool_name=tool_name,
+                source="session.allowed_tools",
+                reason=f"Tool {tool_name.value} is not allowed for session {session.session_id}",
+                requires_approval=requires_approval,
+            )
+
+        if tool_name == ToolName.SCHEDULE_RESUME and not (
+            session_has_vm_binding(session) or session_is_container_worker_vm(session)
+        ):
+            return self._tool_visibility_blocked(
+                tool_name=tool_name,
+                source="session.vm_binding",
+                reason=f"Tool {tool_name.value} requires a session with a VM binding",
+                requires_approval=requires_approval,
+            )
+
+        if tool_name in {
+            ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_UNREAD_FEEDBACK,
+            ToolName.LIST_ALL_FEEDBACK,
+        }:
+            try:
+                self.require_pr_feedback_streams(session)
+            except PolicyError as exc:
+                return self._tool_visibility_blocked(
+                    tool_name=tool_name,
+                    source="session.metadata.pr_feedback_streams",
+                    reason=str(exc),
+                    requires_approval=requires_approval,
+                )
+
+        approval_settings = (
+            self.approval_grant_settings_for_tool(session, tool_name)
+            if requires_approval
+            else None
+        )
+        return ToolVisibility(
+            tool=tool_name,
+            available=True,
+            visible=True,
+            source=source,
+            requires_approval=requires_approval,
+            approval_settings=approval_settings,
+        )
+
     def require_tool(
         self,
         session_id: str,
@@ -288,41 +451,17 @@ class PolicyEngine:
         mcp_tool_approval_lease_id: str | None = None,
     ) -> SessionManifest:
         session = self.get_session(session_id)
-        if tool_name.value.startswith("assistant_"):
-            profile = str(session.metadata.get("capability_profile") or "").strip().lower()
-            if not profile:
-                raise PolicyError(
-                    f"Session {session_id} has no capability profile; assistant tool access is denied by default"
-                )
-            if tool_name in {
-                ToolName.ASSISTANT_UPSERT_CONFIG,
-                ToolName.ASSISTANT_CREATE_WORKFLOW,
-                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
-            }:
-                self._require_assistant_mutation_guardrails(session, tool_name)
-        self.require_tool_not_denied(session, tool_name)
-        has_tool_permission = tool_name in session.allowed_tools
-        if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
-            has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
-        if not has_tool_permission:
-            has_tool_permission = self._lease_allows_tool(
-                session_id=session_id,
-                tool_name=tool_name,
-                workflow_run_id=workflow_run_id,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        visibility = self._tool_visibility_for_session(
+            session,
+            tool_name,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
+        if not visibility.available:
+            raise PolicyError(
+                visibility.reason
+                or f"Tool {tool_name.value} is not allowed for session {session_id}"
             )
-        if not has_tool_permission:
-            raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
-        if tool_name == ToolName.SCHEDULE_RESUME and not (
-            session_has_vm_binding(session) or session_is_container_worker_vm(session)
-        ):
-            raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")
-        if tool_name in {
-            ToolName.HAS_PENDING_FEEDBACK,
-            ToolName.LIST_UNREAD_FEEDBACK,
-            ToolName.LIST_ALL_FEEDBACK,
-        }:
-            self.require_pr_feedback_streams(session)
         return session
 
     def require_tool_not_denied(self, session: SessionManifest, tool_name: ToolName) -> None:
@@ -402,13 +541,90 @@ class PolicyEngine:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
         self.require_tool_not_denied(session, tool_name)
-        required_tools = set(session.approval_required_tools or [])
+        return self._tool_requires_approval_for_session(session, tool_name)
+
+    def tool_visibility_for_session(
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        *,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+    ) -> ToolVisibility:
+        return self._tool_visibility_for_session(
+            session,
+            tool_name,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
+
+    def visible_tools_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+    ) -> list[ToolVisibility]:
         effective_policy = self.effective_policy_for_session(session)
-        required_tools.update(effective_policy.approval_required_tools)
-        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
-        if rule is not None and rule.require_approval:
-            return True
-        return tool_name in required_tools
+        visibilities: list[ToolVisibility] = []
+        for tool in ToolName:
+            visibility = self._tool_visibility_for_session(
+                session,
+                tool,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                effective_policy=effective_policy,
+            )
+            if visibility.visible:
+                visibilities.append(visibility)
+        return visibilities
+
+    def allowed_tool_summary_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        effective_policy = self.effective_policy_for_session(session)
+        available_tools: list[dict[str, Any]] = []
+        approval_required_tools: list[str] = []
+        unavailable_tools: list[dict[str, Any]] = []
+
+        for tool in ToolName:
+            visibility = self._tool_visibility_for_session(
+                session,
+                tool,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                effective_policy=effective_policy,
+            )
+            if visibility.visible:
+                entry: dict[str, Any] = {
+                    "tool_name": visibility.tool.value,
+                    "source": visibility.source,
+                    "requires_approval": visibility.requires_approval,
+                }
+                if visibility.approval_settings is not None:
+                    entry["approval_settings"] = visibility.approval_settings.model_dump(mode="json")
+                available_tools.append(entry)
+                if visibility.requires_approval:
+                    approval_required_tools.append(visibility.tool.value)
+                continue
+            unavailable_tools.append(
+                {
+                    "tool_name": visibility.tool.value,
+                    "source": visibility.source,
+                    "reason": visibility.reason,
+                }
+            )
+
+        return {
+            "session_id": session.session_id,
+            "available_tools": available_tools,
+            "approval_required_tools": approval_required_tools,
+            "unavailable_tools": unavailable_tools,
+        }
 
     def mcp_tool_policy_for_session(
         self, session: SessionManifest, tool_name: ToolName

@@ -58,6 +58,59 @@ def _contains_url_control_character(value: str) -> bool:
     return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
+def _normalize_optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_required_text(value: object, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return text
+
+
+def _normalize_directory_path(value: object, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return DirectoryPath(segments=text).as_posix()
+
+
+def _normalize_phone_number(value: object, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    digits = "".join(character for character in text if character.isdigit())
+    if not digits:
+        raise ValueError(f"{field_name} must contain at least one digit")
+    return f"+{digits}" if "+" in text else digits
+
+
+def _normalize_phone_number_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a JSON array of phone numbers")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        phone_number = _normalize_phone_number(item, field_name=field_name)
+        if phone_number is None:
+            raise ValueError(f"{field_name} cannot contain empty values")
+        if phone_number in seen:
+            continue
+        seen.add(phone_number)
+        normalized.append(phone_number)
+    return normalized
+
+
 bootstrap_default_node_schemas()
 
 
@@ -109,10 +162,60 @@ class AssistantSettingsConfig(BaseModel):
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
+        return _normalize_optional_text(value)
+
+
+class InboundPhoneRoute(BaseModel):
+    id: str = Field(min_length=1)
+    did: str | None = None
+    called_number: str | None = None
+    directory_path: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    allowed_callers: list[str] = Field(default_factory=list)
+    blocked_callers: list[str] = Field(default_factory=list)
+    route_prompt: str = Field(min_length=1)
+    startup_text: str | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="id")
+
+    @field_validator("did", "called_number", mode="before")
+    @classmethod
+    def normalize_phone_match_fields(cls, value: object, info) -> object:
+        return _normalize_phone_number(value, field_name=info.field_name)
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def normalize_directory_path_field(cls, value: object, info) -> object:
+        return _normalize_directory_path(value, field_name=info.field_name)
+
+    @field_validator("startup_text", mode="before")
+    @classmethod
+    def normalize_optional_route_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="session_id")
+
+    @field_validator("route_prompt", mode="before")
+    @classmethod
+    def normalize_route_prompt(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="route_prompt")
+
+    @field_validator("allowed_callers", "blocked_callers", mode="before")
+    @classmethod
+    def normalize_phone_number_lists(cls, value: object, info) -> list[str]:
+        return _normalize_phone_number_list(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def validate_route(self) -> "InboundPhoneRoute":
+        if not self.did and not self.called_number:
+            raise ValueError("inbound_phone_routes entries must define did or called_number")
+        return self
 
 
 class GatewayConfig(BaseModel):
@@ -215,6 +318,7 @@ class GatewayConfig(BaseModel):
     didww_sip_bridge_url: str | None = None
     didww_sip_bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
     didww_from_number: str | None = None
+    inbound_phone_routes: list[InboundPhoneRoute] = Field(default_factory=list)
     discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
@@ -742,6 +846,17 @@ class GatewayConfig(BaseModel):
                 "model_provider_mode='azure_openai' requires "
                 + ", ".join(missing_fields)
                 + " to be configured"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_inbound_phone_routes(self) -> GatewayConfig:
+        route_ids = [route.id for route in self.inbound_phone_routes]
+        duplicates = sorted(route_id for route_id, count in Counter(route_ids).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(
+                f"Duplicate inbound_phone_routes ids are not allowed: {duplicate_list}"
             )
         return self
 

@@ -27,6 +27,33 @@ material. Newer entries are added incrementally as changes land.
 - Persisted delivered container steering interrupts in `operator-steering-notes.db`
   so Admin Web history survives refreshes.
 
+## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
+
+- Added bridge-side inbound call handling for marked Asterisk `StasisStart`
+  events so the DIDWW SIP bridge can provision fixed inbound routes through the
+  gateway, answer the inbound channel, create the `ExternalMedia` bridge, and
+  send a route-specific opening to OpenAI Realtime.
+- Synced terminal inbound bridge results back to the gateway so accepted calls
+  update the gateway-owned voice-session store and schedule the originating
+  agent's reconciliation wake.
+- Collapsed fixed inbound route configuration to one `session_id` field for the
+  active Truman session that owns projection and reconciliation.
+- Extended the bridge store and call record payloads to keep inbound route
+  metadata redacted, including DID/caller hashes and route identifiers, while
+  preserving outbound call behavior.
+- Added focused bridge tests covering listener filtering, inbound provisioning,
+  inbound bridge setup, and the failure path that hangs up rejected calls.
+
+## 2026-06-11 - DIDWW SIP Bridge Inbound Documentation
+
+- Documented the inbound Asterisk `Stasis` dialplan shape, the bridge-to-gateway
+  provisioning path, and the new bridge env vars used to enable fixed inbound
+  DID routes.
+- Added an operator-facing inbound route example with caller allow/block policy
+  and clarified the failure handling for route misses, caller rejection, missing
+  sessions, bridge setup failures, and hangup/reconciliation cases.
+>>>>>>> main
+
 ## 2026-06-11 - Agents Page Detail Layout
 
 - Moved selected-agent labels into the VM host / worker session details panel

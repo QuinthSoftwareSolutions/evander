@@ -404,6 +404,11 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert list_response.json()["counts"]["active"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["model"] == "gpt-5.3-codex"
+    assert detail_response.json()["session"]["tool_summary"]["session_id"] == "issue-14085-session"
+    assert any(
+        item["tool_name"] == "approval_check"
+        for item in detail_response.json()["session"]["tool_summary"]["available_tools"]
+    )
     assert detail_response.json()["session"]["runtime_image"] == {
         "backend": "libvirt_vm",
         "kind": "libvirt_vm_template",
@@ -933,6 +938,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
         "create_ado_backlog_item"
     ][0]["id"] == "issue-policy"
+    assert response.json()["session"]["tool_summary"]["approval_required_tools"] == ["run_script"]
     assert response.json()["session"]["approval_required_tools"] == ["run_script"]
     assert response.json()["session"]["approval_notification_target_ids"] == ["ops-approvals"]
     options = response.json()["session"]["approval_notification_target_options"]
