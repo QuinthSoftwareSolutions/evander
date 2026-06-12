@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Tool Visibility Inspector
+
+- Added a read-only Admin Web Tool Visibility inspector for diagnosing a
+  session's effective MCP tool set from policy visibility, transport binding
+  telemetry, and denied-at-execution evidence.
+- Added Tool Visibility API and persistence support for MCP transport tool-list
+  bindings so operators can identify bound, mismatched, unknown, and possibly
+  stale client manifests without exposing raw tool arguments or results.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced
