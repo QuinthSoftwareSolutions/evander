@@ -5532,6 +5532,77 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     assert published_events[0][0] == "started"
 
 
+def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="claude-opus-4-8",
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "truman",
+                "agent_provider": "claude",
+            },
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="pr-feedback:session-1:feedback-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="handle PR feedback",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_mode="same_context",
+            effect_id="effect-agent-enqueue-prompt-1",
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: "started",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    command = str(backend.started_specs[0].command)
+    assert "claude --continue -p" in command
+    assert "codex exec" not in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["agent_provider"] == "claude"
+
+
 def test_agent_prompt_container_reconciliation_times_out_running_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

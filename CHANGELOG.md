@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Queued Claude Container Prompts
+
+- Fixed queued container-worker prompt dispatch so Claude-backed sessions resume
+  with the Claude runner command instead of falling back to the Codex command
+  when a busy-session prompt drains from `queued-agent-prompts.json`.
+
 ## 2026-06-11 - Agents Page Detail Layout
 
 - Moved selected-agent labels into the VM host / worker session details panel

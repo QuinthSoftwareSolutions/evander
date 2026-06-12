@@ -285,6 +285,12 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record=record,
             session=session,
         )
+        from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=config,
+        )
         try:
             handle = backend.start(
                 backend.prepare(
@@ -298,6 +304,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             prompt=record.prompt,
                             model=model,
                             resume_thread_id=effective_resume_thread_id,
+                            agent_provider=agent_harness,
                             resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,
                             web_search_enabled=bool(
@@ -307,6 +314,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",
                             "dispatch_id": dispatch_id,
+                            "agent_provider": agent_harness,
                             "queued": True,
                         },
                     )
@@ -323,6 +331,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             dispatch_id=dispatch_id,
             execution_id=handle.execution_id,
             model=model,
+            agent_harness=agent_harness,
             effective_resume_thread_id=effective_resume_thread_id,
         ):
             try:
@@ -344,6 +353,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id: str,
         execution_id: str,
         model: str,
+        agent_harness: str,
         effective_resume_thread_id: str | None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
@@ -382,6 +392,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "directory_path": directory_path,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "agent_provider": agent_harness,
             "queue_key": queue_key,
         }
         outputs = {
