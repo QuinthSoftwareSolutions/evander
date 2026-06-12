@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
@@ -538,7 +538,9 @@ class WorkflowEditorGraphMetadata(BaseModel):
         try:
             return DirectoryPath(segments=directory_path).as_posix()
         except ValueError as exc:
-            raise ValueError(f"Workflow graph has invalid directory path: {directory_path}") from exc
+            raise ValueError(
+                f"Workflow graph has invalid directory path: {directory_path}"
+            ) from exc
 
     @computed_field(return_type=list[str])
     @property
@@ -639,9 +641,7 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
-    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(
-        default_factory=list
-    )
+    recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = Field(default_factory=list)
 
 
 class WorkflowRunSearchFilterPayload(BaseModel):
@@ -1052,6 +1052,65 @@ class WorkflowGraphActivityReportPayload(BaseModel):
     period_start: datetime
     period_end: datetime
     graphs: list[WorkflowGraphActivityGraphPayload] = Field(default_factory=list)
+
+
+WorkflowFailureClusterState = Literal["active", "recent", "resolved", "historical"]
+WorkflowFailureClusterSourceKind = Literal["trigger", "effect", "gate"]
+
+
+class WorkflowFailureClusterExamplePayload(BaseModel):
+    event_id: str | None = None
+    trace_id: str | None = None
+    session_id: str | None = None
+    occurred_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_summary: str | None = None
+    run_state: str | None = None
+    run_detail_href: str | None = None
+    api_run_detail_href: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+
+
+class WorkflowFailureClusterPayload(BaseModel):
+    cluster_id: str
+    graph_id: str | None = None
+    graph_name: str | None = None
+    graph_description: str | None = None
+    directory_path: str | None = None
+    node_id: str | None = None
+    node_display_name: str | None = None
+    node_type: str | None = None
+    trigger_type: str | None = None
+    effect_type: str | None = None
+    gate_type: str | None = None
+    source_kind: WorkflowFailureClusterSourceKind
+    error_signature: str
+    error_signature_key: str
+    count: int
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    latest_error_summary: str | None = None
+    state: WorkflowFailureClusterState
+    event_ids: list[str] = Field(default_factory=list)
+    trace_ids: list[str] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+    pr_ids: list[str] = Field(default_factory=list)
+    ado_item_ids: list[str] = Field(default_factory=list)
+    issue_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    examples: list[WorkflowFailureClusterExamplePayload] = Field(default_factory=list)
+
+
+class WorkflowFailureClusterReportPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    generated_at: datetime
+    period_start: datetime
+    period_end: datetime
+    recent_threshold_seconds: int | None = None
+    limit: int = 100
+    has_more: bool = False
+    clusters: list[WorkflowFailureClusterPayload] = Field(default_factory=list)
 
 
 class ConformanceRequirementSnippetPayload(BaseModel):
@@ -1915,9 +1974,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:session:revoke-mcp-tool-approval-lease": (
         "Revoke a workflow-run-scoped MCP tool approval lease for one agent session."
     ),
-    "effect:session:renew-if-expired": (
-        "Renew an expired or soon-expiring session."
-    ),
+    "effect:session:renew-if-expired": ("Renew an expired or soon-expiring session."),
     "effect:artifact:stage": "Copy a file or directory from /home/agent into the session artifacts folder.",
     "effect:artifact:publish-artifacts": (
         "Compress and publish the session artifacts folder to the durable artifact store."
@@ -5148,6 +5205,103 @@ def _read_merged_json_objects(*paths: Path | None) -> dict[str, object]:
     for path in paths:
         payload.update(_read_json_object(path))
     return payload
+
+
+_WORKFLOW_FAILURE_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_WORKFLOW_FAILURE_ISO_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b"
+)
+_WORKFLOW_FAILURE_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{12,}\b")
+_WORKFLOW_FAILURE_URL_RE = re.compile(r"(?P<url>(?:https?|ssh|git)://[^\s'\"`<>]+)")
+_WORKFLOW_FAILURE_TEMP_PATH_RE = re.compile(
+    r"(?P<path>(?:/tmp|/var/tmp|/private/tmp|/run/user/\d+)/[^\s'\"`<>]+)"
+)
+_WORKFLOW_FAILURE_AGENT_REF_RE = re.compile(r"\b(?:refs/(?:heads|remotes)/)?agents/[^\s'\"`<>]+")
+_WORKFLOW_FAILURE_LABELLED_ID_RE = re.compile(
+    r"(?i)\b(?P<label>trace|session|thread|execution|event|request|correlation|"
+    r"approval_request|dispatch|artifact|pr|issue|ado_item)(?:_id)?\b(?P<sep>\s*[:=]\s*)"
+    r"(?P<value>[^\s,;)\]}]+)"
+)
+_WORKFLOW_FAILURE_WS_RE = re.compile(r"\s+")
+_WORKFLOW_FAILURE_ID_PLACEHOLDERS: dict[str, str] = {
+    "trace": "<trace_id>",
+    "session": "<session_id>",
+    "thread": "<thread_id>",
+    "execution": "<execution_id>",
+    "event": "<event_id>",
+    "request": "<request_id>",
+    "correlation": "<correlation_id>",
+    "approval_request": "<approval_request_id>",
+    "dispatch": "<dispatch_id>",
+    "artifact": "<artifact_id>",
+    "pr": "<pr_id>",
+    "issue": "<issue_id>",
+    "ado_item": "<ado_item_id>",
+}
+
+
+def _workflow_failure_replace_url(match: re.Match[str]) -> str:
+    url = match.group("url")
+    try:
+        split = urlsplit(url)
+    except ValueError:
+        return "<url>"
+    return urlunsplit((split.scheme, split.netloc, split.path, "", ""))
+
+
+def _workflow_failure_replace_labelled_id(match: re.Match[str]) -> str:
+    label = match.group("label").lower()
+    placeholder = _WORKFLOW_FAILURE_ID_PLACEHOLDERS.get(label, f"<{label}_id>")
+    return f"{label}_id={placeholder}"
+
+
+def _workflow_failure_fallback_text(outputs: Mapping[str, object]) -> str:
+    error_class = _coerce_optional_string(outputs.get("error_class"))
+    source_kind = (
+        _coerce_optional_string(outputs.get("source_kind"))
+        or _coerce_optional_string(outputs.get("node_type"))
+        or _coerce_optional_string(outputs.get("effect_type"))
+        or _coerce_optional_string(outputs.get("gate_type"))
+        or _coerce_optional_string(outputs.get("trigger_type"))
+    )
+    if error_class and source_kind:
+        return f"{error_class} {source_kind}"
+    if error_class:
+        return error_class
+    if source_kind:
+        return source_kind
+    return "workflow failure"
+
+
+def _normalize_workflow_failure_signature(
+    error_text: object | None, outputs: object | None = None
+) -> tuple[str, str]:
+    output_payload = outputs if isinstance(outputs, Mapping) else {}
+    summary = _coerce_optional_string(error_text)
+    if summary is None:
+        summary = _coerce_optional_string(output_payload.get("error_message"))
+    if summary is None:
+        summary = _coerce_optional_string(output_payload.get("message"))
+    if summary is None:
+        summary = _workflow_failure_fallback_text(output_payload)
+
+    normalized = summary
+    normalized = _WORKFLOW_FAILURE_URL_RE.sub(_workflow_failure_replace_url, normalized)
+    normalized = _WORKFLOW_FAILURE_TEMP_PATH_RE.sub("<temp_path>", normalized)
+    normalized = _WORKFLOW_FAILURE_AGENT_REF_RE.sub("<agent_ref>", normalized)
+    normalized = _WORKFLOW_FAILURE_LABELLED_ID_RE.sub(
+        _workflow_failure_replace_labelled_id, normalized
+    )
+    normalized = _WORKFLOW_FAILURE_UUID_RE.sub("<uuid>", normalized)
+    normalized = _WORKFLOW_FAILURE_ISO_TIMESTAMP_RE.sub("<timestamp>", normalized)
+    normalized = _WORKFLOW_FAILURE_LONG_HEX_RE.sub("<hex>", normalized)
+    normalized = _WORKFLOW_FAILURE_WS_RE.sub(" ", normalized).strip()
+    if not normalized:
+        normalized = _workflow_failure_fallback_text(output_payload)
+    key = _WORKFLOW_FAILURE_WS_RE.sub(" ", normalized).strip().casefold()
+    return normalized, key
 
 
 def _collect_workflow_keyed_values(payload: Any, *, key_suffix: str | None = None) -> list[str]:
@@ -8829,8 +8983,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             (
                 candidate
                 for candidate in execution_records
-                if str(getattr(candidate, "execution_id", "") or "").strip()
-                == current_execution_id
+                if str(getattr(candidate, "execution_id", "") or "").strip() == current_execution_id
             ),
             None,
         )
@@ -9394,12 +9547,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if rule.long_context_input_tokens_over is not None:
             long_context = {
                 "input_tokens_over": rule.long_context_input_tokens_over,
-                "input_multiplier": _admin_decimal_payload(
-                    rule.long_context_input_multiplier
-                ),
-                "output_multiplier": _admin_decimal_payload(
-                    rule.long_context_output_multiplier
-                ),
+                "input_multiplier": _admin_decimal_payload(rule.long_context_input_multiplier),
+                "output_multiplier": _admin_decimal_payload(rule.long_context_output_multiplier),
             }
         return {
             "id": rule.id,
@@ -9411,9 +9560,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "currency": rule.currency,
             "rates_per_1m_tokens": {
                 "input": _admin_decimal_payload(rule.input_per_1m_tokens),
-                "cached_input": _admin_decimal_payload(
-                    rule.cached_input_per_1m_tokens
-                ),
+                "cached_input": _admin_decimal_payload(rule.cached_input_per_1m_tokens),
                 "output": _admin_decimal_payload(rule.output_per_1m_tokens),
             },
             "batch_multiplier": _admin_decimal_payload(rule.batch_multiplier),
@@ -10197,7 +10344,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
         )
 
-    def _agent_session_policy_payload(self, session: SessionManifest | None) -> dict[str, Any] | None:
+    def _agent_session_policy_payload(
+        self, session: SessionManifest | None
+    ) -> dict[str, Any] | None:
         if session is None:
             return None
         labels = _normalize_session_labels(session.metadata.get("labels"))
@@ -10219,7 +10368,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             },
             "approval_notification_target_ids": list(session.approval_notification_target_ids),
             "approval_notification_target_options": [
-                option.model_dump(mode="json") for option in self._approval_notification_target_options(session)
+                option.model_dump(mode="json")
+                for option in self._approval_notification_target_options(session)
             ],
             "tool_argument_policies": {
                 tool_name: [rule.model_dump(mode="json") for rule in rules]
@@ -10294,9 +10444,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
 
         approval_tool_settings = {
-            tool.value: self.runtime.policy.approval_grant_settings_for_tool(session, tool).model_dump(
-                mode="json"
-            )
+            tool.value: self.runtime.policy.approval_grant_settings_for_tool(
+                session, tool
+            ).model_dump(mode="json")
             for tool in ToolName
         }
         mcp_tool_policies = {
@@ -10348,9 +10498,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return {candidate for candidate in candidates if candidate}
 
     @staticmethod
-    def _agent_prompt_queue_record_matches(
-        record: Any, *, candidates: set[str]
-    ) -> bool:
+    def _agent_prompt_queue_record_matches(record: Any, *, candidates: set[str]) -> bool:
         record_values = {
             str(value or "").strip()
             for value in (
@@ -10412,14 +10560,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return AgentPromptQueueSummary(
             record_count=len(matches),
             coalesced_count=sum(
-                max(1, int(getattr(record, "coalesced_count", 1) or 1))
-                for record in matches
+                max(1, int(getattr(record, "coalesced_count", 1) or 1)) for record in matches
             ),
             oldest_created_at=min(getattr(record, "created_at") for record in matches),
             newest_updated_at=max(getattr(record, "updated_at") for record in matches),
             records=[
-                self._agent_prompt_queue_record_payload(record)
-                for record in matches[:record_limit]
+                self._agent_prompt_queue_record_payload(record) for record in matches[:record_limit]
             ],
             truncated_count=max(0, len(matches) - record_limit),
             read_error=read_error,
@@ -10605,7 +10751,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         *,
         fallback_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, str | None]:
-        container_worker = metadata.get("container_worker") if isinstance(metadata, Mapping) else None
+        container_worker = (
+            metadata.get("container_worker") if isinstance(metadata, Mapping) else None
+        )
         image: str | None = None
         image_alias: str | None = None
         if isinstance(container_worker, Mapping):
@@ -10706,7 +10854,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         display_image_ref, image_ref_sanitized = self._runtime_image_ref_display_details(image_ref)
         raw_template_alias = template.get("template_alias")
-        template_alias = _coerce_optional_string(raw_template_alias) if isinstance(raw_template_alias, str) else None
+        template_alias = (
+            _coerce_optional_string(raw_template_alias)
+            if isinstance(raw_template_alias, str)
+            else None
+        )
         return {
             "backend": "libvirt_vm",
             "kind": "libvirt_vm_template",
@@ -10956,9 +11108,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         if selected_backend == "libvirt_vm":
             return (
-                self._agent_records_with_prompt_queue(records)
-                if include_prompt_queue
-                else records
+                self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
             )
 
         container_repository = self._container_worker_execution_repository()
@@ -11009,11 +11159,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
-        return (
-            self._agent_records_with_prompt_queue(records)
-            if include_prompt_queue
-            else records
-        )
+        return self._agent_records_with_prompt_queue(records) if include_prompt_queue else records
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(
@@ -11169,7 +11315,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         from agent_sandbox.effects.providers.agent_session import default_agent_provider_for_config
 
         requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
-        agent_provider = requested_agent_provider or default_agent_provider_for_config(backend.config)
+        agent_provider = requested_agent_provider or default_agent_provider_for_config(
+            backend.config
+        )
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,
@@ -11667,11 +11815,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session_policy_fields:
             update.update(_session_policy_update_from_payload(session, session_policy_fields))
         if "approval_notification_target_ids" in update:
-            update["approval_notification_target_ids"] = _resolve_session_approval_notification_target_ids(
-                self.runtime,
-                self.config,
-                session,
-                update["approval_notification_target_ids"],
+            update["approval_notification_target_ids"] = (
+                _resolve_session_approval_notification_target_ids(
+                    self.runtime,
+                    self.config,
+                    session,
+                    update["approval_notification_target_ids"],
+                )
             )
         if "email_mailboxes" in body:
             update["email_mailbox_allowlist"] = (
@@ -16148,7 +16298,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             trace_id_field="trace_id",
             error_field="error",
         )
-        recent_node_activity.sort(key=lambda item: (item.activity_at, item.activity_key), reverse=True)
+        recent_node_activity.sort(
+            key=lambda item: (item.activity_at, item.activity_key), reverse=True
+        )
         recent_node_activity = recent_node_activity[:200]
 
         runs = [
@@ -16814,7 +16966,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return updated
 
         def _dismiss_store(store: Any, *, node_id_field: str) -> int:
-            dismiss_failed_records_for_node = getattr(store, "dismiss_failed_records_for_node", None)
+            dismiss_failed_records_for_node = getattr(
+                store, "dismiss_failed_records_for_node", None
+            )
             if callable(dismiss_failed_records_for_node):
                 return dismiss_failed_records_for_node(
                     normalized_node_id,
@@ -20304,9 +20458,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def agent_create_options(self, directory_path: str | None = None) -> dict[str, Any]:
         normalized_directory = self._normalize_directory_path(directory_path)
         vm_defaults = self.resolve_vm_defaults(normalized_directory)
-        provider_config = self.runtime.provider_config.resolve_for_directory(
-            normalized_directory
-        )
+        provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
         libvirt_templates = [
             {"alias": alias, "image_ref": image_ref}
             for alias, image_ref in sorted(vm_defaults.libvirt_vm_templates.items())
