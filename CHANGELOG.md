@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Admin Web Workflow Failure Cluster Docs
+
+- Documented the new workflow failure cluster report added to the Admin
+  Web/API surface in the operations guide and user manual as a read-only
+  triage view over stored run activity.
+- Noted that normalized failure signatures remove volatile IDs and timestamps
+  and that the active/recent/resolved labels are heuristic signals that should
+  be validated against representative workflow run detail before remediation.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced

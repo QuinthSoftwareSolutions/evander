@@ -421,7 +421,7 @@ Admin Web. The UI save path uses revision checks to prevent silent stale overwri
 
 ## Reports
 
-The Reports tab contains workflow activity and conformance snapshots.
+The Reports tab contains workflow activity, workflow failure clusters, and conformance snapshots.
 
 ![Reports](assets/admin-ui/manual-reports.png)
 
@@ -433,6 +433,16 @@ Workflow graph activity:
 4. Click **Run report**.
 5. Select a graph to inspect activity count, run count, node count, latest activity, status counts,
    user IDs, and active node breakdown.
+
+Workflow failure clusters:
+
+1. Select **Workflow failure clusters**.
+2. Use 24h, 7d, or 30d presets, or enter a custom start/end range.
+3. Click **Run report**.
+4. Review grouped failures by graph, node, and normalized error signature. The signature removes
+   volatile IDs and timestamps, and the active/recent/resolved label is a heuristic signal rather
+   than proof of root cause.
+5. Open a representative workflow run detail before deciding on remediation.
 
 Conformance:
 
