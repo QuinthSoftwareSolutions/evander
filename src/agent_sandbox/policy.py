@@ -1677,7 +1677,10 @@ class PolicyEngine:
                 if request_session is not None
                 else set()
             )
-            if request.expires_at <= now:
+            if (
+                request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
+                and request.expires_at <= now
+            ):
                 request.status = ApprovalStatus.EXPIRED
                 items[request_id] = request
                 error = _approval_rejection_error(

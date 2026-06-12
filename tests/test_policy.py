@@ -957,7 +957,7 @@ def test_require_approved_attaches_denied_and_expired_diagnostics(tmp_path: Path
         payload=denied_payload,
         tool_name=ToolName.RUN_SCRIPT.value,
         status=ApprovalStatus.DENIED,
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
     engine.approval_store.put(denied.request_id, denied)
 
@@ -969,6 +969,9 @@ def test_require_approved_attaches_denied_and_expired_diagnostics(tmp_path: Path
     assert exc.approval_request.status == ApprovalStatus.DENIED
     assert exc.approval_diagnostic["payload_match"] is True
     assert exc.approval_diagnostic["rejection_kind"] == "denied"
+    stored_denied = engine.approval_store.get(denied.request_id)
+    assert stored_denied is not None
+    assert stored_denied.status == ApprovalStatus.DENIED
 
     expired_payload = {
         "tool_name": ToolName.RUN_SCRIPT.value,
