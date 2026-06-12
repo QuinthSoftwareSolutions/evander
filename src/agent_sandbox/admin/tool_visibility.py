@@ -17,6 +17,10 @@ class ToolVisibilityState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ToolVisibilityExecutionState(str, Enum):
+    DENIED_AT_EXECUTION = "denied_at_execution"
+
+
 class ToolVisibilityNoticePayload(BaseModel):
     kind: str
     message: str
@@ -43,6 +47,7 @@ class ToolVisibilityToolPayload(BaseModel):
     visibility_state: ToolVisibilityState
     available: bool
     visible: bool
+    execution_state: ToolVisibilityExecutionState | None = None
     source: str | None = None
     reason: str | None = None
     requires_approval: bool = False
@@ -50,6 +55,14 @@ class ToolVisibilityToolPayload(BaseModel):
     provider: str | None = None
     category: str = "Other"
     label: str | None = None
+    last_denied_at: datetime | None = None
+    decision: str | None = None
+    error_summary: str | None = None
+    request_id: str | None = None
+    approval_request_id: str | None = None
+    workflow_run_id: str | None = None
+    mcp_tool_approval_lease_id: str | None = None
+    related_links: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ToolVisibilityCountsPayload(BaseModel):
@@ -57,6 +70,7 @@ class ToolVisibilityCountsPayload(BaseModel):
     visible: int = 0
     hidden_by_policy: int = 0
     unavailable_to_session: int = 0
+    denied_at_execution: int = 0
     unknown: int = 0
     requires_approval: int = 0
 
@@ -366,6 +380,101 @@ def _tool_visibility_notices(session: SessionManifest) -> list[ToolVisibilityNot
     return notices
 
 
+def _execution_denial_payload(
+    entry: Any,
+) -> dict[str, Any]:
+    return {
+        "execution_state": ToolVisibilityExecutionState.DENIED_AT_EXECUTION,
+        "last_denied_at": getattr(entry, "created_at", None),
+        "decision": getattr(entry, "decision", None),
+        "error_summary": getattr(entry, "error_summary", None),
+        "request_id": getattr(entry, "request_id", None),
+        "approval_request_id": getattr(entry, "approval_request_id", None),
+        "workflow_run_id": getattr(entry, "workflow_run_id", None),
+        "mcp_tool_approval_lease_id": getattr(entry, "mcp_tool_approval_lease_id", None),
+        "related_links": [
+            link.model_dump(mode="json")
+            for link in getattr(entry, "related_links", [])
+            if link is not None
+        ],
+    }
+
+
+def _apply_execution_denial_summary(
+    tool: ToolVisibilityToolPayload,
+    entry: Any,
+) -> None:
+    summary = _execution_denial_payload(entry)
+    tool.execution_state = summary["execution_state"]
+    tool.last_denied_at = summary["last_denied_at"]
+    tool.decision = summary["decision"]
+    tool.error_summary = summary["error_summary"]
+    tool.request_id = summary["request_id"]
+    tool.approval_request_id = summary["approval_request_id"]
+    tool.workflow_run_id = summary["workflow_run_id"]
+    tool.mcp_tool_approval_lease_id = summary["mcp_tool_approval_lease_id"]
+    tool.related_links = summary["related_links"]
+
+
+def _tool_visibility_denied_execution_payload(
+    entry: Any,
+) -> ToolVisibilityToolPayload | None:
+    tool_name = str(getattr(entry, "tool_name", "") or "").strip()
+    if not tool_name:
+        return None
+    category = "Unknown"
+    label = tool_name.replace("_", " ")
+    summary = _execution_denial_payload(entry)
+    return ToolVisibilityToolPayload(
+        tool_name=tool_name,
+        visibility_state=ToolVisibilityState.UNKNOWN,
+        available=False,
+        visible=False,
+        execution_state=summary["execution_state"],
+        source="unknown",
+        reason=summary["error_summary"] or "Denied at execution.",
+        requires_approval=False,
+        approval_settings=None,
+        provider=None,
+        category=category,
+        label=label,
+        last_denied_at=summary["last_denied_at"],
+        decision=summary["decision"],
+        error_summary=summary["error_summary"],
+        request_id=summary["request_id"],
+        approval_request_id=summary["approval_request_id"],
+        workflow_run_id=summary["workflow_run_id"],
+        mcp_tool_approval_lease_id=summary["mcp_tool_approval_lease_id"],
+        related_links=summary["related_links"],
+    )
+
+
+def _tool_visibility_denied_execution_summary(
+    service: Any, session: SessionManifest
+) -> tuple[dict[str, Any], int]:
+    denied_page = service.list_tool_call_audit_entries(
+        status="denied",
+        session_id=session.session_id,
+        limit=500,
+    )
+    latest_denied_by_tool: dict[str, Any] = {}
+    denied_count = 0
+    for entry in denied_page.items:
+        denied_count += 1
+        tool_name = str(getattr(entry, "tool_name", "") or "").strip()
+        if not tool_name:
+            continue
+        current = latest_denied_by_tool.get(tool_name)
+        entry_created_at = getattr(entry, "created_at", None)
+        current_created_at = getattr(current, "created_at", None) if current is not None else None
+        if current is None or current_created_at is None:
+            latest_denied_by_tool[tool_name] = entry
+            continue
+        if entry_created_at is None or entry_created_at >= current_created_at:
+            latest_denied_by_tool[tool_name] = entry
+    return latest_denied_by_tool, denied_count
+
+
 def build_tool_visibility_payload(
     service: Any,
     session: SessionManifest,
@@ -385,10 +494,12 @@ def build_tool_visibility_payload(
     notices = _tool_visibility_notices(session)
     tools: list[ToolVisibilityToolPayload] = []
     counts = ToolVisibilityCountsPayload(total=len(ToolName))
+    policy_error: Exception | None = None
 
     try:
         service.runtime.policy_config.resolve_for_session_manifest(session)
     except Exception as exc:
+        policy_error = exc
         notices.append(
             ToolVisibilityNoticePayload(
                 kind="policy_unavailable",
@@ -398,43 +509,59 @@ def build_tool_visibility_payload(
                 ),
             )
         )
+    if policy_error is not None:
         for tool in ToolName:
-            tools.append(_unknown_tool_payload(tool, str(exc)))
+            tools.append(_unknown_tool_payload(tool, str(policy_error)))
         counts.unknown = len(ToolName)
-        return ToolVisibilityPayload(
-            session_context=session_context,
-            query_context=query_context,
-            tools=tools,
-            counts=counts,
-            notices=notices,
-        )
-
-    for tool in ToolName:
-        try:
-            visibility = service.runtime.policy.tool_visibility_for_session(
-                session,
-                tool,
-                workflow_run_id=normalized_workflow_run_id,
-                mcp_tool_approval_lease_id=normalized_mcp_tool_approval_lease_id,
-            )
-        except Exception as exc:
-            tools.append(_unknown_tool_payload(tool, str(exc)))
-            counts.unknown += 1
-            continue
-
-        payload = _tool_payload_for_visibility(visibility)
-        tools.append(payload)
-        match payload.visibility_state:
-            case ToolVisibilityState.VISIBLE:
-                counts.visible += 1
-                if payload.requires_approval:
-                    counts.requires_approval += 1
-            case ToolVisibilityState.HIDDEN_BY_POLICY:
-                counts.hidden_by_policy += 1
-            case ToolVisibilityState.UNAVAILABLE_TO_SESSION:
-                counts.unavailable_to_session += 1
-            case ToolVisibilityState.UNKNOWN:
+    else:
+        for tool in ToolName:
+            try:
+                visibility = service.runtime.policy.tool_visibility_for_session(
+                    session,
+                    tool,
+                    workflow_run_id=normalized_workflow_run_id,
+                    mcp_tool_approval_lease_id=normalized_mcp_tool_approval_lease_id,
+                )
+            except Exception as exc:
+                tools.append(_unknown_tool_payload(tool, str(exc)))
                 counts.unknown += 1
+                continue
+
+            payload = _tool_payload_for_visibility(visibility)
+            tools.append(payload)
+            match payload.visibility_state:
+                case ToolVisibilityState.VISIBLE:
+                    counts.visible += 1
+                    if payload.requires_approval:
+                        counts.requires_approval += 1
+                case ToolVisibilityState.HIDDEN_BY_POLICY:
+                    counts.hidden_by_policy += 1
+                case ToolVisibilityState.UNAVAILABLE_TO_SESSION:
+                    counts.unavailable_to_session += 1
+                case ToolVisibilityState.UNKNOWN:
+                    counts.unknown += 1
+
+    try:
+        latest_denied_by_tool, denied_count = _tool_visibility_denied_execution_summary(service, session)
+    except Exception:
+        latest_denied_by_tool = {}
+        denied_count = 0
+    counts.denied_at_execution = denied_count
+    tool_rows_by_name = {tool.tool_name: tool for tool in tools}
+    for tool_name, entry in latest_denied_by_tool.items():
+        tool = tool_rows_by_name.get(tool_name)
+        if tool is not None:
+            _apply_execution_denial_summary(tool, entry)
+            continue
+        extra_tool = _tool_visibility_denied_execution_payload(entry)
+        if extra_tool is None:
+            continue
+        tools.append(extra_tool)
+        tool_rows_by_name[extra_tool.tool_name] = extra_tool
+        if extra_tool.visibility_state is ToolVisibilityState.UNKNOWN:
+            counts.unknown += 1
+
+    counts.total = len(tools)
 
     return ToolVisibilityPayload(
         session_context=session_context,
