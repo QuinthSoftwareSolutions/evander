@@ -746,7 +746,7 @@ def test_mcp_tool_approval_can_allow_payload_variance_until_use_count_exhausted(
 
     assert request.used_count == 2
     assert request.status == ApprovalStatus.EXHAUSTED
-    with pytest.raises(PolicyError, match="not approved"):
+    with pytest.raises(PolicyError, match="not approved") as excinfo:
         engine.require_approved(
             approval.request_id,
             {
@@ -756,6 +756,13 @@ def test_mcp_tool_approval_can_allow_payload_variance_until_use_count_exhausted(
             },
             consume=True,
         )
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "exhausted"
+    assert getattr(exc, "approval_request", None) is not None
+    assert exc.approval_request.status == ApprovalStatus.EXHAUSTED
+    assert exc.approval_diagnostic["approval_request_id"] == approval.request_id
+    assert exc.approval_diagnostic["rejection_kind"] == "exhausted"
+    assert exc.approval_diagnostic["status"] == ApprovalStatus.EXHAUSTED.value
 
 
 def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
@@ -795,7 +802,7 @@ def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
     approval.status = ApprovalStatus.APPROVED
     engine.approval_store.put(approval.request_id, approval)
 
-    with pytest.raises(PolicyError, match="does not belong to session s2"):
+    with pytest.raises(PolicyError, match="does not belong to session s2") as excinfo:
         engine.require_approved(
             approval.request_id,
             {
@@ -805,12 +812,18 @@ def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
             },
             consume=True,
         )
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "wrong_session"
+    assert getattr(exc, "approval_request", None) is not None
+    assert exc.approval_request.request_id == approval.request_id
+    assert exc.approval_diagnostic["approval_request_id"] == approval.request_id
+    assert exc.approval_diagnostic["rejection_kind"] == "wrong_session"
     stored = engine.approval_store.get(approval.request_id)
     assert stored is not None
     assert stored.status == ApprovalStatus.APPROVED
     assert stored.used_count == 0
 
-    with pytest.raises(PolicyError, match="is not for tool complete_issue"):
+    with pytest.raises(PolicyError, match="is not for tool complete_issue") as excinfo:
         engine.require_approved(
             approval.request_id,
             {
@@ -820,6 +833,12 @@ def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
             },
             consume=True,
         )
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "wrong_tool"
+    assert getattr(exc, "approval_request", None) is not None
+    assert exc.approval_request.request_id == approval.request_id
+    assert exc.approval_diagnostic["approval_request_id"] == approval.request_id
+    assert exc.approval_diagnostic["rejection_kind"] == "wrong_tool"
     stored = engine.approval_store.get(approval.request_id)
     assert stored is not None
     assert stored.status == ApprovalStatus.APPROVED
@@ -836,6 +855,147 @@ def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
     )
     assert consumed.used_count == 1
     assert consumed.status == ApprovalStatus.EXHAUSTED
+
+
+def test_require_approved_attaches_payload_mismatch_diagnostic(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    approval = engine.create_approval(
+        "s1",
+        "mcp_tool_invocation",
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "one", "token": "approved-secret"},
+        },
+        "Run script",
+        tool_name=ToolName.RUN_SCRIPT.value,
+    )
+    approval.status = ApprovalStatus.APPROVED
+    engine.approval_store.put(approval.request_id, approval)
+
+    attempted = {
+        "tool_name": ToolName.RUN_SCRIPT.value,
+        "session_id": "s1",
+        "arguments": {"script_name": "two", "token": "attempted-secret"},
+    }
+
+    with pytest.raises(PolicyError, match="Approval payload mismatch") as excinfo:
+        engine.require_approved(approval.request_id, attempted, consume=True)
+
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "payload_mismatch"
+    assert getattr(exc, "approval_request", None) is not None
+    assert exc.approval_request.request_id == approval.request_id
+    diagnostic = exc.approval_diagnostic
+    assert diagnostic["approval_request_id"] == approval.request_id
+    assert diagnostic["rejection_kind"] == "payload_mismatch"
+    assert diagnostic["payload_match"] is False
+    assert diagnostic["approved_payload_digest"] == approval.payload_digest
+    assert diagnostic["attempted_payload_digest"] == digest_payload(attempted)
+    assert diagnostic["approved_payload_summary"]["arguments"]["token"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["arguments"]["token"] == "<redacted>"
+    changed = {
+        entry["path"]: entry for entry in diagnostic["differences"]["changed"]["entries"]
+    }
+    assert changed["arguments.script_name"] == {
+        "path": "arguments.script_name",
+        "approved_value": "one",
+        "attempted_value": "two",
+    }
+    assert changed["arguments.token"] == {
+        "path": "arguments.token",
+        "approved_value": "<redacted>",
+        "attempted_value": "<redacted>",
+    }
+
+
+def test_require_approved_attaches_missing_approval_diagnostic(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+
+    with pytest.raises(PolicyError, match="Unknown approval request") as excinfo:
+        engine.require_approved("missing-request", {"tool_name": ToolName.RUN_SCRIPT.value})
+
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "missing"
+    assert getattr(exc, "approval_request", None) is None
+    assert exc.approval_diagnostic == {
+        "approval_request_id": "missing-request",
+        "rejection_kind": "missing",
+        "status": "missing",
+        "reason": "Unknown approval request: missing-request",
+    }
+
+
+def test_require_approved_attaches_denied_and_expired_diagnostics(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    denied_payload = {
+        "tool_name": ToolName.RUN_SCRIPT.value,
+        "session_id": "s1",
+        "arguments": {"script_name": "one"},
+    }
+    denied = ApprovalRequest(
+        request_id="denied-1",
+        session_id="s1",
+        action_type="mcp_tool_invocation",
+        payload_digest=digest_payload(denied_payload),
+        human_summary="denied",
+        payload=denied_payload,
+        tool_name=ToolName.RUN_SCRIPT.value,
+        status=ApprovalStatus.DENIED,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.approval_store.put(denied.request_id, denied)
+
+    with pytest.raises(PolicyError, match="is not approved") as excinfo:
+        engine.require_approved(denied.request_id, denied_payload)
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "denied"
+    assert exc.approval_request is not None
+    assert exc.approval_request.status == ApprovalStatus.DENIED
+    assert exc.approval_diagnostic["payload_match"] is True
+    assert exc.approval_diagnostic["rejection_kind"] == "denied"
+
+    expired_payload = {
+        "tool_name": ToolName.RUN_SCRIPT.value,
+        "session_id": "s1",
+        "arguments": {"script_name": "two"},
+    }
+    expired = ApprovalRequest(
+        request_id="expired-1",
+        session_id="s1",
+        action_type="mcp_tool_invocation",
+        payload_digest=digest_payload(expired_payload),
+        human_summary="expired",
+        payload=expired_payload,
+        tool_name=ToolName.RUN_SCRIPT.value,
+        status=ApprovalStatus.APPROVED,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    engine.approval_store.put(expired.request_id, expired)
+
+    with pytest.raises(PolicyError, match="has expired") as excinfo:
+        engine.require_approved(expired.request_id, expired_payload)
+    exc = excinfo.value
+    assert getattr(exc, "rejection_kind", None) == "expired"
+    assert exc.approval_request is not None
+    assert exc.approval_request.status == ApprovalStatus.EXPIRED
+    assert exc.approval_diagnostic["approval_request_id"] == expired.request_id
+    assert exc.approval_diagnostic["rejection_kind"] == "expired"
 
 
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:
