@@ -13,6 +13,16 @@ import {
   stateLabel,
   summarizeRequirementCounts,
 } from "./conformanceReports";
+import {
+  stateClassName as workflowFailureClusterStateClassName,
+  stateLabel as workflowFailureClusterStateLabel,
+  selectWorkflowFailureCluster,
+  workflowFailureClusterNodeType,
+  workflowFailureClusterRepresentativeRunHref,
+  workflowFailureClusterRepresentativeRunLabel,
+  WORKFLOW_FAILURE_CLUSTERS_REPORT_ENDPOINT,
+  type WorkflowFailureClusterReportPayload,
+} from "./workflowFailureClusters";
 
 type WorkflowGraphActivityNode = {
   node_id: string;
@@ -51,7 +61,7 @@ type WorkflowGraphActivityReport = {
   graphs: WorkflowGraphActivityGraph[];
 };
 
-type ReportView = "workflow-graph-activity" | "conformance";
+type ReportView = "workflow-graph-activity" | "workflow-failure-clusters" | "conformance";
 
 const HOUR_MS = 60 * 60 * 1000;
 const CONFORMANCE_REPORT_KIND_ORDER: ConformanceReportKind[] = ["trigger", "effect"];
@@ -128,6 +138,11 @@ export function ReportsPage() {
   const [selectedGraphId, setSelectedGraphId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [failureClustersReport, setFailureClustersReport] =
+    useState<WorkflowFailureClusterReportPayload | null>(null);
+  const [selectedFailureClusterId, setSelectedFailureClusterId] = useState<string>("");
+  const [failureClustersLoading, setFailureClustersLoading] = useState(false);
+  const [failureClustersError, setFailureClustersError] = useState<string | null>(null);
   const [conformanceReport, setConformanceReport] =
     useState<ConformanceReportsPayload | null>(null);
   const [conformanceSelectedKind, setConformanceSelectedKind] =
@@ -138,6 +153,12 @@ export function ReportsPage() {
 
   const selectedGraph =
     report?.graphs.find((graph) => graph.graph_id === selectedGraphId) ?? report?.graphs[0] ?? null;
+  const selectedFailureCluster = useMemo(() => {
+    return selectWorkflowFailureCluster(
+      failureClustersReport?.clusters ?? [],
+      selectedFailureClusterId,
+    );
+  }, [failureClustersReport, selectedFailureClusterId]);
   const maxActivity = Math.max(1, ...(report?.graphs.map((graph) => graph.activity_count) ?? [0]));
   const conformanceReports = useMemo(() => {
     const reports = conformanceReport?.reports ?? [];
@@ -169,6 +190,23 @@ export function ReportsPage() {
       current && payload.graphs.some((graph) => graph.graph_id === current)
         ? current
         : payload.graphs[0]?.graph_id ?? "",
+    );
+  }
+
+  async function loadFailureClustersReport(nextStart = startValue, nextEnd = endValue) {
+    const params = new URLSearchParams({
+      start: isoFromLocalInput(nextStart),
+      end: isoFromLocalInput(nextEnd),
+      limit: "100",
+    });
+    const payload = await fetchJson<WorkflowFailureClusterReportPayload>(
+      `${WORKFLOW_FAILURE_CLUSTERS_REPORT_ENDPOINT}?${params.toString()}`,
+    );
+    setFailureClustersReport(payload);
+    setSelectedFailureClusterId((current) =>
+      current && payload.clusters.some((cluster) => cluster.cluster_id === current)
+        ? current
+        : payload.clusters[0]?.cluster_id ?? "",
     );
   }
 
@@ -234,31 +272,58 @@ export function ReportsPage() {
 
   async function handleReportViewChange(nextView: ReportView) {
     setSelectedReportView(nextView);
-    if (nextView !== "conformance") {
+    if (nextView === "workflow-graph-activity") {
+      return;
+    }
+
+    if (nextView === "conformance") {
+      try {
+        setConformanceLoading(true);
+        await loadConformanceReport();
+        setConformanceError(null);
+      } catch (reason: unknown) {
+        setConformanceError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        setConformanceLoading(false);
+      }
       return;
     }
 
     try {
-      setConformanceLoading(true);
-      await loadConformanceReport();
-      setConformanceError(null);
+      setFailureClustersLoading(true);
+      await loadFailureClustersReport();
+      setFailureClustersError(null);
     } catch (reason: unknown) {
-      setConformanceError(reason instanceof Error ? reason.message : String(reason));
+      setFailureClustersError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setConformanceLoading(false);
+      setFailureClustersLoading(false);
     }
   }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     try {
-      setLoading(true);
-      await loadWorkflowReport();
-      setError(null);
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersLoading(true);
+        await loadFailureClustersReport();
+        setFailureClustersError(null);
+      } else {
+        setLoading(true);
+        await loadWorkflowReport();
+        setError(null);
+      }
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersError(reason instanceof Error ? reason.message : String(reason));
+      } else {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setLoading(false);
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersLoading(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
@@ -267,13 +332,27 @@ export function ReportsPage() {
     setStartValue(next.start);
     setEndValue(next.end);
     try {
-      setLoading(true);
-      await loadWorkflowReport(next.start, next.end);
-      setError(null);
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersLoading(true);
+        await loadFailureClustersReport(next.start, next.end);
+        setFailureClustersError(null);
+      } else {
+        setLoading(true);
+        await loadWorkflowReport(next.start, next.end);
+        setError(null);
+      }
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersError(reason instanceof Error ? reason.message : String(reason));
+      } else {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setLoading(false);
+      if (selectedReportView === "workflow-failure-clusters") {
+        setFailureClustersLoading(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
@@ -324,6 +403,19 @@ export function ReportsPage() {
               <span className="status-pill">{report?.graphs.length ?? 0}</span>
             </div>
             <div className="feature-list-meta">Graph runtime activity by selected period.</div>
+          </button>
+          <button
+            type="button"
+            className={`feature-list-item ${
+              selectedReportView === "workflow-failure-clusters" ? "selected" : ""
+            }`}
+            onClick={() => void handleReportViewChange("workflow-failure-clusters")}
+          >
+            <div className="feature-list-title-row">
+              <strong>Failure clusters</strong>
+              <span className="status-pill">{failureClustersReport?.clusters.length ?? 0}</span>
+            </div>
+            <div className="feature-list-meta">Repeated workflow failures grouped by signature.</div>
           </button>
           <button
             type="button"
@@ -555,6 +647,391 @@ export function ReportsPage() {
                   </div>
                 ) : (
                   <div className="empty-state">Run the report to inspect workflow graph activity.</div>
+                )}
+              </article>
+            </div>
+          </>
+        ) : selectedReportView === "workflow-failure-clusters" ? (
+          <>
+            <div className="feature-toolbar">
+              <div>
+                <h2>Workflow failure clusters</h2>
+                <p className="muted-text">
+                  {failureClustersReport
+                    ? `${formatTimestamp(failureClustersReport.period_start)} to ${formatTimestamp(failureClustersReport.period_end)}`
+                    : "Repeated stored workflow failures grouped by normalized signature. These are triage signals, not proof of root cause."}
+                </p>
+              </div>
+              <div className="inline-actions compact-actions">
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={() => void applyPreset(24)}
+                  disabled={failureClustersLoading}
+                >
+                  24h
+                </button>
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={() => void applyPreset(24 * 7)}
+                  disabled={failureClustersLoading}
+                >
+                  7d
+                </button>
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={() => void applyPreset(24 * 30)}
+                  disabled={failureClustersLoading}
+                >
+                  30d
+                </button>
+              </div>
+            </div>
+
+            <form className="admin-toolbar report-period-form" onSubmit={(event) => void handleSubmit(event)}>
+              <label className="field-stack">
+                <span>Start</span>
+                <input
+                  type="datetime-local"
+                  value={startValue}
+                  onChange={(event) => setStartValue(event.target.value)}
+                  required
+                />
+              </label>
+              <label className="field-stack">
+                <span>End</span>
+                <input
+                  type="datetime-local"
+                  value={endValue}
+                  onChange={(event) => setEndValue(event.target.value)}
+                  required
+                />
+              </label>
+              <div className="inline-actions compact-actions">
+                <button
+                  type="submit"
+                  className="admin-action-button primary compact"
+                  disabled={failureClustersLoading}
+                >
+                  {failureClustersLoading ? "Loading..." : "Run report"}
+                </button>
+              </div>
+            </form>
+
+            {failureClustersError ? <div className="callout warning-callout">{failureClustersError}</div> : null}
+
+            <div className="admin-grid two-column report-grid">
+              <article className="admin-panel">
+                <div className="panel-heading">
+                  <div className="eyebrow">Ranked by state and recency</div>
+                  <h2>Clusters</h2>
+                </div>
+                <div className="table-wrap mobile-paired-table">
+                  <table className="admin-table report-failure-clusters-table">
+                    <thead>
+                      <tr>
+                        <th>State</th>
+                        <th>Graph</th>
+                        <th>Node</th>
+                        <th>Count</th>
+                        <th>First seen</th>
+                        <th>Last seen</th>
+                        <th>Summary</th>
+                        <th>Sessions</th>
+                        <th>PRs</th>
+                        <th>ADO</th>
+                        <th>Representative run</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {failureClustersReport?.clusters.map((cluster) => {
+                        const representativeExample = cluster.examples[0] ?? null;
+                        const representativeHref = representativeExample
+                          ? workflowFailureClusterRepresentativeRunHref(representativeExample)
+                          : null;
+                        return (
+                          <tr
+                            key={cluster.cluster_id}
+                            className={selectedFailureCluster?.cluster_id === cluster.cluster_id ? "selected" : ""}
+                            onClick={() => setSelectedFailureClusterId(cluster.cluster_id)}
+                          >
+                            <td>
+                              <span className={`status-pill ${workflowFailureClusterStateClassName(cluster.state)}`}>
+                                {workflowFailureClusterStateLabel(cluster.state)}
+                              </span>
+                            </td>
+                            <td>
+                              <strong>{cluster.graph_name ?? "Unassigned"}</strong>
+                              <div className="feature-list-meta">{cluster.directory_path ?? "root"}</div>
+                              {cluster.graph_description ? (
+                                <div className="feature-list-meta">{truncateText(cluster.graph_description, 120)}</div>
+                              ) : null}
+                            </td>
+                            <td>
+                              <strong>{cluster.node_display_name ?? cluster.node_id ?? "Unknown node"}</strong>
+                              <div className="feature-list-meta">
+                                {cluster.source_kind} · {workflowFailureClusterNodeType(cluster) ?? "n/a"}
+                              </div>
+                            </td>
+                            <td>{cluster.count}</td>
+                            <td>{formatTimestamp(cluster.first_seen_at)}</td>
+                            <td>{formatTimestamp(cluster.last_seen_at)}</td>
+                            <td>{truncateText(cluster.latest_error_summary ?? cluster.error_signature, 140)}</td>
+                            <td>{cluster.session_ids.length}</td>
+                            <td>{cluster.pr_ids.length}</td>
+                            <td>{cluster.ado_item_ids.length}</td>
+                            <td>
+                              {representativeHref && representativeExample ? (
+                                <a href={representativeHref}>{workflowFailureClusterRepresentativeRunLabel(representativeExample)}</a>
+                              ) : (
+                                "None"
+                              )}
+                              {representativeExample ? (
+                                <div className="feature-list-meta">
+                                  {formatTimestamp(representativeExample.occurred_at)}
+                                </div>
+                              ) : null}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={11}>
+                            Loading failure clusters...
+                          </td>
+                        </tr>
+                      ) : null}
+                      {!failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={11}>
+                            No workflow failure clusters found.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  className="mobile-record-list report-failure-clusters-mobile-record-list"
+                  aria-label="Workflow failure clusters"
+                >
+                  {failureClustersReport?.clusters.map((cluster) => {
+                    const representativeExample = cluster.examples[0] ?? null;
+                    return (
+                      <button
+                        key={cluster.cluster_id}
+                        type="button"
+                        className={`mobile-record-card${
+                          selectedFailureCluster?.cluster_id === cluster.cluster_id ? " selected" : ""
+                        }`}
+                        aria-pressed={selectedFailureCluster?.cluster_id === cluster.cluster_id}
+                        onClick={() => setSelectedFailureClusterId(cluster.cluster_id)}
+                      >
+                        <div className="mobile-record-title-row">
+                          <strong>{cluster.graph_name ?? "Unassigned"}</strong>
+                          <span className={`status-pill ${workflowFailureClusterStateClassName(cluster.state)}`}>
+                            {workflowFailureClusterStateLabel(cluster.state)}
+                          </span>
+                        </div>
+                        <div className="feature-list-meta">{cluster.directory_path ?? "root"}</div>
+                        <div className="feature-list-meta">
+                          {cluster.node_display_name ?? cluster.node_id ?? "Unknown node"}
+                          {" · "}
+                          {workflowFailureClusterNodeType(cluster) ?? "n/a"}
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Count</span>
+                          <span>{cluster.count}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>First seen</span>
+                          <span>{formatTimestamp(cluster.first_seen_at)}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Last seen</span>
+                          <span>{formatTimestamp(cluster.last_seen_at)}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Summary</span>
+                          <span>{truncateText(cluster.latest_error_summary ?? cluster.error_signature, 120)}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Sessions</span>
+                          <span>{cluster.session_ids.length}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>PRs</span>
+                          <span>{cluster.pr_ids.length}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>ADO</span>
+                          <span>{cluster.ado_item_ids.length}</span>
+                        </div>
+                        <div className="mobile-record-row">
+                          <span>Run</span>
+                          <span>{representativeExample ? workflowFailureClusterRepresentativeRunLabel(representativeExample) : "None"}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
+                    <div className="empty-state mobile-record-empty">Loading failure clusters...</div>
+                  ) : null}
+                  {!failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
+                    <div className="empty-state mobile-record-empty">No workflow failure clusters found.</div>
+                  ) : null}
+                </div>
+              </article>
+
+              <article className="admin-panel detail-panel">
+                <div className="panel-heading">
+                  <div>
+                    <div className="eyebrow">Selected cluster</div>
+                    <h2>{selectedFailureCluster?.graph_name ?? "No cluster selected"}</h2>
+                  </div>
+                </div>
+                {selectedFailureCluster ? (
+                  <div className="panel-body report-detail">
+                    <div className="callout warning-callout">
+                      Clusters are triage signals from stored workflow activity. Review representative run
+                      detail before remediation.
+                    </div>
+
+                    <div className="detail-list">
+                      <div>
+                        <span>State</span>
+                        <strong>{workflowFailureClusterStateLabel(selectedFailureCluster.state)}</strong>
+                      </div>
+                      <div>
+                        <span>Count</span>
+                        <strong>{selectedFailureCluster.count}</strong>
+                      </div>
+                      <div>
+                        <span>First seen</span>
+                        <strong>{formatTimestamp(selectedFailureCluster.first_seen_at)}</strong>
+                      </div>
+                      <div>
+                        <span>Last seen</span>
+                        <strong>{formatTimestamp(selectedFailureCluster.last_seen_at)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Scope</span>
+                      <p>
+                        {selectedFailureCluster.graph_name ?? "Unassigned"}{" "}
+                        {selectedFailureCluster.directory_path ? `(${selectedFailureCluster.directory_path})` : ""}
+                      </p>
+                      <p>
+                        {selectedFailureCluster.node_display_name ?? selectedFailureCluster.node_id ?? "Unknown node"}{" "}
+                        {workflowFailureClusterNodeType(selectedFailureCluster)
+                          ? `· ${workflowFailureClusterNodeType(selectedFailureCluster)}`
+                          : ""}
+                      </p>
+                      {selectedFailureCluster.graph_description ? (
+                        <p>{truncateText(selectedFailureCluster.graph_description, 240)}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Signature</span>
+                      <pre className="report-guidance">{selectedFailureCluster.error_signature}</pre>
+                      <p className="feature-list-meta">Signature key: {selectedFailureCluster.error_signature_key}</p>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Latest summary</span>
+                      <p>{truncateText(selectedFailureCluster.latest_error_summary, 300)}</p>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Linked IDs</span>
+                      <div className="detail-list">
+                        <div>
+                          <span>Sessions</span>
+                          <strong>{selectedFailureCluster.session_ids.length}</strong>
+                        </div>
+                        <div>
+                          <span>PRs</span>
+                          <strong>{selectedFailureCluster.pr_ids.length}</strong>
+                        </div>
+                        <div>
+                          <span>ADO items</span>
+                          <strong>{selectedFailureCluster.ado_item_ids.length}</strong>
+                        </div>
+                        <div>
+                          <span>Issues</span>
+                          <strong>{selectedFailureCluster.issue_ids.length}</strong>
+                        </div>
+                        <div>
+                          <span>Artifacts</span>
+                          <strong>{selectedFailureCluster.artifact_ids.length}</strong>
+                        </div>
+                      </div>
+                      <p>Sessions: {summarizeItems(selectedFailureCluster.session_ids)}</p>
+                      <p>PRs: {summarizeItems(selectedFailureCluster.pr_ids)}</p>
+                      <p>ADO items: {summarizeItems(selectedFailureCluster.ado_item_ids)}</p>
+                      <p>Issues: {summarizeItems(selectedFailureCluster.issue_ids)}</p>
+                      <p>Artifacts: {summarizeItems(selectedFailureCluster.artifact_ids)}</p>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Representative IDs</span>
+                      <p>Events: {summarizeItems(selectedFailureCluster.event_ids)}</p>
+                      <p>Traces: {summarizeItems(selectedFailureCluster.trace_ids)}</p>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Examples</span>
+                      {selectedFailureCluster.examples.length > 0 ? (
+                        <div className="report-task-list">
+                          {selectedFailureCluster.examples.map((example, index) => {
+                            const exampleHref = workflowFailureClusterRepresentativeRunHref(example);
+                            const exampleBody = (
+                              <>
+                                <div className="report-task-heading">
+                                  <strong>{workflowFailureClusterRepresentativeRunLabel(example)}</strong>
+                                  <span>{example.run_state ?? "n/a"}</span>
+                                </div>
+                                <p>{truncateText(example.error_summary, 220)}</p>
+                                <div className="feature-list-meta">
+                                  {[
+                                    formatTimestamp(example.occurred_at),
+                                    example.api_run_detail_href ?? "No API detail",
+                                  ].join(" · ")}
+                                </div>
+                                <p>Artifacts: {summarizeItems(example.artifact_ids)}</p>
+                              </>
+                            );
+                            return exampleHref ? (
+                              <a
+                                key={`${example.event_id ?? example.trace_id ?? index}-${index}`}
+                                className="report-task-item"
+                                href={exampleHref}
+                              >
+                                {exampleBody}
+                              </a>
+                            ) : (
+                              <div key={`${example.event_id ?? example.trace_id ?? index}-${index}`} className="report-task-item">
+                                {exampleBody}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p>No examples in this period.</p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    {failureClustersLoading
+                      ? "Loading failure clusters..."
+                      : "Run the report to inspect workflow failure clusters."}
+                  </div>
                 )}
               </article>
             </div>
