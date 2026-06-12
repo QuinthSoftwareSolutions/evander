@@ -2784,6 +2784,18 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert result["mode"] == "interrupt_and_resume"
     assert result["note"].status == "delivered"
     assert result["note"].provider == "container_worker_vm"
+    stored_notes = operator_steering_note_store(service.config.runtime_dir).list_notes(
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+    )
+    stored_note_ids = [note.note_id for note in stored_notes]
+    assert result["note"].note_id in stored_note_ids
+    stored_delivered = operator_steering_note_store(service.config.runtime_dir).get_note(
+        result["note"].note_id
+    )
+    assert stored_delivered is not None
+    assert stored_delivered.status == "delivered"
+    assert stored_delivered.worker_execution_id == result["interrupt"]["replacement_execution_id"]
     assert result["interrupt"]["interrupted_execution_id"] == "agent-old-1"
     assert result["interrupt"]["replacement_execution_id"] == backend.started_specs[0].target_name
     assert backend.stopped == ["agent-old-1"]

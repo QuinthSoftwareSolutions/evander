@@ -86,6 +86,27 @@ def test_operator_steering_store_cancel_only_pending_notes(tmp_path: Path) -> No
     assert still_injecting.status == "injecting"
 
 
+def test_operator_steering_store_creates_delivered_note(tmp_path: Path) -> None:
+    store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
+    delivered = store.create_delivered_note(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        worker_execution_id="worker-replacement",
+        message="Interrupt and steer now.",
+        created_by="operator@example.com",
+        provider="container_worker_vm",
+        provider_endpoint="interrupt-and-resume",
+        now=datetime(2026, 6, 8, 12, 5, tzinfo=UTC),
+    )
+
+    listed = store.list_notes(session_id="session-1", dispatch_id="dispatch-1")
+
+    assert delivered.status == "delivered"
+    assert delivered.delivered_at == datetime(2026, 6, 8, 12, 5, tzinfo=UTC)
+    assert delivered.delivery_attempts == 1
+    assert listed == [delivered]
+
+
 def test_operator_steering_store_reclaims_stale_injecting_notes(tmp_path: Path) -> None:
     store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
     note = store.create_note(

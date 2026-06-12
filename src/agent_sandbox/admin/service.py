@@ -9055,20 +9055,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             agent_harness=agent_harness,
         )
 
-        delivered_at = datetime.now(UTC)
-        note = OperatorSteeringNote(
+        note = operator_steering_note_store(self.config.runtime_dir).create_delivered_note(
             session_id=session_id,
             dispatch_id=dispatch_id,
             worker_execution_id=handle.execution_id,
             message=message,
-            status="delivered",
             created_by=created_by,
-            created_at=now,
-            updated_at=delivered_at,
-            delivered_at=delivered_at,
             provider="container_worker_vm",
             provider_endpoint="interrupt-and-resume",
-            delivery_attempts=1,
+            now=datetime.now(UTC),
         )
         return {
             "mode": "interrupt_and_resume",

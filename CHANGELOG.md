@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Fixed queued container-worker prompt dispatch so Claude-backed sessions resume
   with the Claude runner command instead of falling back to the Codex command
   when a busy-session prompt drains from `queued-agent-prompts.json`.
+- Resolved queued Claude prompts with the Claude default model when no queued or
+  session model is configured, and registered their model-usage correlation with
+  the selected agent harness.
 
 ## 2026-06-12 - Container Agent Steering Interrupts
 
@@ -21,6 +24,8 @@ material. Newer entries are added incrementally as changes land.
   old worker job does not make prompt effects look completed or failed before
   the replacement job is registered. Replacement startup failures now fail the
   original waiting record so workflows see the real steering failure.
+- Persisted delivered container steering interrupts in `operator-steering-notes.db`
+  so Admin Web history survives refreshes.
 
 ## 2026-06-11 - Agents Page Detail Layout
 

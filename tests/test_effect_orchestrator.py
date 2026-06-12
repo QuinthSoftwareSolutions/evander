@@ -48,6 +48,7 @@ from agent_sandbox.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
+from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import SessionManifest, ToolName, VmSummary
@@ -5549,7 +5550,6 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
             vm_provider_id="truman",
-            model="claude-opus-4-8",
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
@@ -5598,9 +5598,17 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
     assert dispatched == 1
     command = str(backend.started_specs[0].command)
     assert "claude --continue -p" in command
+    assert "claude-sonnet-4-6" in command
     assert "codex exec" not in command
     waiting_records = list(execution_store.read_all().values())
     assert waiting_records[0].resolved_config["agent_provider"] == "claude"
+    assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
+    context = model_usage_store(tmp_path).get_active_correlation_context(
+        session_id="session-1",
+        dispatch_id=waiting_records[0].outputs["dispatch_id"],
+    )
+    assert context is not None
+    assert context.agent_harness == "claude"
 
 
 def test_agent_prompt_container_reconciliation_times_out_running_job(

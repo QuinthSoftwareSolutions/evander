@@ -12,6 +12,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_gateway_url,
     container_prompt_command,
     container_worker_image_for_session,
+    default_agent_model_for_provider,
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
@@ -260,7 +261,6 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
 
         dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-        model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         execution_id = safe_effect_execution_id("agent", session_id)
         record_metadata = getattr(record, "metadata", {})
         workflow_run_id = (
@@ -291,6 +291,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             session,
             config=config,
         )
+        model = str(
+            record.model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, config)
+        ).strip()
         try:
             handle = backend.start(
                 backend.prepare(
@@ -461,6 +466,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 directory_path=directory_path,
                 model=model,
                 trace_id=execution_record.trace_id,
+                agent_harness=agent_harness,
             )
         self._publish_started_event_for_waiting_record(
             worker=worker,
