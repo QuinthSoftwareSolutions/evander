@@ -1,0 +1,445 @@
+from __future__ import annotations
+
+from enum import Enum
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from agent_sandbox.models import ApprovalGrantSettings, SessionManifest, ToolName
+from agent_sandbox.policy import ToolVisibility
+
+
+class ToolVisibilityState(str, Enum):
+    VISIBLE = "visible"
+    HIDDEN_BY_POLICY = "hidden_by_policy"
+    UNAVAILABLE_TO_SESSION = "unavailable_to_session"
+    UNKNOWN = "unknown"
+
+
+class ToolVisibilityNoticePayload(BaseModel):
+    kind: str
+    message: str
+    tool_name: str | None = None
+
+
+class ToolVisibilitySessionContextPayload(BaseModel):
+    session_id: str
+    directory_path: str
+    vm_id: str | None = None
+    vm_provider: str | None = None
+    expires_at: datetime
+    capability_profile: str | None = None
+    policy_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolVisibilityQueryContextPayload(BaseModel):
+    workflow_run_id: str | None = None
+    mcp_tool_approval_lease_id: str | None = None
+
+
+class ToolVisibilityToolPayload(BaseModel):
+    tool_name: str
+    visibility_state: ToolVisibilityState
+    available: bool
+    visible: bool
+    source: str | None = None
+    reason: str | None = None
+    requires_approval: bool = False
+    approval_settings: ApprovalGrantSettings | None = None
+    provider: str | None = None
+    category: str = "Other"
+    label: str | None = None
+
+
+class ToolVisibilityCountsPayload(BaseModel):
+    total: int = 0
+    visible: int = 0
+    hidden_by_policy: int = 0
+    unavailable_to_session: int = 0
+    unknown: int = 0
+    requires_approval: int = 0
+
+
+class ToolVisibilityPayload(BaseModel):
+    session_context: ToolVisibilitySessionContextPayload
+    query_context: ToolVisibilityQueryContextPayload = Field(
+        default_factory=ToolVisibilityQueryContextPayload
+    )
+    tools: list[ToolVisibilityToolPayload] = Field(default_factory=list)
+    counts: ToolVisibilityCountsPayload = Field(default_factory=ToolVisibilityCountsPayload)
+    notices: list[ToolVisibilityNoticePayload] = Field(default_factory=list)
+
+
+_ISSUE_TOOLS = {
+    ToolName.CREATE_LOCAL_ISSUE,
+    ToolName.LIST_ISSUES,
+    ToolName.GET_ISSUE,
+    ToolName.SET_ISSUE_PLAN,
+    ToolName.APPROVE_ISSUE,
+    ToolName.COMMIT_ISSUE,
+    ToolName.REJECT_ISSUE,
+    ToolName.CLAIM_NEXT_ISSUE,
+    ToolName.COMPLETE_ISSUE,
+}
+
+_AZURE_DEVOPS_TOOLS = {
+    ToolName.CREATE_ADO_BACKLOG_ITEM,
+    ToolName.QUERY_ADO_BACKLOG_ITEMS,
+    ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS,
+    ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA,
+    ToolName.GET_ADO_BACKLOG_ITEM,
+    ToolName.POST_ADO_BACKLOG_COMMENT,
+    ToolName.UPDATE_ADO_BACKLOG_TEXT,
+    ToolName.UPDATE_ADO_BACKLOG_TAGS,
+}
+
+_PULL_REQUEST_TOOLS = {
+    ToolName.LIST_PULL_REQUESTS,
+    ToolName.GET_PULL_REQUEST,
+    ToolName.REQUEST_PR_REVIEW,
+    ToolName.POST_PR_COMMENT,
+    ToolName.POST_PR_INLINE_COMMENT,
+    ToolName.SUBMIT_PR_REVIEW,
+    ToolName.POST_PR_FEEDBACK_REPLY,
+}
+
+_APPROVAL_TOOLS = {
+    ToolName.APPROVAL_SUBMIT,
+    ToolName.APPROVAL_CHECK,
+}
+
+_AGENT_CONTROL_TOOLS = {
+    ToolName.GET_AGENT_STATUS,
+    ToolName.GET_AGENT_LOGS,
+    ToolName.PROMPT_AGENT,
+    ToolName.LIST_PENDING_AGENT_PROMPTS,
+    ToolName.RESPOND_TO_AGENT,
+    ToolName.SCHEDULE_RESUME,
+    ToolName.RUN_SCRIPT,
+    ToolName.COPILOT_HOST_AUTH,
+    ToolName.GET_WORKFLOW_SNAPSHOT,
+    ToolName.ASSISTANT_READ_STATUS,
+    ToolName.ASSISTANT_LIST_AGENTS,
+    ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+    ToolName.ASSISTANT_READ_CONFIG,
+    ToolName.ASSISTANT_UPSERT_CONFIG,
+    ToolName.ASSISTANT_CREATE_WORKFLOW,
+    ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+    ToolName.ASSISTANT_POST_CHAT_REPLY,
+}
+
+_DISCORD_TOOLS = {
+    ToolName.DISCORD_GET_COMMANDS,
+    ToolName.DISCORD_POST_STATUS,
+    ToolName.HAS_PENDING_DISCORD_MESSAGES,
+    ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+    ToolName.LIST_ALL_DISCORD_MESSAGES,
+    ToolName.DISCORD_POST_FILE,
+}
+
+_MESSAGING_TOOLS = {
+    ToolName.ADD_MESSAGE_REACTION,
+}
+
+_VOICE_TOOLS = {
+    ToolName.LIST_CONTACTS,
+    ToolName.MAKE_PHONE_CALL,
+    ToolName.GET_PHONE_CALL_RESULT,
+    ToolName.SUBMIT_VOICE_QUERY_RESPONSE,
+}
+
+_SQL_SERVER_TOOLS = {
+    ToolName.MSSQL_PROVISION_DATABASE,
+    ToolName.MSSQL_LIST_DATABASES,
+    ToolName.MSSQL_DROP_DATABASE,
+}
+
+_FILES_TOOLS = {
+    ToolName.COMMUNICATION_LIST_ATTACHMENTS,
+    ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+    ToolName.LIST_INLINE_MEDIA,
+    ToolName.DOWNLOAD_INLINE_MEDIA,
+    ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+    ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE,
+    ToolName.TEAMS_POST_FILE,
+    ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+    ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+}
+
+_TEAMS_TOOLS = {
+    ToolName.TEAMS_GET_MESSAGES,
+    ToolName.TEAMS_POST_STATUS,
+    ToolName.TEAMS_MEETING_GET_EVENTS,
+    ToolName.TEAMS_MEETING_SPEAK,
+    ToolName.TEAMS_MEETING_STOP,
+}
+
+_EMAIL_TOOLS = {
+    ToolName.EMAIL_LIST_UNREAD,
+    ToolName.EMAIL_GET_MESSAGE,
+    ToolName.EMAIL_CREATE_DRAFT,
+    ToolName.EMAIL_SEND_APPROVED,
+}
+
+_FEEDBACK_TOOLS = {
+    ToolName.HAS_PENDING_FEEDBACK,
+    ToolName.LIST_UNREAD_FEEDBACK,
+    ToolName.LIST_ALL_FEEDBACK,
+}
+
+_HIDDEN_BY_POLICY_SOURCES = {
+    "directory.mcp_tool_policies",
+    "session.allowed_tools",
+    "session.allowed_tools.respond_to_agent",
+    "session.metadata.capability_profile",
+    "session.metadata.assistant_mutation_policy",
+}
+
+_UNAVAILABLE_TO_SESSION_SOURCES = {
+    "session.vm_binding",
+    "session.metadata.pr_feedback_streams",
+}
+
+
+def _tool_category(tool_name: ToolName) -> str:
+    if tool_name in _ISSUE_TOOLS:
+        return "Issue intake"
+    if tool_name in _AZURE_DEVOPS_TOOLS:
+        return "Azure DevOps"
+    if tool_name in _PULL_REQUEST_TOOLS:
+        return "Pull requests"
+    if tool_name in _APPROVAL_TOOLS:
+        return "Approvals"
+    if tool_name in _AGENT_CONTROL_TOOLS:
+        return "Agent control"
+    if tool_name in _MESSAGING_TOOLS:
+        return "Messaging"
+    if tool_name in _VOICE_TOOLS:
+        return "Voice calling"
+    if tool_name in _SQL_SERVER_TOOLS:
+        return "SQL Server"
+    if tool_name in _FILES_TOOLS:
+        return "Files"
+    if tool_name in _DISCORD_TOOLS:
+        return "Discord"
+    if tool_name in _TEAMS_TOOLS:
+        return "Teams"
+    if tool_name in _EMAIL_TOOLS:
+        return "Email"
+    if tool_name in _FEEDBACK_TOOLS:
+        return "Feedback"
+    return "Other"
+
+
+def _tool_provider(tool_name: ToolName, category: str) -> str | None:
+    if tool_name in _AZURE_DEVOPS_TOOLS:
+        return "azure_devops"
+    if tool_name in _PULL_REQUEST_TOOLS:
+        return "pull_requests"
+    if tool_name in _APPROVAL_TOOLS:
+        return "approvals"
+    if tool_name in _AGENT_CONTROL_TOOLS:
+        return "agent"
+    if tool_name in _DISCORD_TOOLS:
+        return "discord"
+    if tool_name in _MESSAGING_TOOLS:
+        return "messaging"
+    if tool_name in _VOICE_TOOLS:
+        return "voice_calling"
+    if tool_name in _SQL_SERVER_TOOLS:
+        return "sql_server"
+    if tool_name in _FILES_TOOLS:
+        return "files"
+    if tool_name in _TEAMS_TOOLS:
+        return "teams"
+    if tool_name in _EMAIL_TOOLS:
+        return "email"
+    if tool_name in _FEEDBACK_TOOLS:
+        return "feedback"
+    if tool_name in _ISSUE_TOOLS:
+        return "issue"
+    return category.lower().replace(" ", "_") if category != "Other" else None
+
+
+def _tool_label(tool_name: ToolName) -> str:
+    return tool_name.value.replace("_", " ")
+
+
+def _policy_metadata(session: SessionManifest) -> dict[str, Any]:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    policy_metadata: dict[str, Any] = {}
+    for key in ("assistant_mutation_policy", "pr_feedback_streams"):
+        if key in metadata:
+            policy_metadata[key] = metadata.get(key)
+    return policy_metadata
+
+
+def _session_context_payload(session: SessionManifest) -> ToolVisibilitySessionContextPayload:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    capability_profile = str(metadata.get("capability_profile") or "").strip() or None
+    vm_id = str(session.vm_id or "").strip() or None
+    vm_provider = str(session.vm_provider or "").strip() or None
+    return ToolVisibilitySessionContextPayload(
+        session_id=session.session_id,
+        directory_path=session.directory_path,
+        vm_id=vm_id,
+        vm_provider=vm_provider,
+        expires_at=session.expires_at,
+        capability_profile=capability_profile,
+        policy_metadata=_policy_metadata(session),
+    )
+
+
+def _visibility_state_for_tool(
+    visibility: ToolVisibility, *, policy_error: Exception | None = None
+) -> ToolVisibilityState:
+    if policy_error is not None:
+        return ToolVisibilityState.UNKNOWN
+    if visibility.visible:
+        return ToolVisibilityState.VISIBLE
+    if visibility.source in _UNAVAILABLE_TO_SESSION_SOURCES:
+        return ToolVisibilityState.UNAVAILABLE_TO_SESSION
+    if visibility.source in _HIDDEN_BY_POLICY_SOURCES:
+        return ToolVisibilityState.HIDDEN_BY_POLICY
+    return ToolVisibilityState.HIDDEN_BY_POLICY
+
+
+def _tool_payload_for_visibility(
+    visibility: ToolVisibility,
+    *,
+    policy_error: Exception | None = None,
+) -> ToolVisibilityToolPayload:
+    tool_name = visibility.tool
+    category = _tool_category(tool_name)
+    visibility_state = _visibility_state_for_tool(visibility, policy_error=policy_error)
+    return ToolVisibilityToolPayload(
+        tool_name=tool_name.value,
+        visibility_state=visibility_state,
+        available=bool(visibility.available) and policy_error is None,
+        visible=bool(visibility.visible) and policy_error is None,
+        source=visibility.source if policy_error is None else "unknown",
+        reason=str(policy_error) if policy_error is not None else visibility.reason,
+        requires_approval=bool(visibility.requires_approval) and policy_error is None,
+        approval_settings=(
+            visibility.approval_settings.model_dump(mode="json")
+            if visibility.approval_settings is not None and policy_error is None
+            else None
+        ),
+        provider=_tool_provider(tool_name, category),
+        category=category,
+        label=_tool_label(tool_name),
+    )
+
+
+def _unknown_tool_payload(tool_name: ToolName, reason: str) -> ToolVisibilityToolPayload:
+    category = _tool_category(tool_name)
+    return ToolVisibilityToolPayload(
+        tool_name=tool_name.value,
+        visibility_state=ToolVisibilityState.UNKNOWN,
+        available=False,
+        visible=False,
+        source="unknown",
+        reason=reason,
+        requires_approval=False,
+        approval_settings=None,
+        provider=_tool_provider(tool_name, category),
+        category=category,
+        label=_tool_label(tool_name),
+    )
+
+
+def _tool_visibility_notices(session: SessionManifest) -> list[ToolVisibilityNoticePayload]:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    notices: list[ToolVisibilityNoticePayload] = []
+    capability_profile = str(metadata.get("capability_profile") or "").strip()
+    if not capability_profile:
+        notices.append(
+            ToolVisibilityNoticePayload(
+                kind="missing_capability_profile",
+                message=(
+                    f"Session {session.session_id} does not define metadata.capability_profile; "
+                    "assistant tools are hidden by policy."
+                ),
+            )
+        )
+    return notices
+
+
+def build_tool_visibility_payload(
+    service: Any,
+    session: SessionManifest,
+    *,
+    workflow_run_id: str | None = None,
+    mcp_tool_approval_lease_id: str | None = None,
+) -> ToolVisibilityPayload:
+    normalized_workflow_run_id = str(workflow_run_id or "").strip() or None
+    normalized_mcp_tool_approval_lease_id = (
+        str(mcp_tool_approval_lease_id or "").strip() or None
+    )
+    query_context = ToolVisibilityQueryContextPayload(
+        workflow_run_id=normalized_workflow_run_id,
+        mcp_tool_approval_lease_id=normalized_mcp_tool_approval_lease_id,
+    )
+    session_context = _session_context_payload(session)
+    notices = _tool_visibility_notices(session)
+    tools: list[ToolVisibilityToolPayload] = []
+    counts = ToolVisibilityCountsPayload(total=len(ToolName))
+
+    try:
+        service.runtime.policy_config.resolve_for_session_manifest(session)
+    except Exception as exc:
+        notices.append(
+            ToolVisibilityNoticePayload(
+                kind="policy_unavailable",
+                message=(
+                    "Tool visibility could not be fully resolved because the session policy "
+                    f"configuration could not be read: {exc}"
+                ),
+            )
+        )
+        for tool in ToolName:
+            tools.append(_unknown_tool_payload(tool, str(exc)))
+        counts.unknown = len(ToolName)
+        return ToolVisibilityPayload(
+            session_context=session_context,
+            query_context=query_context,
+            tools=tools,
+            counts=counts,
+            notices=notices,
+        )
+
+    for tool in ToolName:
+        try:
+            visibility = service.runtime.policy.tool_visibility_for_session(
+                session,
+                tool,
+                workflow_run_id=normalized_workflow_run_id,
+                mcp_tool_approval_lease_id=normalized_mcp_tool_approval_lease_id,
+            )
+        except Exception as exc:
+            tools.append(_unknown_tool_payload(tool, str(exc)))
+            counts.unknown += 1
+            continue
+
+        payload = _tool_payload_for_visibility(visibility)
+        tools.append(payload)
+        match payload.visibility_state:
+            case ToolVisibilityState.VISIBLE:
+                counts.visible += 1
+                if payload.requires_approval:
+                    counts.requires_approval += 1
+            case ToolVisibilityState.HIDDEN_BY_POLICY:
+                counts.hidden_by_policy += 1
+            case ToolVisibilityState.UNAVAILABLE_TO_SESSION:
+                counts.unavailable_to_session += 1
+            case ToolVisibilityState.UNKNOWN:
+                counts.unknown += 1
+
+    return ToolVisibilityPayload(
+        session_context=session_context,
+        query_context=query_context,
+        tools=tools,
+        counts=counts,
+        notices=notices,
+    )
