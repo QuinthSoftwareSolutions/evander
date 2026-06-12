@@ -438,7 +438,8 @@ PR integration preflight:
 
 1. Open **Reports**.
 2. Select **PR integration preflight**.
-3. Enter the Azure DevOps repo, mode, PR ids, and directory path.
+3. Enter the Azure DevOps repo, mode, PR ids, and directory path. Pairwise mode checks every
+   unordered PR pair in the submitted set.
 4. Provide `repo_source` only when you want to override the directory-scoped
    `ado_worker.ado_repo_source`; otherwise leave it blank and the report uses the directory setting.
 5. Click **Run report**.

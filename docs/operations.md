@@ -1637,8 +1637,9 @@ with an operator. Keep polling bounded with `status`, `source_ref_name`,
 
 ### Read-only PR integration preflight
 
-Use the preflight when you need to check whether one PR, a pair of PRs, or a
-proposed merge order will conflict before you take any action on the branch.
+Use the preflight when you need to check whether one PR, every pair in a related
+set of PRs, or a proposed merge order will conflict before you take any action
+on the branch.
 Admin Web exposes the same check under **Reports > PR integration preflight**
 and calls:
 
@@ -1651,7 +1652,8 @@ Request body fields:
 - `provider`: use `azure_devops`, `azure-devops`, or `ado`; the endpoint
   normalizes them to Azure DevOps only.
 - `repo`: the Azure DevOps repo identifier.
-- `mode`: `single`, `pairwise`, or `ordered`.
+- `mode`: `single`, `pairwise`, or `ordered`. Pairwise mode checks every
+  unordered PR pair in the submitted set.
 - `pr_ids`: an array of PR ids, or a comma/newline-delimited string in the UI.
 - `directory_path`: defaults to `root`.
 - `repo_source`: optional; omit it when the selected directory already defines

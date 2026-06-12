@@ -320,25 +320,26 @@ class GitMergePreflightEngine:
         current_target_commit: str | None,
     ) -> list[MergePreflightCheck]:
         checks: list[MergePreflightCheck] = []
-        for index in range(len(requests) - 1):
-            left = requests[index]
-            right = requests[index + 1]
-            left_commit = left["source_commit"]
-            right_commit = right["source_commit"]
-            check = self._run_merge_check(
-                repo_path,
-                index=index + 1,
-                kind="pairwise",
-                pr_ids=[left["request"].pr_id, right["request"].pr_id],
-                source_commits=[left_commit, right_commit],
-                left_commit=left_commit,
-                right_commit=right_commit,
-                target_commit=target_commit,
-                current_target_commit=current_target_commit,
-            )
-            checks.append(check)
-            if check.status != "clean":
-                break
+        check_index = 1
+        for left_index in range(len(requests)):
+            for right_index in range(left_index + 1, len(requests)):
+                left = requests[left_index]
+                right = requests[right_index]
+                left_commit = left["source_commit"]
+                right_commit = right["source_commit"]
+                check = self._run_merge_check(
+                    repo_path,
+                    index=check_index,
+                    kind="pairwise",
+                    pr_ids=[left["request"].pr_id, right["request"].pr_id],
+                    source_commits=[left_commit, right_commit],
+                    left_commit=left_commit,
+                    right_commit=right_commit,
+                    target_commit=target_commit,
+                    current_target_commit=current_target_commit,
+                )
+                checks.append(check)
+                check_index += 1
         return checks
 
     def _run_ordered(
