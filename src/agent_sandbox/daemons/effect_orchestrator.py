@@ -31,6 +31,7 @@ from agent_sandbox.events.internal import (
 from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
+    FOR_EXECUTION_IDS_CONTEXT_KEY,
     GateDefinitionDiscriminated,
     materialize_node_definition,
     NODE_OUTPUTS_CONTEXT_KEY,
@@ -127,7 +128,7 @@ _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _PHASE_LOG_THRESHOLD_SECONDS = 0.25
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
-_FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+_FOR_EXECUTION_IDS_PAYLOAD_KEY = FOR_EXECUTION_IDS_CONTEXT_KEY
 COMPLETION_PENDING_STATUS = "completion_pending"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated

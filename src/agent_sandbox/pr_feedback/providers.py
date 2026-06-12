@@ -186,6 +186,13 @@ def _ado_comment_metadata(
         )
     ]
     return {
+        "comment_author_names": _unique_non_empty(
+            [_ado_author_field(current_comment, "displayName")]
+        ),
+        "comment_author_unique_names": _unique_non_empty(
+            [_ado_author_field(current_comment, "uniqueName")]
+        ),
+        "comment_author_ids": _unique_non_empty([_ado_author_field(current_comment, "id")]),
         "prior_thread_comment_author_names": _unique_non_empty(
             _ado_author_field(comment, "displayName") for comment in prior_comments
         ),

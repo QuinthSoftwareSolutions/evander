@@ -41,6 +41,7 @@ class EffectProviderConfig(BaseModel):
     runtime_dir: Path
     session_store_path: Path
     default_session_ttl_seconds: int
+    agent_prompt_queue_max_retries: int = Field(default=3, ge=1)
     execution_backend: str = "libvirt_vm"
     container_worker_base_url: str | None = None
     container_worker_token_env: str = "AGENT_SANDBOX_WORKER_TOKEN"

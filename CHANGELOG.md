@@ -5,6 +5,82 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Wake And Approval Diagnostic Fixes
+
+- Prevented libvirt wake timeout summaries from storing resume prompt text from
+  timed-out command lines in wake dispatch errors or metadata.
+- Made approval payload diagnostics derive `payload_match` from canonical
+  payload digest equality while keeping redacted diffs as explanatory detail.
+- Removed duplicate scheduled-wake status definitions so legacy empty statuses
+  normalize without Pydantic override warnings.
+- Added a durable retry cap for queued agent prompts so repeated busy-session
+  redispatch loops fail with `retry_limit` diagnostics instead of running
+  indefinitely.
+- Exposed the queued agent prompt retry cap in the Admin Web Provider
+  Integrations tab's Agent prompt section.
+- Preserved `gate:for` and `gate:while` loop state across queued agent prompt
+  dispatch boundaries so async `started` loopbacks advance existing loops
+  instead of restarting one-item loops.
+- Migrated legacy trace-scoped `gate:for` and `gate:while` state keys during
+  loop execution so in-progress loops resume cleanly after upgrade.
+- Added opt-in PR feedback suppression for comments authored by the configured
+  agent identity while leaving agent-authored feedback publishable by default.
+
+## 2026-06-12 - Scheduled Wake Delivery Ledger
+
+- Added a durable scheduled-wake ledger over the existing wake request store,
+  including pending, due, dispatching, dispatched, failed, missed/late, and
+  completed/acknowledged states with dispatch evidence and redacted operator
+  failure summaries.
+- Preserved scheduled-wake dispatch ledger fields while advancing handled wake
+  requests, and marked matching wake requests completed when agent completion
+  watchers publish completion events.
+- Added Admin API and Sessions page views for filtering recent scheduled wakes
+  and retrying or rescheduling failed and missed wake requests.
+- Added a scheduled-wake lateness threshold so overdue wakes are visible and
+  recoverable without reading host logs.
+
+## 2026-06-12 - PR Integration Preflight Hardening
+
+- Made pairwise PR merge preflight evaluate each PR pair against the target
+  commit so target conflicts cannot report a clean result.
+- Required directory-scoped workflow write permission before Admin Web PR
+  integration preflight resolves host repos or Azure DevOps credentials.
+
+## 2026-06-12 - Tool Visibility Inspector
+
+- Added a read-only Admin Web Tool Visibility inspector for diagnosing a
+  session's effective MCP tool set from policy visibility, transport binding
+  telemetry, and denied-at-execution evidence.
+- Added Tool Visibility API and persistence support for MCP transport tool-list
+  bindings so operators can identify bound, mismatched, unknown, and possibly
+  stale client manifests without exposing raw tool arguments or results.
+
+## 2026-06-12 - Approval Retry Diagnostics
+
+- Stopped approval retry diagnostics from reporting redacted stored fields as
+  changed when the attempted payload still matches the canonical approved
+  payload digest.
+- Changed approval detail diagnostics to prioritize the latest blocked retry so
+  operators see the most recent failed attempt first.
+
+## 2026-06-12 - Admin Web Workflow Failure Cluster Docs
+
+- Documented the new workflow failure cluster report added to the Admin
+  Web/API surface in the operations guide and user manual as a read-only
+  triage view over stored run activity.
+- Noted that normalized failure signatures remove volatile IDs and timestamps
+  and that the active/recent/resolved labels are heuristic signals that should
+  be validated against representative workflow run detail before remediation.
+- Kept root/unassigned failure clusters visible in the Admin Web/API report for
+  users with root workflow-run read access when workflow graphs exist.
+
+## 2026-06-12 - Scheduled Wake Cancellation Hardening
+
+- Kept cancelled wake schedules historical and non-dispatchable by rejecting
+  Admin Web/API edits, hiding the enable action for cancelled rows, and ignoring
+  stale cancelled rows during due-wake scans.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced

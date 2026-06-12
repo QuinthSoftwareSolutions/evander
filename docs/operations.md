@@ -232,6 +232,10 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   any workflow changes remain unsaved.
 - Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
   graph metadata by trigger events plus gate/effect execution records over the selected period.
+- Admin Web also exposes workflow failure clusters under **Reports**. That report groups repeated
+  stored run failures by graph, node, and normalized error signature, strips volatile IDs and
+  timestamps from the signature, and treats the active/recent/resolved label as a heuristic triage
+  signal only. Inspect a representative workflow run detail before taking remediation steps.
 - Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
   [conformance-reports.md](conformance-reports.md) for the trigger/effect artifact names,
   regeneration commands, and report states.
@@ -686,6 +690,21 @@ A transport-terminated warning without client-visible failure can be expected fo
     workflow editor document.
 - Response payload includes the active workflow editor document: config path, layout path, revision,
   saved timestamp, normalized workflow config, layout, graph metadata, and derived output schemas.
+
+## Tool Visibility Inspector
+
+- Admin Web exposes a read-only `Tool Visibility` tab for diagnosing a single session's effective
+  tool set.
+- Choose a session from the left sidebar or deep-link with `#tool-visibility?session_id=<id>`.
+- The inspector compares policy visibility, transport binding telemetry, and denied-at-execution
+  evidence without exposing raw tool arguments or results.
+- Use the `State` filter to compare `Visible`, `Hidden by policy`, `Unavailable to session`,
+  `Denied at execution`, and `Unknown` rows. The detail panel shows the policy reason and safe
+  denial summary only.
+- The transport banner can report `Bound`, `Mismatch`, `Unknown`, or `Stale manifest possible`.
+  `Denied at execution` is historical audit evidence, not a live policy grant.
+- If the manifest is stale, reconnect or refresh the MCP client so it fetches the current server
+  manifest. The inspector is diagnostic only and cannot force a client refresh or grant new tools.
 
 ## Host-Side Azure DevOps Backlog Tools
 
@@ -1333,7 +1352,11 @@ After approval, the agent retries the same tool call and includes `approval_requ
 executes only if the request is approved, belongs to the same session, targets the same tool, has not
 expired, has remaining uses, and satisfies the configured payload matching mode. Denied, expired,
 exhausted, wrong-tool, wrong-session, or changed-payload retries are blocked and audited with the
-approval request id for review in Admin Web -> Tool Calls.
+approval request id for review in Admin Web -> Tool Calls. Approval-gate audit events now include a
+redacted approval payload diagnostic with the attempted payload digest and, when safe, field-level
+changed/missing/extra summaries. Admin Web shows the same diagnostic on Approval and Tool Call
+detail panes for operator diagnosis only; it does not change the approval boundary or exact-payload
+matching requirement.
 
 Directory policy can also set `mcp_tool_policies` for known tools. A rule can deny a tool outright,
 force per-invocation approval, provide default grant settings, cap TTL or use count, or force exact
@@ -1635,6 +1658,95 @@ names with case-insensitive `and`, `or`, `not`, and parentheses, for example
 with an operator. Keep polling bounded with `status`, `source_ref_name`,
 `target_ref_name`, `min_time`/`max_time`, `top`, `skip`, or `cursor`.
 
+### Read-only PR integration preflight
+
+Use the preflight when you need to check whether one PR, every pair in a related
+set of PRs, or a proposed merge order will conflict before you take any action
+on the branch.
+Admin Web exposes the same check under **Reports > PR integration preflight**
+and calls:
+
+```bash
+POST /api/admin/pr-integration-preflight
+```
+
+Request body fields:
+
+- `provider`: use `azure_devops`, `azure-devops`, or `ado`; the endpoint
+  normalizes them to Azure DevOps only.
+- `repo`: the Azure DevOps repo identifier.
+- `mode`: `single`, `pairwise`, or `ordered`. Pairwise mode checks every
+  unordered PR pair in the submitted set.
+- `pr_ids`: an array of PR ids, or a comma/newline-delimited string in the UI.
+- `directory_path`: defaults to `root`.
+- `repo_source`: optional; omit it when the selected directory already defines
+  `ado_worker.ado_repo_source`.
+- `organization_url` and `project`: optional Azure DevOps overrides.
+
+The response includes `status`, `summary_text`, `participants`, `checks`,
+`warnings`, and `errors`. Status values are:
+
+- `clean`: the merge simulation was clean.
+- `conflict`: one or more merge checks found content conflicts.
+- `missing_ref`: a source or target commit/ref could not be resolved locally.
+- `stale_target_branch`: the target branch moved since Azure DevOps recorded it.
+- `repo_error`: the local repository could not be resolved or queried.
+- `provider_error`: the Azure DevOps lookup failed.
+
+Example request and conflict summary:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8100/api/admin/pr-integration-preflight \
+  -H 'content-type: application/json' \
+  -d '{
+    "provider": "azure_devops",
+    "repo": "repo-1",
+    "directory_path": "root/team-a",
+    "repo_source": "/work/repo",
+    "mode": "ordered",
+    "pr_ids": ["17", "18"]
+  }'
+```
+
+```json
+{
+  "status": "conflict",
+  "summary_text": "ordered preflight found conflict for PRs 17, 18: 2 conflicted paths.",
+  "participants": [
+    {
+      "pr_id": "17",
+      "source_commit": "1111111",
+      "target_commit": "aaaaaaa",
+      "status": "clean"
+    },
+    {
+      "pr_id": "18",
+      "source_commit": "2222222",
+      "target_commit": "aaaaaaa",
+      "status": "conflict",
+      "explanation": "merge conflict on 2 paths: src/app.py, tests/test_app.py"
+    }
+  ],
+  "checks": [
+    {
+      "index": 1,
+      "pr_ids": ["17"],
+      "status": "clean",
+      "explanation": "merged cleanly"
+    },
+    {
+      "index": 2,
+      "pr_ids": ["17", "18"],
+      "status": "conflict",
+      "conflicted_paths": ["src/app.py", "tests/test_app.py"]
+    }
+  ]
+}
+```
+
+This is read-only: it does not update refs, resolve conflicts, push branches,
+or change PR completion policy.
+
 Use `query:session:list` when the workflow should route by pack-owned session
 metadata instead of a platform-specific PR binding. For PR collaboration packs,
 common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
@@ -1669,7 +1781,10 @@ live provider APIs.
   `trigger:pull-request:new-feedback` can set `agent_author_names`,
   `agent_mention_names`, `agent_author_ids`, and `agent_mention_ids` so
   downstream gates can filter on
-  `feedback.metadata.agent_directed` without running host scripts.
+  `feedback.metadata.agent_directed` without running host scripts. Agent-authored
+  feedback still publishes by default; set `suppress_agent_authored_feedback`
+  only for workflows that should store those comments without emitting wake
+  events.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
@@ -1680,6 +1795,19 @@ live provider APIs.
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- Scheduled wakes are recorded in the durable wake request store with current
+  ledger status, latest dispatch evidence, sanitized failure reason, scheduled
+  time, source, and redacted prompt summary. Admin Web exposes these entries on
+  the Sessions page, and operators can use `GET /api/admin/scheduled-wakes` with
+  `statuses`, `session_id`, `limit`, and `include_completed` query parameters to
+  list/filter recent wake delivery state.
+- Failed, due, and missed/late scheduled wakes can be retried immediately or
+  rescheduled with `POST /api/admin/scheduled-wakes/{request_id}/retry`. Send
+  `{ "run_now": true }` for immediate retry or `{ "resume_at": "<ISO-8601>" }`
+  to reschedule the existing request while preserving retry history.
+- `late_threshold_seconds` in `config/scheduled-wake/config.json` controls how
+  overdue a scheduled wake can be before the worker/API marks it
+  `missed_or_late`.
 - In both wake worker configs, `backoff_seconds` controls how long the worker waits before
   retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
   after activity or busy-session checks, not the process-level exception retry delay.
@@ -1799,7 +1927,10 @@ branches that should only fire when a supported prompt dispatch failure is
 routed. If no error edge is wired, the prompt still fails normally.
 For `effect:agent:enqueue-prompt`, routed dispatch failures preserve retry
 context such as `queued`, `queue_key`, and `coalesced_count` when the prompt was
-queued before dispatch failed.
+queued before dispatch failed. Queue retries are also capped by
+`agent_prompt_queue_max_retries` (default `3`) for the same queue key and prompt
+digest. When the cap is exceeded, the prompt effect fails with
+`failed_phase: retry_limit` and reports `retry_count` plus `max_retries`.
 
 ### Guest repo preparation
 

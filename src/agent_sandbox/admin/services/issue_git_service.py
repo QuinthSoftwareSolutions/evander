@@ -1452,17 +1452,9 @@ class IssueGitAdminService:
 
     def get_approval_review(self, request_id: str) -> dict[str, Any]:
         request = self.get_approval_request(request_id)
-        age_seconds = int((_admin_service._utc_now() - request.created_at).total_seconds())
-        expires_in_seconds = int((request.expires_at - _admin_service._utc_now()).total_seconds())
-        request_payload = request.model_dump(mode="json")
-        request_payload["payload"] = _admin_service._redact_sensitive_payload(request.payload)
-        return {
-            "request": request_payload,
-            "redacted_payload": request_payload["payload"],
-            "audit_context": self._approval_audit_context(request),
-            "age_seconds": age_seconds,
-            "expires_in_seconds": expires_in_seconds,
-        }
+        return _admin_service.build_approval_review_payload(
+            request, self._approval_audit_context(request)
+        )
 
     def decide_approval_request(
         self,

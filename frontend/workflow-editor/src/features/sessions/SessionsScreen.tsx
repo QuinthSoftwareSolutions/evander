@@ -7,7 +7,10 @@ import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import type { RuntimeImageInfo } from "../admin/types";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
-import { visibleWakeSchedules as filterVisibleWakeSchedules } from "./wakeScheduleVisibility";
+import {
+  canToggleWakeScheduleEnabled,
+  visibleWakeSchedules as filterVisibleWakeSchedules,
+} from "./wakeScheduleVisibility";
 
 type ApprovalPayloadMode = "exact" | "any";
 
@@ -103,12 +106,51 @@ type WakeSchedule = {
   cron?: string | null;
   resume_at?: string | null;
   resume_mode: string;
+  status?: string | null;
   enabled: boolean;
   updated_at?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by_session_id?: string | null;
+  cancel_reason?: string | null;
+  cancel_metadata?: Record<string, unknown>;
   schedule_kind: "cron" | "resume_at";
 };
 
+type WakeLedgerEntry = {
+  request_id: string;
+  session_id: string;
+  source?: string | null;
+  resume_at?: string | null;
+  next_run_at?: string | null;
+  scheduled_for?: string | null;
+  schedule_cron?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  status: string;
+  status_reason?: string | null;
+  status_updated_at?: string | null;
+  prompt_summary?: string | null;
+  redacted_prompt?: string | null;
+  latest_dispatch?: {
+    dispatch_id: string;
+    status: string;
+    dispatched_at?: string | null;
+    source?: string | null;
+    error?: string | null;
+  } | null;
+  latest_dispatch_id?: string | null;
+  latest_dispatch_status?: string | null;
+  last_error?: string | null;
+  last_error_at?: string | null;
+  completed_at?: string | null;
+  completion_evidence?: Record<string, unknown>;
+  retry_available: boolean;
+  failure_reason?: string | null;
+  enabled: boolean;
+};
+
 type WakeScheduleKind = "cron" | "resume_at";
+type WakeLedgerFilter = "all" | "pending" | "due" | "dispatching" | "queued" | "dispatched" | "failed" | "missed_or_late" | "completed_or_acknowledged";
 
 type SessionDetailResponse = {
   session: SessionRecord;
@@ -179,6 +221,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_pending_agent_prompts: "List prompts queued for the guest agent that have not been handled yet.",
   respond_to_agent: "Reply to a pending agent prompt or approval-style checkpoint from the guest agent.",
   schedule_resume: "Create or update a host-managed wake schedule that resumes this session later.",
+  cancel_scheduled_wake: "Cancel an obsolete host-managed wake schedule owned by this session.",
   run_script: "Run an approved host-side script on behalf of the session.",
   mssql_provision_database: "Provision a session-owned SQL Server database through the container worker.",
   mssql_list_databases: "List SQL Server databases owned by this session.",
@@ -429,6 +472,7 @@ function groupToolOption(tool: ToolOption): string {
     "list_pending_agent_prompts",
     "respond_to_agent",
     "schedule_resume",
+    "cancel_scheduled_wake",
     "run_script",
     "copilot_host_auth",
   ].includes(value)) {
@@ -592,6 +636,46 @@ function lifecycleClass(session: SessionRecord): string {
 
 function cleanupSupported(session: SessionRecord): boolean {
   return Boolean(session.container_lifecycle?.actions?.cleanup?.supported);
+}
+
+const WAKE_LEDGER_FILTER_OPTIONS: Array<{ value: WakeLedgerFilter; label: string }> = [
+  { value: "all", label: "All statuses" },
+  { value: "pending", label: "Pending" },
+  { value: "due", label: "Due" },
+  { value: "dispatching", label: "Dispatching" },
+  { value: "queued", label: "Queued" },
+  { value: "dispatched", label: "Dispatched" },
+  { value: "failed", label: "Failed" },
+  { value: "missed_or_late", label: "Missed or late" },
+  { value: "completed_or_acknowledged", label: "Completed / acknowledged" },
+];
+
+function wakeLedgerStatusLabel(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    pending: "Pending",
+    due: "Due",
+    dispatching: "Dispatching",
+    queued: "Queued",
+    dispatched: "Dispatched",
+    failed: "Failed",
+    missed_or_late: "Missed / late",
+    completed_or_acknowledged: "Completed / acknowledged",
+  };
+  return labels[normalized] ?? normalized.replace(/_/g, " ");
+}
+
+function wakeLedgerStatusClass(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "failed" || normalized === "missed_or_late") return "failed";
+  if (normalized === "dispatching" || normalized === "queued" || normalized === "dispatched") {
+    return "running";
+  }
+  return "idle";
+}
+
+function wakeLedgerMatchesFilter(item: WakeLedgerEntry, filter: WakeLedgerFilter): boolean {
+  return filter === "all" || item.status === filter;
 }
 
 function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferredSessionId?: string): string {
@@ -909,6 +993,9 @@ export function SessionsScreen() {
   const [editingWakeRequestId, setEditingWakeRequestId] = useState("");
   const [showPastOneTimeWakeSchedules, setShowPastOneTimeWakeSchedules] = useState(false);
   const [wakeVisibilityNowMs, setWakeVisibilityNowMs] = useState(() => Date.now());
+  const [wakeLedgerItems, setWakeLedgerItems] = useState<WakeLedgerEntry[]>([]);
+  const [wakeLedgerFilter, setWakeLedgerFilter] = useState<WakeLedgerFilter>("all");
+  const [wakeLedgerError, setWakeLedgerError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -1008,6 +1095,36 @@ export function SessionsScreen() {
 
   useEffect(() => {
     if (!selectedSessionId) {
+      setWakeLedgerItems([]);
+      setWakeLedgerError(null);
+      return;
+    }
+    let cancelled = false;
+    setWakeLedgerItems([]);
+    setWakeLedgerError(null);
+    fetchJson<{ items: WakeLedgerEntry[] }>(
+      `/api/admin/scheduled-wakes?${new URLSearchParams({
+        session_id: selectedSessionId,
+        limit: "100",
+        include_completed: "true",
+      }).toString()}`,
+    )
+      .then((payload) => {
+        if (cancelled) return;
+        setWakeLedgerItems(payload.items ?? []);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setWakeLedgerItems([]);
+        setWakeLedgerError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedSessionId) {
       setDetail(null);
       setDetailError(null);
       setEditingWakeRequestId("");
@@ -1104,7 +1221,13 @@ export function SessionsScreen() {
     () => visibleWakeScheduleItems.find((item) => item.request_id === editingWakeRequestId) ?? null,
     [editingWakeRequestId, visibleWakeScheduleItems],
   );
+  const visibleWakeLedgerItems = useMemo(
+    () => wakeLedgerItems.filter((item) => wakeLedgerMatchesFilter(item, wakeLedgerFilter)),
+    [wakeLedgerFilter, wakeLedgerItems],
+  );
   const mutationLocked = !privilegedUnlocked;
+  const selectedWakeScheduleIsCancelled = selectedWakeSchedule?.status === "cancelled";
+  const wakeEditorLocked = mutationLocked || selectedWakeScheduleIsCancelled;
   const groupedToolOptions = useMemo(() => groupTools(catalog?.tool_options ?? []), [catalog?.tool_options]);
   const approvalSettingsToolOption = useMemo(
     () => catalog?.tool_options.find((tool) => tool.value === approvalSettingsTool) ?? null,
@@ -1199,6 +1322,19 @@ export function SessionsScreen() {
     const payload = await fetchJson<SessionDetailResponse>(`/api/admin/sessions/${encodeURIComponent(sessionId)}`);
     setDetail(payload);
     return payload;
+  }
+
+  async function refreshSelectedSessionLedger(sessionId: string) {
+    const payload = await fetchJson<{ items: WakeLedgerEntry[] }>(
+      `/api/admin/scheduled-wakes?${new URLSearchParams({
+        session_id: sessionId,
+        limit: "100",
+        include_completed: "true",
+      }).toString()}`,
+    );
+    setWakeLedgerItems(payload.items ?? []);
+    setWakeLedgerError(null);
+    return payload.items ?? [];
   }
 
   async function runSessionAction(action: "renew" | "revoke" | "delete" | "cleanup") {
@@ -1586,6 +1722,7 @@ export function SessionsScreen() {
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(selectedSession.session_id);
       bindWakeSchedule(payload.item.request_id, refreshed.wake_schedules);
+      await refreshSelectedSessionLedger(selectedSession.session_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1604,6 +1741,7 @@ export function SessionsScreen() {
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(item.session_id);
       bindWakeSchedule(item.request_id, refreshed.wake_schedules);
+      await refreshSelectedSessionLedger(item.session_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1624,7 +1762,29 @@ export function SessionsScreen() {
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(item.session_id);
       setDetail(refreshed);
+      await refreshSelectedSessionLedger(item.session_id);
       resetWakeEditor();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function retryWakeLedgerEntry(item: WakeLedgerEntry) {
+    setBusy(`wake-ledger-retry-${item.request_id}`);
+    try {
+      const payload = await fetchJson<{ item: WakeLedgerEntry }>(
+        `/api/admin/scheduled-wakes/${encodeURIComponent(item.request_id)}/retry`,
+        {
+          method: "POST",
+          body: JSON.stringify({ run_now: true }),
+        },
+      );
+      setStatus(`Retried wake schedule ${payload.item.request_id}.`);
+      setError(null);
+      await refreshSelectedSessionDetail(item.session_id);
+      await refreshSelectedSessionLedger(item.session_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2130,7 +2290,7 @@ export function SessionsScreen() {
                     <button type="button" onClick={resetWakeEditor} disabled={mutationLocked || (!editingWakeRequestId && !wakePrompt && !wakeCron && !wakeResumeAt && wakeMode === "same_context" && wakeEnabled)}>
                       Create new
                     </button>
-                    {selectedWakeSchedule ? (
+                    {selectedWakeSchedule && canToggleWakeScheduleEnabled(selectedWakeSchedule) ? (
                       <button type="button" onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)} disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}>
                         {selectedWakeSchedule.enabled ? "Disable selected" : "Enable selected"}
                       </button>
@@ -2140,7 +2300,7 @@ export function SessionsScreen() {
                 <div className="panel-body">
                   <label className="field-stack">
                     <span>Prompt</span>
-                    <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={mutationLocked} />
+                    <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={wakeEditorLocked} />
                   </label>
                   <div className="field-stack">
                     <span>Schedule type</span>
@@ -2149,7 +2309,7 @@ export function SessionsScreen() {
                         type="button"
                         className={wakeScheduleKind === "cron" ? "primary" : ""}
                         onClick={() => setScheduleKind("cron")}
-                        disabled={mutationLocked}
+                        disabled={wakeEditorLocked}
                       >
                         Recurring
                       </button>
@@ -2157,7 +2317,7 @@ export function SessionsScreen() {
                         type="button"
                         className={wakeScheduleKind === "resume_at" ? "primary" : ""}
                         onClick={() => setScheduleKind("resume_at")}
-                        disabled={mutationLocked}
+                        disabled={wakeEditorLocked}
                       >
                         One time
                       </button>
@@ -2166,24 +2326,24 @@ export function SessionsScreen() {
                   {wakeScheduleKind === "cron" ? (
                     <label className="field-stack">
                       <span>Cron</span>
-                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={mutationLocked} />
+                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={wakeEditorLocked} />
                     </label>
                   ) : (
                     <label className="field-stack">
                       <span>Resume at</span>
-                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={mutationLocked} />
+                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={wakeEditorLocked} />
                     </label>
                   )}
                   <label className="field-stack">
                     <span>Resume mode</span>
-                    <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={mutationLocked}>
+                    <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={wakeEditorLocked}>
                       {(catalog?.resume_mode_options ?? []).map((option) => (
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
                   </label>
                   <label className="checkbox-row">
-                    <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={mutationLocked} />
+                    <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={wakeEditorLocked} />
                     <span>Enabled</span>
                   </label>
                   <div className="feature-toolbar-actions session-panel-actions">
@@ -2191,7 +2351,7 @@ export function SessionsScreen() {
                       type="button"
                       className="primary"
                       onClick={() => void submitWakeSchedule(editingWakeRequestId ? "update" : "create")}
-                      disabled={busy === "wake-create" || busy === "wake-update" || mutationLocked}
+                      disabled={busy === "wake-create" || busy === "wake-update" || wakeEditorLocked}
                     >
                       {editingWakeRequestId ? (busy === "wake-update" ? "Saving..." : "Save schedule") : (busy === "wake-create" ? "Creating..." : "Create wake schedule")}
                     </button>
@@ -2216,7 +2376,9 @@ export function SessionsScreen() {
                       >
                         <div className="feature-list-title-row">
                           <strong>{item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}</strong>
-                          <span className={`status-pill state-${item.enabled ? "running" : "idle"}`}>{item.enabled ? "Enabled" : "Disabled"}</span>
+                          <span className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}>
+                            {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
+                          </span>
                         </div>
                         <div className="feature-list-meta">{item.prompt}</div>
                         <div className="feature-list-meta">{item.resume_mode}</div>
@@ -2224,6 +2386,87 @@ export function SessionsScreen() {
                     ))}
                     {detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
                     {(detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
+                  </div>
+                  <div className="wake-ledger-section">
+                    <div className="panel-header wake-ledger-header">
+                      <div>
+                        <h4>Wake ledger</h4>
+                        <p className="field-description">
+                          Durable status entries for this session&apos;s scheduled wakes, including the latest dispatch summary and retryability.
+                        </p>
+                      </div>
+                      <div className="feature-toolbar-actions session-wake-actions">
+                        <label className="field-stack wake-ledger-filter">
+                          <span>Status</span>
+                          <select value={wakeLedgerFilter} onChange={(event) => setWakeLedgerFilter(event.target.value as WakeLedgerFilter)}>
+                            {WAKE_LEDGER_FILTER_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <span className="panel-meta">{visibleWakeLedgerItems.length} shown</span>
+                      </div>
+                    </div>
+                    {wakeLedgerError ? <div className="callout error-callout">{wakeLedgerError}</div> : null}
+                    <div className="feature-list compact-list wake-ledger-list">
+                      {visibleWakeLedgerItems.map((item) => (
+                        <div key={item.request_id} className="feature-list-item wake-ledger-item">
+                          <div className="feature-list-title-row">
+                            <strong>{item.request_id}</strong>
+                            <span className={`status-pill state-${wakeLedgerStatusClass(item.status)}`}>{wakeLedgerStatusLabel(item.status)}</span>
+                          </div>
+                          <div className="feature-list-meta">
+                            {item.prompt_summary ?? item.redacted_prompt ?? "Prompt unavailable"}
+                          </div>
+                          <div className="feature-list-meta">
+                            {item.schedule_cron ? `Cron ${item.schedule_cron}` : `Resume ${formatTimestamp(item.resume_at ?? item.scheduled_for)}`}
+                          </div>
+                          <div className="feature-list-meta">
+                            {item.source ? `Source ${item.source}` : "Source unavailable"}
+                            {item.status_reason ? ` • ${item.status_reason}` : ""}
+                          </div>
+                          <div className="feature-list-meta">
+                            Updated {formatTimestamp(item.updated_at)}
+                            {item.status_updated_at ? ` • Status ${formatTimestamp(item.status_updated_at)}` : ""}
+                          </div>
+                          <div className="feature-list-meta">
+                            Latest dispatch{" "}
+                            {item.latest_dispatch
+                              ? `${item.latest_dispatch.status} at ${formatTimestamp(item.latest_dispatch.dispatched_at)}`
+                              : "none"}
+                          </div>
+                          {item.failure_reason ? <div className="callout warning-callout">{item.failure_reason}</div> : null}
+                          {!item.failure_reason && item.latest_dispatch?.error ? (
+                            <div className="callout warning-callout">{item.latest_dispatch.error}</div>
+                          ) : null}
+                          <div className="feature-toolbar-actions compact-actions">
+                            <span className="panel-meta">
+                              {item.retry_available
+                                ? "Retry available"
+                                : item.completed_at
+                                  ? `Completed ${formatTimestamp(item.completed_at)}`
+                                  : item.enabled
+                                    ? "Enabled"
+                                    : "Disabled"}
+                            </span>
+                            {item.retry_available ? (
+                              <button
+                                type="button"
+                                className="primary"
+                                onClick={() => void retryWakeLedgerEntry(item)}
+                                disabled={busy === `wake-ledger-retry-${item.request_id}` || mutationLocked}
+                              >
+                                {busy === `wake-ledger-retry-${item.request_id}` ? "Retrying..." : "Retry now"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                      {wakeLedgerItems.length === 0 ? <div className="empty-state">No wake ledger entries available for this session.</div> : null}
+                      {wakeLedgerItems.length > 0 && visibleWakeLedgerItems.length === 0 ? <div className="empty-state">No wake ledger entries match the selected status.</div> : null}
+                    </div>
                   </div>
                 </div>
               </article>

@@ -424,6 +424,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "pr_feedback_resume_prompt": (
         "Prompt text passed to the resume script when waking an agent session for unread PR comments."
     ),
+    "agent_prompt_queue_max_retries": (
+        "Maximum durable queue attempts allowed for the same agent prompt before prompt enqueue fails."
+    ),
     "discord_resume_prompt": (
         "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),

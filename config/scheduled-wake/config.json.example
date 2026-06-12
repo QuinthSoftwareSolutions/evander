@@ -5,6 +5,7 @@
   "jitter_seconds": 5,
   "backoff_seconds": 60,
   "cooldown_seconds": 60,
+  "late_threshold_seconds": 300,
   "lock_path": null,
   "session_cooldown_path": null,
   "busy_check_script_path": "scripts/check_session_vm_busy.sh",

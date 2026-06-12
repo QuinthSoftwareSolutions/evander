@@ -16,6 +16,7 @@ from typing_extensions import TypeAliasType
 from agent_sandbox.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from agent_sandbox.workflow.contracts import (
     EdgeDefinition as EdgeDefinition,
+    FOR_EXECUTION_IDS_CONTEXT_KEY as FOR_EXECUTION_IDS_CONTEXT_KEY,
     NODE_OUTPUTS_CONTEXT_KEY as NODE_OUTPUTS_CONTEXT_KEY,
     WorkflowNodeDefinition,
     WorkflowNodeEnvelope,

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     AliasChoices,
@@ -124,6 +124,7 @@ class ToolName(str, Enum):
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
     SCHEDULE_RESUME = "schedule_resume"
+    CANCEL_SCHEDULED_WAKE = "cancel_scheduled_wake"
     PROMPT_AGENT = "prompt_agent"
     LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
@@ -925,6 +926,8 @@ class AgentPromptQueueRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
     coalesced_count: int = 1
+    retry_count: int = 1
+    max_retries: int | None = None
     prompt_preview: str | None = None
     prompt_length: int = 0
     metadata: dict[str, str] = Field(default_factory=dict)
@@ -2682,6 +2685,47 @@ class SubmitVoiceQueryResponseResponse(BaseModel):
     status: str = Field(min_length=1)
 
 
+class CancelScheduledWakeRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", "request_id", mode="before")
+    @classmethod
+    def normalize_required_identifier(cls, value: object, info) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError(f"{info.field_name} must be non-empty")
+        return text
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return text[:1024]
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be an object")
+        return value
+
+
+class CancelScheduledWakeResponse(BaseModel):
+    session_id: str = Field(min_length=1)
+    request_id: str | None = None
+    status: WakeRequestCancellationStatus
+    request: WakeScheduledRequest | None = None
+
+
 class ScheduleResumeRequest(BaseModel):
     session_id: str = Field(min_length=1)
     resume_at: datetime | None = None
@@ -2814,12 +2858,33 @@ class WakeScheduledRequest(BaseModel):
     schedule: WakeScheduleDefinition
     resume_prompt: WakeResumePromptPayload
     resume_mode: str = Field(default="same_context")
+    status: str = Field(default="pending", min_length=1)
     enabled: bool = True
+    status_reason: str | None = None
+    status_updated_at: datetime | None = None
+    last_dispatch_id: str | None = None
+    last_dispatch_status: str | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+    completed_at: datetime | None = None
+    completion_evidence: dict[str, Any] = Field(default_factory=dict)
     source: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by_session_id: str | None = None
+    cancel_reason: str | None = None
+    cancel_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return "pending"
+        return normalized
 
     @field_validator("resume_mode")
     @classmethod
@@ -2828,6 +2893,23 @@ class WakeScheduledRequest(BaseModel):
         if normalized not in {"same_context", "new_context"}:
             raise ValueError("resume_mode must be one of: same_context, new_context")
         return normalized
+
+
+WakeRequestCancellationStatus = Literal[
+    "cancelled",
+    "already_cancelled",
+    "already_dispatched",
+    "already_completed",
+    "not_found",
+    "missing_request_id",
+    "permission_denied",
+]
+
+
+class WakeRequestCancellationResult(BaseModel):
+    status: WakeRequestCancellationStatus
+    request_id: str | None = None
+    request: WakeScheduledRequest | None = None
 
 
 class WakeDispatchRecord(BaseModel):

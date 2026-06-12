@@ -287,8 +287,9 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             (
                 ("providers", "agent_prompt_token_secret_env"),
                 ("providers", "agent_prompt_token_ttl_seconds"),
+                ("providers", "agent_prompt_queue_max_retries"),
             ),
-            ("agent_prompt_token_",),
+            ("agent_prompt_token_", "agent_prompt_queue_"),
         ),
         (
             "Azure DevOps",

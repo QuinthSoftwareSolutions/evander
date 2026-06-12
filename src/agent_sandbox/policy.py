@@ -11,6 +11,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
+from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.models import (
     ApprovalGrantSettings,
     ApprovalNotificationStatus,
@@ -50,6 +51,26 @@ from agent_sandbox.storage import JsonStore
 
 class PolicyError(RuntimeError):
     """Raised when a tool action violates the session policy."""
+
+
+class ApprovalPolicyError(PolicyError):
+    """PolicyError that carries structured approval rejection diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        approval_request_id: str,
+        rejection_kind: str,
+        approval_request: ApprovalRequest | None = None,
+        approval_diagnostic: dict[str, Any] | None = None,
+    ) -> None:
+        self.approval_request_id = approval_request_id
+        self.rejection_kind = rejection_kind
+        self.approval_request = approval_request
+        self.approval_diagnostic = approval_diagnostic
+        self.diagnostic = approval_diagnostic
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +270,54 @@ def _approval_settings_for_request(request: ApprovalRequest) -> ApprovalGrantSet
     if request.action_type == "mcp_tool_invocation":
         return ApprovalGrantSettings()
     return None
+
+
+def _approval_rejection_kind_for_status(status: ApprovalStatus) -> str:
+    if status == ApprovalStatus.DENIED:
+        return "denied"
+    if status == ApprovalStatus.EXPIRED:
+        return "expired"
+    if status == ApprovalStatus.EXHAUSTED:
+        return "exhausted"
+    return "not_approved"
+
+
+def _approval_rejection_error(
+    *,
+    request_id: str,
+    rejection_kind: str,
+    message: str,
+    request: ApprovalRequest | None = None,
+    attempted_payload: dict[str, Any] | None = None,
+    status: str | None = None,
+    redacted_keys: set[str] | None = None,
+) -> ApprovalPolicyError:
+    diagnostic: dict[str, Any] = {
+        "approval_request_id": request_id,
+        "rejection_kind": rejection_kind,
+    }
+    if request is not None and attempted_payload is not None:
+        diagnostic.update(
+            build_payload_diagnostic(
+                approved_payload=request.payload,
+                attempted_payload=attempted_payload,
+                redacted_keys=redacted_keys,
+                status=status or request.status.value,
+                reason=message,
+                approved_payload_digest=request.payload_digest,
+                attempted_payload_digest=digest_payload(attempted_payload),
+            )
+        )
+    else:
+        diagnostic["status"] = status
+        diagnostic["reason"] = message
+    return ApprovalPolicyError(
+        message,
+        approval_request_id=request_id,
+        rejection_kind=rejection_kind,
+        approval_request=request,
+        approval_diagnostic=diagnostic,
+    )
 
 
 def _stricter_max_uses(current: int | None, limit: int | None) -> int | None:
@@ -1587,7 +1656,12 @@ class PolicyEngine:
             nonlocal error
             request = items.get(request_id)
             if request is None:
-                error = PolicyError(f"Unknown approval request: {request_id}")
+                error = _approval_rejection_error(
+                    request_id=request_id,
+                    rejection_kind="missing",
+                    message=f"Unknown approval request: {request_id}",
+                    status="missing",
+                )
                 return ApprovalRequest(
                     request_id=request_id,
                     session_id="unknown",
@@ -1597,50 +1671,120 @@ class PolicyEngine:
                     expires_at=now,
                 )
             self._refresh_approval_redaction(request)
+            request_session = self.session_store.get_session(request.session_id)
+            redacted_keys = (
+                set(self.effective_policy_for_session(request_session).redacted_keys)
+                if request_session is not None
+                else set()
+            )
+            if (
+                request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
+                and request.expires_at <= now
+            ):
+                request.status = ApprovalStatus.EXPIRED
+                items[request_id] = request
+                error = _approval_rejection_error(
+                    request_id=request_id,
+                    rejection_kind="expired",
+                    message=f"Approval request {request_id} has expired",
+                    request=request,
+                    attempted_payload=payload,
+                    status=request.status.value,
+                    redacted_keys=redacted_keys,
+                )
+                return request
             if request.status != ApprovalStatus.APPROVED:
-                error = PolicyError(f"Approval request {request_id} is not approved")
+                error = _approval_rejection_error(
+                    request_id=request_id,
+                    rejection_kind=_approval_rejection_kind_for_status(request.status),
+                    message=f"Approval request {request_id} is not approved",
+                    request=request,
+                    attempted_payload=payload,
+                    status=request.status.value,
+                    redacted_keys=redacted_keys,
+                )
                 return request
             settings = _approval_settings_for_request(request)
             payload_mode = settings.payload_mode if settings is not None else ApprovalPayloadMode.EXACT
             if payload_mode == ApprovalPayloadMode.EXACT and request.payload_digest != digest_payload(payload):
-                error = PolicyError(f"Approval payload mismatch for request {request_id}")
-                return request
-            if request.expires_at <= now:
-                request.status = ApprovalStatus.EXPIRED
-                items[request_id] = request
-                error = PolicyError(f"Approval request {request_id} has expired")
+                error = _approval_rejection_error(
+                    request_id=request_id,
+                    rejection_kind="payload_mismatch",
+                    message=f"Approval payload mismatch for request {request_id}",
+                    request=request,
+                    attempted_payload=payload,
+                    status=request.status.value,
+                    redacted_keys=redacted_keys,
+                )
                 return request
             if request.action_type == "mcp_tool_invocation":
                 expected_session_id = str(payload.get("session_id") or "").strip()
                 if expected_session_id and request.session_id != expected_session_id:
-                    error = PolicyError(
-                        f"Approval request {request_id} does not belong to session "
-                        f"{expected_session_id}"
+                    error = _approval_rejection_error(
+                        request_id=request_id,
+                        rejection_kind="wrong_session",
+                        message=(
+                            f"Approval request {request_id} does not belong to session "
+                            f"{expected_session_id}"
+                        ),
+                        request=request,
+                        attempted_payload=payload,
+                        status=request.status.value,
+                        redacted_keys=redacted_keys,
                     )
                     return request
                 expected_tool_name = str(payload.get("tool_name") or "").strip()
                 actual_tool_name = str(request.tool_name or request.action_type).strip()
                 if expected_tool_name and actual_tool_name != expected_tool_name:
-                    error = PolicyError(
-                        f"Approval request {request_id} is not for tool {expected_tool_name}"
+                    error = _approval_rejection_error(
+                        request_id=request_id,
+                        rejection_kind="wrong_tool",
+                        message=f"Approval request {request_id} is not for tool {expected_tool_name}",
+                        request=request,
+                        attempted_payload=payload,
+                        status=request.status.value,
+                        redacted_keys=redacted_keys,
                     )
                     return request
-                session = self.session_store.get_session(request.session_id)
-                if session is None:
-                    error = PolicyError(f"Unknown session: {request.session_id}")
+                if request_session is None:
+                    error = _approval_rejection_error(
+                        request_id=request_id,
+                        rejection_kind="unknown_session",
+                        message=f"Unknown session: {request.session_id}",
+                        request=request,
+                        attempted_payload=payload,
+                        status=request.status.value,
+                        redacted_keys=redacted_keys,
+                    )
                     return request
                 tool = ToolName._value2member_map_.get(str(request.tool_name or "").strip())
                 if tool is not None:
                     try:
-                        self.require_tool_not_denied(session, tool)
+                        self.require_tool_not_denied(request_session, tool)
                     except PolicyError as exc:
-                        error = exc
+                        error = _approval_rejection_error(
+                            request_id=request_id,
+                            rejection_kind="tool_denied",
+                            message=str(exc),
+                            request=request,
+                            attempted_payload=payload,
+                            status=request.status.value,
+                            redacted_keys=redacted_keys,
+                        )
                         return request
             if consume and settings is not None and settings.max_uses is not None:
                 if request.used_count >= settings.max_uses:
                     request.status = ApprovalStatus.EXHAUSTED
                     items[request_id] = request
-                    error = PolicyError(f"Approval request {request_id} has no remaining uses")
+                    error = _approval_rejection_error(
+                        request_id=request_id,
+                        rejection_kind="exhausted",
+                        message=f"Approval request {request_id} has no remaining uses",
+                        request=request,
+                        attempted_payload=payload,
+                        status=request.status.value,
+                        redacted_keys=redacted_keys,
+                    )
                     return request
                 request.used_count += 1
                 request.last_used_at = now

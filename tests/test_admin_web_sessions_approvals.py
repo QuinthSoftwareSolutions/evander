@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MethodType
 
 import pytest
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -27,6 +31,8 @@ from agent_sandbox.models import (
     ApprovalStatus,
     SessionManifest,
     ToolName,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
 )
 
 
@@ -51,6 +57,39 @@ def write_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config_path
+
+
+def _admin_json_request(
+    *,
+    method: str,
+    path: str,
+    path_params: dict[str, str] | None = None,
+    payload: dict[str, object] | None = None,
+) -> Request:
+    body = json.dumps(payload or {}).encode()
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+            "path_params": path_params or {},
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        },
+        receive,
+    )
 
 
 def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
@@ -103,6 +142,59 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
+    service.config.audit_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "issue-14084-session",
+                        "vm_id": "vm-14084",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "payload mismatch",
+                        "args": {
+                            "session_id": "issue-14084-session",
+                            "request_id": "approval-1",
+                            "token": "secret",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "request_id": "approval-1",
+                            "approval_diagnostic": {
+                                "approval_request_id": "approval-1",
+                                "rejection_kind": "payload_mismatch",
+                                "approved_payload_digest": "digest",
+                                "attempted_payload_digest": "attempted-digest",
+                                "approved_payload": {
+                                    "body": "hello",
+                                    "token": "approved-secret",
+                                },
+                                "attempted_payload": {
+                                    "body": "hello",
+                                    "token": "attempted-secret",
+                                },
+                                "differences": {
+                                    "changed": [
+                                        {
+                                            "path": "payload.token",
+                                            "approved_value": "<redacted>",
+                                            "attempted_value": "<redacted>",
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                        "created_at": "2026-05-18T10:00:00+00:00",
+                    },
+                    sort_keys=True,
+                )
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     client = TestClient(create_app(service))
 
     index_response = client.get("/api/admin/approvals?statuses=pending")
@@ -120,10 +212,24 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
     assert detail_payload["request"]["tool_name"] == "email_send_approved"
     assert detail_payload["request"]["payload"]["token"] == "<redacted>"
     assert detail_payload["redacted_payload"]["token"] == "<redacted>"
+    assert detail_payload["payload_summary"] == '{"body":"hello","token":"<redacted>"}'
+    assert detail_payload["approval_diagnostics"]["request_id"] == "approval-1"
+    assert detail_payload["approval_diagnostics"]["status"] == "pending"
+    assert detail_payload["approval_diagnostics"]["approved_payload"]["token"] == "<redacted>"
+    assert detail_payload["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "attempted_payload"
+    ]["token"] == "<redacted>"
+    assert detail_payload["audit_context"][0]["result"]["approval_diagnostic"]["attempted_payload"][
+        "token"
+    ] == "<redacted>"
     assert detail_payload["request"]["notification_status"] == "delivered"
     assert detail_payload["request"]["notification_target_ids"] == ["ops-approvals"]
     assert detail_payload["request"]["notification_deliveries"][0]["target_id"] == "ops-approvals"
     assert detail_payload["request"]["notification_deliveries"][0]["status"] == "sent"
+    serialized_detail = json.dumps(detail_payload)
+    assert "approved-secret" not in serialized_detail
+    assert "attempted-secret" not in serialized_detail
+    assert "blocked-diagnostic-secret" not in serialized_detail
     assert decision_response.status_code == 200
     assert decision_response.json()["request"]["status"] == "denied"
 
@@ -1060,6 +1166,180 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
     assert delete_response.json()["ok"] is True
 
 
+def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    failed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work",
+        resume_at=datetime.now(UTC) + timedelta(minutes=10),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=failed.request_id,
+            session_id="issue-14086-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work"),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+    completed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Already finished",
+        resume_at=datetime.now(UTC) + timedelta(minutes=20),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-14086-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished"),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-14086-session"},
+    )
+    client = TestClient(create_app(service))
+
+    list_response = client.get(
+        "/api/admin/scheduled-wakes",
+        params={
+            "session_id": "issue-14086-session",
+            "statuses": "failed,completed_or_acknowledged",
+            "include_completed": "false",
+        },
+    )
+    retry_response = client.post(
+        f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
+        json={"run_now": True},
+    )
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert [item["request_id"] for item in list_payload["items"]] == [failed.request_id]
+    item = list_payload["items"][0]
+    assert item["prompt_summary"] == "Resume work"
+    assert item["redacted_prompt"] == "[redacted]"
+    assert item["failure_reason"] is not None
+    assert "\n" not in item["failure_reason"]
+    assert retry_response.status_code == 200
+    retry_item = retry_response.json()["item"]
+    assert retry_item["request_id"] == failed.request_id
+    assert retry_item["enabled"] is True
+    assert retry_item["latest_dispatch"]["status"] == "failed"
+    assert retry_item["failure_reason"] is None
+    assert retry_item["last_error"] is None
+
+
+def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    completed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Already finished",
+        resume_at=datetime.now(UTC) + timedelta(minutes=20),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-14086-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished"),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-14086-session"},
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/scheduled-wakes/{completed.request_id}/retry",
+        json={"run_now": True},
+    )
+
+    assert response.status_code == 409
+    assert "not retryable" in response.json()["error"]
+
+
+def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    failed = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work",
+        resume_at=datetime.now(UTC) + timedelta(minutes=10),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed-reschedule",
+            request_id=failed.request_id,
+            session_id="issue-14086-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work"),
+            dispatched_at=datetime.now(UTC),
+            error="resume failed secret=abc123",
+        )
+    )
+    retry_at = datetime.now(UTC) + timedelta(hours=1)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
+        json={"resume_at": retry_at.isoformat()},
+    )
+
+    assert response.status_code == 200
+    item = response.json()["item"]
+    assert item["request_id"] == failed.request_id
+    assert item["status"] == "pending"
+    assert item["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert item["next_run_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert item["failure_reason"] is None
+
+
 def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -1087,6 +1367,95 @@ def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Pa
     assert item["cron"] == "*/30 * * * *"
     assert item["resume_at"] is None
     assert item["schedule_kind"] == "cron"
+
+
+def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    created = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-14086-session",
+        reason="No longer needed",
+        metadata={"source": "ui"},
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/issue-14086-session")
+
+    assert response.status_code == 200
+    item = response.json()["wake_schedules"][0]
+    assert item["status"] == "cancelled"
+    assert item["cancelled_by_session_id"] == "issue-14086-session"
+    assert item["cancel_reason"] == "No longer needed"
+    assert item["cancel_metadata"] == {"source": "ui"}
+    assert item["schedule_kind"] == "resume_at"
+
+
+def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    created = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-14086-session",
+        reason="No longer needed",
+        metadata={"source": "ui"},
+    )
+    update_endpoint = next(
+        route.endpoint
+        for route in session_approval_routes(service, object())
+        if getattr(route, "path", "") == "/api/admin/sessions/wake-schedules/{request_id:str}"
+        and "PATCH" in getattr(route, "methods", set())
+    )
+
+    response = asyncio.run(
+        update_endpoint(
+            _admin_json_request(
+                method="PATCH",
+                path=f"/api/admin/sessions/wake-schedules/{created.request_id}",
+                path_params={"request_id": created.request_id},
+                payload={"enabled": True},
+            )
+        )
+    )
+
+    assert response.status_code == 400
+    payload = json.loads(response.body)
+    assert "cancelled and cannot be edited" in payload["error"]
+    refreshed = service.runtime.wake_store.get_request(created.request_id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
 
 
 def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) -> None:

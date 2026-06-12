@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  canToggleWakeScheduleEnabled,
   isPastOneTimeWakeSchedule,
   visibleWakeSchedules,
 } from "../src/features/sessions/wakeScheduleVisibility.ts";
@@ -14,16 +15,19 @@ test("past one-time wake schedules are hidden by default", () => {
       request_id: "past-once",
       schedule_kind: "resume_at",
       resume_at: "2026-06-10T20:08:45Z",
+      status: "pending",
     },
     {
       request_id: "future-once",
       schedule_kind: "resume_at",
       resume_at: "2026-06-10T20:12:00Z",
+      status: "pending",
     },
     {
       request_id: "recurring",
       schedule_kind: "cron",
       resume_at: null,
+      status: "pending",
     },
   ];
 
@@ -42,11 +46,49 @@ test("past one-time wake schedules can still be shown", () => {
       request_id: "past-once",
       schedule_kind: "resume_at",
       resume_at: "2026-06-10T20:08:45Z",
+      status: "pending",
     },
   ];
 
   assert.deepEqual(
     visibleWakeSchedules(schedules, { showPastOneTime: true, nowMs }).map((item) => item.request_id),
     ["past-once"],
+  );
+});
+
+test("cancelled one-time wake schedules stay visible as history", () => {
+  const schedules = [
+    {
+      request_id: "cancelled-past-once",
+      schedule_kind: "resume_at",
+      resume_at: "2026-06-10T20:08:45Z",
+      status: "cancelled",
+    },
+  ];
+
+  assert.deepEqual(
+    visibleWakeSchedules(schedules, { showPastOneTime: false, nowMs }).map((item) => item.request_id),
+    ["cancelled-past-once"],
+  );
+});
+
+test("cancelled wake schedules cannot be toggled from the sessions UI", () => {
+  assert.equal(
+    canToggleWakeScheduleEnabled({
+      request_id: "cancelled-wake",
+      schedule_kind: "resume_at",
+      resume_at: "2026-06-10T20:08:45Z",
+      status: "cancelled",
+    }),
+    false,
+  );
+  assert.equal(
+    canToggleWakeScheduleEnabled({
+      request_id: "disabled-wake",
+      schedule_kind: "cron",
+      resume_at: null,
+      status: "pending",
+    }),
+    true,
   );
 });

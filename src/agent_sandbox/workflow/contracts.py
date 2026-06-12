@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from agent_sandbox.models import DirectoryPath
 
 NODE_OUTPUTS_CONTEXT_KEY = "__node_outputs"
+FOR_EXECUTION_IDS_CONTEXT_KEY = "__for_execution_ids"
 RESERVED_OUTPUT_NAMES = frozenset({NODE_OUTPUTS_CONTEXT_KEY})
 
 

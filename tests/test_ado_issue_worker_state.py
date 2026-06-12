@@ -1742,6 +1742,139 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
 
 
 @pytest.mark.parametrize(
+    ("suppress_agent_authored_feedback", "expected_published"),
+    [(False, 1), (True, 0)],
+)
+def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    suppress_agent_authored_feedback: bool,
+    expected_published: int,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "session-6070",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(pr_map_path),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback",
+            "display_name": "PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+            "agent_author_names": ["evander Bot"],
+            "agent_mention_names": ["Truman Bot"],
+            "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
+            "suppress_agent_authored_feedback": suppress_agent_authored_feedback,
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    wake_paths: list[Path] = []
+    monkeypatch.setattr(
+        ado_worker,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: wake_paths.append(Path(lock_path)) or True,
+    )
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        assert repo == "org/repo"
+        assert pr_id == "6070"
+        assert cursor is None
+        return SimpleNamespace(
+            feedback=[
+                FeedbackEnvelope(
+                    feedback_id="azure_devops:thread_comment:30830:5",
+                    provider="azure_devops",
+                    repo="org/repo",
+                    pr_id="6070",
+                    thread_id="30830",
+                    comment_id="5",
+                    author="evander Bot",
+                    body="@<C74221CB-EE08-6A83-9055-AF01C3333112> already handled.",
+                    created_at="2026-04-08T05:33:41.433000Z",
+                    metadata={
+                        "mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
+                        "prior_thread_comment_author_names": ["evander Bot", "jonathan"],
+                    },
+                )
+            ],
+            next_cursor="2026-04-08T05:33:41.433000Z",
+        )
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == expected_published
+    assert wake_paths == (
+        [worker_config.runtime_dir / "effect-orchestrator.lock"]
+        if expected_published
+        else []
+    )
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    events = queue.list_pending(trigger_id="trigger-pr-feedback")
+    assert len(events) == expected_published
+    if expected_published:
+        assert events[0].payload["feedback"]["metadata"]["agent_directed_author_self"] is True
+    feedback_store_payload = json.loads(
+        (worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
+    stored = feedback_store_payload["feedback"]["azure_devops:thread_comment:30830:5"]
+    assert stored["metadata"]["agent_directed"] is False
+    assert stored["metadata"]["agent_directed_author_self"] is True
+    assert stored["metadata"]["agent_directed_reason"] == "self_authored"
+
+
+@pytest.mark.parametrize(
     ("pr_status", "expected_merged", "expected_completed_at"),
     [
         ("completed", True, "2026-05-15T10:00:00Z"),

@@ -2017,6 +2017,10 @@ def _publish_directory_pr_feedback_events(
             feedback_store.set_cursor(stream_key, next_cursors[stream_key])
             if feedback.feedback_id in ignored_feedback_ids:
                 continue
+            if trigger.suppress_agent_authored_feedback and bool(
+                (feedback.metadata or {}).get("agent_directed_author_self")
+            ):
+                continue
             if stored:
                 audit_logger.log_decision(
                     event_type=AuditEventType.FEEDBACK_DETECTED,

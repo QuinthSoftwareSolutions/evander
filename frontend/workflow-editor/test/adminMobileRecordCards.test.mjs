@@ -107,6 +107,11 @@ test("reports keep both desktop tables and add mobile cards for both views", () 
     "admin-table report-conformance-table",
     "report-conformance-mobile-record-list",
   );
+  assertPairedTableAndMobileList(
+    reportsPage,
+    "admin-table report-failure-clusters-table",
+    "report-failure-clusters-mobile-record-list",
+  );
 
   const activityList = reportsPage.slice(reportsPage.indexOf("report-activity-mobile-record-list"));
   for (const snippet of [
@@ -135,6 +140,22 @@ test("reports keep both desktop tables and add mobile cards for both views", () 
     "No conformance reports found.",
   ]) {
     assert.ok(conformanceList.includes(snippet), `missing reports conformance mobile snippet: ${snippet}`);
+  }
+
+  const failureClusterList = reportsPage.slice(
+    reportsPage.indexOf("report-failure-clusters-mobile-record-list"),
+  );
+  for (const snippet of [
+    "setSelectedFailureClusterId(cluster.cluster_id)",
+    "workflowFailureClusterStateLabel(cluster.state)",
+    "workflowFailureClusterNodeType(cluster)",
+    "cluster.session_ids.length",
+    "cluster.pr_ids.length",
+    "cluster.ado_item_ids.length",
+    "workflowFailureClusterRepresentativeRunLabel(representativeExample)",
+    "No workflow failure clusters found.",
+  ]) {
+    assert.ok(failureClusterList.includes(snippet), `missing reports failure clusters mobile snippet: ${snippet}`);
   }
 });
 

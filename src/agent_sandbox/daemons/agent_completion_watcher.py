@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from agent_sandbox.admin.service import AdminService
@@ -65,6 +67,45 @@ def build_agent_run_completed_event(
         payload=payload,
         trace_id=str(uuid4()),
     )
+
+
+def _mark_wake_completed_from_event(*, admin_service: Any, event: TriggerEvent) -> None:
+    payload = event.payload if isinstance(event.payload, Mapping) else {}
+    dispatch_id = str(payload.get("dispatch_id") or "").strip()
+    if not dispatch_id:
+        return
+    wake_store = getattr(getattr(admin_service, "runtime", None), "wake_store", None)
+    mark_completed = getattr(wake_store, "mark_completed_by_dispatch_id", None)
+    if not callable(mark_completed):
+        return
+    scope = payload.get("scope")
+    if not isinstance(scope, Mapping):
+        scope = {}
+    completed_at = event.occurred_at.astimezone(UTC)
+    evidence = {
+        "trigger_event_id": event.event_id,
+        "trigger_type": event.trigger_type,
+        "dispatch_id": dispatch_id,
+        "vm_name": payload.get("vm_name"),
+        "session_id": scope.get("session_id") or payload.get("session_id"),
+        "directory_path": scope.get("directory_path"),
+        "vm_user": scope.get("vm_user"),
+        "agent_state": payload.get("agent_state"),
+        "completed_at": completed_at.isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        mark_completed(
+            dispatch_id,
+            completed_at=completed_at,
+            evidence={key: value for key, value in evidence.items() if value is not None},
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mark scheduled wake completed dispatch_id=%s event_id=%s",
+            dispatch_id,
+            event.event_id,
+            exc_info=True,
+        )
 
 
 def await_agent_completion_and_publish(
@@ -132,6 +173,7 @@ def await_agent_completion_and_publish(
             )
             already_queued = event_queue.contains(event.event_id)
             record = event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            _mark_wake_completed_from_event(admin_service=admin_service, event=event)
             if not already_queued and record.event_id == event.event_id:
                 notify_wake_socket_for_lock(resolved_effect_lock_path)
             return True

@@ -35,6 +35,7 @@ from agent_sandbox.bootstrap import (
 )
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
+from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
     DEFAULT_EFFORT_FIELDS,
@@ -146,6 +147,7 @@ from agent_sandbox.models import (
     RequestPrReviewRequest,
     RespondToAgentRequest,
     RespondToAgentResponse,
+    CancelScheduledWakeResponse,
     ScheduleResumeRequest,
     ScheduleResumeResponse,
     SubmitPrReviewRequest,
@@ -361,6 +363,60 @@ def _approval_gate_intended_effect(tool_name: str, session_id: str) -> str:
         f"Execute the exact approved MCP tool invocation {tool_name!r} "
         f"for session {session_id!r}."
     )
+
+
+def _approval_gate_pending_diagnostic(
+    *,
+    approval_request_id: str,
+    approval_payload: dict[str, Any],
+    redacted_keys: set[str],
+    status: str,
+    reason: str,
+) -> dict[str, Any]:
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approval_payload,
+        attempted_payload=approval_payload,
+        redacted_keys=redacted_keys,
+        status=status,
+        reason=reason,
+        approved_payload_digest=digest_payload(approval_payload),
+        attempted_payload_digest=digest_payload(approval_payload),
+    )
+    diagnostic["approval_request_id"] = approval_request_id
+    return diagnostic
+
+
+def _approval_gate_blocked_diagnostic(
+    *,
+    approval_request_id: str,
+    attempted_payload: dict[str, Any],
+    error: PolicyError,
+) -> dict[str, Any]:
+    diagnostic = getattr(error, "approval_diagnostic", None)
+    if isinstance(diagnostic, dict):
+        result = dict(diagnostic)
+    else:
+        approval_request = getattr(error, "approval_request", None)
+        status = None
+        if approval_request is not None:
+            approval_status = getattr(approval_request, "status", None)
+            status = getattr(approval_status, "value", approval_status)
+        result = {
+            "approval_request_id": approval_request_id,
+            "rejection_kind": getattr(error, "rejection_kind", None) or "blocked",
+            "status": status,
+            "reason": str(error),
+            "attempted_payload_digest": digest_payload(attempted_payload),
+        }
+    result.setdefault("approval_request_id", approval_request_id)
+    rejection_kind = getattr(error, "rejection_kind", None)
+    if rejection_kind and not result.get("rejection_kind"):
+        result["rejection_kind"] = rejection_kind
+    if "reason" not in result:
+        result["reason"] = str(error)
+    if "attempted_payload_digest" not in result:
+        result["attempted_payload_digest"] = digest_payload(attempted_payload)
+    return result
 
 
 def _tool_call_context() -> _ToolCallAuditContext | None:
@@ -1162,8 +1218,40 @@ def create_server(context: RuntimeContext) -> FastMCP:
         streamable_http_path="/mcp",
     )
     transport_session_map: dict[str, str] = {}
+    if context.mcp_transport_bindings is not None:
+        for transport_session_id, binding in context.mcp_transport_bindings.read_all().items():
+            bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip()
+            if bound_session_id:
+                transport_session_map[transport_session_id] = bound_session_id
     setattr(server, "_agent_sandbox_transport_session_map", transport_session_map)
     semantic_adapter = GatewaySemanticAdapter(context)
+
+    def _record_visible_tools(
+        *,
+        transport_session_id: str | None,
+        session_id: str | None,
+        visible_tool_names: list[str],
+        protocol_version: str | None,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+    ) -> None:
+        if context.mcp_transport_bindings is None:
+            return
+        normalized_transport_session_id = str(transport_session_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_transport_session_id or not normalized_session_id:
+            return
+        context.mcp_transport_bindings.record_visible_tools(
+            transport_session_id=normalized_transport_session_id,
+            bound_session_id=normalized_session_id,
+            visible_tool_names=visible_tool_names,
+            last_protocol_version=str(protocol_version or "").strip() or None,
+            last_workflow_run_id=str(workflow_run_id or "").strip() or None,
+            last_mcp_tool_approval_lease_id=(
+                str(mcp_tool_approval_lease_id or "").strip() or None
+            ),
+        )
+        transport_session_map[normalized_transport_session_id] = normalized_session_id
 
     def draft_recipients_from_payload(payload: dict[str, Any]) -> list[str]:
         recipients: list[str] = []
@@ -5972,6 +6060,123 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def cancel_scheduled_wake(
+        session_id: str | None = None,
+        request_id: str = "",
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Cancel an obsolete wake request owned by the caller session.
+
+        Use this to retire pending future wakes that are no longer needed. The
+        caller cannot cancel wakes owned by another session, and one-time wakes
+        that have already been dispatched or completed remain immutable.
+        """
+
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "request_id": request_id,
+            "reason": reason,
+            "metadata": metadata or {},
+        }
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.CANCEL_SCHEDULED_WAKE)
+            normalized_request_id = str(request_id or "").strip()
+            normalized_reason = None
+            if reason is not None:
+                normalized_reason = str(reason).strip()[:1024] or None
+            if metadata is None:
+                normalized_metadata: dict[str, Any] = {}
+            elif isinstance(metadata, dict):
+                normalized_metadata = metadata
+            else:
+                raise ValueError("metadata must be an object")
+
+            if not normalized_request_id:
+                result = CancelScheduledWakeResponse(
+                    session_id=resolved_session_id,
+                    request_id=None,
+                    status="missing_request_id",
+                    request=None,
+                ).model_dump(mode="json")
+                audit_success(
+                    resolved_session_id,
+                    ToolName.CANCEL_SCHEDULED_WAKE,
+                    args,
+                    result,
+                )
+                return result
+
+            cancellation = context.wake_store.cancel_request(
+                request_id=normalized_request_id,
+                caller_session_id=resolved_session_id,
+                reason=normalized_reason,
+                metadata=normalized_metadata,
+            )
+            result = CancelScheduledWakeResponse(
+                session_id=resolved_session_id,
+                request_id=cancellation.request_id,
+                status=cancellation.status,
+                request=cancellation.request,
+            ).model_dump(mode="json")
+            if cancellation.status == "permission_denied":
+                denied_args = dict(args)
+                if denied_args.get("reason") is not None:
+                    denied_args["reason"] = "<redacted>"
+                audit_failure(
+                    resolved_session_id,
+                    ToolName.CANCEL_SCHEDULED_WAKE,
+                    denied_args,
+                    "permission_denied",
+                    decision="denied",
+                    error_class="policy_error",
+                )
+                return result
+
+            audit_success(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                args,
+                result,
+            )
+            return result
+        except PolicyError as exc:
+            denied_args = dict(args)
+            if denied_args.get("reason") is not None:
+                denied_args["reason"] = "<redacted>"
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                denied_args,
+                str(exc),
+            )
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def run_script(
         session_id: str | None = None,
         script_name: str = "",
@@ -8836,6 +9041,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if request is None:
             return tools
 
+        headers = getattr(request, "headers", None)
         session_id, workflow_run_id, mcp_tool_approval_lease_id = _tool_policy_context_from_request(
             request,
             transport_session_map=transport_session_map,
@@ -8856,6 +9062,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
         }
+        _record_visible_tools(
+            transport_session_id=_string_from_headers(headers, "mcp-session-id"),
+            session_id=session_id,
+            visible_tool_names=sorted(visible_tool_names),
+            protocol_version=_string_from_headers(headers, "mcp-protocol-version"),
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
         return [
             tool
             for tool in tools
@@ -8997,6 +9211,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return None
         if not context.policy.approval_required_for_tool(session, tool_enum):
             return None
+        redacted_keys = redacted_keys_for_session_id(session_id)
 
         approval_payload = _approval_gate_payload(
             tool_name=tool_enum.value,
@@ -9025,6 +9240,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "status": status,
                 "approval_request_id": approval.request_id,
                 "payload_digest": payload_digest,
+                "approval_diagnostic": _approval_gate_pending_diagnostic(
+                    approval_request_id=approval.request_id,
+                    approval_payload=approval_payload,
+                    redacted_keys=redacted_keys,
+                    status=status,
+                    reason=(
+                        f"Tool {tool_enum.value} requires approval before execution. "
+                        f"Retry the exact same payload with approval_request_id={approval.request_id} "
+                        "after a human approves it."
+                    ),
+                ),
                 "approval_settings": grant_settings.model_dump(mode="json"),
                 "used_count": approval.used_count,
                 "message": (
@@ -9060,12 +9286,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     f"{tool_enum.value}"
                 )
         except PolicyError as exc:
+            approval_request_id = getattr(exc, "approval_request_id", None) or supplied_request_id
             result = {
                 "status": "blocked",
-                "approval_request_id": supplied_request_id,
+                "approval_request_id": approval_request_id,
                 "payload_digest": payload_digest,
                 "error": str(exc),
                 "error_class": "approval_blocked",
+                "rejection_kind": getattr(exc, "rejection_kind", None),
+                "approval_diagnostic": _approval_gate_blocked_diagnostic(
+                    approval_request_id=approval_request_id,
+                    attempted_payload=approval_payload,
+                    error=exc,
+                ),
             }
             audit_approval_gate(
                 session_id=session_id,
@@ -9205,7 +9438,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
 def _install_mcp_http_logging(
     app: Starlette,
     *,
+    runtime_context: RuntimeContext,
     transport_session_map: dict[str, str] | None = None,
+    transport_binding_store: Any | None = None,
 ) -> None:
     class McpHttpLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):  # type: ignore[override]
@@ -9217,6 +9452,44 @@ def _install_mcp_http_logging(
                 request,
                 transport_session_map=None,
             )
+            workflow_run_id = _string_from_query_params(
+                getattr(request, "query_params", None),
+                "workflow_run_id",
+            )
+            if workflow_run_id is None:
+                workflow_run_id = _string_from_headers(
+                    request.headers,
+                    "x-agent-sandbox-workflow-run-id",
+                    "x-workflow-run-id",
+                )
+            mcp_tool_approval_lease_id = _string_from_query_params(
+                getattr(request, "query_params", None),
+                "mcp_tool_approval_lease_id",
+                "tool_approval_lease_id",
+            )
+            if mcp_tool_approval_lease_id is None:
+                mcp_tool_approval_lease_id = _string_from_headers(
+                    request.headers,
+                    "x-agent-sandbox-mcp-tool-approval-lease-id",
+                    "x-mcp-tool-approval-lease-id",
+                )
+            protocol_version = _string_from_headers(
+                request.headers,
+                "mcp-protocol-version",
+            )
+            request_transport_session_id = _string_from_headers(
+                request.headers,
+                "mcp-session-id",
+            )
+            request_method_name = ""
+            try:
+                raw_body = await request.body()
+                if raw_body:
+                    payload = json.loads(raw_body.decode("utf-8") or "{}")
+                    if isinstance(payload, dict):
+                        request_method_name = str(payload.get("method") or "").strip()
+            except Exception:
+                request_method_name = ""
             logger.info(
                 "gateway_mcp_request method=%s path=%s query=%s accept=%s content_type=%s mcp_session_id=%s protocol_version=%s",
                 request.method,
@@ -9228,23 +9501,40 @@ def _install_mcp_http_logging(
                 request.headers.get("mcp-protocol-version", ""),
             )
             try:
-                request_transport_session_id = _string_from_headers(
-                    request.headers,
-                    "mcp-session-id",
-                )
-                if (
-                    transport_session_map is not None
-                    and request_transport_session_id
-                    and declared_session_id
-                ):
+                if transport_session_map is not None and request_transport_session_id:
                     bound_session_id = str(
                         transport_session_map.get(request_transport_session_id) or ""
                     ).strip()
-                    if bound_session_id and bound_session_id != declared_session_id:
-                        return JSONResponse(
-                            {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE},
-                            status_code=409,
-                        )
+                    if bound_session_id and declared_session_id:
+                        if bound_session_id != declared_session_id:
+                            if transport_binding_store is not None:
+                                transport_binding_store.record_conflict(
+                                    transport_session_id=request_transport_session_id,
+                                    declared_session_id=declared_session_id,
+                                    reason=_SESSION_ID_CONTEXT_CONFLICT_MESSAGE,
+                                    bound_session_id=bound_session_id,
+                                    last_protocol_version=protocol_version,
+                                    last_workflow_run_id=workflow_run_id,
+                                    last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                                )
+                            return JSONResponse(
+                                {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE},
+                                status_code=409,
+                            )
+                    if transport_binding_store is not None:
+                        effective_bound_session_id = declared_session_id or bound_session_id or None
+                        if effective_bound_session_id:
+                            transport_binding_store.bind_transport_session(
+                                transport_session_id=request_transport_session_id,
+                                bound_session_id=effective_bound_session_id,
+                                last_protocol_version=protocol_version,
+                                last_workflow_run_id=workflow_run_id,
+                                last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                            )
+                    if declared_session_id:
+                        transport_session_map[request_transport_session_id] = declared_session_id
+                    elif bound_session_id:
+                        transport_session_map[request_transport_session_id] = bound_session_id
                 response = await call_next(request)
                 response_transport_session_id = str(
                     response.headers.get("mcp-session-id") or ""
@@ -9259,6 +9549,49 @@ def _install_mcp_http_logging(
                     ).strip()
                     if not bound_session_id:
                         transport_session_map[response_transport_session_id] = declared_session_id
+                    if transport_binding_store is not None:
+                        transport_binding_store.bind_transport_session(
+                            transport_session_id=response_transport_session_id,
+                            bound_session_id=declared_session_id,
+                            last_protocol_version=protocol_version,
+                            last_workflow_run_id=workflow_run_id,
+                            last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                        )
+                if (
+                    request_method_name == "tools/list"
+                    and transport_binding_store is not None
+                    and request_transport_session_id
+                ):
+                    resolved_session_id = declared_session_id or str(
+                        transport_session_map.get(request_transport_session_id) or ""
+                    ).strip()
+                    if resolved_session_id:
+                        try:
+                            session = runtime_context.policy.get_session(resolved_session_id)
+                        except PolicyError:
+                            session = None
+                        if session is not None:
+                            visible_tool_names = sorted(
+                                {
+                                    visibility.tool.value
+                                    for visibility in runtime_context.policy.visible_tools_for_session(
+                                        session,
+                                        workflow_run_id=workflow_run_id,
+                                        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                                    )
+                                }
+                            )
+                            transport_binding_store.record_visible_tools(
+                                transport_session_id=request_transport_session_id,
+                                bound_session_id=resolved_session_id,
+                                visible_tool_names=visible_tool_names,
+                                last_protocol_version=protocol_version,
+                                last_workflow_run_id=workflow_run_id,
+                                last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                            )
+                            transport_session_map[request_transport_session_id] = (
+                                resolved_session_id
+                            )
                 logger.info(
                     "gateway_mcp_response method=%s path=%s status=%s content_type=%s mcp_session_id=%s",
                     request.method,
@@ -9933,7 +10266,9 @@ def create_app(context: RuntimeContext) -> Starlette:
     )
     _install_mcp_http_logging(
         app,
+        runtime_context=context,
         transport_session_map=getattr(server, "_agent_sandbox_transport_session_map", None),
+        transport_binding_store=context.mcp_transport_bindings,
     )
     return app
 

@@ -392,6 +392,7 @@ class GatewayConfig(BaseModel):
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
+    agent_prompt_queue_max_retries: int = Field(default=3, ge=1)
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
     azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
     azure_devops_organization_url: str = "https://dev.azure.com"
@@ -402,6 +403,7 @@ class GatewayConfig(BaseModel):
     wake_poll_interval_seconds: float = Field(default=30.0, gt=0)
     wake_jitter_seconds: float = Field(default=5.0, ge=0)
     wake_cooldown_seconds: float = Field(default=60.0, ge=0)
+    wake_schedule_late_threshold_seconds: float = Field(default=300.0, ge=0)
     wake_session_cooldown_path: Path = Path(
         "/var/lib/agent-sandbox/wake-session-cooldown.json"
     )
@@ -992,6 +994,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
     cooldown_seconds: float = Field(default=60.0, ge=0)
+    late_threshold_seconds: float = Field(default=300.0, ge=0)
     lock_path: Path | None = None
     session_cooldown_path: Path | None = None
     busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")

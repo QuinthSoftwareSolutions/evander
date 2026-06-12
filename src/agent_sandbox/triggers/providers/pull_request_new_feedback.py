@@ -103,6 +103,19 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 recent_ids=recent_ids,
             ):
                 continue
+            if trigger.suppress_agent_authored_feedback and bool(
+                (feedback.metadata or {}).get("agent_directed_author_self")
+            ):
+                cursor_store.update(
+                    trigger.id,
+                    lambda state, stream_key=stream_key, feedback=feedback: _acknowledge_feedback(
+                        state,
+                        stream_key,
+                        feedback.feedback_id,
+                        feedback.created_at,
+                    ),
+                )
+                continue
             occurred_at = feedback.created_at.astimezone(UTC)
             events.append(
                 TriggerEvent(

@@ -1153,4 +1153,6 @@ def test_agent_prompt_outputs_include_error_bindings() -> None:
     assert output_schemas["enqueue-agent"]["session_id"] == {"type": "string"}
     assert output_schemas["enqueue-agent"]["vm_name"] == {"type": "string"}
     assert output_schemas["enqueue-agent"]["coalesced_count"] == {"type": "integer"}
+    assert output_schemas["enqueue-agent"]["retry_count"] == {"type": "integer"}
+    assert output_schemas["enqueue-agent"]["max_retries"] == {"type": "integer"}
     assert diagnostics == []

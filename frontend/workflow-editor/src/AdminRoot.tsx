@@ -24,6 +24,7 @@ import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
 import { McpToolsPage } from "./features/mcpTools/McpToolsPage";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
+import { ToolVisibilityPage } from "./features/toolVisibility/ToolVisibilityPage";
 import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
 import { SkillsPage } from "./features/skills/SkillsPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -1827,6 +1828,8 @@ export default function AdminRoot() {
               <WorkersScreen />
             ) : renderedTab === "sessions" ? (
               <SessionsScreen />
+            ) : renderedTab === "tool-visibility" ? (
+              <ToolVisibilityPage />
             ) : renderedTab === "mcp-tools" ? (
               <McpToolsPage />
             ) : renderedTab === "approvals" ? (

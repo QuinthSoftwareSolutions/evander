@@ -390,13 +390,27 @@ class SessionAdminFacade:
                     "resume_at": request.schedule.resume_at,
                     "cron": request.schedule.cron,
                     "prompt": request.resume_prompt.prompt,
+                    "status": request.status,
+                    "status_reason": request.status_reason,
+                    "status_updated_at": request.status_updated_at,
+                    "last_dispatch_id": request.last_dispatch_id,
+                    "last_dispatch_status": request.last_dispatch_status,
+                    "last_error": request.last_error,
+                    "last_error_at": request.last_error_at,
+                    "completed_at": request.completed_at,
+                    "completion_evidence": dict(request.completion_evidence or {}),
                     "resume_mode": request.resume_mode,
+                    "status": request.status,
                     "enabled": request.enabled,
                     "source": request.source,
                     "created_at": request.created_at,
                     "updated_at": request.updated_at,
                     "last_dispatched_at": request.last_dispatched_at,
                     "next_run_at": request.next_run_at,
+                    "cancelled_at": request.cancelled_at,
+                    "cancelled_by_session_id": request.cancelled_by_session_id,
+                    "cancel_reason": request.cancel_reason,
+                    "cancel_metadata": request.cancel_metadata,
                     "last_dispatch": (
                         {
                             "dispatch_id": dispatch.dispatch_id,
@@ -468,6 +482,10 @@ class SessionAdminFacade:
         existing = self._deps.runtime.wake_store.get_request(request_id.strip())
         if existing is None:
             raise ValueError(f"Wake schedule not found: {request_id}")
+        if existing.status == "cancelled":
+            raise ValueError(
+                f"Wake schedule {existing.request_id} is cancelled and cannot be edited."
+            )
         updated_prompt = existing.resume_prompt.prompt if prompt is None else str(prompt).strip()
         if not updated_prompt:
             raise ValueError("prompt cannot be empty")

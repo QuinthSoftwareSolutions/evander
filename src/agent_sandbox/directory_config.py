@@ -114,6 +114,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "github_token_env",
             "agent_prompt_token_secret_env",
             "agent_prompt_token_ttl_seconds",
+            "agent_prompt_queue_max_retries",
             "communication_artifact_link_secret_env",
             "communication_artifact_link_ttl_seconds",
             "communication_artifact_public_base_url",

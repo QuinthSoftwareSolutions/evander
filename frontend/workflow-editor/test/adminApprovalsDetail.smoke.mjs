@@ -76,6 +76,82 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     audit_context: [],
     age_seconds: 90,
     expires_in_seconds: 3_600,
+    payload_summary: '{"body":"hello","token":"<redacted>"}',
+    approval_diagnostics: {
+      request_id: "approval-1",
+      status: "pending",
+      action_type: "mcp_tool_invocation",
+      tool_name: "email_send_approved",
+      payload_digest: "digest-approval-1",
+      approver: "admin",
+      decision_at: null,
+      decision_reason: null,
+      created_at: "2026-05-18T10:00:00Z",
+      expires_at: "2026-05-18T11:00:00Z",
+      age_seconds: 90,
+      expires_in_seconds: 3_600,
+      payload_summary: '{"body":"hello","token":"<redacted>"}',
+      approved_payload: {
+        body: "hello",
+        token: "<redacted>",
+      },
+      requested_payload: {
+        body: "hello",
+        token: "<redacted>",
+      },
+      blocked_tool_call_diagnostics: [
+        {
+          approval_request_id: "approval-1",
+          status: "blocked",
+          rejection_kind: "payload_mismatch",
+          reason: "Payload mismatch for approval-1",
+          payload_match: false,
+          approved_payload_digest: "digest-approval-1",
+          attempted_payload_digest: "attempted-digest-1",
+          payload_summary: '{"body":"hello","token":"<redacted>"}',
+          approved_payload_summary: {
+            body: "hello",
+            token: "<redacted>",
+          },
+          attempted_payload_summary: {
+            body: "hello-v2",
+            token: "<redacted>",
+            extra: "value",
+          },
+          differences: {
+            changed: {
+              entries: [
+                {
+                  path: "arguments.body",
+                  approved_value: "hello",
+                  attempted_value: "hello-v2",
+                },
+              ],
+              truncated: false,
+            },
+            missing: {
+              entries: [
+                {
+                  path: "arguments.optional_field",
+                  approved_value: "needed",
+                },
+              ],
+              truncated: false,
+            },
+            extra: {
+              entries: [
+                {
+                  path: "arguments.trace_id",
+                  attempted_value: "trace-1",
+                },
+              ],
+              truncated: false,
+            },
+            truncated: false,
+          },
+        },
+      ],
+    },
   };
   const sessionResponse = {
     auth_mode: "none",
@@ -232,6 +308,23 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
   );
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page
+      .getByText(
+        "Diagnostic only: the diff explains why the payload was rejected, but it does not loosen the approval boundary.",
+        {
+          exact: true,
+        },
+      )
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() => page.getByText("Mismatch", { exact: true }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Approved payload", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Attempted payload", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.body", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.optional_field", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.trace_id", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByLabel("Approver").waitFor({ state: "visible" }));
   await assert.doesNotReject(() =>
     page.waitForFunction(() => document.activeElement?.textContent === "Approve"),
@@ -270,6 +363,10 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     badgeLayout.titleRight <= badgeLayout.badgeLeft,
     `approval title should wrap before the badge column: titleRight=${badgeLayout.titleRight}, badgeLeft=${badgeLayout.badgeLeft}`,
   );
+
+  const bodyText = await page.locator("body").innerText();
+  assert.doesNotMatch(bodyText, /approved-secret/i);
+  assert.doesNotMatch(bodyText, /attempted-secret/i);
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals?request_id=approval-1&decision=approve");
   assert.equal(await navEntry.count(), 1);

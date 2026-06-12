@@ -25,6 +25,36 @@ def annotate_agent_directed_feedback(
         return item
 
     metadata = dict(item.metadata or {})
+    self_authored = (
+        _normalize_identity(item.author) in author_names
+        or _metadata_contains_identity(
+            metadata,
+            keys=(
+                "comment_author_names",
+                "comment_author_unique_names",
+                "author_names",
+                "author_unique_names",
+            ),
+            identities=author_names,
+        )
+        or _metadata_contains_identity_id(
+            metadata,
+            keys=("comment_author_ids", "author_ids"),
+            identities=author_ids,
+        )
+    )
+    if self_authored:
+        metadata.update(
+            {
+                "agent_directed": False,
+                "agent_directed_same_thread": False,
+                "agent_directed_mentioned": False,
+                "agent_directed_author_self": True,
+                "agent_directed_reason": "self_authored",
+            }
+        )
+        return item.model_copy(update={"metadata": metadata})
+
     same_thread = (
         _metadata_contains_identity(
             metadata,
@@ -57,6 +87,7 @@ def annotate_agent_directed_feedback(
             "agent_directed": agent_directed,
             "agent_directed_same_thread": same_thread,
             "agent_directed_mentioned": mentioned,
+            "agent_directed_author_self": False,
             "agent_directed_reason": (
                 "same_thread" if same_thread else "mention" if mentioned else "not_agent_directed"
             ),

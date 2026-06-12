@@ -211,15 +211,18 @@ Common tasks:
 1. Open **Approvals** and confirm the directory scope.
 2. Filter by status, session, VM, tool, minimum age, or direct-directory-only scope.
 3. Select a request from the queue.
-4. Review queue health, request summary, intended effect, digest, redacted payload, decision
-   history, and matching audit context.
+4. Review queue health, request summary, intended effect, digest, redacted payload, approval
+   payload diagnostic, decision history, and matching audit context.
 5. Unlock privileges.
 6. Enter the approver identity and a reason.
 7. Click **Approve** or **Deny**.
 8. Re-open Tool Calls if you need to compare the request to the original audited tool invocation.
 
 Approval requests are intentionally shown with redacted payloads. Do not assume redacted JSON is
-the full original request body.
+the full original request body. When a later tool call reuses an approval but is blocked because the
+approval is missing, denied, expired, stale, or payload-mismatched, the approval payload diagnostic
+shows a redacted field-level changed/missing/extra summary. That summary is for diagnosis only; it
+does not loosen exact-payload approval enforcement.
 
 ## Artifacts
 
@@ -337,6 +340,8 @@ Common tasks:
 14. Save settings.
 15. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
+16. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+    status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
 Review both tool access and approval policy before saving.
@@ -421,7 +426,7 @@ Admin Web. The UI save path uses revision checks to prevent silent stale overwri
 
 ## Reports
 
-The Reports tab contains workflow activity and conformance snapshots.
+The Reports tab contains workflow activity, workflow failure clusters, and conformance snapshots.
 
 ![Reports](assets/admin-ui/manual-reports.png)
 
@@ -433,6 +438,38 @@ Workflow graph activity:
 4. Click **Run report**.
 5. Select a graph to inspect activity count, run count, node count, latest activity, status counts,
    user IDs, and active node breakdown.
+
+PR integration preflight:
+
+1. Open **Reports**.
+2. Select **PR integration preflight**.
+3. Enter the Azure DevOps repo, mode, PR ids, and directory path. Pairwise mode checks every
+   unordered PR pair in the submitted set.
+4. Provide `repo_source` only when you want to override the directory-scoped
+   `ado_worker.ado_repo_source`; otherwise leave it blank and the report uses the directory setting.
+5. Click **Run report**.
+6. Review `status`, `summary_text`, participants, checks, warnings, and errors.
+
+Status meanings:
+
+- `clean`: the merge simulation was clean.
+- `conflict`: one or more checks found content conflicts.
+- `missing_ref`: a PR source or target commit/ref could not be resolved locally.
+- `stale_target_branch`: the branch moved after Azure DevOps recorded the target commit.
+- `repo_error`: the selected repo source could not be resolved or queried.
+- `provider_error`: Azure DevOps metadata lookup failed.
+
+The preflight is read-only and does not resolve conflicts or change PR completion policy.
+
+Workflow failure clusters:
+
+1. Select **Workflow failure clusters**.
+2. Use 24h, 7d, or 30d presets, or enter a custom start/end range.
+3. Click **Run report**.
+4. Review grouped failures by graph, node, and normalized error signature. The signature removes
+   volatile IDs and timestamps, and the active/recent/resolved label is a heuristic signal rather
+   than proof of root cause.
+5. Open a representative workflow run detail before deciding on remediation.
 
 Conformance:
 
@@ -612,7 +649,8 @@ view or changing directory while there are unsaved workflow changes prompts for 
 1. Open **Approvals**.
 2. Filter to pending requests and the relevant session/tool.
 3. Select the request.
-4. Compare summary, intended effect, payload digest, redacted payload, and audit context.
+4. Compare summary, intended effect, payload digest, redacted payload, approval payload diagnostic,
+   and audit context.
 5. Unlock privileges.
 6. Enter approver and reason.
 7. Approve or deny.

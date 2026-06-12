@@ -203,7 +203,7 @@ Type-specific keys:
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids` |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
@@ -580,7 +580,11 @@ failed as before, and successful `started` / `completed` paths do not populate
 error fields.
 For `effect:agent:enqueue-prompt`, routed dispatch failures include the queued
 retry context (`queued`, `queue_key`, and `coalesced_count`) when the prompt was
-written to the durable retry queue before dispatch failed.
+written to the durable retry queue before dispatch failed. The prompt queue also
+tracks durable retry attempts by queue key and prompt digest, capped by
+`agent_prompt_queue_max_retries` (default `3`). Once the cap is exceeded,
+enqueue fails with `failed_phase: retry_limit` and includes `retry_count` and
+`max_retries` in the error outputs.
 
 When `resume_thread_metadata_key` is set on either prompt effect, the effect
 resumes from and persists the Codex thread ID under a session metadata object.
@@ -1009,10 +1013,48 @@ Mixed graph:
 }
 ```
 
+If the pending wake becomes obsolete, the session can cancel it with `cancel_scheduled_wake`
+instead of deleting the request:
+
+```json
+{
+  "session_id": "issue-11-session",
+  "request_id": "wake-3f2d8a5c8d2e4b2cb8f0f0d4e9b8b7c1",
+  "reason": "No longer needed.",
+  "metadata": {
+    "source": "agent"
+  }
+}
+```
+
+Successful cancellation returns `status="cancelled"` and preserves the request in wake history:
+
+```json
+{
+  "session_id": "issue-11-session",
+  "request_id": "wake-3f2d8a5c8d2e4b2cb8f0f0d4e9b8b7c1",
+  "status": "cancelled",
+  "request": {
+    "status": "cancelled",
+    "cancelled_at": "2026-04-01T09:55:00Z",
+    "cancelled_by_session_id": "issue-11-session",
+    "cancel_reason": "No longer needed.",
+    "cancel_metadata": {
+      "source": "agent"
+    }
+  }
+}
+```
+
 MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
 prompt command resumes the last Codex context when no explicit thread id is available. Admin
 created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
 container Codex exec session.
+
+Cancelled requests remain visible in admin history, but already dispatched or completed one-time
+wakes are immutable and other sessions cannot cancel them. The tool also returns clear terminal
+statuses for `already_cancelled`, `already_dispatched`, `already_completed`, `not_found`,
+`missing_request_id`, and `permission_denied`.
 
 - Recurring cron schedule (host CLI):
 

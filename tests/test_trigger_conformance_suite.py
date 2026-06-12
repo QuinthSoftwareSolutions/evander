@@ -1169,6 +1169,109 @@ def test_pr_feedback_skips_feedback_older_than_stream_cursor(tmp_path: Path) -> 
     ]
 
 
+def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+                "agent_author_names": ["evander Bot"],
+                "suppress_agent_authored_feedback": True,
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    item = PrFeedbackItem(
+        feedback_id="local:self-authored:1",
+        provider="local",
+        repo="org/repo",
+        pr_id="11",
+        author="evander Bot",
+        body="I handled this.",
+        created_at=created_at,
+    )
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps({"feedback": {item.feedback_id: item.model_dump(mode="json")}}),
+        encoding="utf-8",
+    )
+
+    assert provider.poll() == []
+
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload["pr-local"]["stream_cursors"]["local:org/repo:11"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert cursor_payload["pr-local"]["recent_feedback_ids"]["local:org/repo:11"] == [
+        "local:self-authored:1"
+    ]
+    assert provider.poll() == []
+
+
+def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-github",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+                "agent_author_names": ["evander Bot"],
+                "suppress_agent_authored_feedback": True,
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+    poll_cursors: list[str | None] = []
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:self-authored:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="evander Bot",
+                    body="I handled this.",
+                    created_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                )
+            ]
+            self.next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **kwargs):
+            poll_cursors.append(kwargs.get("cursor"))
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+
+    assert provider.poll() == []
+    assert provider.poll() == []
+
+    assert poll_cursors == [None, "2026-04-03T12:00:00Z"]
+
+
 def test_conformance_cron_due_and_cursor_persistence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
 ) -> None:

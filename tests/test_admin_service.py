@@ -54,6 +54,9 @@ from agent_sandbox.models import (
     ContainerSessionLifecycleState,
     SessionManifest,
     ToolName,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
+    WakeScheduleDefinition,
     VmActionResult,
     VmSummary,
 )
@@ -103,6 +106,94 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
                 f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
             ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def write_failure_cluster_config(
+    tmp_path: Path,
+    *,
+    orchestration_store_backend: str = "sqlite",
+    orchestration_store_path: Path | None = None,
+    event_queue_store_path: Path | None = None,
+    effect_execution_store_path: Path | None = None,
+    gate_execution_store_path: Path | None = None,
+) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "failure-clusters.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "failure-clusters",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-ticket",
+                        "name": "Ticket intake",
+                        "description": "Handles ticket intake and branch updates.",
+                        "directory_path": "root",
+                        "user_ids": ["alice"],
+                        "node_ids": ["trigger-ticket", "effect-push-branch"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-ticket",
+                            "display_name": "Ticket created",
+                            "type": "trigger:ticket:created",
+                            "directories": ["root"],
+                        },
+                        {
+                            "id": "effect-push-branch",
+                            "display_name": "Push branch",
+                            "type": "effect:git:push-branch",
+                            "host_repo_path": "/repo",
+                            "local_branch": "review/session/work",
+                            "origin_branch": "refs/heads/feature/topic",
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source_id": "trigger-ticket",
+                            "target_id": "effect-push-branch",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    normalized_orchestration_store_path = (
+        orchestration_store_path or (runtime_dir / "orchestration.db")
+    )
+    normalized_event_queue_store_path = event_queue_store_path or (
+        runtime_dir / "trigger-orchestrator-events.json"
+    )
+    normalized_effect_execution_store_path = effect_execution_store_path or (
+        runtime_dir / "effect-orchestrator-executions.json"
+    )
+    normalized_gate_execution_store_path = gate_execution_store_path or (
+        runtime_dir / "gate-orchestrator-executions.json"
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "orchestration_store_backend": orchestration_store_backend,
+                "orchestration_store_path": str(normalized_orchestration_store_path),
+                "event_queue_store_path": str(normalized_event_queue_store_path),
+                "effect_execution_store_path": str(normalized_effect_execution_store_path),
+                "gate_execution_store_path": str(normalized_gate_execution_store_path),
+                "workflow_packs": ["failure-clusters.v1.json"],
+            }
         ),
         encoding="utf-8",
     )
@@ -268,9 +359,7 @@ def test_list_agents_includes_matching_prompt_queue_summary(
             },
         )
     )
-    queue_store = AgentPromptQueueStore(
-        service.config.runtime_dir / "queued-agent-prompts.json"
-    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
     queue_store.put(
         QueuedAgentPromptRecord(
             queue_key="pr-feedback:container-session:thread-1",
@@ -834,9 +923,10 @@ def test_list_agents_summary_mode_skips_stale_session_effective_policy_for_missi
         backend="all",
     )
 
-    assert [(agent.agent_id, agent.directory_path, agent.effective_tool_policy) for agent in summary_agents] == [
-        ("stale-vm", "root/missing-team", None)
-    ]
+    assert [
+        (agent.agent_id, agent.directory_path, agent.effective_tool_policy)
+        for agent in summary_agents
+    ] == [("stale-vm", "root/missing-team", None)]
 
     with pytest.raises(ValueError, match="references missing directory_path 'root/missing-team'"):
         service.list_agents(
@@ -896,9 +986,7 @@ def test_list_agents_ignores_execution_cleanup_success_for_session_status(
         reconcile_containers=False,
     )
 
-    assert [(agent.agent_id, agent.status) for agent in agents] == [
-        ("container-session", "idle")
-    ]
+    assert [(agent.agent_id, agent.status) for agent in agents] == [("container-session", "idle")]
     sessions = {item.session_id: item for item in service.list_sessions(include_expired=True)}
     lifecycle = sessions["container-session"].container_lifecycle
     assert lifecycle is not None
@@ -1248,7 +1336,9 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
                 }
             )
 
-    monkeypatch.setattr("agent_sandbox.admin.service.ContainerWorkerClient", FakeContainerWorkerClient)
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.ContainerWorkerClient", FakeContainerWorkerClient
+    )
 
     def fake_list_agents(self: AdminService, **_kwargs: object) -> list[AgentRecord]:
         return [
@@ -1354,7 +1444,10 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
         "worker_telemetry_live_probe"
     )
     assert worker_entries["http://worker-missing.test"].reachable is True
-    assert worker_entries["http://worker-missing.test"].telemetry_status is TelemetryStatus.PERMISSION_DENIED
+    assert (
+        worker_entries["http://worker-missing.test"].telemetry_status
+        is TelemetryStatus.PERMISSION_DENIED
+    )
     assert worker_entries["http://worker-missing.test"].healthz_status is TelemetryStatus.AVAILABLE
     assert worker_entries["http://worker-missing.test"].last_heartbeat_source == (
         "healthz_live_probe"
@@ -1704,10 +1797,7 @@ def test_create_container_agent_infers_claude_provider_from_anthropic_config(
         in written_files["/home/agent/.agent-sandbox/session.env"]
     )
     assert "claude-sonnet-4-6" in written_files["/home/agent/.codex/config.toml"]
-    assert (
-        '"commit": ""'
-        in written_files["/home/agent/.claude/settings.json"]
-    )
+    assert '"commit": ""' in written_files["/home/agent/.claude/settings.json"]
     assert (
         "http://192.168.250.1:11434/session/claude-session"
         in written_files["/home/agent/.claude/settings.json"]
@@ -2292,8 +2382,7 @@ def test_install_admin_agent_skills_copies_managed_skill_to_container_session(
             [
                 {
                     "destination_path": (
-                        "/home/agent/.config/agent-sandbox/codex/skills/"
-                        "demo.skill/SKILL.md"
+                        "/home/agent/.config/agent-sandbox/codex/skills/demo.skill/SKILL.md"
                     ),
                     "mode": "0644",
                     "content": "# Demo\n",
@@ -2322,14 +2411,9 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
     )
     copied: list[tuple[str, list[dict[str, object]], str]] = []
 
-    def fake_vm_exec(
-        self: AdminService, target: str, **kwargs: object
-    ) -> dict[str, object]:
+    def fake_vm_exec(self: AdminService, target: str, **kwargs: object) -> dict[str, object]:
         assert target == "lab-session"
-        assert (
-            kwargs["command"]
-            == 'printf "%s" "${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"'
-        )
+        assert kwargs["command"] == 'printf "%s" "${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"'
         return {"success": True, "stdout": "/custom/codex\n"}
 
     def fake_vm_copy_files(
@@ -2415,9 +2499,9 @@ def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
     )
 
     queue_key = "admin-agent-prompt:libvirt_vm:receptionist-session"
-    queued = AgentPromptQueueStore(
-        tmp_path / "runtime" / "queued-agent-prompts.json"
-    ).get(queue_key)
+    queued = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json").get(
+        queue_key
+    )
 
     assert result["success"] is True
     assert result["queued"] is True
@@ -2615,9 +2699,9 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
     )
 
     queue_key = "admin-agent-prompt:libvirt_vm:receptionist-session"
-    queued = AgentPromptQueueStore(
-        tmp_path / "runtime" / "queued-agent-prompts.json"
-    ).get(queue_key)
+    queued = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json").get(
+        queue_key
+    )
 
     assert result["success"] is True
     assert result["queued"] is True
@@ -2908,9 +2992,7 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert refreshed.outputs["interrupted_execution_id"] == "agent-old-1"
     assert refreshed.outputs["interrupted_execution_ids"] == ["agent-old-1"]
     assert refreshed.outputs["operator_interrupt_count"] == 1
-    assert refreshed.outputs["cancelled_legacy_operator_steering_note_ids"] == [
-        legacy_note.note_id
-    ]
+    assert refreshed.outputs["cancelled_legacy_operator_steering_note_ids"] == [legacy_note.note_id]
     cancelled_legacy = operator_steering_note_store(service.config.runtime_dir).get_note(
         legacy_note.note_id
     )
@@ -2997,7 +3079,9 @@ def test_submit_operator_steering_failure_after_stop_fails_waiting_record(
     class FailingReplacementBackend:
         def __init__(self) -> None:
             self.config = service.runtime.provider_config.resolve_for_directory("root")
-            self.repository = SimpleNamespace(get=lambda execution_id: None, put=lambda record: None)
+            self.repository = SimpleNamespace(
+                get=lambda execution_id: None, put=lambda record: None
+            )
             self.stopped: list[str] = []
 
         def get_log_snapshot(self, execution_id: str, *, lines: int = 120) -> str:
@@ -3057,10 +3141,13 @@ def test_container_waiting_reconciliation_skips_operator_interrupt_in_progress()
     )
     worker = SimpleNamespace()
 
-    assert AgentPromptEffectProvider._reconcile_container_waiting_record(
-        worker=worker,
-        record=record,
-    ) == 0
+    assert (
+        AgentPromptEffectProvider._reconcile_container_waiting_record(
+            worker=worker,
+            record=record,
+        )
+        == 0
+    )
 
 
 def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispatch_fails(
@@ -3105,9 +3192,9 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispa
     )
 
     queue_key = "admin-agent-prompt:container_worker_vm:container-session"
-    queued = AgentPromptQueueStore(
-        tmp_path / "runtime" / "queued-agent-prompts.json"
-    ).get(queue_key)
+    queued = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json").get(
+        queue_key
+    )
 
     assert result["success"] is True
     assert result["queued"] is True
@@ -3170,9 +3257,9 @@ def test_run_admin_agent_action_prompt_agent_queues_busy_container_session(
     )
 
     queue_key = "admin-agent-prompt:container_worker_vm:container-session"
-    queued = AgentPromptQueueStore(
-        tmp_path / "runtime" / "queued-agent-prompts.json"
-    ).get(queue_key)
+    queued = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json").get(
+        queue_key
+    )
 
     assert result["success"] is True
     assert result["queued"] is True
@@ -3242,9 +3329,9 @@ def test_run_admin_agent_action_prompt_agent_supports_vm_without_linked_session(
     )
 
     queue_key = "admin-agent-prompt:libvirt_vm:standalone-vm"
-    queued = AgentPromptQueueStore(
-        tmp_path / "runtime" / "queued-agent-prompts.json"
-    ).get(queue_key)
+    queued = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json").get(
+        queue_key
+    )
 
     assert result["success"] is True
     assert result["queued"] is True
@@ -3264,9 +3351,7 @@ def test_run_admin_agent_action_prompt_agent_requires_resolvable_container_sessi
 ) -> None:
     service = AdminService(write_config(tmp_path))
 
-    with pytest.raises(
-        ValueError, match="Unknown container worker agent target: missing-session"
-    ):
+    with pytest.raises(ValueError, match="Unknown container worker agent target: missing-session"):
         service.run_admin_agent_action(
             "missing-session",
             "prompt-agent",
@@ -3827,9 +3912,7 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert watcher["cmd"][backend_index + 1] == "sqlite"
     assert "--orchestration-store-path" in watcher["cmd"]
     store_index = watcher["cmd"].index("--orchestration-store-path")
-    assert watcher["cmd"][store_index + 1] == str(
-        service.config.runtime_dir / "orchestration.db"
-    )
+    assert watcher["cmd"][store_index + 1] == str(service.config.runtime_dir / "orchestration.db")
     assert "--session-id" in watcher["cmd"]
     assert "receptionist-session" in watcher["cmd"]
 
@@ -3900,9 +3983,7 @@ def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> Non
 
     def fake_run_subprocess(cmd: list[str], **kwargs: object):
         captured["cmd"] = cmd
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="thread_id=thread-mcp-1\nok\n", stderr=""
-        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="thread_id=thread-mcp-1\nok\n", stderr="")
 
     monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
 
@@ -3919,14 +4000,11 @@ def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> Non
     assert "--mcp-gateway-url" in captured["cmd"]
     gateway_url_index = captured["cmd"].index("--mcp-gateway-url")
     assert captured["cmd"][gateway_url_index + 1] == (
-        "http://gateway.test/mcp?"
-        "session_id=receptionist-session&mcp_tool_approval_lease_id=lease-1"
+        "http://gateway.test/mcp?session_id=receptionist-session&mcp_tool_approval_lease_id=lease-1"
     )
 
 
-def test_resume_agent_does_not_reuse_stored_session_thread_id(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_resume_agent_does_not_reuse_stored_session_thread_id(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -5316,7 +5394,9 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
     }
     assert root_direct == []
     assert root_descendant_health.total == 2
-    assert review["request"]["intended_effect"] == "Send the approved email payload to the recipient."
+    assert (
+        review["request"]["intended_effect"] == "Send the approved email payload to the recipient."
+    )
     assert review["redacted_payload"]["token"] == "<redacted>"
     assert review["request"]["payload"]["token"] == "<redacted>"
     assert review["request"]["notification_status"] == "partial"
@@ -5458,6 +5538,99 @@ def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_
                     },
                     sort_keys=True,
                 ),
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "payload mismatch",
+                        "args": {
+                            "session_id": "session-1",
+                            "request_id": "approval-1",
+                            "token": "blocked-secret",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "request_id": "approval-1",
+                            "approval_diagnostic": {
+                                "approval_request_id": "approval-1",
+                                "rejection_kind": "payload_mismatch",
+                                "approved_payload_digest": "digest-1",
+                                "attempted_payload_digest": "attempted-digest",
+                                "approved_payload": {
+                                    "body": "hello",
+                                    "token": "approved-secret",
+                                },
+                                "attempted_payload": {
+                                    "body": "hello",
+                                    "token": "attempted-secret",
+                                },
+                                "differences": {
+                                    "changed": [
+                                        {
+                                            "path": "payload.token",
+                                            "approved_value": "<redacted>",
+                                            "attempted_value": "<redacted>",
+                                        }
+                                    ]
+                                },
+                                "secret": "blocked-diagnostic-secret",
+                            },
+                        },
+                        "created_at": "2026-05-18T10:03:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "latest payload mismatch",
+                        "args": {
+                            "session_id": "session-1",
+                            "request_id": "approval-1",
+                            "token": "latest-blocked-secret",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "request_id": "approval-1",
+                            "approval_diagnostic": {
+                                "approval_request_id": "approval-1",
+                                "rejection_kind": "payload_mismatch",
+                                "reason": "latest payload mismatch",
+                                "approved_payload_digest": "digest-1",
+                                "attempted_payload_digest": "latest-attempted-digest",
+                                "approved_payload": {
+                                    "body": "hello",
+                                    "token": "approved-secret",
+                                },
+                                "attempted_payload": {
+                                    "body": "hello",
+                                    "token": "latest-attempted-secret",
+                                },
+                                "differences": {
+                                    "changed": [
+                                        {
+                                            "path": "payload.token",
+                                            "approved_value": "<redacted>",
+                                            "attempted_value": "<redacted>",
+                                        }
+                                    ]
+                                },
+                                "secret": "latest-diagnostic-secret",
+                            },
+                        },
+                        "created_at": "2026-05-18T10:04:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
             ]
         )
         + "\n",
@@ -5470,15 +5643,41 @@ def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_
         "tool_call",
         "approval_decision",
         "tool_call",
+        "tool_call",
+        "tool_call",
     ]
-    assert {entry["approval_request_id"] for entry in review["audit_context"]} == {
-        "approval-1"
-    }
+    assert {entry["approval_request_id"] for entry in review["audit_context"]} == {"approval-1"}
     decision_entry = review["audit_context"][1]
+    blocked_entry = review["audit_context"][4]
     assert decision_entry["args"]["request_id"] == "approval-1"
     assert decision_entry["result"]["status"] == "denied"
     assert decision_entry["result"]["tool_name"] == "email_send_approved"
     assert decision_entry["result"]["payload_digest"] == "digest-1"
+    assert review["payload_summary"] == '{"body":"hello"}'
+    assert review["approval_diagnostics"]["request_id"] == "approval-1"
+    assert review["approval_diagnostics"]["status"] == "pending"
+    assert review["approval_diagnostics"]["tool_name"] == "email_send_approved"
+    assert review["approval_diagnostics"]["approved_payload"] == {"body": "hello"}
+    assert [
+        diagnostic["attempted_payload_digest"]
+        for diagnostic in review["approval_diagnostics"]["blocked_tool_call_diagnostics"]
+    ] == ["latest-attempted-digest", "attempted-digest"]
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "approved_payload"
+    ]["token"] == "<redacted>"
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "attempted_payload"
+    ]["token"] == "<redacted>"
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["differences"][
+        "changed"
+    ][0]["attempted_value"] == "<redacted>"
+    assert blocked_entry["result"]["approval_diagnostic"]["secret"] == "<redacted>"
+    assert blocked_entry["result"]["approval_diagnostic"]["attempted_payload"]["token"] == "<redacted>"
+    serialized_review = json.dumps(review, default=str)
+    assert "approved-secret" not in serialized_review
+    assert "attempted-secret" not in serialized_review
+    assert "latest-attempted-secret" not in serialized_review
+    assert "latest-diagnostic-secret" not in serialized_review
 
 
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:
@@ -5605,7 +5804,9 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
         == ScheduledWakeWorkerGlobalConfig().poll_interval_seconds
     )
     assert read_result.config["directories"] == []
-    assert read_result.config["backoff_seconds"] == ScheduledWakeWorkerGlobalConfig().backoff_seconds
+    assert (
+        read_result.config["backoff_seconds"] == ScheduledWakeWorkerGlobalConfig().backoff_seconds
+    )
 
     write_result = service.write_worker_global_config(
         "scheduled-wake",
@@ -5944,9 +6145,11 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
 
     assert record["event_id"] == "chat:msg-1"
     assert not config_path.exists()
-    queued = SqliteTriggerEventQueue(tmp_path / "runtime" / "orchestration.db").read_all()[
-        "chat:msg-1"
-    ].model_dump(mode="json")
+    queued = (
+        SqliteTriggerEventQueue(tmp_path / "runtime" / "orchestration.db")
+        .read_all()["chat:msg-1"]
+        .model_dump(mode="json")
+    )
     assert queued["trigger_id"] == "system.chat_assistant"
     assert queued["payload"] == {
         "user_id": "alice",
@@ -6801,11 +7004,401 @@ def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
     with sqlite3.connect(db_path) as connection:
         table_names = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
     assert {"trigger_events", "effect_executions", "gate_executions"} <= table_names
+
+
+def test_normalize_workflow_failure_signature_canonicalizes_volatile_identifiers() -> None:
+    outputs = {
+        "error_class": "RuntimeError",
+        "source_kind": "effect",
+        "node_type": "effect:git:push-branch",
+    }
+    error_a = (
+        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "at 2026-05-18T11:00:00Z; session_id=11111111-1111-1111-1111-111111111111; "
+        "trace_id=22222222-2222-2222-2222-222222222222; thread_id=33333333-3333-3333-3333-333333333333; "
+        "execution_id=44444444-4444-4444-4444-444444444444; "
+        "request_id=55555555-5555-5555-5555-555555555555; "
+        "artifact_url=https://example.com/api/run?session=11111111-1111-1111-1111-111111111111&trace=22222222-2222-2222-2222-222222222222; "
+        "hash=abcdef1234567890abcdef1234567890; path=/tmp/workflow-run-a?token=secret"
+    )
+    error_b = (
+        "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b "
+        "at 2026-06-12T05:06:07Z; session_id=66666666-6666-6666-6666-666666666666; "
+        "trace_id=77777777-7777-7777-7777-777777777777; thread_id=88888888-8888-8888-8888-888888888888; "
+        "execution_id=99999999-9999-9999-9999-999999999999; "
+        "request_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa; "
+        "artifact_url=https://example.com/api/run?session=66666666-6666-6666-6666-666666666666&trace=77777777-7777-7777-7777-777777777777; "
+        "hash=fedcba0987654321fedcba0987654321; path=/tmp/workflow-run-b?token=secret"
+    )
+
+    summary_a, key_a = admin_service._normalize_workflow_failure_signature(error_a, outputs)
+    summary_b, key_b = admin_service._normalize_workflow_failure_signature(error_b, outputs)
+
+    assert key_a == key_b
+    assert summary_a == summary_b
+    assert "<agent_ref>" in summary_a
+    assert "<timestamp>" in summary_a
+    assert "<session_id>" in summary_a
+    assert "<trace_id>" in summary_a
+    assert "<thread_id>" in summary_a
+    assert "<execution_id>" in summary_a
+    assert "<request_id>" in summary_a
+    assert "<temp_path>" in summary_a
+    assert "<hex>" in summary_a
+    assert "https://example.com/api/run" in summary_a
+    assert "session=" not in summary_a
+    assert "trace=" not in summary_a
+
+
+def test_normalize_workflow_failure_signature_keeps_distinct_errors_separate() -> None:
+    outputs = {
+        "error_class": "RuntimeError",
+        "source_kind": "effect",
+        "node_type": "effect:git:push-branch",
+    }
+    rejected = (
+        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "because the remote branch already exists"
+    )
+    existing = "Existing branch refs/heads/agents/session-987/update-branch-host-b already exists"
+
+    rejected_summary, rejected_key = admin_service._normalize_workflow_failure_signature(
+        rejected, outputs
+    )
+    existing_summary, existing_key = admin_service._normalize_workflow_failure_signature(
+        existing, outputs
+    )
+
+    assert rejected_key != existing_key
+    assert rejected_summary != existing_summary
+
+
+def test_normalize_workflow_failure_signature_falls_back_to_class_and_source() -> None:
+    summary, key = admin_service._normalize_workflow_failure_signature(
+        "   ",
+        {
+            "error_class": "RuntimeError",
+            "source_kind": "effect",
+            "node_type": "effect:git:push-branch",
+        },
+    )
+
+    assert summary == "RuntimeError effect"
+    assert key == "runtimeerror effect"
+
+
+def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_and_orders_examples_newest_first(
+    tmp_path: Path,
+) -> None:
+    write_failure_cluster_config(tmp_path)
+    service = AdminService(write_config(tmp_path))
+    db_path = tmp_path / "runtime" / "orchestration.db"
+    queue_store = SqliteTriggerEventQueue(db_path)
+    effect_store = SqliteExecutionStore(db_path)
+
+    trigger_failure = TriggerEvent(
+        event_id="evt-trigger-root",
+        trigger_id="orphan-trigger",
+        trigger_type="trigger:ticket:created",
+        trace_id="trace-trigger-root",
+        occurred_at=datetime(2026, 6, 12, 9, 0, tzinfo=UTC),
+        payload={
+            "session_id": "session-root",
+            "pr_id": "pr-root",
+            "issue_id": "issue-root",
+            "ado_item_id": "ado-root",
+            "artifact_id": "comm_00000000000000000000000000000001",
+        },
+    )
+    queue_store.publish(trigger_failure, idempotency_key="evt-trigger-root")
+    queue_store.mark_event_cleared(
+        "evt-trigger-root",
+        cleared_at=datetime(2026, 6, 12, 9, 5, tzinfo=UTC),
+        clear_reason="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
+        error="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
+    )
+
+    error_a = (
+        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "at 2026-06-12T10:00:00Z; session_id=11111111-1111-1111-1111-111111111111; "
+        "trace_id=22222222-2222-2222-2222-222222222222; thread_id=33333333-3333-3333-3333-333333333333; "
+        "execution_id=44444444-4444-4444-4444-444444444444; request_id=55555555-5555-5555-5555-555555555555; "
+        "artifact_url=https://example.com/api/run?session=11111111-1111-1111-1111-111111111111&trace=22222222-2222-2222-2222-222222222222"
+    )
+    error_b = (
+        "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b "
+        "at 2026-06-12T11:00:00Z; session_id=66666666-6666-6666-6666-666666666666; "
+        "trace_id=77777777-7777-7777-7777-777777777777; thread_id=88888888-8888-8888-8888-888888888888; "
+        "execution_id=99999999-9999-9999-9999-999999999999; request_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa; "
+        "artifact_url=https://example.com/api/run?session=66666666-6666-6666-6666-666666666666&trace=77777777-7777-7777-7777-777777777777"
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-1",
+            idempotency_key="evt-effect-1::effect-push-branch",
+            event_id="evt-effect-1",
+            trace_id="trace-effect-1",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="failed",
+            started_at=datetime(2026, 6, 12, 10, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 10, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-1",
+            resolved_config={
+                "session_id": "session-a",
+                "pr_id": "pr-101",
+            },
+            input_payload={
+                "issue_id": "issue-a",
+                "work_item_id": "work-789",
+            },
+            outputs={
+                "message": error_a,
+                "artifact_id": "comm_00000000000000000000000000000002",
+            },
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-2",
+            idempotency_key="evt-effect-2::effect-push-branch",
+            event_id="evt-effect-2",
+            trace_id="trace-effect-2",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="error_routed",
+            started_at=datetime(2026, 6, 12, 11, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 11, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-2",
+            resolved_config={
+                "session_id": "session-b",
+                "pr_id": "pr-102",
+            },
+            input_payload={
+                "issue_id": "issue-b",
+            },
+            outputs={
+                "error_message": error_b,
+                "artifact_id": "comm_00000000000000000000000000000003",
+            },
+            inputs_by_source={"trigger-ticket": {"ado_item_id": "ado-556"}},
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-success",
+            idempotency_key="evt-effect-success::effect-push-branch",
+            event_id="evt-effect-success",
+            trace_id="trace-effect-success",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="succeeded",
+            started_at=datetime(2026, 6, 12, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 12, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-success",
+            resolved_config={"session_id": "session-b"},
+            input_payload={},
+            outputs={"message": "completed successfully"},
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-3",
+            idempotency_key="evt-effect-3::effect-push-branch",
+            event_id="evt-effect-3",
+            trace_id="trace-effect-3",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="failed",
+            started_at=datetime(2026, 6, 12, 12, 30, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 12, 31, tzinfo=UTC),
+            resolved_config_hash="hash-effect-3",
+            resolved_config={"session_id": "session-c", "pr_id": "pr-103"},
+            input_payload={"issue_id": "issue-c"},
+            outputs={
+                "message": "Existing branch refs/heads/agents/session-987/update-branch-host-b already exists",
+                "artifact_id": "comm_00000000000000000000000000000004",
+            },
+            dismissed_at=None,
+        )
+    )
+
+    report = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 12, 8, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 12, 13, 0, tzinfo=UTC),
+        limit=10,
+        recent_threshold_seconds=7200,
+    )
+
+    assert report.limit == 10
+    assert report.recent_threshold_seconds == 7200
+    assert report.has_more is False
+    assert report.clusters and len(report.clusters) == 3
+
+    resolved = next(cluster for cluster in report.clusters if cluster.count == 2)
+    active = next(cluster for cluster in report.clusters if cluster.event_ids == ["evt-effect-3"])
+    historical = next(
+        cluster for cluster in report.clusters if cluster.event_ids == ["evt-trigger-root"]
+    )
+
+    assert resolved.graph_id == "graph-ticket"
+    assert resolved.graph_name == "Ticket intake"
+    assert resolved.node_id == "effect-push-branch"
+    assert resolved.node_type == "effect:git:push-branch"
+    assert resolved.effect_type == "effect:git:push-branch"
+    assert resolved.count == 2
+    assert resolved.event_ids == ["evt-effect-2", "evt-effect-1"]
+    assert resolved.trace_ids == ["trace-effect-2", "trace-effect-1"]
+    assert resolved.session_ids[0] == "session-b"
+    assert set(resolved.session_ids) >= {"session-a", "session-b"}
+    assert set(resolved.pr_ids) >= {"pr-101", "pr-102"}
+    assert set(resolved.ado_item_ids) >= {"ado-556", "work-789"}
+    assert set(resolved.issue_ids) >= {"issue-a", "issue-b"}
+    assert set(resolved.artifact_ids) >= {
+        "comm_00000000000000000000000000000002",
+        "comm_00000000000000000000000000000003",
+    }
+    assert "<agent_ref>" in resolved.error_signature
+    assert resolved.latest_error_summary == resolved.error_signature
+    assert resolved.examples[0].event_id == "evt-effect-2"
+    assert resolved.examples[1].event_id == "evt-effect-1"
+    assert resolved.examples[0].run_detail_href == "#workflow?event_id=evt-effect-2"
+    assert resolved.examples[0].api_run_detail_href == (
+        "/api/workflow-editor/run-detail?event_id=evt-effect-2"
+    )
+
+    assert active.graph_id == "graph-ticket"
+    assert active.state == "active"
+    assert active.count == 1
+    assert active.event_ids == ["evt-effect-3"]
+    assert active.latest_error_summary.startswith("Existing branch")
+    assert active.examples[0].event_id == "evt-effect-3"
+
+    assert historical.graph_id == "root"
+    assert historical.graph_name == "Unassigned"
+    assert historical.state == "historical"
+    assert historical.source_kind == "trigger"
+    assert historical.trigger_type == "trigger:ticket:created"
+    assert historical.count == 1
+    assert historical.event_ids == ["evt-trigger-root"]
+    assert historical.latest_error_summary.startswith("Rejected branch update")
+    assert historical.examples[0].event_id == "evt-trigger-root"
+
+    empty_period = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 13, 0, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 13, 1, 0, tzinfo=UTC),
+        limit=10,
+    )
+    assert empty_period.clusters == []
+    assert empty_period.has_more is False
+
+
+def test_read_workflow_failure_clusters_report_uses_json_fallback_without_initializing_missing_files(
+    tmp_path: Path,
+) -> None:
+    write_config(tmp_path)
+    event_queue_store_path = tmp_path / "runtime" / "trigger-orchestrator-events.json"
+    effect_execution_store_path = tmp_path / "runtime" / "effect-orchestrator-executions.json"
+    gate_execution_store_path = tmp_path / "runtime" / "gate-orchestrator-executions.json"
+    write_failure_cluster_config(
+        tmp_path,
+        orchestration_store_backend="json",
+        event_queue_store_path=event_queue_store_path,
+        effect_execution_store_path=effect_execution_store_path,
+        gate_execution_store_path=gate_execution_store_path,
+    )
+    service = AdminService(write_config(tmp_path))
+
+    report = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 12, 8, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 12, 13, 0, tzinfo=UTC),
+        limit=10,
+    )
+
+    assert report.clusters == []
+    assert event_queue_store_path.exists() is False
+    assert effect_execution_store_path.exists() is False
+    assert gate_execution_store_path.exists() is False
+
+
+def test_workflow_failure_cluster_payload_models_validate_representative_json() -> None:
+    report = admin_service.WorkflowFailureClusterReportPayload.model_validate(
+        {
+            "generated_at": "2026-06-12T12:00:00Z",
+            "period_start": "2026-06-11T12:00:00Z",
+            "period_end": "2026-06-12T12:00:00Z",
+            "recent_threshold_seconds": 7200,
+            "limit": 25,
+            "clusters": [
+                {
+                    "cluster_id": "cluster-1",
+                    "graph_id": "graph-ticket",
+                    "graph_name": "Ticket intake",
+                    "graph_description": "Handles ticket intake.",
+                    "directory_path": "root",
+                    "node_id": "effect-ticket",
+                    "node_display_name": "Prompt ticket",
+                    "node_type": "effect:agent:prompt",
+                    "effect_type": "effect:agent:prompt",
+                    "source_kind": "effect",
+                    "error_signature": "Rejected branch update for <agent_ref>",
+                    "error_signature_key": "rejected branch update for <agent_ref>",
+                    "count": 2,
+                    "first_seen_at": "2026-06-12T10:00:00Z",
+                    "last_seen_at": "2026-06-12T11:00:00Z",
+                    "latest_error_summary": "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b",
+                    "state": "recent",
+                    "event_ids": ["evt-2", "evt-1"],
+                    "trace_ids": ["trace-1"],
+                    "session_ids": ["session-1"],
+                    "pr_ids": ["123"],
+                    "ado_item_ids": ["456"],
+                    "issue_ids": ["root::local::1"],
+                    "examples": [
+                        {
+                            "event_id": "evt-2",
+                            "trace_id": "trace-2",
+                            "session_id": "session-1",
+                            "occurred_at": "2026-06-12T11:00:00Z",
+                            "run_state": "active",
+                            "error_summary": "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b",
+                            "run_detail_href": "#workflow?event_id=evt-2",
+                            "api_run_detail_href": "/api/workflow-editor/run-detail?event_id=evt-2",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    cluster = report.clusters[0]
+    example = cluster.examples[0]
+
+    assert report.worker_id == "trigger-orchestrator"
+    assert cluster.source_kind == "effect"
+    assert cluster.state == "recent"
+    assert cluster.event_ids == ["evt-2", "evt-1"]
+    assert cluster.artifact_ids == []
+    assert example.run_detail_href == "#workflow?event_id=evt-2"
+    assert example.api_run_detail_href == "/api/workflow-editor/run-detail?event_id=evt-2"
+    assert example.artifact_ids == []
+    assert report.model_dump(mode="json")["clusters"][0]["examples"][0]["run_detail_href"] == (
+        "#workflow?event_id=evt-2"
+    )
 
 
 def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
@@ -6829,9 +7422,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
             },
         )
     )
-    ContainerWorkerExecutionRepository(
-        runtime_dir / "container-worker-executions.json"
-    ).put(
+    ContainerWorkerExecutionRepository(runtime_dir / "container-worker-executions.json").put(
         ContainerWorkerExecutionRecord(
             execution_id="exec-sqlite-agent",
             session_id="session-sqlite",
@@ -6950,9 +7541,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
             outputs={"dispatch_id": "dispatch-sqlite"},
             inputs_by_source={"effect-prompt": {"issue_number": "11"}},
             input_event_ids_by_source={"effect-prompt": "evt-sqlite"},
-            input_occurred_at_by_source={
-                "effect-prompt": datetime(2026, 5, 3, 11, 0, tzinfo=UTC)
-            },
+            input_occurred_at_by_source={"effect-prompt": datetime(2026, 5, 3, 11, 0, tzinfo=UTC)},
             config_revision="rev-sqlite",
         )
     )
@@ -7205,7 +7794,11 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
@@ -7550,7 +8143,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
@@ -7665,7 +8262,11 @@ def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
@@ -7704,7 +8305,11 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
         "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
         "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
         "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "await_agent_store_path": runtime_dir
+        / "providers"
+        / "gates"
+        / "await-agent"
+        / "pending.json",
         "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
     }
     monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
@@ -8022,14 +8627,18 @@ def test_run_conformance_report_executes_fixed_suite_and_refreshes_payload(
     assert payload.exit_code == 0
     assert payload.output == "ok"
     assert len(calls) == 1
-    assert calls[0]["command"][1:] == ["-m", "pytest", "-q", "tests/test_trigger_conformance_suite.py"]
+    assert calls[0]["command"][1:] == [
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_trigger_conformance_suite.py",
+    ]
     assert calls[0]["cwd"] == REPO_ROOT
     assert calls[0]["text"] is True
     assert calls[0]["capture_output"] is True
     assert calls[0]["timeout"] == admin_service.CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS
-    assert (
-        calls[0]["env"]["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"]
-        == str(runtime_dir / "trigger-conformance-report.json")
+    assert calls[0]["env"]["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"] == str(
+        runtime_dir / "trigger-conformance-report.json"
     )
     reports = {report.kind: report for report in payload.reports.reports}
     assert reports["trigger"].state == "pass"
@@ -8120,7 +8729,9 @@ def test_run_conformance_report_returns_payload_for_pytest_failure(
             ),
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 1, stdout="failed stdout", stderr="failed stderr")
+        return subprocess.CompletedProcess(
+            command, 1, stdout="failed stdout", stderr="failed stderr"
+        )
 
     monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
 
@@ -8357,7 +8968,9 @@ def test_workflow_editor_save_and_reload_preserve_deserialize_declared_outputs(
     assert save_result.validation_diagnostics == []
 
     reread = service.read_workflow_editor_document()
-    reread_gate = next(item for item in reread.config["gates"] if item["id"] == "gate-deserialize-1")
+    reread_gate = next(
+        item for item in reread.config["gates"] if item["id"] == "gate-deserialize-1"
+    )
     assert reread_gate["outputs"] == expected_outputs
     assert reread.output_schemas["gate-deserialize-1"] == expected_outputs
 
@@ -9271,7 +9884,10 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
     assert lifecycle is not None
     assert lifecycle.state == ContainerSessionLifecycleState.CLEANUP_FAILED
     assert lifecycle.actions.cleanup.supported is True
-    assert lifecycle.cleanup_error == "container worker DELETE /v1/sessions/container-session failed: cleanup exploded"
+    assert (
+        lifecycle.cleanup_error
+        == "container worker DELETE /v1/sessions/container-session failed: cleanup exploded"
+    )
     assert lifecycle.last_signal_at == now - timedelta(minutes=5)
 
 
@@ -9811,7 +10427,9 @@ def test_effective_tool_policy_payload_combines_directory_and_session_rules(
         "approval_check",
         "complete_issue",
     ]
-    assert [item["id"] for item in effective["tool_argument_policies"]["create_ado_backlog_item"]] == [
+    assert [
+        item["id"] for item in effective["tool_argument_policies"]["create_ado_backlog_item"]
+    ] == [
         "directory-policy",
         "session-policy",
     ]
@@ -10730,7 +11348,9 @@ def test_create_issue_vm_from_local_issue_rejects_ambiguous_proxy_identifier(
     )
 
     def _fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise AssertionError("create_issue_vm_from_local_issue should reject ambiguous identifiers before setup")
+        raise AssertionError(
+            "create_issue_vm_from_local_issue should reject ambiguous identifiers before setup"
+        )
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fail_run)
 
@@ -11213,8 +11833,8 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     assert "config alias.sync-base" in remote_script
     assert 'AGENT_PUSH_HELPER_B64="' in remote_script
     assert 'SYNC_BASE_HELPER_B64="' in remote_script
-    assert '.agent-sandbox/bin/push-agent' in remote_script
-    assert '.agent-sandbox/bin/sync-base' in remote_script
+    assert ".agent-sandbox/bin/push-agent" in remote_script
+    assert ".agent-sandbox/bin/sync-base" in remote_script
     assert "config agent-sandbox.prNotesRef" in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
     assert "config agent-sandbox.workBranch" in remote_script
@@ -11475,9 +12095,7 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
             "create_ado_backlog_item": [
                 {
                     "id": "create-policy",
-                    "constraints": [
-                        {"id": "title", "path": "title", "operator": "required"}
-                    ],
+                    "constraints": [{"id": "title", "path": "title", "operator": "required"}],
                 }
             ]
         },
@@ -11526,9 +12144,7 @@ def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
             "create_ado_backlog_item": [
                 {
                     "id": "upsert-policy",
-                    "constraints": [
-                        {"id": "project", "path": "project", "operator": "required"}
-                    ],
+                    "constraints": [{"id": "project", "path": "project", "operator": "required"}],
                 }
             ]
         },
@@ -12325,6 +12941,58 @@ def test_create_and_list_wake_schedules_include_last_dispatch(tmp_path: Path) ->
     assert schedules[0]["last_dispatch"] is None
 
 
+def test_create_and_list_wake_schedules_include_cancellation_fields(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        source="admin_cli",
+    )
+    cancellation = service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-1-session",
+        reason="No longer needed",
+        metadata={"source": "admin"},
+    )
+
+    schedules = service.list_wake_schedules(session_id="issue-1-session")
+
+    assert cancellation.status == "cancelled"
+    assert len(schedules) == 1
+    assert schedules[0]["status"] == "cancelled"
+    assert schedules[0]["enabled"] is False
+    assert schedules[0]["cancelled_by_session_id"] == "issue-1-session"
+    assert schedules[0]["cancel_reason"] == "No longer needed"
+    assert schedules[0]["cancel_metadata"] == {"source": "admin"}
+    assert schedules[0]["cancelled_at"] is not None
+
+
+def test_edit_wake_schedule_rejects_cancelled_schedule(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        source="admin_cli",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-1-session",
+        reason="No longer needed",
+        metadata={"source": "admin"},
+    )
+
+    with pytest.raises(ValueError, match="cancelled and cannot be edited"):
+        service.edit_wake_schedule(created.request_id, enabled=True)
+
+    refreshed = service.runtime.wake_store.get_request(created.request_id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
+
+
 def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     with pytest.raises(ValueError, match="Invalid cron expression"):
@@ -12453,6 +13121,118 @@ def test_list_wake_schedules_filters_disabled_entries(tmp_path: Path) -> None:
     schedules = service.list_wake_schedules(session_id="issue-1-session", include_disabled=False)
 
     assert schedules == []
+
+
+def test_list_scheduled_wake_ledger_filters_statuses_and_completed_entries(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=30)
+    failed = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Retry me later.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=failed.request_id,
+            session_id="issue-1-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Retry me later."),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+
+    completed = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Already finished.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-1-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished."),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-1-session"},
+    )
+
+    entries = service.list_scheduled_wake_ledger(
+        session_id="issue-1-session",
+        statuses=["failed", "completed_or_acknowledged"],
+        include_completed=True,
+    )
+    assert {item["request_id"] for item in entries} == {failed.request_id, completed.request_id}
+    failed_entry = next(item for item in entries if item["request_id"] == failed.request_id)
+    assert failed_entry["retry_available"] is True
+    assert failed_entry["prompt_summary"] == "Retry me later."
+    assert failed_entry["redacted_prompt"] == "[redacted]"
+    assert failed_entry["failure_reason"] is not None
+    assert "\n" not in failed_entry["failure_reason"]
+
+    open_entries = service.list_scheduled_wake_ledger(
+        session_id="issue-1-session",
+        include_completed=False,
+    )
+    assert {item["request_id"] for item in open_entries} == {failed.request_id}
+
+
+def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=5)
+    retry_at = datetime.now(UTC) + timedelta(hours=1)
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume work.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=created.request_id,
+            session_id="issue-1-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+
+    updated = service.retry_scheduled_wake(
+        created.request_id,
+        resume_at=retry_at,
+        run_now=False,
+    )
+    request = service.runtime.wake_store.get_request(created.request_id)
+
+    assert updated["request_id"] == created.request_id
+    assert updated["status"] == "pending"
+    assert updated["enabled"] is True
+    assert updated["next_run_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert updated["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert updated["failure_reason"] is None
+    assert updated["last_error"] is None
+    assert updated["latest_dispatch"]["status"] == "failed"
+    assert request is not None
+    assert request.schedule.resume_at == retry_at
+    retry_history = request.resume_prompt.metadata["retry_history"]
+    assert retry_history[0]["previous_status"] == "failed"
+    assert retry_history[0]["previous_failure_reason"] is not None
+    assert retry_history[0]["requested_resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
 
 
 def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(

@@ -46,6 +46,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
 from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
+    AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
 )
 from agent_sandbox.model_usage.runtime import model_usage_store
@@ -1861,6 +1862,106 @@ def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 1
 
 
+def test_for_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "work ${{for-1.current_index}}:${{for-1.current_element}}",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "done ${{for-1.item_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "for-1"),
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+                {"source_id": "effect-body", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+    state_path = runtime_dir / "providers" / "gates" / "for" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_key = "for-1:trace-for-legacy:event-for-legacy"
+    state_path.write_text(
+        json.dumps(
+            {
+                legacy_key: {
+                    "key": legacy_key,
+                    "gate_id": "for-1",
+                    "trace_id": "trace-for-legacy",
+                    "for_execution_id": "event-for-legacy",
+                    "next_index": 2,
+                    "item_count": 3,
+                    "updated_at": datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc).isoformat(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-body": {"success": True, "message": "body"},
+            "effect-done": {"success": True, "message": "done"},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-legacy",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"steps": ["alpha", "beta", "gamma"]},
+            trace_id="trace-for-legacy",
+        )
+    )
+
+    for _ in range(12):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
+    done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
+    assert [item["resolved_config"]["command"] for item in body_records] == ["work 2:gamma"]
+    assert [item["resolved_config"]["command"] for item in done_records] == ["done 3"]
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {}
+
+
 def test_for_gate_without_body_edge_routes_immediately_to_done(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -2270,6 +2371,112 @@ def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
         "is_done": True,
         "is_exhausted": True,
     }
+
+
+def test_while_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "while-1",
+                    "display_name": "Retry while failing",
+                    "type": "gate:while",
+                    "when": {"left": 1, "equals": 1},
+                    "max_iterations": 3,
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "body ${{while-1.iteration_index}}/${{while-1.remaining_iterations}}",
+                },
+                {
+                    "id": "effect-exhausted",
+                    "display_name": "Exhausted",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "exhausted ${{while-1.iteration_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "while-1"),
+                {"source_id": "while-1", "source_port": "body", "target_id": "effect-body"},
+                {
+                    "source_id": "while-1",
+                    "source_port": "exhausted",
+                    "target_id": "effect-exhausted",
+                },
+                {"source_id": "effect-body", "target_id": "while-1", "allow_cycle": True},
+            ],
+        }
+    )
+    state_path = runtime_dir / "providers" / "gates" / "while" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_key = "while-1:trace-while-legacy:event-while-legacy"
+    state_path.write_text(
+        json.dumps(
+            {
+                legacy_key: {
+                    "key": legacy_key,
+                    "gate_id": "while-1",
+                    "trace_id": "trace-while-legacy",
+                    "while_execution_id": "event-while-legacy",
+                    "next_iteration_index": 2,
+                    "max_iterations": 3,
+                    "updated_at": datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc).isoformat(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-body": {"success": True, "message": "body"},
+            "effect-exhausted": {"success": True, "message": "exhausted"},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-while-legacy",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-while-legacy",
+        )
+    )
+
+    for _ in range(12):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
+    exhausted_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-exhausted"
+    ]
+    assert [item["resolved_config"]["command"] for item in body_records] == ["body 2/0"]
+    assert [item["resolved_config"]["command"] for item in exhausted_records] == ["exhausted 3"]
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {}
 
 
 def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
@@ -4174,13 +4381,20 @@ def test_queued_agent_prompt_record_accepts_optional_workflow_context() -> None:
                 "gate-map": {"ticket": {"issue_id": "ISSUE-1"}},
                 "ignored": "not-a-node-payload",
             },
+            "workflow_for_execution_ids": {
+                "for-1": "event-for-1",
+                " ": "ignored",
+                "for-empty": "",
+            },
         }
     )
 
     assert without_context.workflow_context is None
+    assert without_context.workflow_for_execution_ids is None
     assert with_context.workflow_context == {
         "gate-map": {"ticket": {"issue_id": "ISSUE-1"}}
     }
+    assert with_context.workflow_for_execution_ids == {"for-1": "event-for-1"}
 
 
 def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: Path) -> None:
@@ -4197,6 +4411,7 @@ def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: P
             resume_thread_id=None,
             effect_id="effect-1",
             workflow_context={"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}},
+            workflow_for_execution_ids={"for-1": "event-old"},
         )
     )
 
@@ -4212,6 +4427,7 @@ def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: P
             resume_thread_id=None,
             effect_id="effect-1",
             workflow_context={"gate-map": {"ticket": {"issue_id": "ISSUE-2"}}},
+            workflow_for_execution_ids={"for-1": "event-new"},
         )
     )
 
@@ -4221,6 +4437,94 @@ def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: P
     assert stored.coalesced_count == 2
     assert stored.prompt == "new prompt"
     assert stored.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-2"}}}
+    assert stored.workflow_for_execution_ids == {"for-1": "event-new"}
+
+
+def test_agent_prompt_queue_retry_ledger_caps_recreated_prompt(tmp_path: Path) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+
+    for _ in range(3):
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key="pr-feedback:session-1:feedback-1",
+                target="session-1",
+                vm_name="worker-1",
+                session_id="session-1",
+                prompt="check feedback",
+                model=None,
+                vm_user="agent",
+                resume_thread_id=None,
+                effect_id="effect-1",
+            ),
+            max_retries=3,
+        )
+        queue_store.delete("pr-feedback:session-1:feedback-1")
+
+    with pytest.raises(AgentPromptRetryLimitExceeded) as exc_info:
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key="pr-feedback:session-1:feedback-1",
+                target="session-1",
+                vm_name="worker-1",
+                session_id="session-1",
+                prompt="check feedback",
+                model=None,
+                vm_user="agent",
+                resume_thread_id=None,
+                effect_id="effect-1",
+            ),
+            max_retries=3,
+        )
+
+    assert exc_info.value.retry_count == 4
+    assert exc_info.value.max_retries == 3
+    assert queue_store.get("pr-feedback:session-1:feedback-1") is None
+    ledger_payload = json.loads(
+        (tmp_path / "agent-prompt-retry-ledger.json").read_text(encoding="utf-8")
+    )
+    [ledger_record] = ledger_payload.values()
+    assert ledger_record["retry_count"] == 4
+    assert ledger_record["max_retries"] == 3
+    assert ledger_record["exhausted_at"] is not None
+
+
+def test_agent_prompt_queue_retry_ledger_allows_distinct_prompt_for_same_key(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="admin-agent-prompt:container_worker_vm:session-1",
+            target="session-1",
+            vm_name="worker-1",
+            session_id="session-1",
+            prompt="first prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="admin-agent-prompt:container_worker_vm:session-1",
+        ),
+        max_retries=1,
+    )
+    queue_store.delete("admin-agent-prompt:container_worker_vm:session-1")
+
+    queued = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="admin-agent-prompt:container_worker_vm:session-1",
+            target="session-1",
+            vm_name="worker-1",
+            session_id="session-1",
+            prompt="second prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="admin-agent-prompt:container_worker_vm:session-1",
+        ),
+        max_retries=1,
+    )
+
+    assert queued.retry_count == 1
+    assert len(json.loads((tmp_path / "agent-prompt-retry-ledger.json").read_text())) == 2
 
 
 def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_context(
@@ -4390,6 +4694,154 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
     ]
     assert len(effect_2_records) == 1
     assert effect_2_records[0]["status"] == "succeeded"
+
+
+def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"sessions": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "For each session",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.sessions}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "${{for-1.current_element.vm_name}}",
+                    "prompt": "Handle ${{for-1.current_element.session_id}}",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-1",
+                    "metadata": {"for_done": True},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "for-1"),
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-1"},
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+                {
+                    "source_id": "effect-1",
+                    "source_port": "started",
+                    "target_id": "for-1",
+                    "allow_cycle": True,
+                },
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda **kwargs: [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="running",
+                session_ids=["session-1"],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume_agent should only be called by queued dispatch")
+        ),
+    )
+    metadata_updates: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "session_update_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs) or {"success": True},
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-queued-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"sessions": [{"session_id": "session-1", "vm_name": "vm-1"}]},
+            trace_id="trace-for-queued",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    queued_payload = json.loads(
+        (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
+    )
+    assert queued_payload["vm-1"]["workflow_for_execution_ids"] == {
+        "for-1": "event-for-queued-1"
+    }
+
+    resume_calls: list[dict[str, object]] = []
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=["session-1"],
+            )
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    for _ in range(10):
+        worker.run_once()
+
+    assert len(resume_calls) == 1
+    queued_store_path = runtime_dir / "queued-agent-prompts.json"
+    queued_after_dispatch = (
+        json.loads(queued_store_path.read_text(encoding="utf-8"))
+        if queued_store_path.exists()
+        else {}
+    )
+    assert queued_after_dispatch == {}
+    assert metadata_updates == [
+        {"target": "session-1", "metadata": {"for_done": True}},
+    ]
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
+    assert len(for_records) == 2
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 1
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 1
+    assert [item["resolved_config"]["for_execution_id"] for item in for_records] == [
+        "event-for-queued-1",
+        "event-for-queued-1",
+    ]
 
 
 def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes_idle(

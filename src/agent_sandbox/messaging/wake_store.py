@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from agent_sandbox.cron import next_cron_time
 from agent_sandbox.models import (
     WakeDispatchRecord,
     WakeMessageEnvelope,
+    WakeRequestCancellationResult,
     WakeResumePromptPayload,
     WakeScheduledRequest,
     WakeScheduleDefinition,
@@ -45,6 +47,36 @@ class WakeRequestRepository(Protocol):
 
     def record_dispatch(self, dispatch: WakeDispatchRecord) -> None: ...
 
+    def mark_request_due_or_missed(
+        self, *, now_utc: datetime, late_after: timedelta
+    ) -> list[WakeScheduledRequest]: ...
+
+    def mark_request_dispatching(
+        self,
+        request_id: str,
+        *,
+        now_utc: datetime,
+        reason: str | None = None,
+    ) -> WakeScheduledRequest | None: ...
+
+    def mark_completed_by_dispatch_id(
+        self,
+        dispatch_id: str,
+        *,
+        completed_at: datetime,
+        evidence: dict[str, Any],
+    ) -> WakeScheduledRequest | None: ...
+
+    def cancel_request(
+        self,
+        request_id: str,
+        *,
+        caller_session_id: str,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        now_utc: datetime | None = None,
+    ) -> WakeRequestCancellationResult: ...
+
     def schedule_resume_request(
         self,
         *,
@@ -69,6 +101,15 @@ class WakeRequestRepository(Protocol):
 
     def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]: ...
 
+    def list_ledger_entries(
+        self,
+        *,
+        session_id: str | None = None,
+        statuses: list[str] | None = None,
+        include_completed: bool = True,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]: ...
+
     def read_raw(self) -> dict[str, Any]: ...
 
 
@@ -86,7 +127,7 @@ class WakeRequestStore:
         self._import_legacy_json_if_empty()
 
     def upsert_request(self, request: WakeScheduledRequest) -> None:
-        validated = WakeScheduledRequest.model_validate(request)
+        validated = self._normalize_cancelled_request(WakeScheduledRequest.model_validate(request))
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -138,7 +179,9 @@ class WakeRequestStore:
             ).fetchone()
         if row is None:
             return None
-        return WakeScheduledRequest.model_validate_json(row["payload_json"])
+        return self._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate_json(row["payload_json"])
+        )
 
     def delete_request(self, request_id: str) -> bool:
         normalized_request_id = str(request_id or "")
@@ -195,7 +238,22 @@ class WakeRequestStore:
                 if row is not None:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
                     request.updated_at = now
-                    if validated.status == "dispatched":
+                    request.status_updated_at = validated.dispatched_at
+                    request.last_dispatch_id = validated.dispatch_id
+                    request.last_dispatch_status = validated.status
+                    request.last_error = None
+                    request.last_error_at = None
+                    if validated.status in {"failed", "timed_out"}:
+                        request.status = "failed"
+                        request.status_reason = self._dispatch_failure_reason(validated)
+                        request.last_error = request.status_reason
+                        request.last_error_at = validated.dispatched_at
+                    elif validated.status == "queued":
+                        request.status = "queued"
+                        request.status_reason = None
+                    else:
+                        request.status = "dispatched"
+                        request.status_reason = None
                         request.last_dispatched_at = validated.dispatched_at
                         if request.schedule.resume_at is not None:
                             request.next_run_at = None
@@ -254,6 +312,127 @@ class WakeRequestStore:
             )
             self._compact(connection)
 
+    def cancel_request(
+        self,
+        request_id: str,
+        *,
+        caller_session_id: str,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        now_utc: datetime | None = None,
+    ) -> WakeRequestCancellationResult:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return WakeRequestCancellationResult(status="missing_request_id")
+
+        normalized_caller_session_id = str(caller_session_id or "").strip()
+        if not normalized_caller_session_id:
+            return WakeRequestCancellationResult(
+                status="permission_denied",
+                request_id=normalized_request_id,
+            )
+
+        normalized_reason = str(reason or "").strip() or None
+        normalized_metadata = dict(metadata or {})
+        cancelled_at = now_utc or datetime.now(UTC)
+
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE request_id = ?
+                """,
+                (normalized_request_id,),
+            ).fetchone()
+            if row is None:
+                return WakeRequestCancellationResult(
+                    status="not_found",
+                    request_id=normalized_request_id,
+                )
+
+            request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+            if request.session_id != normalized_caller_session_id:
+                return WakeRequestCancellationResult(
+                    status="permission_denied",
+                    request_id=normalized_request_id,
+                )
+
+            latest_dispatch = self._latest_dispatch_for_request(connection, normalized_request_id)
+            if request.status == "cancelled":
+                return WakeRequestCancellationResult(
+                    status="already_cancelled",
+                    request_id=normalized_request_id,
+                    request=request,
+                )
+
+            if request.schedule.resume_at is not None:
+                if latest_dispatch is not None:
+                    if latest_dispatch.status == "completed":
+                        return WakeRequestCancellationResult(
+                            status="already_completed",
+                            request_id=normalized_request_id,
+                            request=request,
+                        )
+                    if latest_dispatch.status in {"dispatched", "queued"}:
+                        return WakeRequestCancellationResult(
+                            status="already_dispatched",
+                            request_id=normalized_request_id,
+                            request=request,
+                        )
+                if request.last_dispatched_at is not None:
+                    return WakeRequestCancellationResult(
+                        status="already_dispatched",
+                        request_id=normalized_request_id,
+                        request=request,
+                    )
+                if not request.enabled:
+                    return WakeRequestCancellationResult(
+                        status="already_cancelled",
+                        request_id=normalized_request_id,
+                        request=request,
+                    )
+            elif not request.enabled:
+                return WakeRequestCancellationResult(
+                    status="already_cancelled",
+                    request_id=normalized_request_id,
+                    request=request,
+                )
+
+            request.status = "cancelled"
+            request.enabled = False
+            request.next_run_at = None
+            request.cancelled_at = cancelled_at
+            request.cancelled_by_session_id = normalized_caller_session_id
+            request.cancel_reason = normalized_reason
+            request.cancel_metadata = normalized_metadata
+            request.updated_at = cancelled_at
+            connection.execute(
+                """
+                UPDATE wake_requests
+                SET session_id = ?,
+                    enabled = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    last_dispatched_at = ?,
+                    next_run_at = ?,
+                    schedule_resume_at = ?,
+                    schedule_cron = ?,
+                    source = ?,
+                    resume_mode = ?,
+                    payload_json = ?
+                WHERE request_id = ?
+                """,
+                self._request_update_row(request),
+            )
+            self._compact(connection)
+            return WakeRequestCancellationResult(
+                status="cancelled",
+                request_id=normalized_request_id,
+                request=request,
+            )
+
     def schedule_resume_request(
         self,
         *,
@@ -285,6 +464,10 @@ class WakeRequestStore:
                 resume_prompt=WakeResumePromptPayload(prompt=prompt, metadata=metadata),
                 resume_mode=resume_mode,
                 enabled=enabled,
+                status="pending",
+                status_reason=None,
+                status_updated_at=now,
+                completion_evidence={},
                 source=source,
                 created_at=now,
                 updated_at=now,
@@ -312,6 +495,232 @@ class WakeRequestStore:
             )
             self._compact(connection)
             return request
+
+    def mark_request_due_or_missed(
+        self, *, now_utc: datetime, late_after: timedelta
+    ) -> list[WakeScheduledRequest]:
+        grace = max(late_after, timedelta(0))
+        latest_dispatches = self.latest_dispatch_by_request_id()
+        updated_requests: list[WakeScheduledRequest] = []
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE enabled = 1
+                  AND next_run_at IS NOT NULL
+                  AND next_run_at <= ?
+                ORDER BY COALESCE(next_run_at, created_at) ASC, request_id ASC
+                """,
+                (self._datetime_to_storage(now_utc),),
+            ).fetchall()
+            for row in rows:
+                try:
+                    request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+                except Exception:
+                    continue
+                status, reason = self._derived_due_status(
+                    request,
+                    now_utc=now_utc,
+                    grace=grace,
+                    latest_dispatch=latest_dispatches.get(request.request_id),
+                )
+                if status == request.status and reason == request.status_reason:
+                    continue
+                request.status = status
+                request.status_reason = reason
+                request.status_updated_at = now_utc
+                request.updated_at = now_utc
+                if status == "missed_or_late":
+                    request.last_error = reason
+                    request.last_error_at = now_utc
+                connection.execute(
+                    """
+                    UPDATE wake_requests
+                    SET session_id = ?,
+                        enabled = ?,
+                        created_at = ?,
+                        updated_at = ?,
+                        last_dispatched_at = ?,
+                        next_run_at = ?,
+                        schedule_resume_at = ?,
+                        schedule_cron = ?,
+                        source = ?,
+                        resume_mode = ?,
+                        payload_json = ?
+                    WHERE request_id = ?
+                    """,
+                    self._request_update_row(request),
+                )
+                updated_requests.append(request)
+            self._compact(connection)
+        return updated_requests
+
+    def mark_request_dispatching(
+        self,
+        request_id: str,
+        *,
+        now_utc: datetime,
+        reason: str | None = None,
+    ) -> WakeScheduledRequest | None:
+        normalized_request_id = str(request_id or "")
+        if not normalized_request_id:
+            return None
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE request_id = ?
+                """,
+                (normalized_request_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+            request.status = "dispatching"
+            request.status_reason = reason or "dispatch attempt started"
+            request.status_updated_at = now_utc
+            request.updated_at = now_utc
+            connection.execute(
+                """
+                UPDATE wake_requests
+                SET session_id = ?,
+                    enabled = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    last_dispatched_at = ?,
+                    next_run_at = ?,
+                    schedule_resume_at = ?,
+                    schedule_cron = ?,
+                    source = ?,
+                    resume_mode = ?,
+                    payload_json = ?
+                WHERE request_id = ?
+                """,
+                self._request_update_row(request),
+            )
+            self._compact(connection)
+        return request
+
+    def mark_completed_by_dispatch_id(
+        self,
+        dispatch_id: str,
+        *,
+        completed_at: datetime,
+        evidence: dict[str, Any],
+    ) -> WakeScheduledRequest | None:
+        normalized_dispatch_id = str(dispatch_id or "")
+        if not normalized_dispatch_id:
+            return None
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (normalized_dispatch_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            dispatch = WakeDispatchRecord.model_validate_json(row["payload_json"])
+            normalized_request_id = str(dispatch.request_id or "")
+            if not normalized_request_id:
+                return None
+            request_row = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE request_id = ?
+                """,
+                (normalized_request_id,),
+            ).fetchone()
+            if request_row is None:
+                return None
+            request = WakeScheduledRequest.model_validate_json(request_row["payload_json"])
+            request.status = "completed_or_acknowledged"
+            request.status_reason = None
+            request.status_updated_at = completed_at
+            request.completed_at = completed_at
+            request.completion_evidence = dict(evidence)
+            request.last_dispatch_id = dispatch.dispatch_id
+            request.last_dispatch_status = dispatch.status
+            request.last_error = None
+            request.last_error_at = None
+            request.updated_at = completed_at
+            connection.execute(
+                """
+                UPDATE wake_requests
+                SET session_id = ?,
+                    enabled = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    last_dispatched_at = ?,
+                    next_run_at = ?,
+                    schedule_resume_at = ?,
+                    schedule_cron = ?,
+                    source = ?,
+                    resume_mode = ?,
+                    payload_json = ?
+                WHERE request_id = ?
+                """,
+                self._request_update_row(request),
+            )
+            self._compact(connection)
+        return request
+
+    def list_ledger_entries(
+        self,
+        *,
+        session_id: str | None = None,
+        statuses: list[str] | None = None,
+        include_completed: bool = True,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        normalized_session_id = str(session_id or "").strip()
+        normalized_statuses = {
+            normalized
+            for normalized in (self._normalize_status(status) for status in (statuses or []))
+            if normalized
+        }
+        latest_dispatches = self.latest_dispatch_by_request_id()
+        with self._lock, self._connect() as connection:
+            params: list[Any] = []
+            sql = "SELECT payload_json FROM wake_requests"
+            if normalized_session_id:
+                sql += " WHERE session_id = ?"
+                params.append(normalized_session_id)
+            sql += " ORDER BY updated_at DESC, request_id DESC"
+            rows = connection.execute(sql, params).fetchall()
+
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+            except Exception:
+                continue
+            latest_dispatch = latest_dispatches.get(request.request_id)
+            status = self._ledger_status_for_request(request, latest_dispatch=latest_dispatch)
+            if normalized_statuses and status not in normalized_statuses:
+                continue
+            if not include_completed and status == "completed_or_acknowledged":
+                continue
+            entries.append(
+                self._ledger_entry_for_request(
+                    request,
+                    latest_dispatch=latest_dispatch,
+                    status=status,
+                )
+            )
+            if len(entries) >= int(limit):
+                break
+        return entries
 
     def read_raw(self) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
@@ -388,6 +797,7 @@ class WakeRequestStore:
                 continue
             if normalized_session_id and request.session_id != normalized_session_id:
                 continue
+            request = self._normalize_cancelled_request(request)
             if not include_disabled and not request.enabled:
                 continue
             requests.append(request)
@@ -435,6 +845,9 @@ class WakeRequestStore:
                 try:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
                 except Exception:
+                    continue
+                request = self._normalize_cancelled_request(request)
+                if request.status == "cancelled" or not request.enabled:
                     continue
                 next_run_at = request.next_run_at
                 if next_run_at is None:
@@ -676,7 +1089,17 @@ class WakeRequestStore:
     def _validate_request(raw_value: object) -> WakeScheduledRequest | None:
         if not isinstance(raw_value, dict):
             return None
-        return WakeScheduledRequest.model_validate(raw_value)
+        return WakeRequestStore._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate(raw_value)
+        )
+
+    @staticmethod
+    def _normalize_cancelled_request(request: WakeScheduledRequest) -> WakeScheduledRequest:
+        if request.status != "cancelled":
+            return request
+        if request.enabled is False and request.next_run_at is None:
+            return request
+        return request.model_copy(update={"enabled": False, "next_run_at": None}, deep=True)
 
     @staticmethod
     def _validate_dispatch(raw_value: object) -> WakeDispatchRecord | None:
@@ -697,6 +1120,24 @@ class WakeRequestStore:
             (request_id,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _latest_dispatch_for_request(
+        connection: sqlite3.Connection, request_id: str
+    ) -> WakeDispatchRecord | None:
+        row = connection.execute(
+            """
+            SELECT payload_json
+            FROM wake_dispatches
+            WHERE request_id = ?
+            ORDER BY dispatched_at DESC, dispatch_id DESC
+            LIMIT 1
+            """,
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return WakeDispatchRecord.model_validate_json(row["payload_json"])
 
     @staticmethod
     def _request_row(request: WakeScheduledRequest) -> tuple[Any, ...]:
@@ -779,3 +1220,175 @@ class WakeRequestStore:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+    @staticmethod
+    def _normalize_status(value: object) -> str:
+        normalized = str(value or "").strip().casefold()
+        return normalized
+
+    @staticmethod
+    def _sanitize_text(value: object, *, limit: int = 240) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        text = " ".join(text.split())
+        text = re.sub(r"(?i)\bbearer\s+[^,\s;]+", "Bearer [redacted]", text)
+        text = re.sub(
+            r"(?i)\b(secret|token|private|password|api[_-]?key|authorization)(\s*[=:]\s*)[^,\s;]+",
+            lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+            text,
+        )
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return text[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _dispatch_failure_reason(dispatch: WakeDispatchRecord) -> str:
+        if dispatch.error:
+            reason = dispatch.error
+        elif dispatch.status == "timed_out":
+            reason = "wake dispatch timed out"
+        else:
+            reason = f"wake dispatch failed with status {dispatch.status}"
+        sanitized = WakeRequestStore._sanitize_text(reason, limit=240)
+        return sanitized or dispatch.status
+
+    @staticmethod
+    def _prompt_summary(prompt: str) -> str:
+        sanitized = WakeRequestStore._sanitize_text(prompt, limit=160)
+        if sanitized is None:
+            return ""
+        return sanitized
+
+    @staticmethod
+    def _request_status_from_dispatch(dispatch: WakeDispatchRecord) -> str:
+        status = WakeRequestStore._normalize_status(dispatch.status)
+        if status in {"failed", "timed_out"}:
+            return "failed"
+        if status in {"queued", "dispatched"}:
+            return status
+        return status or "pending"
+
+    def _derived_due_status(
+        self,
+        request: WakeScheduledRequest,
+        *,
+        now_utc: datetime,
+        grace: timedelta,
+        latest_dispatch: WakeDispatchRecord | None,
+    ) -> tuple[str, str | None]:
+        if request.completed_at is not None:
+            return "completed_or_acknowledged", request.status_reason
+
+        current_status = self._normalize_status(request.status) or "pending"
+        if current_status == "dispatching":
+            next_run_at = request.next_run_at or request.schedule.resume_at
+            if next_run_at is not None and next_run_at > now_utc:
+                return "dispatching", request.status_reason
+            if latest_dispatch is None:
+                return "missed_or_late", "Previous dispatch attempt did not complete."
+            latest_dispatch_status = self._request_status_from_dispatch(latest_dispatch)
+            if latest_dispatch_status in {"dispatched", "queued", "failed"}:
+                return latest_dispatch_status, request.status_reason
+            return "missed_or_late", "Previous dispatch attempt did not complete."
+
+        if current_status in {
+            "queued",
+            "dispatched",
+            "failed",
+            "missed_or_late",
+            "completed_or_acknowledged",
+        }:
+            return current_status, request.status_reason
+
+        next_run_at = request.next_run_at or request.schedule.resume_at
+        if next_run_at is None:
+            return current_status, request.status_reason
+
+        if next_run_at > now_utc:
+            return "pending", request.status_reason
+
+        late_seconds = (now_utc - next_run_at).total_seconds()
+        if late_seconds <= grace.total_seconds():
+            return "due", request.status_reason
+        return "missed_or_late", request.status_reason or "Scheduled wake missed its window."
+
+    def _ledger_status_for_request(
+        self,
+        request: WakeScheduledRequest,
+        *,
+        latest_dispatch: WakeDispatchRecord | None,
+    ) -> str:
+        current_status = self._normalize_status(request.status) or "pending"
+        if current_status in {
+            "due",
+            "queued",
+            "dispatched",
+            "failed",
+            "missed_or_late",
+            "completed_or_acknowledged",
+        }:
+            return current_status
+        if current_status == "dispatching":
+            derived_status, _reason = self._derived_due_status(
+                request,
+                now_utc=datetime.now(UTC),
+                grace=timedelta(0),
+                latest_dispatch=latest_dispatch,
+            )
+            return derived_status
+        derived_status, _reason = self._derived_due_status(
+            request,
+            now_utc=datetime.now(UTC),
+            grace=timedelta(0),
+            latest_dispatch=latest_dispatch,
+        )
+        return derived_status
+
+    def _ledger_entry_for_request(
+        self,
+        request: WakeScheduledRequest,
+        *,
+        latest_dispatch: WakeDispatchRecord | None,
+        status: str,
+    ) -> dict[str, Any]:
+        latest_dispatch_summary: dict[str, Any] | None = None
+        if latest_dispatch is not None:
+            latest_dispatch_summary = {
+                "dispatch_id": latest_dispatch.dispatch_id,
+                "status": latest_dispatch.status,
+                "dispatched_at": self._datetime_to_storage(latest_dispatch.dispatched_at),
+                "source": latest_dispatch.source,
+                "error": self._sanitize_text(latest_dispatch.error),
+            }
+        prompt = request.resume_prompt.prompt
+        failure_reason = self._sanitize_text(request.last_error or request.status_reason)
+        return {
+            "request_id": request.request_id,
+            "session_id": request.session_id,
+            "source": request.source,
+            "resume_at": self._datetime_to_storage(request.schedule.resume_at),
+            "next_run_at": self._datetime_to_storage(request.next_run_at),
+            "scheduled_for": self._datetime_to_storage(request.next_run_at or request.schedule.resume_at),
+            "schedule_cron": request.schedule.cron,
+            "created_at": self._datetime_to_storage(request.created_at),
+            "updated_at": self._datetime_to_storage(request.updated_at),
+            "status": status,
+            "status_reason": self._sanitize_text(request.status_reason),
+            "status_updated_at": self._datetime_to_storage(request.status_updated_at),
+            "prompt_summary": self._prompt_summary(prompt),
+            "redacted_prompt": "[redacted]" if prompt else None,
+            "latest_dispatch": latest_dispatch_summary,
+            "latest_dispatch_id": request.last_dispatch_id or getattr(latest_dispatch, "dispatch_id", None),
+            "latest_dispatch_status": request.last_dispatch_status
+            or getattr(latest_dispatch, "status", None),
+            "last_error": self._sanitize_text(request.last_error),
+            "last_error_at": self._datetime_to_storage(request.last_error_at),
+            "completed_at": self._datetime_to_storage(request.completed_at),
+            "completion_evidence": dict(request.completion_evidence or {}),
+            "retry_available": status in {"failed", "missed_or_late"},
+            "failure_reason": failure_reason,
+            "enabled": request.enabled,
+        }

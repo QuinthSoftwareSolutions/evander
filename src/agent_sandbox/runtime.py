@@ -44,6 +44,10 @@ from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
+from agent_sandbox.repositories.mcp_transport_bindings import (
+    JsonMcpTransportBindingRepository,
+    McpTransportBindingRepository,
+)
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
     SessionToolApprovalLeaseRepository,
@@ -163,6 +167,7 @@ class RuntimeContext:
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
     tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
+    mcp_transport_bindings: McpTransportBindingRepository | None = None
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -310,6 +315,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
         config.runtime_dir
     )
+    mcp_transport_bindings = JsonMcpTransportBindingRepository.from_runtime_dir(
+        config.runtime_dir
+    )
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
@@ -400,6 +408,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         teams_meeting_store=teams_meeting_store,
         teams_meeting_bridge_client=teams_meeting_bridge_client,
         tool_approval_leases=tool_approval_leases,
+        mcp_transport_bindings=mcp_transport_bindings,
     )
     from agent_sandbox.approval_notifications import ApprovalNotificationDispatcher
 
