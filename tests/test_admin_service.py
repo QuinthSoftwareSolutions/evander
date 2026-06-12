@@ -109,6 +109,94 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return config_path
 
 
+def write_failure_cluster_config(
+    tmp_path: Path,
+    *,
+    orchestration_store_backend: str = "sqlite",
+    orchestration_store_path: Path | None = None,
+    event_queue_store_path: Path | None = None,
+    effect_execution_store_path: Path | None = None,
+    gate_execution_store_path: Path | None = None,
+) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "failure-clusters.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "failure-clusters",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-ticket",
+                        "name": "Ticket intake",
+                        "description": "Handles ticket intake and branch updates.",
+                        "directory_path": "root",
+                        "user_ids": ["alice"],
+                        "node_ids": ["trigger-ticket", "effect-push-branch"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-ticket",
+                            "display_name": "Ticket created",
+                            "type": "trigger:ticket:created",
+                            "directories": ["root"],
+                        },
+                        {
+                            "id": "effect-push-branch",
+                            "display_name": "Push branch",
+                            "type": "effect:git:push-branch",
+                            "host_repo_path": "/repo",
+                            "local_branch": "review/session/work",
+                            "origin_branch": "refs/heads/feature/topic",
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source_id": "trigger-ticket",
+                            "target_id": "effect-push-branch",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    normalized_orchestration_store_path = (
+        orchestration_store_path or (runtime_dir / "orchestration.db")
+    )
+    normalized_event_queue_store_path = event_queue_store_path or (
+        runtime_dir / "trigger-orchestrator-events.json"
+    )
+    normalized_effect_execution_store_path = effect_execution_store_path or (
+        runtime_dir / "effect-orchestrator-executions.json"
+    )
+    normalized_gate_execution_store_path = gate_execution_store_path or (
+        runtime_dir / "gate-orchestrator-executions.json"
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "orchestration_store_backend": orchestration_store_backend,
+                "orchestration_store_path": str(normalized_orchestration_store_path),
+                "event_queue_store_path": str(normalized_event_queue_store_path),
+                "effect_execution_store_path": str(normalized_effect_execution_store_path),
+                "gate_execution_store_path": str(normalized_gate_execution_store_path),
+                "workflow_packs": ["failure-clusters.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> None:
     audit_entries = [
         {
@@ -6876,6 +6964,248 @@ def test_normalize_workflow_failure_signature_falls_back_to_class_and_source() -
 
     assert summary == "RuntimeError effect"
     assert key == "runtimeerror effect"
+
+
+def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_and_orders_examples_newest_first(
+    tmp_path: Path,
+) -> None:
+    write_failure_cluster_config(tmp_path)
+    service = AdminService(write_config(tmp_path))
+    db_path = tmp_path / "runtime" / "orchestration.db"
+    queue_store = SqliteTriggerEventQueue(db_path)
+    effect_store = SqliteExecutionStore(db_path)
+
+    trigger_failure = TriggerEvent(
+        event_id="evt-trigger-root",
+        trigger_id="orphan-trigger",
+        trigger_type="trigger:ticket:created",
+        trace_id="trace-trigger-root",
+        occurred_at=datetime(2026, 6, 12, 9, 0, tzinfo=UTC),
+        payload={
+            "session_id": "session-root",
+            "pr_id": "pr-root",
+            "issue_id": "issue-root",
+            "ado_item_id": "ado-root",
+            "artifact_id": "comm_00000000000000000000000000000001",
+        },
+    )
+    queue_store.publish(trigger_failure, idempotency_key="evt-trigger-root")
+    queue_store.mark_event_cleared(
+        "evt-trigger-root",
+        cleared_at=datetime(2026, 6, 12, 9, 5, tzinfo=UTC),
+        clear_reason="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
+        error="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
+    )
+
+    error_a = (
+        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "at 2026-06-12T10:00:00Z; session_id=11111111-1111-1111-1111-111111111111; "
+        "trace_id=22222222-2222-2222-2222-222222222222; thread_id=33333333-3333-3333-3333-333333333333; "
+        "execution_id=44444444-4444-4444-4444-444444444444; request_id=55555555-5555-5555-5555-555555555555; "
+        "artifact_url=https://example.com/api/run?session=11111111-1111-1111-1111-111111111111&trace=22222222-2222-2222-2222-222222222222"
+    )
+    error_b = (
+        "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b "
+        "at 2026-06-12T11:00:00Z; session_id=66666666-6666-6666-6666-666666666666; "
+        "trace_id=77777777-7777-7777-7777-777777777777; thread_id=88888888-8888-8888-8888-888888888888; "
+        "execution_id=99999999-9999-9999-9999-999999999999; request_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa; "
+        "artifact_url=https://example.com/api/run?session=66666666-6666-6666-6666-666666666666&trace=77777777-7777-7777-7777-777777777777"
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-1",
+            idempotency_key="evt-effect-1::effect-push-branch",
+            event_id="evt-effect-1",
+            trace_id="trace-effect-1",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="failed",
+            started_at=datetime(2026, 6, 12, 10, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 10, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-1",
+            resolved_config={
+                "session_id": "session-a",
+                "pr_id": "pr-101",
+            },
+            input_payload={
+                "issue_id": "issue-a",
+            },
+            outputs={
+                "message": error_a,
+                "artifact_id": "comm_00000000000000000000000000000002",
+            },
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-2",
+            idempotency_key="evt-effect-2::effect-push-branch",
+            event_id="evt-effect-2",
+            trace_id="trace-effect-2",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="error_routed",
+            started_at=datetime(2026, 6, 12, 11, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 11, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-2",
+            resolved_config={
+                "session_id": "session-b",
+                "pr_id": "pr-102",
+            },
+            input_payload={
+                "issue_id": "issue-b",
+            },
+            outputs={
+                "error_message": error_b,
+                "artifact_id": "comm_00000000000000000000000000000003",
+            },
+            inputs_by_source={"trigger-ticket": {"ado_item_id": "ado-556"}},
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-success",
+            idempotency_key="evt-effect-success::effect-push-branch",
+            event_id="evt-effect-success",
+            trace_id="trace-effect-success",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="succeeded",
+            started_at=datetime(2026, 6, 12, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 12, 1, tzinfo=UTC),
+            resolved_config_hash="hash-effect-success",
+            resolved_config={"session_id": "session-b"},
+            input_payload={},
+            outputs={"message": "completed successfully"},
+            dismissed_at=None,
+        )
+    )
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="effect-3",
+            idempotency_key="evt-effect-3::effect-push-branch",
+            event_id="evt-effect-3",
+            trace_id="trace-effect-3",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-push-branch",
+            effect_type="effect:git:push-branch",
+            status="failed",
+            started_at=datetime(2026, 6, 12, 12, 30, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 12, 12, 31, tzinfo=UTC),
+            resolved_config_hash="hash-effect-3",
+            resolved_config={"session_id": "session-c", "pr_id": "pr-103"},
+            input_payload={"issue_id": "issue-c"},
+            outputs={
+                "message": "Existing branch refs/heads/agents/session-987/update-branch-host-b already exists",
+                "artifact_id": "comm_00000000000000000000000000000004",
+            },
+            dismissed_at=None,
+        )
+    )
+
+    report = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 12, 8, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 12, 13, 0, tzinfo=UTC),
+        limit=10,
+        recent_threshold_seconds=7200,
+    )
+
+    assert report.limit == 10
+    assert report.recent_threshold_seconds == 7200
+    assert report.has_more is False
+    assert report.clusters and len(report.clusters) == 3
+
+    by_state = {cluster.state: cluster for cluster in report.clusters}
+    resolved = by_state["resolved"]
+    recent = by_state["recent"]
+    active = by_state["active"]
+
+    assert resolved.graph_id == "graph-ticket"
+    assert resolved.graph_name == "Ticket intake"
+    assert resolved.node_id == "effect-push-branch"
+    assert resolved.node_type == "effect:git:push-branch"
+    assert resolved.effect_type == "effect:git:push-branch"
+    assert resolved.count == 2
+    assert resolved.event_ids == ["evt-effect-2", "evt-effect-1"]
+    assert resolved.trace_ids == ["trace-effect-2", "trace-effect-1"]
+    assert resolved.session_ids[0] == "session-b"
+    assert set(resolved.session_ids) >= {"session-a", "session-b"}
+    assert set(resolved.pr_ids) >= {"pr-101", "pr-102"}
+    assert set(resolved.ado_item_ids) >= {"ado-556"}
+    assert set(resolved.issue_ids) >= {"issue-a", "issue-b"}
+    assert set(resolved.artifact_ids) >= {
+        "comm_00000000000000000000000000000002",
+        "comm_00000000000000000000000000000003",
+    }
+    assert "<agent_ref>" in resolved.error_signature
+    assert resolved.latest_error_summary == resolved.error_signature
+    assert resolved.examples[0].event_id == "evt-effect-2"
+    assert resolved.examples[1].event_id == "evt-effect-1"
+    assert resolved.examples[0].run_detail_href == "#workflow?event_id=evt-effect-2"
+    assert resolved.examples[0].api_run_detail_href == (
+        "/api/workflow-editor/run-detail?event_id=evt-effect-2"
+    )
+
+    assert recent.graph_id == "graph-ticket"
+    assert recent.state == "recent"
+    assert recent.count == 1
+    assert recent.event_ids == ["evt-effect-3"]
+    assert recent.latest_error_summary.startswith("Existing branch")
+    assert recent.examples[0].event_id == "evt-effect-3"
+
+    assert active.graph_id == "root"
+    assert active.graph_name == "Unassigned"
+    assert active.source_kind == "trigger"
+    assert active.trigger_type == "trigger:ticket:created"
+    assert active.count == 1
+    assert active.event_ids == ["evt-trigger-root"]
+    assert active.latest_error_summary.startswith("Rejected branch update")
+    assert active.examples[0].event_id == "evt-trigger-root"
+
+    empty_period = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 13, 0, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 13, 1, 0, tzinfo=UTC),
+        limit=10,
+    )
+    assert empty_period.clusters == []
+    assert empty_period.has_more is False
+
+
+def test_read_workflow_failure_clusters_report_uses_json_fallback_without_initializing_missing_files(
+    tmp_path: Path,
+) -> None:
+    write_config(tmp_path)
+    event_queue_store_path = tmp_path / "runtime" / "trigger-orchestrator-events.json"
+    effect_execution_store_path = tmp_path / "runtime" / "effect-orchestrator-executions.json"
+    gate_execution_store_path = tmp_path / "runtime" / "gate-orchestrator-executions.json"
+    write_failure_cluster_config(
+        tmp_path,
+        orchestration_store_backend="json",
+        event_queue_store_path=event_queue_store_path,
+        effect_execution_store_path=effect_execution_store_path,
+        gate_execution_store_path=gate_execution_store_path,
+    )
+    service = AdminService(write_config(tmp_path))
+
+    report = service.read_workflow_failure_clusters_report(
+        period_start=datetime(2026, 6, 12, 8, 0, tzinfo=UTC),
+        period_end=datetime(2026, 6, 12, 13, 0, tzinfo=UTC),
+        limit=10,
+    )
+
+    assert report.clusters == []
+    assert event_queue_store_path.exists() is False
+    assert effect_execution_store_path.exists() is False
+    assert gate_execution_store_path.exists() is False
 
 
 def test_workflow_failure_cluster_payload_models_validate_representative_json() -> None:
