@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - PR Integration Preflight Hardening
+
+- Made pairwise PR merge preflight evaluate each PR pair against the target
+  commit so target conflicts cannot report a clean result.
+- Required directory-scoped workflow write permission before Admin Web PR
+  integration preflight resolves host repos or Azure DevOps credentials.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced

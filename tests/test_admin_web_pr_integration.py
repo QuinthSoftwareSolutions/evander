@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.admin.web.pr_integration import pr_integration_routes
 from agent_sandbox.pr_merge_preflight import (
     MergePreflightCheck,
     MergePreflightParticipant,
@@ -32,6 +36,50 @@ def write_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config_path
+
+
+def _json_request(payload: dict[str, object]) -> Request:
+    body = json.dumps(payload).encode()
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/admin/pr-integration-preflight",
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        },
+        receive,
+    )
+
+
+class _DenyWorkflowWriteAuth:
+    def __init__(self) -> None:
+        self.required_permission: tuple[str, str] | None = None
+
+    def require(self, _request: Request) -> object:
+        return object()
+
+    def require_permission(
+        self,
+        _request: Request,
+        permission: str,
+        *,
+        directory_path: str,
+    ) -> None:
+        self.required_permission = (permission, directory_path)
+        raise PermissionError(f"Permission required: {permission}")
 
 
 def _report() -> MergePreflightReport:
@@ -237,3 +285,35 @@ def test_admin_web_pr_integration_preflight_rejects_bad_json(
 
     assert response.status_code == 400
     assert response.json()["error"] == "Request body must be valid JSON"
+
+
+def test_admin_web_pr_integration_preflight_requires_workflow_write_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def run_pr_integration_preflight(**kwargs: object) -> MergePreflightReport:
+        raise AssertionError(f"service should not be invoked: {kwargs!r}")
+
+    monkeypatch.setattr(service, "run_pr_integration_preflight", run_pr_integration_preflight)
+    auth = _DenyWorkflowWriteAuth()
+    route = pr_integration_routes(service, auth)[0]
+
+    response = asyncio.run(
+        route.endpoint(
+            _json_request(
+                {
+                    "provider": "ado",
+                    "repo": "repo-1",
+                    "pr_ids": ["17"],
+                    "mode": "single",
+                    "directory_path": "root/team-a",
+                    "repo_source": "/work/repo",
+                }
+            )
+        )
+    )
+
+    assert response.status_code == 403
+    assert json.loads(response.body)["error"] == "Permission required: workflows.write"
+    assert auth.required_permission == ("workflows.write", "root/team-a")

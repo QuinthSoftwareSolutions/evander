@@ -15,6 +15,8 @@ from agent_sandbox.admin.services import (
     VmAgentAdminSupport,
 )
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
 
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
     real_client = httpx.Client
@@ -103,7 +105,7 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
 ) -> None:
     repo = tmp_path / "repo"
     main_commit, feature_commit = _init_repo(repo)
-    support = _resolve_repo_source_support(Path("/home/agent/repos/Truman"))
+    support = _resolve_repo_source_support(PROJECT_DIR)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -154,7 +156,7 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setenv("ADO_PAT", "secret")
     service = _build_service(
-        project_dir=Path("/home/agent/repos/Truman"),
+        project_dir=PROJECT_DIR,
         repo_source_resolver=support.resolve_repo_source,
         compute_directory_effective_config=compute_directory_effective_config,
         provider_config_resolver=provider_config_resolver,
@@ -189,7 +191,7 @@ def test_run_pr_integration_preflight_prefers_explicit_repo_source(
 ) -> None:
     repo = tmp_path / "repo"
     main_commit, feature_commit = _init_repo(repo)
-    support = _resolve_repo_source_support(Path("/home/agent/repos/Truman"))
+    support = _resolve_repo_source_support(PROJECT_DIR)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -224,7 +226,7 @@ def test_run_pr_integration_preflight_prefers_explicit_repo_source(
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setenv("ADO_PAT", "secret")
     service = _build_service(
-        project_dir=Path("/home/agent/repos/Truman"),
+        project_dir=PROJECT_DIR,
         repo_source_resolver=support.resolve_repo_source,
         compute_directory_effective_config=compute_directory_effective_config,
         provider_config_resolver=provider_config_resolver,
@@ -260,9 +262,9 @@ def test_run_pr_integration_preflight_requires_repo_source_when_missing(
     def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
         return SimpleNamespace(ok=True, data=SimpleNamespace(resolution=SimpleNamespace(effective_config={})))
 
-    support = _resolve_repo_source_support(Path("/home/agent/repos/Truman"))
+    support = _resolve_repo_source_support(PROJECT_DIR)
     service = _build_service(
-        project_dir=Path("/home/agent/repos/Truman"),
+        project_dir=PROJECT_DIR,
         repo_source_resolver=support.resolve_repo_source,
         compute_directory_effective_config=compute_directory_effective_config,
         provider_config_resolver=provider_config_resolver,
@@ -286,7 +288,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
 ) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
-    support = _resolve_repo_source_support(Path("/home/agent/repos/Truman"))
+    support = _resolve_repo_source_support(PROJECT_DIR)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -306,7 +308,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
         )
 
     service = _build_service(
-        project_dir=Path("/home/agent/repos/Truman"),
+        project_dir=PROJECT_DIR,
         repo_source_resolver=support.resolve_repo_source,
         compute_directory_effective_config=compute_directory_effective_config,
         provider_config_resolver=provider_config_resolver,
@@ -330,7 +332,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
 def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
     tmp_path: Path,
 ) -> None:
-    support = _resolve_repo_source_support(Path("/home/agent/repos/Truman"))
+    support = _resolve_repo_source_support(PROJECT_DIR)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -343,7 +345,7 @@ def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
         raise AssertionError("repo_source is explicit, so directory config should not be used")
 
     service = _build_service(
-        project_dir=Path("/home/agent/repos/Truman"),
+        project_dir=PROJECT_DIR,
         repo_source_resolver=support.resolve_repo_source,
         compute_directory_effective_config=compute_directory_effective_config,
         provider_config_resolver=provider_config_resolver,

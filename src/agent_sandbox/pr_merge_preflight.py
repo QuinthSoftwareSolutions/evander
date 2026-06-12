@@ -321,18 +321,22 @@ class GitMergePreflightEngine:
     ) -> list[MergePreflightCheck]:
         checks: list[MergePreflightCheck] = []
         check_index = 1
+        target_left = target_commit or current_target_commit
         for left_index in range(len(requests)):
             for right_index in range(left_index + 1, len(requests)):
                 left = requests[left_index]
                 right = requests[right_index]
                 left_commit = left["source_commit"]
                 right_commit = right["source_commit"]
-                check = self._run_merge_check(
+                source_commits = [
+                    commit for commit in (left_commit, right_commit) if commit is not None
+                ]
+                check = self._run_pairwise_merge_check(
                     repo_path,
                     index=check_index,
-                    kind="pairwise",
                     pr_ids=[left["request"].pr_id, right["request"].pr_id],
-                    source_commits=[left_commit, right_commit],
+                    source_commits=source_commits,
+                    target_left=target_left,
                     left_commit=left_commit,
                     right_commit=right_commit,
                     target_commit=target_commit,
@@ -341,6 +345,82 @@ class GitMergePreflightEngine:
                 checks.append(check)
                 check_index += 1
         return checks
+
+    def _run_pairwise_merge_check(
+        self,
+        repo_path: Path,
+        *,
+        index: int,
+        pr_ids: list[str],
+        source_commits: list[str],
+        target_left: str | None,
+        left_commit: str | None,
+        right_commit: str | None,
+        target_commit: str | None,
+        current_target_commit: str | None,
+    ) -> MergePreflightCheck:
+        target_left_check = self._run_merge_check(
+            repo_path,
+            index=index,
+            kind="pairwise",
+            pr_ids=pr_ids,
+            source_commits=source_commits,
+            left_commit=target_left,
+            right_commit=left_commit,
+            target_commit=target_commit,
+            current_target_commit=current_target_commit,
+        )
+        if target_left_check.status != "clean":
+            return target_left_check
+        if target_left_check.tree_oid is None:
+            return MergePreflightCheck(
+                index=index,
+                kind="pairwise",
+                pr_ids=pr_ids,
+                source_commits=source_commits,
+                left_commit=target_left,
+                right_commit=left_commit,
+                target_commit=target_commit,
+                current_target_commit=current_target_commit,
+                tree_oid=None,
+                conflicted_paths=[],
+                status="repo_error",
+                explanation="failed to resolve target merge tree",
+            )
+
+        synthetic_left = self._commit_tree(
+            repo_path,
+            tree_oid=target_left_check.tree_oid,
+            left_commit=target_left,
+            right_commit=left_commit,
+        )
+        if synthetic_left is None:
+            return MergePreflightCheck(
+                index=index,
+                kind="pairwise",
+                pr_ids=pr_ids,
+                source_commits=source_commits,
+                left_commit=target_left,
+                right_commit=left_commit,
+                target_commit=target_commit,
+                current_target_commit=current_target_commit,
+                tree_oid=target_left_check.tree_oid,
+                conflicted_paths=[],
+                status="repo_error",
+                explanation="failed to create synthetic pairwise merge commit",
+            )
+
+        return self._run_merge_check(
+            repo_path,
+            index=index,
+            kind="pairwise",
+            pr_ids=pr_ids,
+            source_commits=source_commits,
+            left_commit=synthetic_left,
+            right_commit=right_commit,
+            target_commit=target_commit,
+            current_target_commit=current_target_commit,
+        )
 
     def _run_ordered(
         self,
@@ -494,7 +574,7 @@ class GitMergePreflightEngine:
     ) -> MergePreflightCheck | None:
         for index, item in enumerate(requests, start=1):
             if item["source_commit"] is not None and (
-                mode == "pairwise" or item["target_commit"] is not None
+                item["target_commit"] is not None
             ):
                 continue
             missing = []
@@ -504,13 +584,12 @@ class GitMergePreflightEngine:
                 missing.append(
                     f"source commit/ref ({item['request'].source_commit or item['request'].source_branch})"
                 )
-            if mode != "pairwise":
-                if item["request"].target_commit is None and item["request"].target_branch is None:
-                    missing.append("target commit/ref")
-                elif item["target_commit"] is None:
-                    missing.append(
-                        f"target commit/ref ({item['request'].target_commit or item['request'].target_branch})"
-                    )
+            if item["request"].target_commit is None and item["request"].target_branch is None:
+                missing.append("target commit/ref")
+            elif item["target_commit"] is None:
+                missing.append(
+                    f"target commit/ref ({item['request'].target_commit or item['request'].target_branch})"
+                )
             if not missing:
                 continue
             explanation = ", ".join(missing)

@@ -10,7 +10,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin.web.shared import json_error
+from agent_sandbox.admin.web.rbac import WORKFLOWS_WRITE_PERMISSION
+from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.pr_merge_preflight import MergePreflightMode
 
 _PR_ID_SPLIT_RE = re.compile(r"[\s,]+")
@@ -124,7 +125,7 @@ def _response_payload(
     return payload
 
 
-def pr_integration_routes(service: AdminService) -> list[Route]:
+def pr_integration_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
     async def run_pr_integration_preflight(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -137,6 +138,16 @@ def pr_integration_routes(service: AdminService) -> list[Route]:
             payload = PrIntegrationPreflightRequest.model_validate(body)
         except ValidationError as exc:
             return json_error(_validation_error_text(exc))
+
+        try:
+            auth.require(request)
+            auth.require_permission(
+                request,
+                WORKFLOWS_WRITE_PERMISSION,
+                directory_path=payload.directory_path,
+            )
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
 
         try:
             report = await run_in_threadpool(

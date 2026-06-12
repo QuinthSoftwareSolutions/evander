@@ -148,6 +148,51 @@ def test_pairwise_preflight_reports_clean_for_compatible_prs(tmp_path: Path) -> 
     assert report.summary_text == "pairwise preflight clean for PRs 1, 2."
 
 
+def test_pairwise_preflight_reports_target_conflict_for_source_compatible_prs(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    source_commit_a = _branch_with(repo, "feat-a", files={"base.txt": "feature a\n"})
+    source_commit_b = _branch_with(repo, "feat-b", files={"feature-b.txt": "b\n"})
+    _git(repo, "checkout", "-q", "main")
+    (repo / "base.txt").write_text("target\n")
+    _git(repo, "add", "base.txt")
+    _git(repo, "commit", "-q", "-m", "move target")
+    target_commit = _git(repo, "rev-parse", "main").stdout.strip()
+    engine = GitMergePreflightEngine()
+
+    report = engine.run(
+        repo,
+        mode="pairwise",
+        pull_requests=[
+            _pr(
+                "1",
+                source_branch="refs/heads/feat-a",
+                target_branch="refs/heads/main",
+                source_commit=source_commit_a,
+                target_commit=target_commit,
+            ),
+            _pr(
+                "2",
+                source_branch="refs/heads/feat-b",
+                target_branch="refs/heads/main",
+                source_commit=source_commit_b,
+                target_commit=target_commit,
+            ),
+        ],
+    )
+
+    assert report.status == "conflict"
+    assert len(report.checks) == 1
+    assert report.checks[0].status == "conflict"
+    assert report.checks[0].pr_ids == ["1", "2"]
+    assert report.checks[0].source_commits == [source_commit_a, source_commit_b]
+    assert report.checks[0].conflicted_paths == ["base.txt"]
+    assert report.checks[0].target_commit == target_commit
+    _assert_repo_clean(repo)
+
+
 def test_pairwise_preflight_reports_conflict_and_leaves_repo_clean(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
