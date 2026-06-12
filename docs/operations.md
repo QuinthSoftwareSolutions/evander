@@ -1781,7 +1781,10 @@ live provider APIs.
   `trigger:pull-request:new-feedback` can set `agent_author_names`,
   `agent_mention_names`, `agent_author_ids`, and `agent_mention_ids` so
   downstream gates can filter on
-  `feedback.metadata.agent_directed` without running host scripts.
+  `feedback.metadata.agent_directed` without running host scripts. Agent-authored
+  feedback still publishes by default; set `suppress_agent_authored_feedback`
+  only for workflows that should store those comments without emitting wake
+  events.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
@@ -1924,7 +1927,10 @@ branches that should only fire when a supported prompt dispatch failure is
 routed. If no error edge is wired, the prompt still fails normally.
 For `effect:agent:enqueue-prompt`, routed dispatch failures preserve retry
 context such as `queued`, `queue_key`, and `coalesced_count` when the prompt was
-queued before dispatch failed.
+queued before dispatch failed. Queue retries are also capped by
+`agent_prompt_queue_max_retries` (default `3`) for the same queue key and prompt
+digest. When the cap is exceeded, the prompt effect fails with
+`failed_phase: retry_limit` and reports `retry_count` plus `max_retries`.
 
 ### Guest repo preparation
 

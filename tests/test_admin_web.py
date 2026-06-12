@@ -1096,6 +1096,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "agent_mention_names",
         "agent_author_ids",
         "agent_mention_ids",
+        "suppress_agent_authored_feedback",
     ]
     pr_completed_trigger = next(
         node
@@ -4807,6 +4808,8 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effe
     assert body["output_schemas"]["effect-enqueue-1"]["session_id"] == {"type": "string"}
     assert body["output_schemas"]["effect-enqueue-1"]["vm_name"] == {"type": "string"}
     assert body["output_schemas"]["effect-enqueue-1"]["coalesced_count"] == {"type": "integer"}
+    assert body["output_schemas"]["effect-enqueue-1"]["retry_count"] == {"type": "integer"}
+    assert body["output_schemas"]["effect-enqueue-1"]["max_retries"] == {"type": "integer"}
 
 
 def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
@@ -9524,6 +9527,16 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         for section in tab["sections"]
         for field in section["fields"]
     }
+    agent_prompt = next(
+        section for section in providers["sections"] if section["title"] == "Agent prompt"
+    )
+    agent_prompt_fields = {field["field_name"]: field for field in agent_prompt["fields"]}
+    assert set(agent_prompt_fields) == {
+        "agent_prompt_token_secret_env",
+        "agent_prompt_token_ttl_seconds",
+        "agent_prompt_queue_max_retries",
+    }
+    assert agent_prompt_fields["agent_prompt_queue_max_retries"]["kind"] == "int"
     assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
     assert "Fallback runner container image" in provider_fields["container_worker_default_image"][
         "tooltip"

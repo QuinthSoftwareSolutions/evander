@@ -1861,6 +1861,15 @@ def _pull_request_trigger_fields(
                         "Mention identity IDs that should mark a PR feedback event as agent-directed."
                     ),
                 ),
+                _field(
+                    "suppress_agent_authored_feedback",
+                    "Suppress agent-authored feedback",
+                    "boolean",
+                    description=(
+                        "When enabled, PR feedback authored by the configured agent identity is "
+                        "stored but not published as a workflow event."
+                    ),
+                ),
             ]
         )
     return fields
@@ -10710,6 +10719,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             created_at=getattr(record, "created_at"),
             updated_at=getattr(record, "updated_at"),
             coalesced_count=int(getattr(record, "coalesced_count", 1) or 1),
+            retry_count=int(getattr(record, "retry_count", 1) or 1),
+            max_retries=getattr(record, "max_retries", None),
             prompt_preview=prompt_preview,
             prompt_length=prompt_length,
             metadata=dict(getattr(record, "metadata", {}) or {}),

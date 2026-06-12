@@ -31,7 +31,10 @@ from agent_sandbox.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
     resolve_agent_prompt_dispatch_port,
 )
-from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
+from agent_sandbox.workflow.contracts import (
+    FOR_EXECUTION_IDS_CONTEXT_KEY,
+    NODE_OUTPUTS_CONTEXT_KEY,
+)
 from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
 from agent_sandbox.session_expiry import (
     SessionExpiredError,
@@ -644,6 +647,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         )
         if workflow_context:
             input_payload[NODE_OUTPUTS_CONTEXT_KEY] = workflow_context
+        workflow_for_execution_ids = (
+            AgentEnqueuePromptQueueDispatchHook._workflow_for_execution_ids_from_record(record)
+        )
+        if workflow_for_execution_ids:
+            input_payload[FOR_EXECUTION_IDS_CONTEXT_KEY] = workflow_for_execution_ids
 
     def _has_waiting_enqueue_prompt_for_record(self, *, worker: Any, record: Any) -> bool:
         execution_store = getattr(worker, "execution_store", None)
@@ -816,6 +824,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             if isinstance(node_id, str) and isinstance(node_payload, dict):
                 workflow_context[node_id] = dict(node_payload)
         return workflow_context or None
+
+    @staticmethod
+    def _workflow_for_execution_ids_from_record(record: Any) -> dict[str, str] | None:
+        raw_value = getattr(record, "workflow_for_execution_ids", None)
+        if not isinstance(raw_value, dict):
+            return None
+        workflow_for_execution_ids: dict[str, str] = {}
+        for gate_id, execution_id in raw_value.items():
+            if not isinstance(gate_id, str):
+                continue
+            gate_text = gate_id.strip()
+            execution_text = str(execution_id).strip() if execution_id is not None else ""
+            if gate_text and execution_text:
+                workflow_for_execution_ids[gate_text] = execution_text
+        return workflow_for_execution_ids or None
 
     @staticmethod
     def _json_sha256(value: Any) -> str:

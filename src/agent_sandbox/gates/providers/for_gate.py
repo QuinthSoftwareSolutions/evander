@@ -33,6 +33,34 @@ class _ForGateStateStoreAdapter:
     def get(self, key: str) -> ForGateStateRecord | None:
         return self.store.get(key)
 
+    def get_migrating_legacy_key(
+        self, *, key: str, legacy_key: str
+    ) -> ForGateStateRecord | None:
+        if legacy_key == key:
+            return self.get(key)
+
+        snapshot = self.store.read_all()
+        has_current = key in snapshot
+        has_legacy = legacy_key in snapshot
+        if has_current and not has_legacy:
+            return snapshot[key]
+        if not has_current and not has_legacy:
+            return None
+
+        def updater(items: dict[str, ForGateStateRecord]) -> ForGateStateRecord | None:
+            current = items.get(key)
+            if current is not None:
+                items.pop(legacy_key, None)
+                return current
+            legacy = items.pop(legacy_key, None)
+            if legacy is None:
+                return None
+            migrated = legacy.model_copy(update={"key": key})
+            items[key] = migrated
+            return migrated
+
+        return self.store.update_all(updater)
+
     def put(self, key: str, record: ForGateStateRecord) -> None:
         self.store.put(key, record)
 
@@ -150,11 +178,16 @@ class ForGateProvider(GateProviderBase):
         state_key = _for_gate_state_key(
             gate_id=gate.id, trace_id=queue_record.trace_id, for_execution_id=for_execution_id
         )
+        legacy_state_key = _legacy_for_gate_state_key(
+            gate_id=gate.id, trace_id=queue_record.trace_id, for_execution_id=for_execution_id
+        )
         adapter = self.load_state()
 
         if not has_body_edge:
             outputs = _terminal_outputs(item_count=len(items))
             adapter.delete(state_key)
+            if legacy_state_key != state_key:
+                adapter.delete(legacy_state_key)
             worker._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,
@@ -173,7 +206,7 @@ class ForGateProvider(GateProviderBase):
             )
             return True
 
-        state = adapter.get(state_key)
+        state = adapter.get_migrating_legacy_key(key=state_key, legacy_key=legacy_state_key)
         if state is None:
             state = ForGateStateRecord(
                 key=state_key,
@@ -347,6 +380,11 @@ def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def _for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
+    del trace_id
+    return f"{gate_id}:{for_execution_id}"
+
+
+def _legacy_for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
     return f"{gate_id}:{trace_id}:{for_execution_id}"
 
 

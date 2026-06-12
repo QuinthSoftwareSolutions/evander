@@ -74,6 +74,8 @@ def _prompt_error_outputs(
     queue_key: str | None = None,
     queued: bool | None = None,
     coalesced_count: int | None = None,
+    retry_count: int | None = None,
+    max_retries: int | None = None,
     execution_backend: str | None = None,
 ) -> dict[str, Any]:
     outputs: dict[str, Any] = {
@@ -96,6 +98,10 @@ def _prompt_error_outputs(
         outputs["queued"] = bool(queued)
     if coalesced_count is not None:
         outputs["coalesced_count"] = int(coalesced_count)
+    if retry_count is not None:
+        outputs["retry_count"] = int(retry_count)
+    if max_retries is not None:
+        outputs["max_retries"] = int(max_retries)
     return outputs
 
 

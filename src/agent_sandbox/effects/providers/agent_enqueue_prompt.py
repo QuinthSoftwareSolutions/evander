@@ -7,7 +7,10 @@ from uuid import uuid4
 
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
-from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
+from agent_sandbox.messaging.agent_prompt_queue import (
+    AgentPromptRetryLimitExceeded,
+    QueuedAgentPromptRecord,
+)
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.model_usage.runtime import (
     register_model_usage_correlation_context,
@@ -21,7 +24,10 @@ from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
-from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
+from agent_sandbox.workflow.contracts import (
+    FOR_EXECUTION_IDS_CONTEXT_KEY,
+    NODE_OUTPUTS_CONTEXT_KEY,
+)
 from agent_sandbox.workflow.validation import NodeCapability
 
 from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
@@ -118,6 +124,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             execution_context=execution_context,
             input_payload=payload,
         )
+        workflow_for_execution_ids = self._workflow_for_execution_ids_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+        )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
@@ -155,6 +165,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 config=config,
                 effect_id=effect.id,
                 workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 execution_context=execution_context,
@@ -203,6 +214,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
@@ -213,6 +225,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "vm_name": vm_name,
                 "session_id": effective_session_id,
                 "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
             }
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
@@ -245,6 +259,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
@@ -266,6 +281,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     queue_key=record.queue_key,
                     queued=True,
                     coalesced_count=record.coalesced_count,
+                    retry_count=record.retry_count,
+                    max_retries=record.max_retries,
                 ),
             )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
@@ -338,6 +355,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         config: Any,
         effect_id: str,
         workflow_context: dict[str, dict[str, Any]] | None,
+        workflow_for_execution_ids: dict[str, str] | None,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
         execution_context: Mapping[str, Any] | None,
@@ -383,6 +401,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
@@ -393,6 +412,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "vm_name": target_name,
                 "session_id": session_id,
                 "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             }
 
@@ -457,6 +478,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
@@ -478,6 +500,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     queue_key=record.queue_key,
                     queued=True,
                     coalesced_count=record.coalesced_count,
+                    retry_count=record.retry_count,
+                    max_retries=record.max_retries,
                     execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 ),
             ) from exc
@@ -880,6 +904,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         effect_id: str,
         queue_key: str | None = None,
         workflow_context: dict[str, dict[str, Any]] | None = None,
+        workflow_for_execution_ids: dict[str, str] | None = None,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
         resume_thread_metadata_key: str | None = None,
@@ -896,22 +921,50 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             }.items()
             if value
         }
-        return enqueue_agent_prompt(
-            runtime_dir=context.resolved_config.runtime_dir,
-            queue_key=queue_key,
-            target=target,
-            vm_name=vm_name,
-            session_id=session_id,
-            prompt=prompt,
-            model=model,
-            vm_user=vm_user,
-            resume_thread_id=resume_thread_id,
-            resume_thread_metadata_key=resume_thread_metadata_key,
-            resume_thread_metadata_collection=resume_thread_metadata_collection,
-            effect_id=effect_id,
-            metadata=metadata,
-            workflow_context=workflow_context,
-        )
+        max_retries = self._agent_prompt_queue_max_retries()
+        try:
+            return enqueue_agent_prompt(
+                runtime_dir=context.resolved_config.runtime_dir,
+                queue_key=queue_key,
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect_id,
+                metadata=metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                max_retries=max_retries,
+            )
+        except AgentPromptRetryLimitExceeded as exc:
+            message = str(exc)
+            raise EffectProviderExecutionError(
+                message,
+                outputs=_prompt_error_outputs(
+                    message,
+                    error_class=type(exc).__name__,
+                    failed_phase="retry_limit",
+                    session_id=session_id,
+                    vm_name=vm_name,
+                    queue_key=exc.queue_key,
+                    queued=False,
+                    retry_count=exc.retry_count,
+                    max_retries=exc.max_retries,
+                ),
+            ) from exc
+
+    def _agent_prompt_queue_max_retries(self) -> int:
+        context = self._context()
+        value = getattr(context.resolved_config, "agent_prompt_queue_max_retries", 3)
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 3
 
     @classmethod
     def _workflow_context_from_sources(
@@ -934,6 +987,44 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 if workflow_context:
                     return workflow_context
         return None
+
+    @classmethod
+    def _workflow_for_execution_ids_from_sources(
+        cls,
+        *,
+        execution_context: Mapping[str, Any] | None,
+        input_payload: Mapping[str, Any] | None,
+    ) -> dict[str, str] | None:
+        for source in (execution_context, input_payload):
+            if not isinstance(source, Mapping):
+                continue
+            workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
+                source.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
+            )
+            if workflow_for_execution_ids:
+                return workflow_for_execution_ids
+            nested_input = source.get("input_payload")
+            if isinstance(nested_input, Mapping):
+                workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
+                    nested_input.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
+                )
+                if workflow_for_execution_ids:
+                    return workflow_for_execution_ids
+        return None
+
+    @staticmethod
+    def _copy_workflow_for_execution_ids(raw_value: Any) -> dict[str, str] | None:
+        if not isinstance(raw_value, Mapping):
+            return None
+        workflow_for_execution_ids: dict[str, str] = {}
+        for gate_id, execution_id in raw_value.items():
+            if not isinstance(gate_id, str):
+                continue
+            gate_text = gate_id.strip()
+            execution_text = str(execution_id).strip() if execution_id is not None else ""
+            if gate_text and execution_text:
+                workflow_for_execution_ids[gate_text] = execution_text
+        return workflow_for_execution_ids or None
 
     @staticmethod
     def _copy_workflow_context(raw_context: Any) -> dict[str, dict[str, Any]] | None:

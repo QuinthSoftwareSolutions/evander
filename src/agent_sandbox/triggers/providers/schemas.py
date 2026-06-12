@@ -482,6 +482,7 @@ class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     agent_mention_names: list[str] = Field(default_factory=list)
     agent_author_ids: list[str] = Field(default_factory=list)
     agent_mention_ids: list[str] = Field(default_factory=list)
+    suppress_agent_authored_feedback: bool = False
 
     @field_validator(
         "agent_author_names",

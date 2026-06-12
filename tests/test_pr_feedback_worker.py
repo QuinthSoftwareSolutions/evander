@@ -22,8 +22,10 @@ from agent_sandbox.pr_feedback import (
     GitHubFeedbackAdapter,
     PrFeedbackStore,
     AzureDevOpsFeedbackAdapter,
+    annotate_agent_directed_feedback,
     pr_feedback_item_payload,
 )
+from agent_sandbox.models import PrFeedbackItem
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 
@@ -55,6 +57,35 @@ def test_pr_feedback_daemon_reexports_match_shared_package() -> None:
     assert daemon_pr_feedback_worker.PrFeedbackStore is PrFeedbackStore
     assert daemon_pr_feedback_worker.GitHubFeedbackAdapter is GitHubFeedbackAdapter
     assert daemon_pr_feedback_worker.AzureDevOpsFeedbackAdapter is AzureDevOpsFeedbackAdapter
+
+
+def test_agent_directed_annotation_marks_self_authored_feedback_not_directed() -> None:
+    item = PrFeedbackItem(
+        feedback_id="azure_devops:thread_comment:44:5",
+        provider="azure_devops",
+        repo="org/repo",
+        pr_id="7566",
+        thread_id="44",
+        comment_id="5",
+        author="evander Bot",
+        body="@<C74221CB-EE08-6A83-9055-AF01C3333112> I handled this.",
+        created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+        metadata={
+            "mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
+            "prior_thread_comment_author_names": ["evander Bot"],
+        },
+    )
+
+    annotated = annotate_agent_directed_feedback(
+        item,
+        agent_author_names=["evander Bot"],
+        agent_mention_names=["Truman Bot"],
+        agent_mention_ids=["c74221cb-ee08-6a83-9055-af01c3333112"],
+    )
+
+    assert annotated.metadata["agent_directed"] is False
+    assert annotated.metadata["agent_directed_author_self"] is True
+    assert annotated.metadata["agent_directed_reason"] == "self_authored"
 
 
 def test_pr_feedback_store_preserves_raw_embedded_inline_media_payload(

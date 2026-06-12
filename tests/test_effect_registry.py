@@ -46,7 +46,11 @@ from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
 from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
+from agent_sandbox.effects.providers.base import (
+    EffectProviderBase,
+    EffectProviderExecutionError,
+    EffectRuntimeContext,
+)
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
     EffectProviderFactory,
@@ -2847,6 +2851,97 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert "check teams" in queued_payload
     assert "chat:thread-1:msg-1" in queued_payload
     assert "teams:chat-1:agent_thread_id" in queued_payload
+
+
+def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        agent_prompt_queue_max_retries=1,
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+    )
+    backend.repository = SimpleNamespace(
+        list_active_by_session=lambda session_id, active_statuses: [
+            ContainerWorkerExecutionRecord(
+                execution_id="agent-session-1-old",
+                session_id=session_id,
+                worker_job_id="job-1",
+                worker_url="http://worker.test",
+                target_name="agent-session-1-old",
+                last_status=next(iter(active_statuses)),
+            )
+        ],
+        read_all=lambda: (_ for _ in ()).throw(
+            AssertionError("container enqueue should not scan all execution mappings")
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="agent-enqueue",
+        display_name="Enqueue",
+        type="effect:agent:enqueue-prompt",
+        target="session-1",
+        prompt="check teams",
+        queue_key="chat:thread-1:msg-1",
+    )
+
+    output = factory.build(effect).execute()
+    assert output["queued"] is True
+    assert output["retry_count"] == 1
+    assert output["max_retries"] == 1
+    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").delete(
+        "chat:thread-1:msg-1"
+    )
+
+    with pytest.raises(EffectProviderExecutionError) as exc_info:
+        factory.build(effect).execute()
+
+    assert exc_info.value.outputs["failed_phase"] == "retry_limit"
+    assert exc_info.value.outputs["queue_key"] == "chat:thread-1:msg-1"
+    assert exc_info.value.outputs["queued"] is False
+    assert exc_info.value.outputs["retry_count"] == 2
+    assert exc_info.value.outputs["max_retries"] == 1
+    assert AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+        "chat:thread-1:msg-1"
+    ) is None
 
 
 def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key(

@@ -13,6 +13,18 @@ material. Newer entries are added incrementally as changes land.
   payload digest equality while keeping redacted diffs as explanatory detail.
 - Removed duplicate scheduled-wake status definitions so legacy empty statuses
   normalize without Pydantic override warnings.
+- Added a durable retry cap for queued agent prompts so repeated busy-session
+  redispatch loops fail with `retry_limit` diagnostics instead of running
+  indefinitely.
+- Exposed the queued agent prompt retry cap in the Admin Web Provider
+  Integrations tab's Agent prompt section.
+- Preserved `gate:for` and `gate:while` loop state across queued agent prompt
+  dispatch boundaries so async `started` loopbacks advance existing loops
+  instead of restarting one-item loops.
+- Migrated legacy trace-scoped `gate:for` and `gate:while` state keys during
+  loop execution so in-progress loops resume cleanly after upgrade.
+- Added opt-in PR feedback suppression for comments authored by the configured
+  agent identity while leaving agent-authored feedback publishable by default.
 
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 

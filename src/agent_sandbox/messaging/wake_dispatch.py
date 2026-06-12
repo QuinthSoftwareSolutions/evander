@@ -525,6 +525,9 @@ class HostWakeDispatcher:
                     resume_mode=effective_resume_mode,
                     queue_key=queue_key,
                     metadata=queue_metadata,
+                    max_retries=int(
+                        getattr(worker_config, "agent_prompt_queue_max_retries", 3) or 3
+                    ),
                 )
             except Exception as exc:
                 error, failure_metadata = _build_dispatch_failure_details(

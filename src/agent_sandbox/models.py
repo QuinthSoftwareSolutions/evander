@@ -926,6 +926,8 @@ class AgentPromptQueueRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
     coalesced_count: int = 1
+    retry_count: int = 1
+    max_retries: int | None = None
     prompt_preview: str | None = None
     prompt_length: int = 0
     metadata: dict[str, str] = Field(default_factory=dict)
