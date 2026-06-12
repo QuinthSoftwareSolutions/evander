@@ -54,6 +54,9 @@ from agent_sandbox.models import (
     ContainerSessionLifecycleState,
     SessionManifest,
     ToolName,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
+    WakeScheduleDefinition,
     VmActionResult,
     VmSummary,
 )
@@ -12453,6 +12456,118 @@ def test_list_wake_schedules_filters_disabled_entries(tmp_path: Path) -> None:
     schedules = service.list_wake_schedules(session_id="issue-1-session", include_disabled=False)
 
     assert schedules == []
+
+
+def test_list_scheduled_wake_ledger_filters_statuses_and_completed_entries(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=30)
+    failed = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Retry me later.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=failed.request_id,
+            session_id="issue-1-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Retry me later."),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+
+    completed = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Already finished.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id=completed.request_id,
+            session_id="issue-1-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Already finished."),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    service.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-completed",
+        completed_at=datetime.now(UTC),
+        evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-1-session"},
+    )
+
+    entries = service.list_scheduled_wake_ledger(
+        session_id="issue-1-session",
+        statuses=["failed", "completed_or_acknowledged"],
+        include_completed=True,
+    )
+    assert {item["request_id"] for item in entries} == {failed.request_id, completed.request_id}
+    failed_entry = next(item for item in entries if item["request_id"] == failed.request_id)
+    assert failed_entry["retry_available"] is True
+    assert failed_entry["prompt_summary"] == "Retry me later."
+    assert failed_entry["redacted_prompt"] == "[redacted]"
+    assert failed_entry["failure_reason"] is not None
+    assert "\n" not in failed_entry["failure_reason"]
+
+    open_entries = service.list_scheduled_wake_ledger(
+        session_id="issue-1-session",
+        include_completed=False,
+    )
+    assert {item["request_id"] for item in open_entries} == {failed.request_id}
+
+
+def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=5)
+    retry_at = datetime.now(UTC) + timedelta(hours=1)
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume work.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id=created.request_id,
+            session_id="issue-1-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=datetime.now(UTC),
+            error="stack trace\nsecret token",
+        )
+    )
+
+    updated = service.retry_scheduled_wake(
+        created.request_id,
+        resume_at=retry_at,
+        run_now=False,
+    )
+    request = service.runtime.wake_store.get_request(created.request_id)
+
+    assert updated["request_id"] == created.request_id
+    assert updated["status"] == "pending"
+    assert updated["enabled"] is True
+    assert updated["next_run_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert updated["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
+    assert updated["failure_reason"] is None
+    assert updated["last_error"] is None
+    assert updated["latest_dispatch"]["status"] == "failed"
+    assert request is not None
+    assert request.schedule.resume_at == retry_at
+    retry_history = request.resume_prompt.metadata["retry_history"]
+    assert retry_history[0]["previous_status"] == "failed"
+    assert retry_history[0]["previous_failure_reason"] is not None
+    assert retry_history[0]["requested_resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
 
 
 def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(

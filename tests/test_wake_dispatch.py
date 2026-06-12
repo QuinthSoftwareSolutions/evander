@@ -177,6 +177,40 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
 
 
+def test_resume_binding_records_failed_dispatch_when_script_is_missing(
+    tmp_path: Path,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    worker_config = config.model_copy(update={"host_resume_script_path": tmp_path / "missing.sh"})
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=worker_config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-missing-script",
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "resume script missing" in result.error
+    latest = wake_store.latest_dispatch_by_request_id()["wake-missing-script"]
+    assert latest.status == "failed"
+    assert latest.error is not None
+    assert "resume script missing" in latest.error
+
+
 def test_resume_binding_records_failed_dispatch_for_expired_session_before_script(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,6 +249,55 @@ def test_resume_binding_records_failed_dispatch_for_expired_session_before_scrip
     latest = wake_store.latest_dispatch_by_request_id()["wake-expired"]
     assert latest.status == "failed"
     assert latest.error == result.error
+
+
+def test_resume_binding_sanitizes_failure_stdout_stderr_and_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(update={"host_resume_script_path": resume_script})
+
+    def fake_run(cmd: list[str], **kwargs: object):
+        return subprocess.CompletedProcess(
+            cmd,
+            2,
+            stdout="line one\nsecret=abc123",
+            stderr="line two\nprivate=xyz789",
+        )
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=worker_config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-failed",
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "exit_code=2" in result.error
+    latest = wake_store.latest_dispatch_by_request_id()["wake-failed"]
+    assert latest.metadata["stdout"] == "line one secret=[redacted]"
+    assert latest.metadata["stderr"] == "line two private=[redacted]"
+    assert "\n" not in latest.error
+    assert "\n" not in latest.metadata["stdout"]
+    assert "\n" not in latest.metadata["stderr"]
 
 
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
@@ -420,7 +503,8 @@ def test_resume_container_binding_records_failed_dispatch_when_queueing_busy_ses
     assert latest.status == "failed"
     assert latest.request_id == "wake-queue-failed"
     assert latest.resume_mode == "same_context"
-    assert latest.error == "queue write failed"
+    assert latest.error is not None
+    assert "queue write failed" in latest.error
     assert latest.metadata["backend"] == "container_worker_vm"
     assert latest.metadata["target_name"] == "metadata-target"
     assert latest.metadata["source"] == "scheduled_cron"
@@ -463,7 +547,8 @@ def test_resume_container_binding_records_failed_dispatch_when_backend_start_rai
     assert latest.status == "failed"
     assert latest.request_id == "wake-failed"
     assert latest.resume_mode == "new_context"
-    assert latest.error == "boom"
+    assert latest.error is not None
+    assert "boom" in latest.error
     assert latest.metadata["backend"] == "container_worker_vm"
     assert latest.metadata["target_name"].startswith("agent-session-1-")
     assert latest.metadata["source"] == "scheduled_once"

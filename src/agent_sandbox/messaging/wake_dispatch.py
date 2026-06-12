@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import time
 from collections.abc import Mapping
@@ -51,6 +52,74 @@ _ACTIVE_CONTAINER_STATUSES = {
     "starting",
     "running",
 }
+
+
+def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = " ".join(text.split())
+    text = re.sub(r"(?i)\bbearer\s+[^,\s;]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"(?i)\b(secret|token|private|password|api[_-]?key|authorization)(\s*[=:]\s*)[^,\s;]+",
+        lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+        text,
+    )
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _build_dispatch_failure_details(
+    *,
+    backend: str,
+    session_id: str,
+    vm_id: str | None = None,
+    target_name: str | None = None,
+    timeout_seconds: float | None = None,
+    exit_code: int | None = None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    exception: BaseException | None = None,
+    reason: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    metadata: dict[str, Any] = {"backend": backend, "session_id": session_id}
+    context_parts = [f"backend={backend}", f"session_id={session_id}"]
+    if vm_id:
+        metadata["vm_id"] = vm_id
+        context_parts.append(f"vm_id={vm_id}")
+    if target_name:
+        metadata["target_name"] = target_name
+        context_parts.append(f"target_name={target_name}")
+    if timeout_seconds is not None:
+        metadata["timeout_seconds"] = timeout_seconds
+        context_parts.append(f"timeout_seconds={timeout_seconds:.3f}")
+    if exit_code is not None:
+        metadata["exit_code"] = exit_code
+        context_parts.append(f"exit_code={exit_code}")
+    sanitized_stdout = _sanitize_operator_text(stdout, limit=240)
+    sanitized_stderr = _sanitize_operator_text(stderr, limit=240)
+    if sanitized_stdout is not None:
+        metadata["stdout"] = sanitized_stdout
+        context_parts.append(f"stdout={sanitized_stdout}")
+    if sanitized_stderr is not None:
+        metadata["stderr"] = sanitized_stderr
+        context_parts.append(f"stderr={sanitized_stderr}")
+    if exception is not None:
+        exception_type = type(exception).__name__
+        metadata["exception_type"] = exception_type
+        message = _sanitize_operator_text(exception, limit=180) or exception_type
+        summary = f"{exception_type}: {message}"
+    elif reason is not None:
+        summary = _sanitize_operator_text(reason, limit=180) or "dispatch failed"
+    elif exit_code is not None:
+        summary = f"exit_code={exit_code}"
+    else:
+        summary = "dispatch failed"
+    summary = f"{summary} {' '.join(context_parts)}".strip()
+    return _sanitize_operator_text(summary, limit=320) or summary, metadata
 
 
 @dataclass(frozen=True)
@@ -145,7 +214,13 @@ class HostWakeDispatcher:
             try:
                 ensure_session_not_expired(session)
             except SessionExpiredError as exc:
-                dispatch_record = WakeDispatchRecord(
+                error, failure_metadata = _build_dispatch_failure_details(
+                    backend=self.config.execution_backend,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    exception=exc,
+                )
+                dispatch_record = self._build_dispatch_record(
                     dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
                     request_id=request_id,
                     session_id=binding.session_id,
@@ -154,12 +229,11 @@ class HostWakeDispatcher:
                     resume_mode=resume_mode,
                     scheduled_for=scheduled_for,
                     source=dispatch_source,
-                    metadata={
-                        "vm_id": binding.vm_id,
-                        "source": binding.source,
-                        **(wake_metadata or {}),
-                    },
-                    error=str(exc),
+                    dispatch_source=dispatch_source,
+                    wake_metadata={**(wake_metadata or {}), **failure_metadata},
+                    backend=self.config.execution_backend,
+                    vm_id=binding.vm_id,
+                    error=error,
                 )
                 if wake_store is not None:
                     wake_store.record_dispatch(dispatch_record)
@@ -172,7 +246,30 @@ class HostWakeDispatcher:
                 binding.session_id,
                 binding.vm_id,
             )
-            return None
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=self.config.execution_backend,
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                reason=f"resume script missing path={script_path}",
+            )
+            dispatch_record = self._build_dispatch_record(
+                dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                request_id=request_id,
+                session_id=binding.session_id,
+                status="failed",
+                resume_prompt=WakeResumePromptPayload(prompt=prompt),
+                resume_mode=resume_mode,
+                scheduled_for=scheduled_for,
+                source=dispatch_source,
+                dispatch_source=dispatch_source,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
+                backend=self.config.execution_backend,
+                vm_id=binding.vm_id,
+                error=error,
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
         cmd = [
             str(script_path),
             "--prompt",
@@ -205,7 +302,7 @@ class HostWakeDispatcher:
         run_kwargs["env"] = os.environ | agent_env
         try:
             completed = subprocess.run(cmd, **run_kwargs)
-        except OSError:
+        except OSError as exc:
             logger.warning(
                 "Resume script invocation failed path=%s session_id=%s vm_id=%s",
                 script_path,
@@ -213,7 +310,13 @@ class HostWakeDispatcher:
                 binding.vm_id,
                 exc_info=True,
             )
-            dispatch_record = WakeDispatchRecord(
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=self.config.execution_backend,
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                exception=exc,
+            )
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
                 request_id=request_id,
                 session_id=binding.session_id,
@@ -222,17 +325,16 @@ class HostWakeDispatcher:
                 resume_mode=resume_mode,
                 scheduled_for=scheduled_for,
                 source=dispatch_source,
-                metadata={
-                    "vm_id": binding.vm_id,
-                    "source": binding.source,
-                    **(wake_metadata or {}),
-                },
-                error="resume script invocation failed",
+                dispatch_source=dispatch_source,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
+                backend=self.config.execution_backend,
+                vm_id=binding.vm_id,
+                error=error,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             logger.warning(
                 "Resume script timed out path=%s session_id=%s vm_id=%s timeout_seconds=%.3f",
                 script_path,
@@ -240,7 +342,14 @@ class HostWakeDispatcher:
                 binding.vm_id,
                 worker_config.wake_resume_timeout_seconds,
             )
-            dispatch_record = WakeDispatchRecord(
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=self.config.execution_backend,
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                timeout_seconds=worker_config.wake_resume_timeout_seconds,
+                exception=exc,
+            )
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
                 request_id=request_id,
                 session_id=binding.session_id,
@@ -249,20 +358,18 @@ class HostWakeDispatcher:
                 resume_mode=resume_mode,
                 scheduled_for=scheduled_for,
                 source=dispatch_source,
-                metadata={
-                    "vm_id": binding.vm_id,
-                    "source": binding.source,
-                    "timeout_seconds": worker_config.wake_resume_timeout_seconds,
-                    **(wake_metadata or {}),
-                },
-                error="resume script timed out",
+                dispatch_source=dispatch_source,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
+                backend=self.config.execution_backend,
+                vm_id=binding.vm_id,
+                error=error,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
         if completed.returncode == 0:
-            dispatch_record = WakeDispatchRecord(
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
                 request_id=request_id,
                 session_id=binding.session_id,
@@ -271,17 +378,24 @@ class HostWakeDispatcher:
                 resume_mode=resume_mode,
                 scheduled_for=scheduled_for,
                 source=dispatch_source,
-                metadata={
-                    "vm_id": binding.vm_id,
-                    "source": binding.source,
-                    **(wake_metadata or {}),
-                },
+                dispatch_source=dispatch_source,
+                wake_metadata=wake_metadata,
+                backend=self.config.execution_backend,
+                vm_id=binding.vm_id,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
-        dispatch_record = WakeDispatchRecord(
+        error, failure_metadata = _build_dispatch_failure_details(
+            backend=self.config.execution_backend,
+            session_id=binding.session_id,
+            vm_id=binding.vm_id,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+        dispatch_record = self._build_dispatch_record(
             dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
             request_id=request_id,
             session_id=binding.session_id,
@@ -290,15 +404,11 @@ class HostWakeDispatcher:
             resume_mode=resume_mode,
             scheduled_for=scheduled_for,
             source=dispatch_source,
-            metadata={
-                "vm_id": binding.vm_id,
-                "source": binding.source,
-                "exit_code": completed.returncode,
-                "stdout": (completed.stdout or "").strip(),
-                "stderr": (completed.stderr or "").strip(),
-                **(wake_metadata or {}),
-            },
-            error=(completed.stderr or "").strip() or f"exit_code={completed.returncode}",
+            dispatch_source=dispatch_source,
+            wake_metadata={**(wake_metadata or {}), **failure_metadata},
+            backend=self.config.execution_backend,
+            vm_id=binding.vm_id,
+            error=error,
         )
         if wake_store is not None:
             wake_store.record_dispatch(dispatch_record)
@@ -327,7 +437,13 @@ class HostWakeDispatcher:
         try:
             ensure_session_not_expired(session)
         except SessionExpiredError as exc:
-            dispatch_record = self._build_container_dispatch_record(
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                session_id=session_id,
+                target_name=target_name,
+                exception=exc,
+            )
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -335,11 +451,11 @@ class HostWakeDispatcher:
                 resume_mode=effective_resume_mode,
                 scheduled_for=scheduled_for,
                 dispatch_source=dispatch_source,
-                wake_metadata=wake_metadata,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
                 status="failed",
-                target_name=target_name,
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                error=str(exc),
+                target_name=target_name,
+                error=error,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
@@ -361,7 +477,13 @@ class HostWakeDispatcher:
                 admin_service=getattr(self.runtime, "admin_service", None),
             )
         except Exception as exc:
-            dispatch_record = self._build_container_dispatch_record(
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                session_id=session_id,
+                target_name=target_name,
+                exception=exc,
+            )
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -369,11 +491,11 @@ class HostWakeDispatcher:
                 resume_mode=effective_resume_mode,
                 scheduled_for=scheduled_for,
                 dispatch_source=dispatch_source,
-                wake_metadata=wake_metadata,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
                 status="failed",
-                target_name=target_name,
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                error=str(exc) or type(exc).__name__,
+                target_name=target_name,
+                error=error,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
@@ -405,7 +527,13 @@ class HostWakeDispatcher:
                     metadata=queue_metadata,
                 )
             except Exception as exc:
-                dispatch_record = self._build_container_dispatch_record(
+                error, failure_metadata = _build_dispatch_failure_details(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    session_id=session_id,
+                    target_name=target_name,
+                    exception=exc,
+                )
+                dispatch_record = self._build_dispatch_record(
                     dispatch_id=dispatch_id,
                     session_id=session_id,
                     request_id=request_id,
@@ -413,16 +541,16 @@ class HostWakeDispatcher:
                     resume_mode=effective_resume_mode,
                     scheduled_for=scheduled_for,
                     dispatch_source=dispatch_source,
-                    wake_metadata=wake_metadata,
+                    wake_metadata={**queue_metadata, **(wake_metadata or {}), **failure_metadata},
                     status="failed",
-                    target_name=target_name,
                     backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                    error=str(exc) or type(exc).__name__,
+                    target_name=target_name,
+                    error=error,
                 )
                 if wake_store is not None:
                     wake_store.record_dispatch(dispatch_record)
                 return dispatch_record
-            dispatch_record = self._build_container_dispatch_record(
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -437,8 +565,8 @@ class HostWakeDispatcher:
                     "queue_key": queued_record.queue_key,
                 },
                 status="queued",
-                target_name=target_name,
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                target_name=target_name,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
@@ -475,7 +603,13 @@ class HostWakeDispatcher:
                 )
             )
         except Exception as exc:
-            dispatch_record = self._build_container_dispatch_record(
+            error, failure_metadata = _build_dispatch_failure_details(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                session_id=session_id,
+                target_name=execution_id,
+                exception=exc,
+            )
+            dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -483,17 +617,17 @@ class HostWakeDispatcher:
                 resume_mode=effective_resume_mode,
                 scheduled_for=scheduled_for,
                 dispatch_source=dispatch_source,
-                wake_metadata=wake_metadata,
+                wake_metadata={**(wake_metadata or {}), **failure_metadata},
                 status="failed",
-                target_name=execution_id,
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                error=str(exc) or type(exc).__name__,
+                target_name=execution_id,
+                error=error,
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
 
-        dispatch_record = self._build_container_dispatch_record(
+        dispatch_record = self._build_dispatch_record(
             dispatch_id=dispatch_id,
             session_id=session_id,
             request_id=request_id,
@@ -508,8 +642,8 @@ class HostWakeDispatcher:
                 "execution_id": getattr(handle, "execution_id", execution_id),
             },
             status="dispatched",
-            target_name=execution_id,
             backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            target_name=execution_id,
         )
         if wake_store is not None:
             wake_store.record_dispatch(dispatch_record)
@@ -544,6 +678,54 @@ class HostWakeDispatcher:
             return "disabled"
         return "live" if bool(getattr(session, "web_search_enabled", False)) else "disabled"
 
+    def _build_dispatch_record(
+        self,
+        *,
+        dispatch_id: str,
+        session_id: str,
+        request_id: str | None,
+        resume_prompt: WakeResumePromptPayload | None = None,
+        prompt: str | None = None,
+        resume_mode: str,
+        scheduled_for: datetime | None,
+        dispatch_source: str,
+        wake_metadata: dict[str, Any] | None,
+        status: str,
+        backend: str,
+        source: str | None = None,
+        vm_id: str | None = None,
+        target_name: str | None = None,
+        error: str | None = None,
+    ) -> WakeDispatchRecord:
+        effective_prompt = prompt or ""
+        effective_resume_prompt = resume_prompt or WakeResumePromptPayload(prompt=effective_prompt)
+        if wake_metadata:
+            effective_resume_prompt = WakeResumePromptPayload(
+                prompt=effective_resume_prompt.prompt,
+                metadata={**effective_resume_prompt.metadata, **wake_metadata},
+            )
+        payload_metadata: dict[str, Any] = {
+            "backend": backend,
+            "source": source or dispatch_source,
+            **(wake_metadata or {}),
+        }
+        if vm_id is not None:
+            payload_metadata["vm_id"] = vm_id
+        if target_name is not None:
+            payload_metadata["target_name"] = target_name
+        return WakeDispatchRecord(
+            dispatch_id=dispatch_id,
+            request_id=request_id,
+            session_id=session_id,
+            status=status,
+            resume_prompt=effective_resume_prompt,
+            resume_mode=resume_mode,
+            scheduled_for=scheduled_for,
+            source=source or dispatch_source,
+            metadata=payload_metadata,
+            error=error,
+        )
+
     def _build_container_dispatch_record(
         self,
         *,
@@ -560,25 +742,19 @@ class HostWakeDispatcher:
         backend: str,
         error: str | None = None,
     ) -> WakeDispatchRecord:
-        payload_metadata: dict[str, Any] = {
-            "backend": backend,
-            "target_name": target_name,
-            "source": dispatch_source,
-            **(wake_metadata or {}),
-        }
-        return WakeDispatchRecord(
+        return self._build_dispatch_record(
             dispatch_id=dispatch_id,
-            request_id=request_id,
             session_id=session_id,
-            status=status,
-            resume_prompt=WakeResumePromptPayload(
-                prompt=prompt,
-                metadata=dict(wake_metadata or {}),
-            ),
+            request_id=request_id,
+            resume_prompt=WakeResumePromptPayload(prompt=prompt),
+            prompt=prompt,
             resume_mode=resume_mode,
             scheduled_for=scheduled_for,
-            source=dispatch_source,
-            metadata=payload_metadata,
+            dispatch_source=dispatch_source,
+            wake_metadata=wake_metadata,
+            status=status,
+            backend=backend,
+            target_name=target_name,
             error=error,
         )
 

@@ -337,6 +337,8 @@ Common tasks:
 14. Save settings.
 15. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
+16. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+    status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
 Review both tool access and approval policy before saving.

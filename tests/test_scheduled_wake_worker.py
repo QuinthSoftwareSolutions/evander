@@ -154,6 +154,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "poll_interval_seconds": 12.5,
                 "jitter_seconds": 1.5,
                 "cooldown_seconds": 45.0,
+                "late_threshold_seconds": 90.0,
             }
         ),
         encoding="utf-8",
@@ -164,6 +165,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
 
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
+    assert worker.config.wake_schedule_late_threshold_seconds == 90.0
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
@@ -243,9 +245,9 @@ def test_scheduled_wake_worker_run_once_with_lock_propagates_cycle_exceptions(
 
 
 def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatch) -> None:
-    worker = _build_worker(tmp_path)
+    worker = _build_worker(tmp_path, config_payload={"late_threshold_seconds": 60.0})
     _register_session(worker)
-    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    due_at = datetime.now(UTC) - timedelta(minutes=2)
     _schedule_one_time_request(worker, request_id="wake-1", session_id="session-a", due_at=due_at)
 
     dispatched: list[str] = []
@@ -256,6 +258,8 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
 
     def resume_binding(binding, **kwargs):
         dispatched.append(binding.session_id)
+        assert kwargs["wake_metadata"]["was_late"] is True
+        assert kwargs["wake_metadata"]["late_seconds"] > 0
         record = WakeDispatchRecord(
             dispatch_id="dispatch-one-time-success",
             request_id=kwargs["request_id"],
@@ -266,7 +270,11 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
             scheduled_for=kwargs["scheduled_for"],
             dispatched_at=dispatch_at,
             source=kwargs["dispatch_source"],
-            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            metadata={
+                "vm_id": binding.vm_id,
+                "source": binding.source,
+                **kwargs["wake_metadata"],
+            },
         )
         worker.runtime.wake_store.record_dispatch(record)
         return record
@@ -282,8 +290,33 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert refreshed is not None
     assert refreshed.enabled is False
     assert refreshed.next_run_at is None
+    assert refreshed.status == "dispatched"
+    assert refreshed.last_dispatch_id == "dispatch-one-time-success"
+    assert refreshed.last_dispatch_status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
     assert "session-a" in cooldown_payload
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-1"]
+    assert latest.metadata["was_late"] is True
+    assert latest.metadata["late_seconds"] > 0
+
+
+def test_scheduled_wake_worker_marks_late_missing_session_request(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(tmp_path, config_payload={"late_threshold_seconds": 60.0})
+    due_at = datetime.now(UTC) - timedelta(minutes=2)
+    _schedule_one_time_request(worker, request_id="wake-missing", session_id="session-missing", due_at=due_at)
+
+    result = worker.run_once()
+
+    refreshed = worker.runtime.wake_store.get_request("wake-missing")
+    assert result.requests_due == 0
+    assert result.wakes_dispatched == 0
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.status == "missed_or_late"
+    assert refreshed.status_reason is not None
+    assert "session session-missing" in refreshed.status_reason
 
 
 def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
@@ -407,6 +440,9 @@ def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_
     assert refreshed.enabled is True
     assert refreshed.next_run_at is not None
     assert refreshed.next_run_at > due_at
+    assert refreshed.status == latest.status
+    assert refreshed.last_dispatch_id == latest.dispatch_id
+    assert refreshed.last_dispatch_status == latest.status
     assert refreshed.last_dispatched_at is not None
 
 
@@ -457,10 +493,21 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
         def __init__(self, due_request):
             self.due_request = due_request
             self.find_due_requests_called = False
+            self.mark_request_due_or_missed_called = False
             self.upserted_requests: list[object] = []
 
         def read_raw(self):
             raise AssertionError("run_once should not call read_raw")
+
+        def mark_request_due_or_missed(self, **kwargs):
+            self.mark_request_due_or_missed_called = True
+            self.mark_request_due_or_missed_args = kwargs
+            return []
+
+        def mark_request_dispatching(self, *args, **kwargs):
+            self.mark_request_dispatching_called = True
+            self.mark_request_dispatching_args = (args, kwargs)
+            return self.due_request
 
         def find_due_requests(self, *, now_utc):
             self.find_due_requests_called = True
@@ -496,6 +543,8 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
 
     result = worker.run_once()
 
+    assert fake_store.mark_request_due_or_missed_called is True
+    assert fake_store.mark_request_dispatching_called is True
     assert fake_store.find_due_requests_called is True
     assert result.requests_due == 1
     assert result.wakes_dispatched == 1
@@ -549,6 +598,9 @@ def test_scheduled_wake_worker_dispatches_due_cron_range_request(
     assert refreshed.enabled is True
     assert refreshed.next_run_at is not None
     assert refreshed.next_run_at > due_at
+    assert refreshed.status == "dispatched"
+    assert refreshed.last_dispatch_id == "dispatch-cron-success"
+    assert refreshed.last_dispatch_status == "dispatched"
     assert refreshed.last_dispatched_at is not None
     assert worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron"].status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())

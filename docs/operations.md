@@ -1680,6 +1680,19 @@ live provider APIs.
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- Scheduled wakes are recorded in the durable wake request store with current
+  ledger status, latest dispatch evidence, sanitized failure reason, scheduled
+  time, source, and redacted prompt summary. Admin Web exposes these entries on
+  the Sessions page, and operators can use `GET /api/admin/scheduled-wakes` with
+  `statuses`, `session_id`, `limit`, and `include_completed` query parameters to
+  list/filter recent wake delivery state.
+- Failed, due, and missed/late scheduled wakes can be retried immediately or
+  rescheduled with `POST /api/admin/scheduled-wakes/{request_id}/retry`. Send
+  `{ "run_now": true }` for immediate retry or `{ "resume_at": "<ISO-8601>" }`
+  to reschedule the existing request while preserving retry history.
+- `late_threshold_seconds` in `config/scheduled-wake/config.json` controls how
+  overdue a scheduled wake can be before the worker/API marks it
+  `missed_or_late`.
 - In both wake worker configs, `backoff_seconds` controls how long the worker waits before
   retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
   after activity or busy-session checks, not the process-level exception retry delay.

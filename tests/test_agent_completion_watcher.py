@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import agent_sandbox.daemons.agent_completion_watcher as watcher
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.models import VmSummary
+from agent_sandbox.messaging.wake_store import WakeRequestStore
+from agent_sandbox.models import (
+    VmSummary,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
+    WakeScheduleDefinition,
+)
 
 
 def test_build_agent_run_completed_event_uses_dispatch_scope() -> None:
@@ -127,6 +133,100 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
     assert isinstance(event, TriggerEvent)
     assert event.payload["agent_state"] == "idle"
     assert event.payload["dispatch_id"] == "dispatch-123"
+
+
+def test_await_agent_completion_marks_matching_wake_request_completed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
+    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=UTC)
+    wake_store.schedule_resume_request(
+        session_id="session-14724",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
+        request_id="wake-1",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-123",
+            request_id="wake-1",
+            session_id="session-14724",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=UTC),
+            source="scheduled_once",
+        )
+    )
+    published: dict[str, object] = {}
+
+    class _AdminServiceStub:
+        def __init__(self, runtime_dir: Path) -> None:
+            self.runtime_dir = runtime_dir
+            self.runtime = SimpleNamespace(wake_store=wake_store)
+
+        def list_vms(self, **kwargs):
+            return [
+                VmSummary(
+                    vm_name="vm-issue-14724",
+                    session_ids=["session-14724"],
+                    labels={"vm-type": "issue"},
+                    directory_paths=["root/example-industry/app"],
+                    libvirt_state="running",
+                    ip_address="192.0.2.10",
+                    agent_state="idle",
+                    agent_repo_names=[],
+                    last_state_update_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC),
+                    dispatch_id="dispatch-123",
+                )
+            ]
+
+    class _QueueStub:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def contains(self, event_id: str) -> bool:
+            return False
+
+        def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+            published["event"] = event
+            published["idempotency_key"] = idempotency_key
+            return SimpleNamespace(event_id=event.event_id)
+
+    monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
+    monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
+    monkeypatch.setattr(watcher, "notify_wake_socket_for_lock", lambda lock_path: True)
+
+    result = watcher.await_agent_completion_and_publish(
+        runtime_dir=runtime_dir,
+        vm_name="vm-issue-14724",
+        dispatch_id="dispatch-123",
+        vm_user="agent",
+        session_id="session-14724",
+        directory_path="root/example-industry/app",
+        poll_interval_seconds=0.01,
+        timeout_seconds=1.0,
+    )
+
+    assert result is True
+    assert published["idempotency_key"] == "__await-agent-completion__:dispatch-123"
+    completed = wake_store.get_request("wake-1")
+    assert completed is not None
+    assert completed.status == "completed_or_acknowledged"
+    assert completed.completed_at == datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC)
+    assert completed.last_dispatch_id == "dispatch-123"
+    assert completed.last_dispatch_status == "dispatched"
+    assert completed.completion_evidence["trigger_type"] == "trigger:agent:run:completed"
+    assert completed.completion_evidence["dispatch_id"] == "dispatch-123"
+    assert completed.completion_evidence["vm_name"] == "vm-issue-14724"
+    assert completed.completion_evidence["session_id"] == "session-14724"
 
 
 def test_await_agent_completion_uses_configured_event_queue_path(
