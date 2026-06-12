@@ -147,6 +147,7 @@ from agent_sandbox.models import (
     RequestPrReviewRequest,
     RespondToAgentRequest,
     RespondToAgentResponse,
+    CancelScheduledWakeResponse,
     ScheduleResumeRequest,
     ScheduleResumeResponse,
     SubmitPrReviewRequest,
@@ -6051,6 +6052,123 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.SCHEDULE_RESUME,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def cancel_scheduled_wake(
+        session_id: str | None = None,
+        request_id: str = "",
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Cancel an obsolete wake request owned by the caller session.
+
+        Use this to retire pending future wakes that are no longer needed. The
+        caller cannot cancel wakes owned by another session, and one-time wakes
+        that have already been dispatched or completed remain immutable.
+        """
+
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "request_id": request_id,
+            "reason": reason,
+            "metadata": metadata or {},
+        }
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.CANCEL_SCHEDULED_WAKE)
+            normalized_request_id = str(request_id or "").strip()
+            normalized_reason = None
+            if reason is not None:
+                normalized_reason = str(reason).strip()[:1024] or None
+            if metadata is None:
+                normalized_metadata: dict[str, Any] = {}
+            elif isinstance(metadata, dict):
+                normalized_metadata = metadata
+            else:
+                raise ValueError("metadata must be an object")
+
+            if not normalized_request_id:
+                result = CancelScheduledWakeResponse(
+                    session_id=resolved_session_id,
+                    request_id=None,
+                    status="missing_request_id",
+                    request=None,
+                ).model_dump(mode="json")
+                audit_success(
+                    resolved_session_id,
+                    ToolName.CANCEL_SCHEDULED_WAKE,
+                    args,
+                    result,
+                )
+                return result
+
+            cancellation = context.wake_store.cancel_request(
+                request_id=normalized_request_id,
+                caller_session_id=resolved_session_id,
+                reason=normalized_reason,
+                metadata=normalized_metadata,
+            )
+            result = CancelScheduledWakeResponse(
+                session_id=resolved_session_id,
+                request_id=cancellation.request_id,
+                status=cancellation.status,
+                request=cancellation.request,
+            ).model_dump(mode="json")
+            if cancellation.status == "permission_denied":
+                denied_args = dict(args)
+                if denied_args.get("reason") is not None:
+                    denied_args["reason"] = "<redacted>"
+                audit_failure(
+                    resolved_session_id,
+                    ToolName.CANCEL_SCHEDULED_WAKE,
+                    denied_args,
+                    "permission_denied",
+                    decision="denied",
+                    error_class="policy_error",
+                )
+                return result
+
+            audit_success(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                args,
+                result,
+            )
+            return result
+        except PolicyError as exc:
+            denied_args = dict(args)
+            if denied_args.get("reason") is not None:
+                denied_args["reason"] = "<redacted>"
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                denied_args,
+                str(exc),
+            )
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
                 args,
                 str(exc),
                 decision="error",

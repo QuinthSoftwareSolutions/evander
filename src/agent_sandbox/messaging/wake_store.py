@@ -14,6 +14,7 @@ from agent_sandbox.cron import next_cron_time
 from agent_sandbox.models import (
     WakeDispatchRecord,
     WakeMessageEnvelope,
+    WakeRequestCancellationResult,
     WakeResumePromptPayload,
     WakeScheduledRequest,
     WakeScheduleDefinition,
@@ -66,6 +67,16 @@ class WakeRequestRepository(Protocol):
         evidence: dict[str, Any],
     ) -> WakeScheduledRequest | None: ...
 
+    def cancel_request(
+        self,
+        request_id: str,
+        *,
+        caller_session_id: str,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        now_utc: datetime | None = None,
+    ) -> WakeRequestCancellationResult: ...
+
     def schedule_resume_request(
         self,
         *,
@@ -116,7 +127,7 @@ class WakeRequestStore:
         self._import_legacy_json_if_empty()
 
     def upsert_request(self, request: WakeScheduledRequest) -> None:
-        validated = WakeScheduledRequest.model_validate(request)
+        validated = self._normalize_cancelled_request(WakeScheduledRequest.model_validate(request))
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -168,7 +179,9 @@ class WakeRequestStore:
             ).fetchone()
         if row is None:
             return None
-        return WakeScheduledRequest.model_validate_json(row["payload_json"])
+        return self._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate_json(row["payload_json"])
+        )
 
     def delete_request(self, request_id: str) -> bool:
         normalized_request_id = str(request_id or "")
@@ -298,6 +311,127 @@ class WakeRequestStore:
                 self._message_row(message),
             )
             self._compact(connection)
+
+    def cancel_request(
+        self,
+        request_id: str,
+        *,
+        caller_session_id: str,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        now_utc: datetime | None = None,
+    ) -> WakeRequestCancellationResult:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return WakeRequestCancellationResult(status="missing_request_id")
+
+        normalized_caller_session_id = str(caller_session_id or "").strip()
+        if not normalized_caller_session_id:
+            return WakeRequestCancellationResult(
+                status="permission_denied",
+                request_id=normalized_request_id,
+            )
+
+        normalized_reason = str(reason or "").strip() or None
+        normalized_metadata = dict(metadata or {})
+        cancelled_at = now_utc or datetime.now(UTC)
+
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE request_id = ?
+                """,
+                (normalized_request_id,),
+            ).fetchone()
+            if row is None:
+                return WakeRequestCancellationResult(
+                    status="not_found",
+                    request_id=normalized_request_id,
+                )
+
+            request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+            if request.session_id != normalized_caller_session_id:
+                return WakeRequestCancellationResult(
+                    status="permission_denied",
+                    request_id=normalized_request_id,
+                )
+
+            latest_dispatch = self._latest_dispatch_for_request(connection, normalized_request_id)
+            if request.status == "cancelled":
+                return WakeRequestCancellationResult(
+                    status="already_cancelled",
+                    request_id=normalized_request_id,
+                    request=request,
+                )
+
+            if request.schedule.resume_at is not None:
+                if latest_dispatch is not None:
+                    if latest_dispatch.status == "completed":
+                        return WakeRequestCancellationResult(
+                            status="already_completed",
+                            request_id=normalized_request_id,
+                            request=request,
+                        )
+                    if latest_dispatch.status in {"dispatched", "queued"}:
+                        return WakeRequestCancellationResult(
+                            status="already_dispatched",
+                            request_id=normalized_request_id,
+                            request=request,
+                        )
+                if request.last_dispatched_at is not None:
+                    return WakeRequestCancellationResult(
+                        status="already_dispatched",
+                        request_id=normalized_request_id,
+                        request=request,
+                    )
+                if not request.enabled:
+                    return WakeRequestCancellationResult(
+                        status="already_cancelled",
+                        request_id=normalized_request_id,
+                        request=request,
+                    )
+            elif not request.enabled:
+                return WakeRequestCancellationResult(
+                    status="already_cancelled",
+                    request_id=normalized_request_id,
+                    request=request,
+                )
+
+            request.status = "cancelled"
+            request.enabled = False
+            request.next_run_at = None
+            request.cancelled_at = cancelled_at
+            request.cancelled_by_session_id = normalized_caller_session_id
+            request.cancel_reason = normalized_reason
+            request.cancel_metadata = normalized_metadata
+            request.updated_at = cancelled_at
+            connection.execute(
+                """
+                UPDATE wake_requests
+                SET session_id = ?,
+                    enabled = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    last_dispatched_at = ?,
+                    next_run_at = ?,
+                    schedule_resume_at = ?,
+                    schedule_cron = ?,
+                    source = ?,
+                    resume_mode = ?,
+                    payload_json = ?
+                WHERE request_id = ?
+                """,
+                self._request_update_row(request),
+            )
+            self._compact(connection)
+            return WakeRequestCancellationResult(
+                status="cancelled",
+                request_id=normalized_request_id,
+                request=request,
+            )
 
     def schedule_resume_request(
         self,
@@ -663,6 +797,7 @@ class WakeRequestStore:
                 continue
             if normalized_session_id and request.session_id != normalized_session_id:
                 continue
+            request = self._normalize_cancelled_request(request)
             if not include_disabled and not request.enabled:
                 continue
             requests.append(request)
@@ -710,6 +845,9 @@ class WakeRequestStore:
                 try:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
                 except Exception:
+                    continue
+                request = self._normalize_cancelled_request(request)
+                if request.status == "cancelled" or not request.enabled:
                     continue
                 next_run_at = request.next_run_at
                 if next_run_at is None:
@@ -951,7 +1089,17 @@ class WakeRequestStore:
     def _validate_request(raw_value: object) -> WakeScheduledRequest | None:
         if not isinstance(raw_value, dict):
             return None
-        return WakeScheduledRequest.model_validate(raw_value)
+        return WakeRequestStore._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate(raw_value)
+        )
+
+    @staticmethod
+    def _normalize_cancelled_request(request: WakeScheduledRequest) -> WakeScheduledRequest:
+        if request.status != "cancelled":
+            return request
+        if request.enabled is False and request.next_run_at is None:
+            return request
+        return request.model_copy(update={"enabled": False, "next_run_at": None}, deep=True)
 
     @staticmethod
     def _validate_dispatch(raw_value: object) -> WakeDispatchRecord | None:
@@ -972,6 +1120,24 @@ class WakeRequestStore:
             (request_id,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _latest_dispatch_for_request(
+        connection: sqlite3.Connection, request_id: str
+    ) -> WakeDispatchRecord | None:
+        row = connection.execute(
+            """
+            SELECT payload_json
+            FROM wake_dispatches
+            WHERE request_id = ?
+            ORDER BY dispatched_at DESC, dispatch_id DESC
+            LIMIT 1
+            """,
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return WakeDispatchRecord.model_validate_json(row["payload_json"])
 
     @staticmethod
     def _request_row(request: WakeScheduledRequest) -> tuple[Any, ...]:

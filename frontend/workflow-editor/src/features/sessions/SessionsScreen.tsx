@@ -7,7 +7,10 @@ import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import type { RuntimeImageInfo } from "../admin/types";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
-import { visibleWakeSchedules as filterVisibleWakeSchedules } from "./wakeScheduleVisibility";
+import {
+  canToggleWakeScheduleEnabled,
+  visibleWakeSchedules as filterVisibleWakeSchedules,
+} from "./wakeScheduleVisibility";
 
 type ApprovalPayloadMode = "exact" | "any";
 
@@ -103,8 +106,13 @@ type WakeSchedule = {
   cron?: string | null;
   resume_at?: string | null;
   resume_mode: string;
+  status?: string | null;
   enabled: boolean;
   updated_at?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by_session_id?: string | null;
+  cancel_reason?: string | null;
+  cancel_metadata?: Record<string, unknown>;
   schedule_kind: "cron" | "resume_at";
 };
 
@@ -213,6 +221,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_pending_agent_prompts: "List prompts queued for the guest agent that have not been handled yet.",
   respond_to_agent: "Reply to a pending agent prompt or approval-style checkpoint from the guest agent.",
   schedule_resume: "Create or update a host-managed wake schedule that resumes this session later.",
+  cancel_scheduled_wake: "Cancel an obsolete host-managed wake schedule owned by this session.",
   run_script: "Run an approved host-side script on behalf of the session.",
   mssql_provision_database: "Provision a session-owned SQL Server database through the container worker.",
   mssql_list_databases: "List SQL Server databases owned by this session.",
@@ -463,6 +472,7 @@ function groupToolOption(tool: ToolOption): string {
     "list_pending_agent_prompts",
     "respond_to_agent",
     "schedule_resume",
+    "cancel_scheduled_wake",
     "run_script",
     "copilot_host_auth",
   ].includes(value)) {
@@ -1216,6 +1226,8 @@ export function SessionsScreen() {
     [wakeLedgerFilter, wakeLedgerItems],
   );
   const mutationLocked = !privilegedUnlocked;
+  const selectedWakeScheduleIsCancelled = selectedWakeSchedule?.status === "cancelled";
+  const wakeEditorLocked = mutationLocked || selectedWakeScheduleIsCancelled;
   const groupedToolOptions = useMemo(() => groupTools(catalog?.tool_options ?? []), [catalog?.tool_options]);
   const approvalSettingsToolOption = useMemo(
     () => catalog?.tool_options.find((tool) => tool.value === approvalSettingsTool) ?? null,
@@ -2278,7 +2290,7 @@ export function SessionsScreen() {
                     <button type="button" onClick={resetWakeEditor} disabled={mutationLocked || (!editingWakeRequestId && !wakePrompt && !wakeCron && !wakeResumeAt && wakeMode === "same_context" && wakeEnabled)}>
                       Create new
                     </button>
-                    {selectedWakeSchedule ? (
+                    {selectedWakeSchedule && canToggleWakeScheduleEnabled(selectedWakeSchedule) ? (
                       <button type="button" onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)} disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}>
                         {selectedWakeSchedule.enabled ? "Disable selected" : "Enable selected"}
                       </button>
@@ -2288,7 +2300,7 @@ export function SessionsScreen() {
                 <div className="panel-body">
                   <label className="field-stack">
                     <span>Prompt</span>
-                    <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={mutationLocked} />
+                    <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={wakeEditorLocked} />
                   </label>
                   <div className="field-stack">
                     <span>Schedule type</span>
@@ -2297,7 +2309,7 @@ export function SessionsScreen() {
                         type="button"
                         className={wakeScheduleKind === "cron" ? "primary" : ""}
                         onClick={() => setScheduleKind("cron")}
-                        disabled={mutationLocked}
+                        disabled={wakeEditorLocked}
                       >
                         Recurring
                       </button>
@@ -2305,7 +2317,7 @@ export function SessionsScreen() {
                         type="button"
                         className={wakeScheduleKind === "resume_at" ? "primary" : ""}
                         onClick={() => setScheduleKind("resume_at")}
-                        disabled={mutationLocked}
+                        disabled={wakeEditorLocked}
                       >
                         One time
                       </button>
@@ -2314,24 +2326,24 @@ export function SessionsScreen() {
                   {wakeScheduleKind === "cron" ? (
                     <label className="field-stack">
                       <span>Cron</span>
-                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={mutationLocked} />
+                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={wakeEditorLocked} />
                     </label>
                   ) : (
                     <label className="field-stack">
                       <span>Resume at</span>
-                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={mutationLocked} />
+                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={wakeEditorLocked} />
                     </label>
                   )}
                   <label className="field-stack">
                     <span>Resume mode</span>
-                    <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={mutationLocked}>
+                    <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={wakeEditorLocked}>
                       {(catalog?.resume_mode_options ?? []).map((option) => (
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
                   </label>
                   <label className="checkbox-row">
-                    <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={mutationLocked} />
+                    <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={wakeEditorLocked} />
                     <span>Enabled</span>
                   </label>
                   <div className="feature-toolbar-actions session-panel-actions">
@@ -2339,7 +2351,7 @@ export function SessionsScreen() {
                       type="button"
                       className="primary"
                       onClick={() => void submitWakeSchedule(editingWakeRequestId ? "update" : "create")}
-                      disabled={busy === "wake-create" || busy === "wake-update" || mutationLocked}
+                      disabled={busy === "wake-create" || busy === "wake-update" || wakeEditorLocked}
                     >
                       {editingWakeRequestId ? (busy === "wake-update" ? "Saving..." : "Save schedule") : (busy === "wake-create" ? "Creating..." : "Create wake schedule")}
                     </button>
@@ -2364,7 +2376,9 @@ export function SessionsScreen() {
                       >
                         <div className="feature-list-title-row">
                           <strong>{item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}</strong>
-                          <span className={`status-pill state-${item.enabled ? "running" : "idle"}`}>{item.enabled ? "Enabled" : "Disabled"}</span>
+                          <span className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}>
+                            {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
+                          </span>
                         </div>
                         <div className="feature-list-meta">{item.prompt}</div>
                         <div className="feature-list-meta">{item.resume_mode}</div>

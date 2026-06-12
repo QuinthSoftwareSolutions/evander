@@ -488,7 +488,9 @@ def test_resolve_session_id_from_context_requires_value() -> None:
         _resolve_session_id_from_context(None, ctx)
 
 
-def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
+def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools(
+    tmp_path,
+) -> None:
     context = build_runtime(
         GatewayConfig(
             runtime_dir=tmp_path,
@@ -503,6 +505,9 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     server = create_server(context)
 
     assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
+    assert any(
+        tool.name == "cancel_scheduled_wake" for tool in server._tool_manager.list_tools()
+    )
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
@@ -528,6 +533,15 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     )
     assert "phone_number" not in make_phone_call_fields
     assert "to_number" not in make_phone_call_fields
+    cancel_scheduled_wake_tool = next(
+        tool
+        for tool in server._tool_manager.list_tools()
+        if tool.name == "cancel_scheduled_wake"
+    )
+    cancel_scheduled_wake_fields = set(cancel_scheduled_wake_tool.parameters["properties"])
+    assert {"session_id", "request_id", "reason", "metadata"}.issubset(
+        cancel_scheduled_wake_fields
+    )
     list_contacts_tool = next(
         tool for tool in server._tool_manager.list_tools() if tool.name == "list_contacts"
     )
