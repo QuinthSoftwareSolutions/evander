@@ -5997,6 +5997,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "metadata": metadata or {},
         }
         try:
+            context.policy.require_tool(resolved_session_id, ToolName.CANCEL_SCHEDULED_WAKE)
             normalized_request_id = str(request_id or "").strip()
             normalized_reason = None
             if reason is not None:
@@ -6057,7 +6058,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.CANCEL_SCHEDULED_WAKE, args, str(exc))
+            denied_args = dict(args)
+            if denied_args.get("reason") is not None:
+                denied_args["reason"] = "<redacted>"
+            audit_failure(
+                resolved_session_id,
+                ToolName.CANCEL_SCHEDULED_WAKE,
+                denied_args,
+                str(exc),
+            )
             raise
         except ValueError as exc:
             audit_failure(

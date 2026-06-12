@@ -2914,6 +2914,49 @@ def test_cancel_scheduled_wake_persists_request_and_is_idempotent(
     assert repeated["request"]["status"] == "cancelled"
 
 
+def test_cancel_scheduled_wake_requires_tool_permission_for_owned_wake(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Continue working through unread feedback.",
+        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+        request_id="wake-123",
+        source="wake-worker",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={"trace_id": "trace-1"},
+    )
+    before = context.wake_store.read_raw()["requests"]["wake-123"]
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool cancel_scheduled_wake is not allowed"):
+        call_tool(
+            server,
+            "cancel_scheduled_wake",
+            {
+                "session_id": "session-1",
+                "request_id": "wake-123",
+                "reason": "No longer needed.",
+            },
+        )
+
+    assert context.wake_store.read_raw()["requests"]["wake-123"] == before
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.CANCEL_SCHEDULED_WAKE.value
+    assert event["decision"] == "denied"
+    assert event["args"]["reason"] == "<redacted>"
+    assert event["result"]["error_class"] == "policy_error"
+
+
 def test_cancel_scheduled_wake_denies_cross_session_and_redacts_reason(
     tmp_path: Path,
 ) -> None:
