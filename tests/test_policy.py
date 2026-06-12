@@ -1548,6 +1548,27 @@ def test_build_payload_diagnostic_uses_raw_attempted_payload_for_digest() -> Non
     )
 
 
+def test_build_payload_diagnostic_payload_match_uses_digest_equality() -> None:
+    approved = {"token": "<redacted>", "value": "same"}
+    attempted = {"token": "<redacted>", "value": "same"}
+    approved_payload_digest = digest_payload({"token": "approved-secret", "value": "same"})
+    attempted_payload_digest = digest_payload(attempted)
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        redacted_keys={"token"},
+        approved_payload_digest=approved_payload_digest,
+        attempted_payload_digest=attempted_payload_digest,
+    )
+
+    assert approved_payload_digest != attempted_payload_digest
+    assert diagnostic["payload_match"] is False
+    assert diagnostic["differences"]["changed"]["entries"] == []
+    assert diagnostic["differences"]["missing"]["entries"] == []
+    assert diagnostic["differences"]["extra"]["entries"] == []
+
+
 def test_build_payload_diagnostic_suppresses_redacted_diffs_when_digests_match() -> None:
     attempted = {"token": "actual-secret", "value": "same"}
     approved = {"token": "<redacted>", "value": "same"}

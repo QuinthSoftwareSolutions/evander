@@ -334,7 +334,7 @@ class HostWakeDispatcher:
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired:
             logger.warning(
                 "Resume script timed out path=%s session_id=%s vm_id=%s timeout_seconds=%.3f",
                 script_path,
@@ -347,7 +347,7 @@ class HostWakeDispatcher:
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,
                 timeout_seconds=worker_config.wake_resume_timeout_seconds,
-                exception=exc,
+                reason="resume script timed out",
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",

@@ -2858,7 +2858,6 @@ class WakeScheduledRequest(BaseModel):
     resume_mode: str = Field(default="same_context")
     status: str = Field(default="pending", min_length=1)
     enabled: bool = True
-    status: str = Field(default="pending")
     status_reason: str | None = None
     status_updated_at: datetime | None = None
     last_dispatch_id: str | None = None
@@ -2891,14 +2890,6 @@ class WakeScheduledRequest(BaseModel):
         normalized = value.strip()
         if normalized not in {"same_context", "new_context"}:
             raise ValueError("resume_mode must be one of: same_context, new_context")
-        return normalized
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("status must be a non-empty string")
         return normalized
 
 

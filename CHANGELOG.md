@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Wake And Approval Diagnostic Fixes
+
+- Prevented libvirt wake timeout summaries from storing resume prompt text from
+  timed-out command lines in wake dispatch errors or metadata.
+- Made approval payload diagnostics derive `payload_match` from canonical
+  payload digest equality while keeping redacted diffs as explanatory detail.
+- Removed duplicate scheduled-wake status definitions so legacy empty statuses
+  normalize without Pydantic override warnings.
+
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 
 - Added a durable scheduled-wake ledger over the existing wake request store,

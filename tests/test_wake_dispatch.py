@@ -300,6 +300,59 @@ def test_resume_binding_sanitizes_failure_stdout_stderr_and_exit_code(
     assert "\n" not in latest.metadata["stderr"]
 
 
+def test_resume_binding_timeout_error_does_not_include_prompt_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(
+        update={
+            "host_resume_script_path": resume_script,
+            "wake_resume_timeout_seconds": 7.0,
+        }
+    )
+    prompt = "Do sensitive wake work with token=abc123"
+
+    def fake_run(cmd: list[str], **kwargs: object):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=worker_config,
+        prompt=prompt,
+        dispatch_source="scheduled_once",
+        request_id="wake-timeout",
+    )
+
+    assert result is not None
+    latest = wake_store.latest_dispatch_by_request_id()["wake-timeout"]
+    assert latest.status == "timed_out"
+    assert latest.error is not None
+    assert "resume script timed out" in latest.error
+    assert "timeout_seconds=7.000" in latest.error
+    assert prompt not in latest.error
+    assert "--prompt" not in latest.error
+    assert "exception_type" not in latest.metadata
+    assert latest.metadata["timeout_seconds"] == 7.0
+    assert result.error == latest.error
+    assert prompt not in str(latest.metadata)
+    assert "--prompt" not in str(latest.metadata)
+
+
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

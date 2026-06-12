@@ -62,10 +62,7 @@ def build_payload_diagnostic(
     return {
         "status": status,
         "reason": reason,
-        "payload_match": not differences["truncated"]
-        and not differences["changed"]["entries"]
-        and not differences["missing"]["entries"]
-        and not differences["extra"]["entries"],
+        "payload_match": approved_payload_digest == attempted_payload_digest,
         "approved_payload_digest": approved_payload_digest,
         "attempted_payload_digest": attempted_payload_digest,
         "approved_payload_summary": approved_payload_summary,
