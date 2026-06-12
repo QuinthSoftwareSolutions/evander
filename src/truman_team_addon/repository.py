@@ -703,6 +703,7 @@ class TeamStateRepository:
                 findings=findings or [],
                 review_profile_id=review_profile_id,
                 instructions=instructions,
+                created_at=utc_now(),
                 decision_at=decision_at,
             )
             state_model.review_requests[review.id] = review
@@ -1813,6 +1814,7 @@ class TeamStateRepository:
                         },
                     )
                     result["created_inbox_item_ids"].append(inbox_id)
+            release.updated_at = now
             _recalculate_project_status(state_model, release.project_id)
             result["state"] = release.state.value
             result["success"] = True
@@ -2404,6 +2406,7 @@ def _apply_review_request(
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
+    now = utc_now()
     review = ReviewRequest(
         id=review_id,
         deliverable_id=deliverable_id,
@@ -2411,6 +2414,7 @@ def _apply_review_request(
         state=TeamRecordState.PENDING,
         review_profile_id=profile_id,
         instructions=instructions,
+        created_at=now,
     )
     state.review_requests[review.id] = review
     deliverable.review_request_ids = _append_unique(
@@ -2956,6 +2960,7 @@ def _build_release_package(
         or canonical_release_branch(project, release_id)
     )
     promotion_ids: list[str] = []
+    now = utc_now()
     # Internal feature branches are consolidated into a release branch, which is then
     # pushed to the canonical remote after consolidation succeeds. Only create git
     # promotions when there is at least one feature branch to consolidate; pure
@@ -2982,6 +2987,8 @@ def _build_release_package(
         canonical_branch=target_canonical_branch,
         git_promotion_record_ids=promotion_ids,
         state=TeamRecordState.PENDING,
+        created_at=now,
+        updated_at=now,
     )
     if feature_branches:
         _emit_git_promotion_event(

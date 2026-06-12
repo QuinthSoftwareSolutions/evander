@@ -195,6 +195,49 @@ Example request shape:
 }
 ```
 
+### Team Activity Timeline
+
+The Teams tab includes a derived `Timeline / Audit` view backed by the current
+`TeamState` snapshot. `GET /api/addons/team-addon/timeline` returns a read-only
+timeline; it is not an append-only audit log, so overwritten intermediate
+changes are not reconstructed and legacy records without timestamps stay
+timestamp-missing.
+
+The endpoint accepts these filters:
+
+- `team_id`
+- `project_id`
+- `agent_id` matches the entry's actor or any related agent id
+- `type` supports repeat values or comma-separated lists
+- `status` supports repeat values or comma-separated lists
+- `attention_needed=true|false`
+
+Each entry carries JSON-safe fields for `id`, `type`, `category`,
+`timestamp`/`timestamp_source`, `timestamp_missing`, `actor_agent_id`,
+`related_agent_ids`, `team_id`, `project_id`, the flat related ids
+(`task_id`, `deliverable_id`, `review_request_id`, `inbox_item_id`,
+`action_record_id`, `ephemeral_assignment_id`, `git_promotion_id`,
+`release_package_id`), `status`, `attention_needed`, and `summary`.
+
+The view includes these entry families:
+
+- task created and updated entries
+- inbox item created and handled or updated entries when `updated_at` differs
+- deliverable created entries
+- review request created entries, with `timestamp: null` and
+  `timestamp_missing: true` for legacy requests without `created_at`
+- review decision entries at `decision_at`
+- action record created entries
+- ephemeral assignment requested entries and lifecycle state entries when
+  `updated_at` differs
+- git promotion requested and result entries
+- release package created entries, plus published or blocked state entries
+
+Entries sort chronologically ascending when they have a timestamp. Entries with
+missing timestamps sort after dated entries, with stable secondary ordering by
+category, type, and id. In the UI, missing timestamps render as `Timestamp
+unavailable`.
+
 When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 

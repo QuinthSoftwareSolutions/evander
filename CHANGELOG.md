@@ -42,6 +42,18 @@ material. Newer entries are added incrementally as changes land.
 - Documented the dedicated Review & Delivery workspace in the Team Add-ons guide
   while keeping the existing setup forms and Admin Web integration model intact.
 
+## 2026-06-11 - Team Add-on Timeline / Audit View
+
+- Added the derived Team Add-on timeline API and bundled UI view so operators
+  can inspect current-state activity for tasks, inbox items, deliverables,
+  reviews, action records, ephemeral assignments, Git promotions, and release
+  packages.
+- Exposed team, project, agent, type, status, and attention-needed filters, and
+  kept timeline ordering deterministic even when legacy review requests or
+  other records have no timestamp.
+- Documented the derived-current-state boundary, timestamp-missing behavior,
+  and the fact that the view is not a persisted audit log.
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`

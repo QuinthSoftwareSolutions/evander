@@ -316,6 +316,530 @@ async function requestJson(request) {
   return text ? JSON.parse(text) : {};
 }
 
+function buildTimelinePayload(state, url) {
+  const filters = {
+    team_id: queryText(url.searchParams, "team_id"),
+    project_id: queryText(url.searchParams, "project_id"),
+    agent_id: queryText(url.searchParams, "agent_id"),
+    type: normalizedQueryValues(url.searchParams, "type"),
+    status: normalizedQueryValues(url.searchParams, "status"),
+    attention_needed: queryBool(url.searchParams, "attention_needed"),
+  };
+  const entries = collectTimelineEntries(state).filter((entry) =>
+    matchesTimelineFilters(entry, filters),
+  );
+  entries.sort(compareTimelineEntries);
+  return {
+    revision: state.revision,
+    derived: true,
+    audit_log: false,
+    source: "derived_from_current_team_state",
+    description: "Derived timeline from the current TeamState snapshot.",
+    filters: compactFilters(filters),
+    timestampless_count: entries.filter((entry) => entry.timestamp === null).length,
+    entries,
+  };
+}
+
+function collectTimelineEntries(state) {
+  const entries = [];
+  const taskIds = Object.keys(state.tasks || {}).sort();
+  taskIds.forEach((taskId) => {
+    const task = state.tasks[taskId];
+    const project = state.projects[task.project_id];
+    const teamId = project?.team_id ?? null;
+    const relatedAgents = unique([
+      task.owner_agent_id,
+      task.created_by_agent_id,
+      task.parent_task_id ? state.tasks[task.parent_task_id]?.owner_agent_id : null,
+    ]);
+    entries.push(
+      timelineEntry({
+        id: `task:${task.id}:created`,
+        type: "task",
+        category: "created",
+        timestamp: task.created_at || null,
+        timestamp_source: "created_at",
+        actor_agent_id: task.created_by_agent_id,
+        related_agent_ids: relatedAgents,
+        team_id: teamId,
+        project_id: task.project_id,
+        task_id: task.id,
+        status: task.state,
+        attention_needed: taskNeedsAttention(task.state),
+        summary: `Task ${task.id} created: ${task.title}`,
+      }),
+    );
+    if (task.updated_at && task.updated_at !== task.created_at) {
+      entries.push(
+        timelineEntry({
+          id: `task:${task.id}:updated`,
+          type: "task",
+          category: "updated",
+          timestamp: task.updated_at,
+          timestamp_source: "updated_at",
+          actor_agent_id: task.owner_agent_id,
+          related_agent_ids: relatedAgents,
+          team_id: teamId,
+          project_id: task.project_id,
+          task_id: task.id,
+          status: task.state,
+          attention_needed: taskNeedsAttention(task.state),
+          summary: `Task ${task.id} updated: ${task.title}`,
+        }),
+      );
+    }
+  });
+
+  const inboxIds = Object.keys(state.inbox || {}).sort();
+  inboxIds.forEach((inboxId) => {
+    const item = state.inbox[inboxId];
+    const recipient = state.agents[item.recipient_agent_id];
+    const task = item.task_id ? state.tasks[item.task_id] : null;
+    const project = task ? state.projects[task.project_id] : null;
+    const teamId = recipient?.team_id ?? project?.team_id ?? null;
+    const relatedAgents = unique([item.recipient_agent_id, item.sender_agent_id]);
+    entries.push(
+      timelineEntry({
+        id: `inbox:${item.id}:created`,
+        type: "inbox_item",
+        category: "created",
+        timestamp: item.created_at || null,
+        timestamp_source: "created_at",
+        actor_agent_id: item.sender_agent_id,
+        related_agent_ids: relatedAgents,
+        team_id: teamId,
+        project_id: task?.project_id ?? null,
+        task_id: item.task_id ?? null,
+        inbox_item_id: item.id,
+        status: item.state,
+        attention_needed: item.state === "pending",
+        summary: `Inbox item ${item.id} created for ${item.recipient_agent_id}`,
+      }),
+    );
+    if (item.updated_at && item.updated_at !== item.created_at) {
+      entries.push(
+        timelineEntry({
+          id: `inbox:${item.id}:handled`,
+          type: "inbox_item",
+          category: item.state === "handled" ? "handled" : "updated",
+          timestamp: item.updated_at,
+          timestamp_source: "updated_at",
+          actor_agent_id: item.sender_agent_id,
+          related_agent_ids: relatedAgents,
+          team_id: teamId,
+          project_id: task?.project_id ?? null,
+          task_id: item.task_id ?? null,
+          inbox_item_id: item.id,
+          status: item.state,
+          attention_needed: item.state === "pending",
+          summary: `Inbox item ${item.id} ${item.state}`,
+        }),
+      );
+    }
+  });
+
+  Object.keys(state.deliverables || {})
+    .sort()
+    .forEach((deliverableId) => {
+      const deliverable = state.deliverables[deliverableId];
+      const task = state.tasks[deliverable.task_id];
+      const project = task ? state.projects[task.project_id] : null;
+      const relatedAgents = unique([
+        deliverable.producer_agent_id,
+        task?.owner_agent_id,
+        task?.created_by_agent_id,
+      ]);
+      entries.push(
+        timelineEntry({
+          id: `deliverable:${deliverable.id}:created`,
+          type: "deliverable",
+          category: "created",
+          timestamp: deliverable.created_at || null,
+          timestamp_source: "created_at",
+          actor_agent_id: deliverable.producer_agent_id,
+          related_agent_ids: relatedAgents,
+          team_id: project?.team_id ?? null,
+          project_id: task?.project_id ?? null,
+          task_id: deliverable.task_id,
+          deliverable_id: deliverable.id,
+          status: deliverable.state,
+          attention_needed: recordNeedsAttention(deliverable.state),
+          summary: `Deliverable ${deliverable.id} created: ${deliverable.summary}`,
+        }),
+      );
+    });
+
+  Object.keys(state.review_requests || {})
+    .sort()
+    .forEach((reviewId) => {
+      const review = state.review_requests[reviewId];
+      const deliverable = state.deliverables[review.deliverable_id];
+      const task = deliverable ? state.tasks[deliverable.task_id] : null;
+      const project = task ? state.projects[task.project_id] : null;
+      const relatedAgents = unique([
+        review.reviewer_agent_id,
+        deliverable?.producer_agent_id,
+        task?.owner_agent_id,
+        task?.created_by_agent_id,
+      ]);
+      entries.push(
+        timelineEntry({
+          id: `review:${review.id}:created`,
+          type: "review",
+          category: "requested",
+          timestamp: review.created_at || null,
+          timestamp_source: "created_at",
+          timestamp_missing: review.created_at == null,
+          actor_agent_id: review.reviewer_agent_id,
+          related_agent_ids: relatedAgents,
+          team_id: project?.team_id ?? null,
+          project_id: task?.project_id ?? null,
+          task_id: task?.id ?? null,
+          deliverable_id: review.deliverable_id,
+          review_request_id: review.id,
+          status: review.state,
+          attention_needed: recordNeedsAttention(review.state),
+          summary: `Review requested for deliverable ${review.deliverable_id}`,
+        }),
+      );
+      if (review.decision_at || review.state !== "pending") {
+        entries.push(
+          timelineEntry({
+            id: `review:${review.id}:decision`,
+            type: "review",
+            category: "decision",
+            timestamp: review.decision_at || null,
+            timestamp_source: "decision_at",
+            timestamp_missing: review.decision_at == null,
+            actor_agent_id: review.reviewer_agent_id,
+            related_agent_ids: relatedAgents,
+            team_id: project?.team_id ?? null,
+            project_id: task?.project_id ?? null,
+            task_id: task?.id ?? null,
+            deliverable_id: review.deliverable_id,
+            review_request_id: review.id,
+            status: review.state,
+            attention_needed: review.state === "blocked" || review.state === "rejected",
+            summary: `Review ${review.id} ${review.state}`,
+          }),
+        );
+      }
+    });
+
+  Object.keys(state.action_records || {})
+    .sort()
+    .forEach((actionId) => {
+      const record = state.action_records[actionId];
+      const agent = state.agents[record.agent_id];
+      entries.push(
+        timelineEntry({
+          id: `action:${record.id}:created`,
+          type: "action",
+          category: "created",
+          timestamp: record.created_at || null,
+          timestamp_source: "created_at",
+          actor_agent_id: record.agent_id,
+          related_agent_ids: unique([record.agent_id]),
+          team_id: agent?.team_id ?? null,
+          project_id: agent?.project_id ?? null,
+          action_record_id: record.id,
+          status: record.success ? "succeeded" : "failed",
+          attention_needed: !record.success,
+          summary: `Action ${record.id} ${record.success ? "succeeded" : "failed"}`,
+        }),
+      );
+    });
+
+  Object.keys(state.ephemeral_assignments || {})
+    .sort()
+    .forEach((assignmentId) => {
+      const assignment = state.ephemeral_assignments[assignmentId];
+      const project = state.projects[assignment.project_id];
+      const relatedAgents = unique([assignment.parent_agent_id]);
+      entries.push(
+        timelineEntry({
+          id: `ephemeral:${assignment.id}:requested`,
+          type: "ephemeral_assignment",
+          category: "requested",
+          timestamp: assignment.created_at || null,
+          timestamp_source: "created_at",
+          actor_agent_id: assignment.parent_agent_id,
+          related_agent_ids: relatedAgents,
+          team_id: project?.team_id ?? null,
+          project_id: assignment.project_id,
+          task_id: assignment.task_id,
+          ephemeral_assignment_id: assignment.id,
+          status: assignment.state,
+          attention_needed: ephemeralNeedsAttention(assignment.state),
+          summary: `Ephemeral assignment ${assignment.id} requested for task ${assignment.task_id}`,
+        }),
+      );
+      if (assignment.updated_at && assignment.updated_at !== assignment.created_at) {
+        entries.push(
+          timelineEntry({
+            id: `ephemeral:${assignment.id}:state`,
+            type: "ephemeral_assignment",
+            category: "state",
+            timestamp: assignment.updated_at,
+            timestamp_source: "updated_at",
+            actor_agent_id: assignment.parent_agent_id,
+            related_agent_ids: relatedAgents,
+            team_id: project?.team_id ?? null,
+            project_id: assignment.project_id,
+            task_id: assignment.task_id,
+            ephemeral_assignment_id: assignment.id,
+            status: assignment.state,
+            attention_needed: ephemeralNeedsAttention(assignment.state),
+            summary: `Ephemeral assignment ${assignment.id} ${assignment.state}`,
+          }),
+        );
+      }
+    });
+
+  Object.keys(state.git_promotions || {})
+    .sort()
+    .forEach((promotionId) => {
+      const promotion = state.git_promotions[promotionId];
+      const project = state.projects[promotion.project_id];
+      entries.push(
+        timelineEntry({
+          id: `git-promotion:${promotion.id}:requested`,
+          type: "git_promotion",
+          category: "requested",
+          timestamp: promotion.created_at || null,
+          timestamp_source: "created_at",
+          actor_agent_id: promotion.actor_agent_id,
+          related_agent_ids: unique([promotion.actor_agent_id]),
+          team_id: project?.team_id ?? null,
+          project_id: promotion.project_id,
+          task_id: promotion.task_id || null,
+          deliverable_id: promotion.deliverable_id || null,
+          release_package_id: promotion.release_package_id || null,
+          git_promotion_id: promotion.id,
+          status: "pending",
+          attention_needed: true,
+          summary: `Git promotion ${promotion.id} requested from ${promotion.source_branch}`,
+        }),
+      );
+      if (promotion.state !== "pending") {
+        entries.push(
+          timelineEntry({
+            id: `git-promotion:${promotion.id}:result`,
+            type: "git_promotion",
+            category: "result",
+            timestamp: promotion.updated_at || null,
+            timestamp_source: "updated_at",
+            actor_agent_id: promotion.actor_agent_id,
+            related_agent_ids: unique([promotion.actor_agent_id]),
+            team_id: project?.team_id ?? null,
+            project_id: promotion.project_id,
+            task_id: promotion.task_id || null,
+            deliverable_id: promotion.deliverable_id || null,
+            release_package_id: promotion.release_package_id || null,
+            git_promotion_id: promotion.id,
+            status: promotion.state,
+            attention_needed: promotion.state === "failed",
+            summary: `Git promotion ${promotion.id} ${promotion.state}`,
+          }),
+        );
+      }
+    });
+
+  Object.keys(state.release_packages || {})
+    .sort()
+    .forEach((releaseId) => {
+      const release = state.release_packages[releaseId];
+      const project = state.projects[release.project_id];
+      const relatedAgents = unique([
+        project?.lead_agent_id,
+        ...(release.deliverable_ids || []).map((deliverableId) =>
+          state.deliverables[deliverableId]?.producer_agent_id,
+        ),
+      ]);
+      entries.push(
+        timelineEntry({
+          id: `release:${release.id}:created`,
+          type: "release_package",
+          category: "created",
+          timestamp: release.created_at || null,
+          timestamp_source: "created_at",
+          actor_agent_id: project?.lead_agent_id ?? null,
+          related_agent_ids: relatedAgents,
+          team_id: project?.team_id ?? null,
+          project_id: release.project_id,
+          release_package_id: release.id,
+          status: release.state,
+          attention_needed: releaseNeedsAttention(release.state),
+          summary: `Release package ${release.id} created for project ${release.project_id}`,
+        }),
+      );
+      if (release.state === "accepted") {
+        const timestamp = release.published_at || release.updated_at || null;
+        entries.push(
+          timelineEntry({
+            id: `release:${release.id}:published`,
+            type: "release_package",
+            category: "published",
+            timestamp,
+            timestamp_source: release.published_at ? "published_at" : "updated_at",
+            timestamp_missing: timestamp == null,
+            actor_agent_id: project?.lead_agent_id ?? null,
+            related_agent_ids: relatedAgents,
+            team_id: project?.team_id ?? null,
+            project_id: release.project_id,
+            release_package_id: release.id,
+            status: release.state,
+            attention_needed: releaseNeedsAttention(release.state),
+            summary: `Release package ${release.id} published`,
+          }),
+        );
+      } else if (release.state === "blocked") {
+        entries.push(
+          timelineEntry({
+            id: `release:${release.id}:blocked`,
+            type: "release_package",
+            category: "blocked",
+            timestamp: release.updated_at || null,
+            timestamp_source: "updated_at",
+            timestamp_missing: release.updated_at == null,
+            actor_agent_id: project?.lead_agent_id ?? null,
+            related_agent_ids: relatedAgents,
+            team_id: project?.team_id ?? null,
+            project_id: release.project_id,
+            release_package_id: release.id,
+            status: release.state,
+            attention_needed: releaseNeedsAttention(release.state),
+            summary: release.error ? `Release blocked: ${release.error}` : `Release ${release.id} blocked`,
+          }),
+        );
+      }
+    });
+
+  return entries;
+}
+
+function matchesTimelineFilters(entry, filters) {
+  if (filters.team_id && entry.team_id !== filters.team_id) {
+    return false;
+  }
+  if (filters.project_id && entry.project_id !== filters.project_id) {
+    return false;
+  }
+  if (filters.agent_id) {
+    const related = new Set([entry.actor_agent_id, ...(entry.related_agent_ids || [])]);
+    if (!related.has(filters.agent_id)) {
+      return false;
+    }
+  }
+  if (filters.type && !filters.type.includes(entry.type)) {
+    return false;
+  }
+  if (filters.status && (!entry.status || !filters.status.includes(entry.status))) {
+    return false;
+  }
+  if (filters.attention_needed !== null && entry.attention_needed !== filters.attention_needed) {
+    return false;
+  }
+  return true;
+}
+
+function compareTimelineEntries(left, right) {
+  const leftMissing = left.timestamp == null;
+  const rightMissing = right.timestamp == null;
+  if (leftMissing !== rightMissing) {
+    return leftMissing ? 1 : -1;
+  }
+  const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NEGATIVE_INFINITY;
+  const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NEGATIVE_INFINITY;
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return (
+    String(left.category || "").localeCompare(String(right.category || "")) ||
+    String(left.type || "").localeCompare(String(right.type || "")) ||
+    String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function timelineEntry(entry) {
+  return {
+    ...entry,
+    timestamp_missing: entry.timestamp_missing ?? entry.timestamp == null,
+    related_agent_ids: unique(entry.related_agent_ids || []),
+  };
+}
+
+function compactFilters(filters) {
+  const result = {};
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === null || value === undefined) {
+      return;
+    }
+    if (Array.isArray(value) && !value.length) {
+      return;
+    }
+    result[key] = value;
+  });
+  return result;
+}
+
+function queryText(searchParams, key) {
+  const value = searchParams.get(key);
+  if (!value) {
+    return null;
+  }
+  const text = value.trim();
+  return text || null;
+}
+
+function normalizedQueryValues(searchParams, key) {
+  const values = [];
+  searchParams.getAll(key).forEach((value) => {
+    value.split(",").forEach((part) => {
+      const text = part.trim();
+      if (text) {
+        values.push(text);
+      }
+    });
+  });
+  return values.length ? [...new Set(values)] : null;
+}
+
+function queryBool(searchParams, key) {
+  const value = queryText(searchParams, key);
+  if (value === null) {
+    return null;
+  }
+  if (["true", "1", "yes", "on"].includes(value.toLowerCase())) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(value.toLowerCase())) {
+    return false;
+  }
+  return null;
+}
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
+}
+
+function taskNeedsAttention(state) {
+  return ["pending", "blocked", "waiting_for_review", "rejected"].includes(state);
+}
+
+function recordNeedsAttention(state) {
+  return ["pending", "blocked", "rejected", "in_progress"].includes(state);
+}
+
+function ephemeralNeedsAttention(state) {
+  return ["requested", "spawn_pending", "running", "cleanup_pending", "failed"].includes(state);
+}
+
+function releaseNeedsAttention(state) {
+  return ["pending", "blocked"].includes(state);
+}
+
 async function serveStatic(response, assetName, contentType) {
   const assetPath = path.join(staticRoot, assetName);
   const body = await readFile(assetPath);
@@ -374,6 +898,10 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
         }
         const materialized = applyTemplateMaterialization(state, payload, template);
         jsonResponse(response, { ...state, materialized }, 201);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/timeline") {
+        jsonResponse(response, buildTimelinePayload(state, url));
         return;
       }
 
@@ -1700,6 +2228,33 @@ function seededOrgChartState() {
         task_id: "task_open",
         payload: { question: "Status?" },
         state: "pending",
+        created_at: "2026-06-09T00:00:00Z",
+        updated_at: "2026-06-09T02:00:00Z",
+      },
+    },
+    action_records: {
+      action: {
+        id: "action",
+        agent_id: "lead",
+        dispatch_id: "dispatch-action",
+        action: { type: "deploy", summary: "Deploy failed" },
+        success: false,
+        error: "boom",
+        created_at: "2026-06-09T03:00:00Z",
+      },
+    },
+    ephemeral_assignments: {
+      ephemeral: {
+        id: "ephemeral",
+        parent_agent_id: "lead",
+        project_id: "project",
+        task_id: "task",
+        session_id: "session-ephemeral",
+        title: "Ephemeral draft",
+        prompt: "Draft an implementation plan.",
+        state: "running",
+        created_at: "2026-06-09T04:00:00Z",
+        updated_at: "2026-06-09T05:00:00Z",
       },
     },
     ephemeral_assignments: {
@@ -1758,6 +2313,12 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
+  await page
+    .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")
+    .waitFor({ state: "visible" });
+  await page.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
+  await page.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  assert.ok((await page.locator(".timeline-entry").count()) >= 10);
 
   const workspace = page.locator(".review-delivery-panel");
   await workspace.getByRole("heading", { name: "Review & Delivery" }).waitFor({
@@ -1906,6 +2467,20 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await waitingRow.getByText("decided 2026-06-09T00:00:00Z").waitFor({ state: "visible" });
   await waitingRow.getByText("Findings: Looks good to me.").waitFor({ state: "visible" });
   await waitingRow.getByText("tests: passed - Added acceptance notes").waitFor({
+    state: "visible",
+  });
+
+  await waitForSelectOption(page, "#timeline-type-filter", "review");
+  const timelineTypeFilter = page.locator("#timeline-type-filter");
+  const timelineAttentionFilter = page.locator("#timeline-attention-filter");
+  await timelineTypeFilter.selectOption("review");
+  await timelineAttentionFilter.selectOption("false");
+  await page.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  assert.equal(await page.locator(".timeline-entry").count(), 4);
+  await page.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
+    state: "visible",
+  });
+  await page.getByText(/Review review-waiting accepted/).first().waitFor({
     state: "visible",
   });
 });
