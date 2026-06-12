@@ -17,6 +17,17 @@ material. Newer entries are added incrementally as changes land.
   hierarchy warnings, runtime/task/inbox/ephemeral detail rendering, and
   display-name form payloads.
 
+## 2026-06-11 - Team Add-on Runtime Blockers Presentation
+
+- Tightened the Team Add-on Runtime / Blockers panel styling so long section
+  headings, filter controls, and runtime summary text wrap cleanly on narrow
+  viewports.
+- Kept derived runtime operations scoped in `query:team:state` responses so
+  project- and agent-filtered workflow queries do not expose unrelated teams'
+  runtime rows.
+- Kept the bundled add-on packaging contract unchanged while documenting the
+  new operator-facing runtime view in the project history.
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`

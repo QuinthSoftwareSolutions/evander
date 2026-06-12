@@ -29,6 +29,36 @@
             <div id="summary-grid" class="summary-grid"></div>
           </section>
 
+          <section class="content-panel runtime-operations-panel" aria-labelledby="runtime-operations-heading">
+            <div class="runtime-operations-header">
+              <div>
+                <p class="section-label">Operations</p>
+                <h2 id="runtime-operations-heading">Runtime / Blockers</h2>
+              </div>
+              <div
+                class="runtime-filter-group"
+                id="runtime-filter-group"
+                role="toolbar"
+                aria-label="Runtime filters"
+              >
+                <button class="runtime-filter-button" type="button" data-runtime-filter="all">All</button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="needs_attention">
+                  Needs attention
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="due_leased_agents">
+                  Due / leased agents
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="blocked_waiting_work">
+                  Blocked / waiting work
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="ephemeral_work">
+                  Ephemeral work
+                </button>
+              </div>
+            </div>
+            <div id="runtime-operations-view" class="runtime-operations-view"></div>
+          </section>
+
           <section class="content-grid">
             <div class="content-panel" aria-labelledby="hierarchy-heading">
               <h2 id="hierarchy-heading">Hierarchy</h2>

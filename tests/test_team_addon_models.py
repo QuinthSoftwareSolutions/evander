@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -15,9 +15,13 @@ from truman_team_addon.git_naming import (
     validate_branch_name,
 )
 from truman_team_addon.models import (
+    AgentActionRecord,
+    AgentInboxItem,
+    AgentRuntime,
     AgentTask,
     Deliverable,
     EphemeralAssignment,
+    EphemeralAssignmentState,
     GitPromotionRecord,
     PersistentAgent,
     Project,
@@ -29,9 +33,12 @@ from truman_team_addon.models import (
     ReviewProfileCriterion,
     ReviewRequest,
     Team,
+    TeamInboxItemState,
+    TeamInboxItemType,
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    runtime_operations_payload,
     team_state_payload,
 )
 
@@ -139,6 +146,119 @@ def _valid_state() -> TeamState:
             )
         },
     )
+
+
+def _state_with_runtime_operations() -> TeamState:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = _valid_state()
+    state.agent_runtimes["ui"] = AgentRuntime(
+        agent_id="ui",
+        wake_leased_until=now + timedelta(minutes=5),
+        active_dispatch_id="dispatch-ui",
+        wake_reason="inbox",
+        last_wake_at=now - timedelta(minutes=10),
+        next_wake_at=now - timedelta(minutes=1),
+        no_progress_count=2,
+        last_progress_at=now - timedelta(minutes=20),
+        updated_at=now,
+    )
+    state.tasks["blocked-task"] = AgentTask(
+        id="blocked-task",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=2,
+        state=TeamTaskState.BLOCKED,
+        title="Blocked task",
+        description="Blocked task description.",
+        created_by_agent_id="lead",
+    )
+    state.tasks["dep-wait"] = AgentTask(
+        id="dep-wait",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=3,
+        state=TeamTaskState.PENDING,
+        title="Dependency task",
+        description="Dependency task description.",
+        created_by_agent_id="lead",
+    )
+    state.tasks["waiting-task"] = AgentTask(
+        id="waiting-task",
+        owner_agent_id="ui",
+        project_id="project",
+        priority=4,
+        state=TeamTaskState.IN_PROGRESS,
+        title="Waiting task",
+        description="Waiting task description.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dep-wait"],
+    )
+    state.inbox["inbox-1"] = AgentInboxItem(
+        id="inbox-1",
+        recipient_agent_id="ui",
+        sender_agent_id="lead",
+        task_id="waiting-task",
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        state=TeamInboxItemState.PENDING,
+        payload={"message": "Please report progress."},
+    )
+    state.inbox["escalation-1"] = AgentInboxItem(
+        id="escalation-1",
+        recipient_agent_id="manager",
+        sender_agent_id="lead",
+        item_type=TeamInboxItemType.ESCALATION,
+        state=TeamInboxItemState.PENDING,
+        payload={"title": "Need operator help", "message": "Please review."},
+    )
+    state.action_records["action-1"] = AgentActionRecord(
+        id="action-1",
+        agent_id="ui",
+        dispatch_id="dispatch-ui",
+        action={"kind": "build"},
+        success=False,
+        error="build failed",
+    )
+    state.release_packages["release"] = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        artifact_refs=["published/release.tar.gz"],
+        state=TeamRecordState.BLOCKED,
+        error="release blocked",
+    )
+    state.git_promotions["promotion-1"] = GitPromotionRecord(
+        id="promotion-1",
+        project_id="project",
+        release_package_id="release",
+        actor_agent_id="lead",
+        source_branch="team/team/features/task-ui",
+        target_branch="team/team/releases/release",
+        promotion_kind="release",
+        state="failed",
+        error="merge conflict",
+    )
+    state.ephemeral_assignments["ephemeral-failed"] = EphemeralAssignment(
+        id="ephemeral-failed",
+        parent_agent_id="ui",
+        project_id="project",
+        task_id="waiting-task",
+        session_id="session-ephemeral-failed",
+        title="Failed ephemeral assignment",
+        prompt="Do work.",
+        state=EphemeralAssignmentState.FAILED,
+        error="spawn failed",
+    )
+    state.ephemeral_assignments["ephemeral-cleanup"] = EphemeralAssignment(
+        id="ephemeral-cleanup",
+        parent_agent_id="ui",
+        project_id="project",
+        task_id="waiting-task",
+        session_id="session-ephemeral-cleanup",
+        title="Cleanup pending ephemeral assignment",
+        prompt="Do more work.",
+        state=EphemeralAssignmentState.CLEANUP_PENDING,
+    )
+    return TeamState.model_validate(state.model_dump(mode="python"))
 
 
 def test_valid_team_state_loads() -> None:
@@ -585,6 +705,7 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
     state = TeamState.model_validate(_state_with_task_graph())
 
     payload = team_state_payload(state)
+    runtime_operations = payload["runtime_operations"]
 
     task = payload["tasks"]["task"]
     assert task["parent_task_id"] == "parent"
@@ -610,6 +731,67 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         "blocked": 0,
         "open": 1,
     }
+    assert {row["id"] for row in runtime_operations["agents"]} == {
+        "lead",
+        "manager",
+        "reviewer",
+        "ui",
+    }
+    assert any(
+        row["kind"] == "waiting_dependency_task" and row["id"] == "task"
+        for row in runtime_operations["attention"]
+    )
+
+
+def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
+    state = _state_with_runtime_operations()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    payload = runtime_operations_payload(state, now=now)
+
+    assert payload["generated_at"] == now.isoformat()
+
+    agents = {row["id"]: row for row in payload["agents"]}
+    ui = agents["ui"]
+    assert ui["active_dispatch_id"] == "dispatch-ui"
+    assert ui["wake_due"] is True
+    assert ui["lease_active"] is True
+    assert ui["wake_reason"] == "inbox"
+    assert ui["next_wake_at"] == "2025-12-31T23:59:00+00:00"
+    assert ui["wake_leased_until"] == "2026-01-01T00:05:00+00:00"
+
+    rows = {row["kind"]: row for row in payload["attention"]}
+    assert set(rows) == {
+        "blocked_task",
+        "blocked_release_package",
+        "cleanup_pending_ephemeral_assignment",
+        "failed_action_record",
+        "failed_ephemeral_assignment",
+        "failed_git_promotion",
+        "pending_escalation",
+        "pending_inbox_item",
+        "waiting_dependency_task",
+    }
+    assert rows["blocked_task"]["id"] == "blocked-task"
+    assert rows["blocked_task"]["state"] == "blocked"
+    assert rows["blocked_task"]["dependency_status"] == "satisfied"
+    assert rows["waiting_dependency_task"]["id"] == "waiting-task"
+    assert rows["waiting_dependency_task"]["dependency_status"] == "waiting"
+    assert rows["waiting_dependency_task"]["blocked_by_task_ids"] == ["dep-wait"]
+    assert rows["pending_inbox_item"]["inbox_item_id"] == "inbox-1"
+    assert rows["pending_inbox_item"]["task_id"] == "waiting-task"
+    assert rows["pending_escalation"]["inbox_item_id"] == "escalation-1"
+    assert rows["failed_action_record"]["dispatch_id"] == "dispatch-ui"
+    assert rows["failed_action_record"]["project_id"] == "project"
+    assert rows["failed_action_record"]["error"] == "build failed"
+    assert rows["failed_git_promotion"]["promotion_id"] == "promotion-1"
+    assert rows["failed_git_promotion"]["release_package_id"] == "release"
+    assert rows["blocked_release_package"]["release_package_id"] == "release"
+    assert rows["blocked_release_package"]["state"] == "blocked"
+    assert rows["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
+    assert rows["failed_ephemeral_assignment"]["state"] == "failed"
+    assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
+    assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
 
 
 def test_dependency_status_satisfied_and_blocked() -> None:

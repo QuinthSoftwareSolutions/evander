@@ -14,11 +14,37 @@ const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
 let state = emptyState();
+let runtimeFilter = null;
+let runtimeFilterTouched = false;
+
+const runtimeFilterChoices = [
+  ["all", "All"],
+  ["needs_attention", "Needs attention"],
+  ["due_leased_agents", "Due / leased agents"],
+  ["blocked_waiting_work", "Blocked / waiting work"],
+  ["ephemeral_work", "Ephemeral work"],
+];
+const blockedWorkKinds = new Set([
+  "blocked_task",
+  "waiting_dependency_task",
+  "pending_inbox_item",
+  "pending_escalation",
+  "failed_action_record",
+  "failed_git_promotion",
+  "blocked_release_package",
+]);
+const ephemeralWorkKinds = new Set([
+  "failed_ephemeral_assignment",
+  "cleanup_pending_ephemeral_assignment",
+]);
+const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
   statusMessage: document.querySelector("#status-message"),
   summaryGrid: document.querySelector("#summary-grid"),
+  runtimeOperationsView: document.querySelector("#runtime-operations-view"),
+  runtimeFilterButtons: Array.from(document.querySelectorAll("[data-runtime-filter]")),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
   projectsView: document.querySelector("#projects-view"),
@@ -29,6 +55,7 @@ const elements = {
 
 document.addEventListener("DOMContentLoaded", () => {
   bindForms();
+  bindRuntimeFilters();
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
@@ -51,6 +78,11 @@ function emptyState() {
     release_packages: {},
     ephemeral_assignments: {},
     git_promotions: {},
+    runtime_operations: {
+      generated_at: null,
+      agents: [],
+      attention: [],
+    },
   };
 }
 
@@ -115,6 +147,7 @@ function normalizeState(payload) {
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   renderSummary();
+  renderRuntimeOperations();
   renderHierarchy();
   renderAgents();
   renderProjects();
@@ -125,6 +158,7 @@ function render() {
 
 function renderSummary() {
   const teams = values(state.teams);
+  const activeTeams = teams.filter((team) => !team.archived);
   const projects = values(state.projects);
   const agents = values(state.agents).filter((agent) => agent.status !== "archived");
   const tasks = values(state.tasks);
@@ -147,21 +181,305 @@ function renderSummary() {
     .map(([label, value]) => {
       return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
     })
-    .join("");
+    .join("")
+    .concat(
+      !teams.length
+        ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
+        : !activeTeams.length
+          ? `<p class="empty-state summary-empty-state">No active team.</p>`
+          : "",
+    );
+}
 
-  if (!teams.length) {
-    elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+function runtimeSortRows(left, right) {
+  return (
+    runtimeSeverityRank(left.severity) - runtimeSeverityRank(right.severity) ||
+    String(left.kind || "").localeCompare(String(right.kind || "")) ||
+    String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function runtimeSeverityRank(severity) {
+  const order = {
+    critical: 0,
+    warning: 1,
+    info: 2,
+  };
+  return order[String(severity || "")] ?? 9;
+}
+
+function runtimeAgentsForFilter(agents) {
+  return [...agents].sort(byId);
+}
+
+function dueLeasedAgentsForFilter(agents) {
+  return runtimeAgentsForFilter(agents).filter((agent) => isDueOrLeasedAgent(agent));
+}
+
+function runtimeAttentionForFilter(attention, filter) {
+  const sorted = [...attention].sort(runtimeSortRows);
+  if (filter === "blocked_waiting_work") {
+    return sorted.filter((row) => blockedWorkKinds.has(row.kind));
   }
+  if (filter === "ephemeral_work") {
+    return sorted.filter((row) => ephemeralWorkKinds.has(row.kind));
+  }
+  return sorted;
+}
+
+function renderRuntimeAttentionRows(attention, emptyMessage = "No current blockers.") {
+  if (!attention.length) {
+    return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
+  }
+  return `
+    <ul class="runtime-list runtime-attention-list">
+      ${attention.map((row) => renderRuntimeAttentionRow(row)).join("")}
+    </ul>
+  `;
+}
+
+function renderRuntimeAttentionRow(row) {
+  const refs = runtimeReferenceParts(row);
+  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
+  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
+  return `
+    <li class="record-item runtime-item runtime-attention-item runtime-severity-${escapeHtml(row.severity || "info")}">
+      <div class="record-line">
+        <strong>${escapeHtml(row.title || row.id)}</strong>
+        <span class="state-pill ${escapeHtml(row.severity || "info")}">${escapeHtml(row.severity || "info")}</span>
+      </div>
+      <div class="meta-line">${escapeHtml(row.kind || "attention")} - ${escapeHtml(row.id)}</div>
+      ${detail}
+      ${
+        stateLine || errorLine
+          ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
+          : ""
+      }
+      ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+    </li>
+  `;
+}
+
+function renderRuntimeAgentRows(agents, emptyMessage = "No agent runtime data yet.") {
+  if (!agents.length) {
+    return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
+  }
+  return `
+    <ul class="runtime-list runtime-agent-list">
+      ${agents.map((agent) => renderRuntimeAgentRow(agent)).join("")}
+    </ul>
+  `;
+}
+
+function renderRuntimeAgentRow(agent) {
+  const status = runtimeAgentStatus(agent);
+  const refs = runtimeReferenceParts(agent);
+  const wakeReason = runtimeText(agent.wake_reason);
+  const lastWake = runtimeText(agent.last_wake_at);
+  const nextWake = runtimeText(agent.next_wake_at);
+  const wakeLease = runtimeText(agent.wake_leased_until);
+  const dispatchId = runtimeText(agent.active_dispatch_id);
+  return `
+    <li class="record-item runtime-item runtime-agent-item">
+      <div class="record-line">
+        <strong>${escapeHtml(agent.id)}</strong>
+        <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+      </div>
+      <div class="meta-line">${escapeHtml(agent.role)} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</div>
+      <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
+      <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
+      <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}</div>
+      ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+    </li>
+  `;
+}
+
+function runtimeAgentStatus(agent) {
+  if (isDueOrLeasedAgent(agent)) {
+    return "warning";
+  }
+  return "info";
+}
+
+function isDueOrLeasedAgent(agent) {
+  return Boolean(agent.wake_due || agent.lease_active || agent.active_dispatch_id);
+}
+
+function runtimeReferenceParts(row) {
+  const refs = [];
+  const entries = [
+    ["team", row.team_id],
+    ["agent", row.agent_id],
+    ["project", row.project_id],
+    ["task", row.task_id],
+    ["deliverable", row.deliverable_id],
+    ["deliverable", row.deliverable_ids],
+    ["inbox", row.inbox_item_id],
+    ["action", row.action_record_id],
+    ["assignment", row.assignment_id],
+    ["promotion", row.promotion_id],
+    ["release", row.release_package_id],
+    ["dispatch", row.dispatch_id],
+    ["session", row.session_id],
+  ];
+  entries.forEach(([label, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length) {
+        refs.push(`${label}s ${escapeHtml(value.join(", "))}`);
+      }
+      return;
+    }
+    if (value) {
+      refs.push(`${label} ${escapeHtml(value)}`);
+    }
+  });
+  return refs.length ? `Refs: ${refs.join(" - ")}` : "";
+}
+
+function runtimeBooleanLabel(value, label) {
+  return `${label}: ${value ? "yes" : "no"}`;
+}
+
+function runtimeText(value) {
+  const formatted = text(value);
+  return formatted || "-";
+}
+
+function runtimeFilterLabel(filter) {
+  return runtimeFilterLabels[filter] || runtimeFilterLabels.all;
+}
+
+function bindRuntimeFilters() {
+  elements.runtimeFilterButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      runtimeFilter = button.dataset.runtimeFilter || "all";
+      runtimeFilterTouched = true;
+      renderRuntimeOperations();
+    });
+  });
+}
+
+function renderRuntimeOperations() {
+  if (!elements.runtimeOperationsView) {
+    return;
+  }
+
+  const runtime = state.runtime_operations || {
+    generated_at: null,
+    agents: [],
+    attention: [],
+  };
+  if (!runtimeFilterTouched || !runtimeFilterChoices.some(([value]) => value === runtimeFilter)) {
+    runtimeFilter = runtime.attention.length ? "needs_attention" : "all";
+  }
+
+  const agents = runtimeAgentsForFilter(runtime.agents || []);
+  const dueLeasedAgents = dueLeasedAgentsForFilter(runtime.agents || []);
+  const attention = runtimeAttentionForFilter(runtime.attention || [], runtimeFilter);
+  const allAttention = [...(runtime.attention || [])].sort(runtimeSortRows);
+  const attentionCount = allAttention.length;
+  const visibleAttentionCount = attention.length;
+
+  const sections = [];
+
+  if (runtimeFilter === "all" || runtimeFilter === "needs_attention") {
+    sections.push(
+      renderRuntimeSection({
+        title: runtimeFilter === "all" ? "Persistent runtime state" : "Agents needing attention",
+        count: runtimeFilter === "all" ? `${agents.length} visible` : `${dueLeasedAgents.length} visible`,
+        emptyMessage: runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
+        body: renderRuntimeAgentRows(
+          runtimeFilter === "all" ? agents : dueLeasedAgents,
+          runtimeFilter === "all" ? "No agent runtime data yet." : "No due or leased agents.",
+        ),
+      }),
+    );
+  } else if (runtimeFilter === "due_leased_agents") {
+    sections.push(
+      renderRuntimeSection({
+        title: "Due / leased agents",
+        count: `${dueLeasedAgents.length} visible`,
+        emptyMessage: "No due or leased agents.",
+        body: renderRuntimeAgentRows(dueLeasedAgents, "No due or leased agents."),
+      }),
+    );
+  }
+
+  elements.runtimeFilterButtons.forEach((button) => {
+    const active = (button.dataset.runtimeFilter || "all") === runtimeFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  if (runtimeFilter === "all" || runtimeFilter === "needs_attention") {
+    sections.push(
+      renderRuntimeSection({
+        title: "Blockers and wake-ups",
+        count: `${visibleAttentionCount} visible / ${attentionCount} total`,
+        emptyMessage: "No current blockers.",
+        body: renderRuntimeAttentionRows(attention, "No current blockers."),
+      }),
+    );
+  } else if (runtimeFilter === "blocked_waiting_work") {
+    sections.push(
+      renderRuntimeSection({
+        title: "Blocked / waiting work",
+        count: `${visibleAttentionCount} visible / ${attentionCount} total`,
+        emptyMessage: "No blocked or waiting work.",
+        body: renderRuntimeAttentionRows(attention, "No blocked or waiting work."),
+      }),
+    );
+  } else if (runtimeFilter === "ephemeral_work") {
+    sections.push(
+      renderRuntimeSection({
+        title: "Ephemeral work",
+        count: `${visibleAttentionCount} visible / ${attentionCount} total`,
+        emptyMessage: "No ephemeral work.",
+        body: renderRuntimeAttentionRows(attention, "No ephemeral work."),
+      }),
+    );
+  }
+
+  elements.runtimeOperationsView.innerHTML = `
+    <div class="runtime-filter-summary">Showing ${escapeHtml(runtimeFilterLabel(runtimeFilter))}.</div>
+    ${sections.join("")}
+    ${
+      runtime.generated_at
+        ? `<div class="meta-line runtime-generated-at">Runtime generated ${escapeHtml(runtime.generated_at)}</div>`
+        : ""
+    }
+  `;
+}
+
+function renderRuntimeSection({ title, count, emptyMessage, body }) {
+  return `
+    <section class="runtime-section">
+      <div class="runtime-section-header">
+        <div>
+          <p class="subheading">Runtime</p>
+          <h3>${escapeHtml(title)}</h3>
+        </div>
+        <div class="runtime-count">${escapeHtml(count)}</div>
+      </div>
+      ${body || `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`}
+    </section>
+  `;
 }
 
 function renderHierarchy() {
   const teams = values(state.teams);
+  const activeTeams = teams.filter((team) => !team.archived);
   if (!teams.length) {
     elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
     return;
   }
+  if (!activeTeams.length) {
+    elements.hierarchyView.innerHTML = `<p class="empty-state">No active team.</p>`;
+    return;
+  }
 
-  elements.hierarchyView.innerHTML = teams
+  elements.hierarchyView.innerHTML = activeTeams
     .map((team) => {
       const hierarchy = teamHierarchyGraph(team);
       return `
