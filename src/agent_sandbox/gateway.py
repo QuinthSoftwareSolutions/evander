@@ -169,7 +169,11 @@ from agent_sandbox.retell_phone import (
     verify_retell_webhook_signature,
 )
 from agent_sandbox.teams_meeting import voice_session_transcript_from_teams_events
-from agent_sandbox.voice_sessions import VoiceQueryDelegator, voice_query_payload
+from agent_sandbox.voice_sessions import (
+    VoiceQueryDelegator,
+    disable_pending_voice_query_wake,
+    voice_query_payload,
+)
 from agent_sandbox.voice_sessions import (
     VoiceProjectionService,
     realtime_session_config,
@@ -7225,6 +7229,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 confidence=request.confidence,
                 metadata=request.metadata,
             )
+            wake_request_disabled = disable_pending_voice_query_wake(
+                query=query,
+                wake_store=context.wake_store,
+            )
             result = SubmitVoiceQueryResponseResponse(
                 query_id=query.query_id,
                 voice_session_id=query.voice_session_id,
@@ -7238,6 +7246,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     "query_id": result["query_id"],
                     "voice_session_id": result["voice_session_id"],
                     "status": result["status"],
+                    "wake_request_disabled": wake_request_disabled,
                 },
             )
             return result
@@ -7545,7 +7554,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "Teams meeting ended; review the transcript for decisions and follow-up."
                     ),
                 )
-                context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             manifest = context.session_repository.get_session(session_id)
             if manifest is not None:
                 metadata = dict(manifest.metadata or {})
@@ -9826,11 +9834,6 @@ def create_app(context: RuntimeContext) -> Starlette:
                 voice_session_id,
                 payload,
             )
-            if updated.status in {"ended", "failed"}:
-                context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
-                updated = context.voice_session_store.get_by_voice_session_id(
-                    voice_session_id
-                ) or updated
             return JSONResponse(
                 {
                     "voice_session_id": updated.voice_session_id,
