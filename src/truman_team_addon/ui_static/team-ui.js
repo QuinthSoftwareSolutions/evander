@@ -2385,6 +2385,7 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
       form.reset();
     }
     render();
+    void loadTimeline();
     setStatus(`Saved revision ${state.revision}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Save failed.", "error");

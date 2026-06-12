@@ -380,8 +380,8 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                 deliverable_id=promotion.deliverable_id,
                 release_package_id=promotion.release_package_id,
                 git_promotion_id=promotion.id,
-                status="pending",
-                attention_needed=True,
+                status=promotion.state,
+                attention_needed=_git_promotion_attention_needed(promotion.state),
                 summary=_git_promotion_requested_summary(promotion),
             )
         )
@@ -567,8 +567,16 @@ def _entry_agent_ids(entry: TimelineEntry) -> list[str]:
 
 def _timeline_sort_key(entry: TimelineEntry) -> tuple[int, datetime, str, str, str]:
     missing = entry.timestamp is None
-    timestamp = entry.timestamp or datetime.min.replace(tzinfo=UTC)
+    timestamp = _normalized_sort_timestamp(entry.timestamp)
     return (1 if missing else 0, timestamp, entry.category, entry.type, entry.id)
+
+
+def _normalized_sort_timestamp(timestamp: datetime | None) -> datetime:
+    if timestamp is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if timestamp.tzinfo is None or timestamp.tzinfo.utcoffset(timestamp) is None:
+        return timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
 
 
 def _normalize_filter_values(values: Sequence[str] | str | None) -> list[str] | None:
@@ -630,6 +638,10 @@ def _ephemeral_attention_needed(state: EphemeralAssignmentState) -> bool:
         EphemeralAssignmentState.REJECTED,
         EphemeralAssignmentState.FAILED,
     }
+
+
+def _git_promotion_attention_needed(state: str) -> bool:
+    return state in {"pending", "failed"}
 
 
 def _release_attention_needed(state: TeamRecordState) -> bool:

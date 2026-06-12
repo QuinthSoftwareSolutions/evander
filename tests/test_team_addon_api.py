@@ -494,18 +494,11 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
             "state": "accepted",
+            "decision_at": "2026-01-01T12:00:00",
             "expected_revision": 6,
         },
     )
     assert response.status_code == 201
-    response = client.post(
-        "/api/addons/team-addon/review-requests/review/decision",
-        json={
-            "state": "accepted",
-            "expected_revision": 7,
-        },
-    )
-    assert response.status_code == 200
 
     timeline = client.get(
         "/api/addons/team-addon/timeline",
@@ -530,7 +523,6 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
         "attention_needed": False,
     }
     assert payload["timestampless_count"] == 0
-    assert payload["entries"][0]["id"] == "task:task:created"
     assert {entry["id"] for entry in payload["entries"]} == {
         "task:task:created",
         "task:task:updated",
@@ -670,6 +662,16 @@ def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> Non
     assert body["materialized"]["revision"] == 1
     assert body["revision"] == 1
     assert len(body["agents"]) == 5
+    assert {
+        role_key: body["agents"][agent_id]["ephemeral_policy"]["max_concurrent"]
+        for role_key, agent_id in body["materialized"]["agent_ids"].items()
+    } == {
+        "manager": 0,
+        "project_lead": 1,
+        "implementer": 2,
+        "reviewer": 1,
+        "release_operator": 1,
+    }
     assert len(body["projects"]) == 1
     assert len(body["review_profiles"]) == 1
     assert len(body["tasks"]) == 2

@@ -311,6 +311,10 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
     assert release_blocked["status"] == "blocked"
     assert release_blocked["attention_needed"] is True
 
+    promotion_requested = entries_by_id["git-promotion:alpha-promotion:requested"]
+    assert promotion_requested["status"] == "failed"
+    assert promotion_requested["attention_needed"] is True
+
 
 def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_attention() -> None:
     state = _timeline_state()
@@ -352,3 +356,44 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     beta_view = derive_team_timeline(state, team_id="beta-team")
     assert [entry["id"] for entry in beta_view["entries"]] == ["task:beta-task:created"]
     assert all(entry["team_id"] == "beta-team" for entry in beta_view["entries"])
+
+
+def test_derive_team_timeline_normalizes_naive_timestamps_for_sorting() -> None:
+    state = _timeline_state()
+    review = state.review_requests["alpha-review"]
+    review.created_at = datetime(2026, 1, 1, 12, 30)
+    review.decision_at = datetime(2026, 1, 1, 12, 45)
+
+    timeline = derive_team_timeline(state, types="review")
+
+    assert [entry["id"] for entry in timeline["entries"]] == [
+        "review:alpha-review:created",
+        "review:alpha-review:decision",
+    ]
+
+
+def test_derive_team_timeline_uses_current_promotion_state_for_requested_entries() -> None:
+    state = _timeline_state()
+    promotion = state.git_promotions["alpha-promotion"]
+    promotion.state = "succeeded"
+    promotion.error = None
+
+    timeline = derive_team_timeline(state)
+    entries_by_id = {entry["id"]: entry for entry in timeline["entries"]}
+    requested = entries_by_id["git-promotion:alpha-promotion:requested"]
+
+    assert requested["status"] == "succeeded"
+    assert requested["attention_needed"] is False
+
+    attention_ids = [
+        entry["id"]
+        for entry in derive_team_timeline(state, attention_needed=True)["entries"]
+    ]
+    assert "git-promotion:alpha-promotion:requested" not in attention_ids
+    assert "git-promotion:alpha-promotion:result" not in attention_ids
+
+    pending_ids = [
+        entry["id"]
+        for entry in derive_team_timeline(state, statuses="pending")["entries"]
+    ]
+    assert "git-promotion:alpha-promotion:requested" not in pending_ids

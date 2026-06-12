@@ -850,6 +850,7 @@ async function serveStatic(response, assetName, contentType) {
 async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, initialState = null } = {}) {
   const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
+  const timelineRequests = [];
   let conflictSent = false;
   const template = autoDevSquadTemplate();
 
@@ -901,6 +902,7 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/timeline") {
+        timelineRequests.push(url.search);
         jsonResponse(response, buildTimelinePayload(state, url));
         return;
       }
@@ -967,7 +969,7 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
   });
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
-  return { port: address.port, requests, state };
+  return { port: address.port, requests, state, timelineRequests };
 }
 
 function materializationDuplicateError(state, payload) {
@@ -1302,6 +1304,20 @@ async function openBrowserPage(t, port) {
 
 async function waitForSelectOption(page, selector, value) {
   await page.locator(`${selector} option[value="${value}"]`).waitFor({ state: "attached" });
+}
+
+async function waitForCondition(predicate, message, { timeoutMs = 2000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  if (predicate()) {
+    return;
+  }
+  throw new Error(message);
 }
 
 async function openDetails(page, name) {
@@ -2307,7 +2323,7 @@ function seededMalformedHierarchyState() {
 }
 
 test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
-  const { port, requests, state } = await createTeamAddonServer(t, {
+  const { port, requests, state, timelineRequests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
   const page = await openBrowserPage(t, port);
@@ -2319,6 +2335,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await page.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
   await page.locator(".timeline-entry").first().waitFor({ state: "visible" });
   assert.ok((await page.locator(".timeline-entry").count()) >= 10);
+  const timelineRequestsBeforeDecision = timelineRequests.length;
 
   const workspace = page.locator(".review-delivery-panel");
   await workspace.getByRole("heading", { name: "Review & Delivery" }).waitFor({
@@ -2430,6 +2447,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
     .fill("tests | passed | Added acceptance notes\ndocs | passed | README updated");
   await workspaceDecisionForm.getByRole("button", { name: "Submit decision" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  await waitForCondition(
+    () => timelineRequests.length > timelineRequestsBeforeDecision,
+    "expected timeline to refresh after a successful review decision",
+  );
 
   const decisionRequest = requests.find((request) =>
     request.pathname === "/api/addons/team-addon/review-requests/review-waiting/decision",

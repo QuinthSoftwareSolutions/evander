@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Team Add-on Template and Timeline Fixes
+
+- Applied template-defined ephemeral concurrency policies when materializing
+  persistent agents from the Auto-Dev Squad template.
+- Hardened derived timeline ordering for offset-naive timestamps and kept
+  completed Git promotions out of pending/attention-needed timeline filters.
+- Refreshed the Timeline / Audit panel after successful Team Add-on UI
+  mutations so operators do not see stale derived activity.
+
 ## 2026-06-11 - Team Add-on Org Chart View
 
 - Added an org-chart hierarchy view to the Team Add-on UI with visible

@@ -222,6 +222,16 @@ def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> No
     assert state.agents["implementer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
     assert state.agents["reviewer-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
     assert state.agents["release-operator-auto-dev-squad"].reports_to_agent_id == "project-lead-auto-dev-squad"
+    assert {
+        role_key: state.agents[agent_id].ephemeral_policy.max_concurrent
+        for role_key, agent_id in result["agent_ids"].items()
+    } == {
+        "manager": 0,
+        "project_lead": 1,
+        "implementer": 2,
+        "reviewer": 1,
+        "release_operator": 1,
+    }
 
     profile = state.review_profiles["project-auto-dev-squad-auto-dev-review"]
     assert profile.team_id == "team-auto-dev-squad"

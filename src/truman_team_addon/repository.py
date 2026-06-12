@@ -543,6 +543,7 @@ class TeamStateRepository:
                 role=root_role_key,
                 session_id=manager_role_input["session_id"],
                 reports_to_agent_id=None,
+                ephemeral_policy=root_role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[manager.id] = manager
             state.teams[team_id] = Team(
@@ -598,6 +599,7 @@ class TeamStateRepository:
                     role=role.key,
                     session_id=role_inputs[role.key]["session_id"],
                     reports_to_agent_id=superior.id,
+                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
                 )
                 state.agents[role_agent.id] = role_agent
                 superior.subordinate_agent_ids = _append_unique(
