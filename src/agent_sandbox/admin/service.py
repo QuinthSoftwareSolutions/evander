@@ -997,6 +997,7 @@ class ToolCallAuditEntryPayload(BaseModel):
     error_summary: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
+    approval_diagnostic: dict[str, Any] | None = None
     related_links: list[ToolCallAuditRelatedLinkPayload] = Field(default_factory=list)
 
 
@@ -20577,6 +20578,85 @@ def _approval_audit_payload_matches_request(
     return payload.get("session_id") == request.session_id
 
 
+def _compact_payload_summary(value: Any, *, max_length: int = 180) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, (dict, list)):
+        if not value:
+            return None
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    else:
+        text = str(value).strip()
+    if not text:
+        return None
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 1].rstrip()}..."
+
+
+def _approval_review_blocked_tool_call_diagnostics(
+    audit_context: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for entry in audit_context:
+        if not isinstance(entry, dict):
+            continue
+        if _tool_call_failure_status(entry) != "denied":
+            continue
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        diagnostic = result.get("approval_diagnostic")
+        if isinstance(diagnostic, dict):
+            diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def build_approval_review_payload(
+    request: ApprovalRequest, audit_context: list[dict[str, Any]]
+) -> dict[str, Any]:
+    now = _utc_now()
+    age_seconds = int((now - request.created_at).total_seconds())
+    expires_in_seconds = int((request.expires_at - now).total_seconds())
+    redacted_payload = _redact_sensitive_payload(request.payload)
+    redacted_audit_context = [
+        _redact_sensitive_payload(entry) if isinstance(entry, dict) else entry
+        for entry in audit_context
+    ]
+    request_payload = request.model_dump(mode="json")
+    request_payload["payload"] = redacted_payload
+    blocked_tool_call_diagnostics = _approval_review_blocked_tool_call_diagnostics(
+        redacted_audit_context
+    )
+    approval_diagnostics = {
+        "request_id": request.request_id,
+        "status": request.status.value,
+        "action_type": request.action_type,
+        "tool_name": request.tool_name or request.action_type,
+        "payload_digest": request.payload_digest,
+        "approver": request.approver,
+        "decision_at": request_payload.get("decision_at"),
+        "decision_reason": request.decision_reason,
+        "created_at": request_payload.get("created_at"),
+        "expires_at": request_payload.get("expires_at"),
+        "age_seconds": age_seconds,
+        "expires_in_seconds": expires_in_seconds,
+        "payload_summary": _compact_payload_summary(redacted_payload),
+        "approved_payload": redacted_payload,
+        "requested_payload": redacted_payload,
+        "blocked_tool_call_diagnostics": blocked_tool_call_diagnostics,
+    }
+    return {
+        "request": request_payload,
+        "redacted_payload": redacted_payload,
+        "payload_summary": _compact_payload_summary(redacted_payload),
+        "approval_diagnostics": approval_diagnostics,
+        "audit_context": redacted_audit_context,
+        "age_seconds": age_seconds,
+        "expires_in_seconds": expires_in_seconds,
+    }
+
+
 def _tool_call_error_summary(
     entry: dict[str, Any], status: str, result: dict[str, Any]
 ) -> str | None:
@@ -20676,6 +20756,9 @@ def _tool_call_audit_entry_from_payload(
     raw_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     redacted_args = _redact_sensitive_payload(raw_args)
     redacted_result = _redact_sensitive_payload(raw_result)
+    approval_diagnostic = redacted_result.get("approval_diagnostic")
+    if not isinstance(approval_diagnostic, dict):
+        approval_diagnostic = None
     status = _tool_call_failure_status(payload)
     decision = str(payload.get("decision") or payload.get("status") or "").strip() or None
     request_id = None
@@ -20812,6 +20895,7 @@ def _tool_call_audit_entry_from_payload(
         error_summary=_tool_call_error_summary(payload, status, raw_result),
         args=redacted_args,
         result=redacted_result,
+        approval_diagnostic=approval_diagnostic,
     )
     entry.related_links = _tool_call_related_links(entry)
     return entry

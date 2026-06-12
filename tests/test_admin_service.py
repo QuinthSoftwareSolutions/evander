@@ -5458,6 +5458,52 @@ def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_
                     },
                     sort_keys=True,
                 ),
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "payload mismatch",
+                        "args": {
+                            "session_id": "session-1",
+                            "request_id": "approval-1",
+                            "token": "blocked-secret",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "request_id": "approval-1",
+                            "approval_diagnostic": {
+                                "approval_request_id": "approval-1",
+                                "rejection_kind": "payload_mismatch",
+                                "approved_payload_digest": "digest-1",
+                                "attempted_payload_digest": "attempted-digest",
+                                "approved_payload": {
+                                    "body": "hello",
+                                    "token": "approved-secret",
+                                },
+                                "attempted_payload": {
+                                    "body": "hello",
+                                    "token": "attempted-secret",
+                                },
+                                "differences": {
+                                    "changed": [
+                                        {
+                                            "path": "payload.token",
+                                            "approved_value": "<redacted>",
+                                            "attempted_value": "<redacted>",
+                                        }
+                                    ]
+                                },
+                                "secret": "blocked-diagnostic-secret",
+                            },
+                        },
+                        "created_at": "2026-05-18T10:03:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
             ]
         )
         + "\n",
@@ -5470,15 +5516,36 @@ def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_
         "tool_call",
         "approval_decision",
         "tool_call",
+        "tool_call",
     ]
     assert {entry["approval_request_id"] for entry in review["audit_context"]} == {
         "approval-1"
     }
     decision_entry = review["audit_context"][1]
+    blocked_entry = review["audit_context"][3]
     assert decision_entry["args"]["request_id"] == "approval-1"
     assert decision_entry["result"]["status"] == "denied"
     assert decision_entry["result"]["tool_name"] == "email_send_approved"
     assert decision_entry["result"]["payload_digest"] == "digest-1"
+    assert review["payload_summary"] == '{"body":"hello"}'
+    assert review["approval_diagnostics"]["request_id"] == "approval-1"
+    assert review["approval_diagnostics"]["status"] == "pending"
+    assert review["approval_diagnostics"]["tool_name"] == "email_send_approved"
+    assert review["approval_diagnostics"]["approved_payload"] == {"body": "hello"}
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "approved_payload"
+    ]["token"] == "<redacted>"
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "attempted_payload"
+    ]["token"] == "<redacted>"
+    assert review["approval_diagnostics"]["blocked_tool_call_diagnostics"][0]["differences"][
+        "changed"
+    ][0]["attempted_value"] == "<redacted>"
+    assert blocked_entry["result"]["approval_diagnostic"]["secret"] == "<redacted>"
+    assert blocked_entry["result"]["approval_diagnostic"]["attempted_payload"]["token"] == "<redacted>"
+    serialized_review = json.dumps(review, default=str)
+    assert "approved-secret" not in serialized_review
+    assert "attempted-secret" not in serialized_review
 
 
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:

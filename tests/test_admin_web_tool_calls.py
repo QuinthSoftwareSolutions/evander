@@ -60,6 +60,29 @@ def _write_audit_log(path: Path) -> None:
                 "request_id": "request-1",
                 "secret": "result-secret",
                 "status": "success",
+                "approval_diagnostic": {
+                    "approval_request_id": "approval-1",
+                    "rejection_kind": "payload_mismatch",
+                    "approved_payload_digest": "digest-1",
+                    "attempted_payload_digest": "attempted-digest",
+                    "approved_payload": {
+                        "token": "approved-secret",
+                        "nested": {"password": "approved-nested-secret"},
+                    },
+                    "attempted_payload": {
+                        "token": "attempted-secret",
+                        "nested": {"password": "attempted-nested-secret"},
+                    },
+                            "differences": {
+                                "changed": [
+                                    {
+                                        "path": "payload.token",
+                                        "approved_value": "<redacted>",
+                                        "attempted_value": "<redacted>",
+                                    }
+                                ]
+                            },
+                        },
             },
             "created_at": "2026-05-18T10:00:00+00:00",
         },
@@ -161,6 +184,11 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     assert default_page.items[0].error_summary == "boom"
     assert default_page.items[0].related_links[0].kind == "session"
     assert {"session", "vm"}.issubset({link.kind for link in default_page.items[0].related_links})
+    assert team_page.items[1].approval_diagnostic is not None
+    assert team_page.items[1].approval_diagnostic["approval_request_id"] == "approval-1"
+    assert team_page.items[1].approval_diagnostic["attempted_payload"]["token"] == "<redacted>"
+    assert team_page.items[1].approval_diagnostic["attempted_payload"]["nested"]["password"] == "<redacted>"
+    assert team_page.items[1].approval_diagnostic["differences"]["changed"][0]["attempted_value"] == "<redacted>"
     assert default_page.items[1].status == "denied"
     assert default_page.items[1].error_summary == "blocked"
     assert default_page.items[1].args["secret"] == "<redacted>"
