@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from .issue_git_service import IssueGitAdminDependencies, IssueGitAdminService, IssueGitAdminSupport
 from .operations_service import OperationsAdminService
+from .pr_preflight_service import (
+    PrIntegrationPreflightAdminDependencies,
+    PrIntegrationPreflightAdminService,
+)
 from .vm_agent_service import VmAgentAdminDependencies, VmAgentAdminService, VmAgentAdminSupport
 from .workflow_config_service import WorkflowConfigAdminService
 
@@ -10,6 +14,8 @@ __all__ = [
     "IssueGitAdminService",
     "IssueGitAdminSupport",
     "OperationsAdminService",
+    "PrIntegrationPreflightAdminDependencies",
+    "PrIntegrationPreflightAdminService",
     "VmAgentAdminDependencies",
     "VmAgentAdminService",
     "VmAgentAdminSupport",

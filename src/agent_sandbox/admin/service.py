@@ -6991,6 +6991,8 @@ class AdminService:
             IssueGitAdminDependencies,
             IssueGitAdminService,
             IssueGitAdminSupport,
+            PrIntegrationPreflightAdminDependencies,
+            PrIntegrationPreflightAdminService,
             OperationsAdminService,
             VmAgentAdminDependencies,
             VmAgentAdminService,
@@ -7188,6 +7190,13 @@ class AdminService:
                 resolve_repo_source=self.vm_agent_support.resolve_repo_source,
                 sync_repo_into_bare_remote=self.vm_agent_support.sync_repo_into_bare_remote,
                 clone_repo_into_vm=self.vm_agent_support.clone_repo_into_vm,
+            )
+        )
+        self.pr_integration_preflight_admin = PrIntegrationPreflightAdminService(
+            PrIntegrationPreflightAdminDependencies(
+                runtime=self.runtime,
+                compute_directory_effective_config=self.compute_directory_effective_config,
+                resolve_repo_source=self.vm_agent_support.resolve_repo_source,
             )
         )
         self.operations_admin = OperationsAdminService(
@@ -13064,6 +13073,29 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             body_artifact_ids=body_artifact_ids,
             draft=draft,
             fill=fill,
+        )
+
+    def run_pr_integration_preflight(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_ids: list[str],
+        mode: str,
+        directory_path: str,
+        organization_url: str | None = None,
+        project: str | None = None,
+        repo_source: str | None = None,
+    ):
+        return self.pr_integration_preflight_admin.run_pr_integration_preflight(
+            provider=provider,
+            repo=repo,
+            pr_ids=pr_ids,
+            mode=mode,
+            directory_path=directory_path,
+            organization_url=organization_url,
+            project=project,
+            repo_source=repo_source,
         )
 
     def push_branch(
