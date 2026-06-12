@@ -124,6 +124,7 @@ class ToolName(str, Enum):
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
     SCHEDULE_RESUME = "schedule_resume"
+    CANCEL_SCHEDULED_WAKE = "cancel_scheduled_wake"
     PROMPT_AGENT = "prompt_agent"
     LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
@@ -2680,6 +2681,47 @@ class SubmitVoiceQueryResponseResponse(BaseModel):
     query_id: str = Field(min_length=1)
     voice_session_id: str = Field(min_length=1)
     status: str = Field(min_length=1)
+
+
+class CancelScheduledWakeRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", "request_id", mode="before")
+    @classmethod
+    def normalize_required_identifier(cls, value: object, info) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError(f"{info.field_name} must be non-empty")
+        return text
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return text[:1024]
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be an object")
+        return value
+
+
+class CancelScheduledWakeResponse(BaseModel):
+    session_id: str = Field(min_length=1)
+    request_id: str | None = None
+    status: WakeRequestCancellationStatus
+    request: WakeScheduledRequest | None = None
 
 
 class ScheduleResumeRequest(BaseModel):

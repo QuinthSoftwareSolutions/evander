@@ -24,6 +24,7 @@ from agent_sandbox.models import (
     ApprovalPayloadMode,
     ApprovalRequest,
     ApprovalStatus,
+    CancelScheduledWakeRequest,
     Directory,
     DiscordCommandEnvelope,
     SessionManifest,
@@ -901,6 +902,83 @@ def test_require_tool_schedule_resume_rejects_non_container_session_without_vm_b
 
     with pytest.raises(PolicyError, match="requires a session with a VM binding"):
         engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
+
+
+def test_require_tool_cancel_scheduled_wake_does_not_require_vm_binding(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    session = engine.require_tool("s1", ToolName.CANCEL_SCHEDULED_WAKE)
+
+    assert session.session_id == "s1"
+
+
+def test_require_tool_cancel_scheduled_wake_rejects_session_without_tool_permission(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(PolicyError, match="is not allowed for session s1"):
+        engine.require_tool("s1", ToolName.CANCEL_SCHEDULED_WAKE)
+
+
+def test_require_tool_cancel_scheduled_wake_respects_directory_denials(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(
+        config,
+        {"mcp_tool_policies": {ToolName.CANCEL_SCHEDULED_WAKE.value: {"denied": True}}},
+    )
+    engine = make_engine_from_config(config)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(PolicyError, match="denied by directory policy"):
+        engine.require_tool("s1", ToolName.CANCEL_SCHEDULED_WAKE)
+
+
+def test_cancel_scheduled_wake_request_normalizes_identifiers_reason_and_metadata() -> None:
+    request = CancelScheduledWakeRequest(
+        session_id="  s1  ",
+        request_id="  req-1  ",
+        reason="  " + ("x" * 1100) + "  ",
+        metadata=None,
+    )
+
+    assert request.session_id == "s1"
+    assert request.request_id == "req-1"
+    assert len(request.reason or "") == 1024
+    assert request.reason == "x" * 1024
+    assert request.metadata == {}
 
 
 def test_assistant_mutation_tools_require_explicit_mutation_policy(tmp_path: Path) -> None:
