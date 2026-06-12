@@ -477,6 +477,42 @@ def test_mark_request_due_or_missed_refreshes_due_and_stale_dispatching_requests
     assert stale.last_error is not None
 
 
+def test_mark_request_due_or_missed_overwrites_stale_last_error_reason(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    now = datetime(2026, 4, 1, 10, 40, tzinfo=UTC)
+
+    request = store.schedule_resume_request(
+        session_id="session-stale",
+        prompt="Resume stale work.",
+        schedule=WakeScheduleDefinition(resume_at=now - timedelta(minutes=10)),
+        request_id="wake-stale",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    request.status = "dispatching"
+    request.status_reason = None
+    request.status_updated_at = now - timedelta(minutes=20)
+    request.last_dispatch_id = "dispatch-stale"
+    request.last_error = "older failure text"
+    request.last_error_at = now - timedelta(minutes=30)
+    store.upsert_request(request)
+
+    refreshed = store.mark_request_due_or_missed(now_utc=now, late_after=timedelta(minutes=5))
+    assert [item.request_id for item in refreshed] == ["wake-stale"]
+
+    updated = store.get_request("wake-stale")
+    assert updated is not None
+    assert updated.status == "missed_or_late"
+    assert updated.last_error is not None
+    assert "older failure text" not in updated.last_error
+    assert "dispatch" in updated.last_error.casefold()
+    assert updated.last_error_at == now
+
+
 def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_summary(
     tmp_path: Path,
 ) -> None:
@@ -566,6 +602,24 @@ def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_
     assert failure_entry["retry_available"] is True
     assert "\n" not in (failure_entry["failure_reason"] or "")
     assert "second line" in (failure_entry["failure_reason"] or "")
+
+
+def test_list_ledger_entries_returns_no_rows_for_nonpositive_limit(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    assert store.list_ledger_entries(limit=0) == []
 
 
 def test_schedule_resume_request_rejects_duplicate_request_id(tmp_path: Path) -> None:

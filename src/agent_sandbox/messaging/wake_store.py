@@ -397,7 +397,7 @@ class WakeRequestStore:
                 request.status_reason = reason
                 request.status_updated_at = now_utc
                 request.updated_at = now_utc
-                if status == "missed_or_late" and not request.last_error:
+                if status == "missed_or_late":
                     request.last_error = reason
                     request.last_error_at = now_utc
                 connection.execute(
@@ -546,6 +546,8 @@ class WakeRequestStore:
         include_completed: bool = True,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
         normalized_session_id = str(session_id or "").strip()
         normalized_statuses = {
             normalized
@@ -581,7 +583,7 @@ class WakeRequestStore:
                     status=status,
                 )
             )
-            if len(entries) >= max(0, int(limit)):
+            if len(entries) >= int(limit):
                 break
         return entries
 
