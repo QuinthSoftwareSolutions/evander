@@ -35,6 +35,10 @@ def build_payload_diagnostic(
     """Build a redacted payload diagnostic without changing enforcement semantics."""
     normalized_redacted_keys = _normalize_redacted_keys(redacted_keys)
     normalized_redacted_markers = _normalize_redacted_markers(redacted_markers)
+    if approved_payload_digest is None:
+        approved_payload_digest = digest_payload(approved_payload)
+    if attempted_payload_digest is None:
+        attempted_payload_digest = digest_payload(attempted_payload)
     approved_payload_summary = _redact_payload(
         approved_payload,
         redacted_keys=normalized_redacted_keys,
@@ -45,17 +49,16 @@ def build_payload_diagnostic(
         redacted_keys=normalized_redacted_keys,
         redacted_markers=normalized_redacted_markers,
     )
-    differences = _build_differences(
-        approved_payload,
-        attempted_payload,
-        redacted_keys=normalized_redacted_keys,
-        redacted_markers=normalized_redacted_markers,
-        max_diff_entries=max_diff_entries,
-    )
-    if approved_payload_digest is None:
-        approved_payload_digest = digest_payload(approved_payload)
-    if attempted_payload_digest is None:
-        attempted_payload_digest = digest_payload(attempted_payload)
+    if approved_payload_digest == attempted_payload_digest:
+        differences = _empty_differences()
+    else:
+        differences = _build_differences(
+            approved_payload,
+            attempted_payload,
+            redacted_keys=normalized_redacted_keys,
+            redacted_markers=normalized_redacted_markers,
+            max_diff_entries=max_diff_entries,
+        )
     return {
         "status": status,
         "reason": reason,
@@ -68,6 +71,16 @@ def build_payload_diagnostic(
         "approved_payload_summary": approved_payload_summary,
         "attempted_payload_summary": attempted_payload_summary,
         "differences": differences,
+    }
+
+
+def _empty_differences() -> dict[str, Any]:
+    empty_bucket = {"entries": [], "truncated": False}
+    return {
+        "changed": dict(empty_bucket),
+        "missing": dict(empty_bucket),
+        "extra": dict(empty_bucket),
+        "truncated": False,
     }
 
 

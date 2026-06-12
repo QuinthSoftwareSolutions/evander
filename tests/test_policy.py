@@ -1001,6 +1001,51 @@ def test_require_approved_attaches_denied_and_expired_diagnostics(tmp_path: Path
     assert exc.approval_diagnostic["rejection_kind"] == "expired"
 
 
+def test_require_approved_ignores_redacted_stored_fields_when_digest_matches(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    approved_payload = {
+        "tool_name": ToolName.RUN_SCRIPT.value,
+        "session_id": "s1",
+        "arguments": {"script_name": "one", "token": "approved-secret"},
+    }
+    approval = engine.create_approval(
+        "s1",
+        "mcp_tool_invocation",
+        approved_payload,
+        "Run script",
+        tool_name=ToolName.RUN_SCRIPT.value,
+    )
+    assert approval.payload["arguments"]["token"] == "<redacted>"
+    approval.status = ApprovalStatus.DENIED
+    engine.approval_store.put(approval.request_id, approval)
+
+    with pytest.raises(PolicyError, match="is not approved") as excinfo:
+        engine.require_approved(approval.request_id, approved_payload)
+
+    diagnostic = excinfo.value.approval_diagnostic
+    assert diagnostic["rejection_kind"] == "denied"
+    assert diagnostic["approved_payload_digest"] == approval.payload_digest
+    assert diagnostic["attempted_payload_digest"] == approval.payload_digest
+    assert diagnostic["payload_match"] is True
+    assert diagnostic["approved_payload_summary"]["arguments"]["token"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["arguments"]["token"] == "<redacted>"
+    assert diagnostic["differences"] == {
+        "changed": {"entries": [], "truncated": False},
+        "missing": {"entries": [], "truncated": False},
+        "extra": {"entries": [], "truncated": False},
+        "truncated": False,
+    }
+
+
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     engine.session_store.upsert_session(
@@ -1423,6 +1468,27 @@ def test_build_payload_diagnostic_uses_raw_attempted_payload_for_digest() -> Non
     assert diagnostic["attempted_payload_digest"] != digest_payload(
         diagnostic["attempted_payload_summary"]
     )
+
+
+def test_build_payload_diagnostic_suppresses_redacted_diffs_when_digests_match() -> None:
+    attempted = {"token": "actual-secret", "value": "same"}
+    approved = {"token": "<redacted>", "value": "same"}
+    canonical_digest = digest_payload(attempted)
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        redacted_keys={"token"},
+        approved_payload_digest=canonical_digest,
+        attempted_payload_digest=canonical_digest,
+    )
+
+    assert diagnostic["payload_match"] is True
+    assert diagnostic["approved_payload_summary"]["token"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["token"] == "<redacted>"
+    assert diagnostic["differences"]["changed"]["entries"] == []
+    assert diagnostic["differences"]["missing"]["entries"] == []
+    assert diagnostic["differences"]["extra"]["entries"] == []
 
 
 def test_build_payload_diagnostic_truncates_deep_array_diffs() -> None:

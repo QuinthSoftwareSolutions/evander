@@ -20600,7 +20600,7 @@ def _approval_review_blocked_tool_call_diagnostics(
     audit_context: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
-    for entry in audit_context:
+    for entry in reversed(audit_context):
         if not isinstance(entry, dict):
             continue
         if _tool_call_failure_status(entry) != "denied":

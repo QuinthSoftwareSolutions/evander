@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-12 - Approval Retry Diagnostics
+
+- Stopped approval retry diagnostics from reporting redacted stored fields as
+  changed when the attempted payload still matches the canonical approved
+  payload digest.
+- Changed approval detail diagnostics to prioritize the latest blocked retry so
+  operators see the most recent failed attempt first.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced
