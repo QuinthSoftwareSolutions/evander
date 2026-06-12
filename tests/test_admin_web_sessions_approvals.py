@@ -1089,6 +1089,43 @@ def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Pa
     assert item["schedule_kind"] == "cron"
 
 
+def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    created = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-14086-session",
+        reason="No longer needed",
+        metadata={"source": "ui"},
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/issue-14086-session")
+
+    assert response.status_code == 200
+    item = response.json()["wake_schedules"][0]
+    assert item["status"] == "cancelled"
+    assert item["cancelled_by_session_id"] == "issue-14086-session"
+    assert item["cancel_reason"] == "No longer needed"
+    assert item["cancel_metadata"] == {"source": "ui"}
+    assert item["schedule_kind"] == "resume_at"
+
+
 def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

@@ -391,12 +391,17 @@ class SessionAdminFacade:
                     "cron": request.schedule.cron,
                     "prompt": request.resume_prompt.prompt,
                     "resume_mode": request.resume_mode,
+                    "status": request.status,
                     "enabled": request.enabled,
                     "source": request.source,
                     "created_at": request.created_at,
                     "updated_at": request.updated_at,
                     "last_dispatched_at": request.last_dispatched_at,
                     "next_run_at": request.next_run_at,
+                    "cancelled_at": request.cancelled_at,
+                    "cancelled_by_session_id": request.cancelled_by_session_id,
+                    "cancel_reason": request.cancel_reason,
+                    "cancel_metadata": request.cancel_metadata,
                     "last_dispatch": (
                         {
                             "dispatch_id": dispatch.dispatch_id,

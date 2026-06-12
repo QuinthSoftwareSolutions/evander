@@ -103,8 +103,13 @@ type WakeSchedule = {
   cron?: string | null;
   resume_at?: string | null;
   resume_mode: string;
+  status?: string | null;
   enabled: boolean;
   updated_at?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by_session_id?: string | null;
+  cancel_reason?: string | null;
+  cancel_metadata?: Record<string, unknown>;
   schedule_kind: "cron" | "resume_at";
 };
 
@@ -179,6 +184,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_pending_agent_prompts: "List prompts queued for the guest agent that have not been handled yet.",
   respond_to_agent: "Reply to a pending agent prompt or approval-style checkpoint from the guest agent.",
   schedule_resume: "Create or update a host-managed wake schedule that resumes this session later.",
+  cancel_scheduled_wake: "Cancel an obsolete host-managed wake schedule owned by this session.",
   run_script: "Run an approved host-side script on behalf of the session.",
   mssql_provision_database: "Provision a session-owned SQL Server database through the container worker.",
   mssql_list_databases: "List SQL Server databases owned by this session.",
@@ -429,6 +435,7 @@ function groupToolOption(tool: ToolOption): string {
     "list_pending_agent_prompts",
     "respond_to_agent",
     "schedule_resume",
+    "cancel_scheduled_wake",
     "run_script",
     "copilot_host_auth",
   ].includes(value)) {
@@ -2216,7 +2223,9 @@ export function SessionsScreen() {
                       >
                         <div className="feature-list-title-row">
                           <strong>{item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}</strong>
-                          <span className={`status-pill state-${item.enabled ? "running" : "idle"}`}>{item.enabled ? "Enabled" : "Disabled"}</span>
+                          <span className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}>
+                            {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
+                          </span>
                         </div>
                         <div className="feature-list-meta">{item.prompt}</div>
                         <div className="feature-list-meta">{item.resume_mode}</div>

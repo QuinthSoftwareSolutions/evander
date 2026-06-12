@@ -1,6 +1,7 @@
 export type WakeScheduleVisibilityItem = {
   schedule_kind: "cron" | "resume_at";
   resume_at?: string | null;
+  status?: string | null;
 };
 
 export function isPastOneTimeWakeSchedule(
@@ -28,5 +29,6 @@ export function visibleWakeSchedules<T extends WakeScheduleVisibilityItem>(
   if (options.showPastOneTime) {
     return [...items];
   }
-  return items.filter((item) => !isPastOneTimeWakeSchedule(item, nowMs));
+  // Cancelled rows stay visible as history even when their one-time timestamp is in the past.
+  return items.filter((item) => item.status === "cancelled" || !isPastOneTimeWakeSchedule(item, nowMs));
 }

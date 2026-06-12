@@ -1009,10 +1009,48 @@ Mixed graph:
 }
 ```
 
+If the pending wake becomes obsolete, the session can cancel it with `cancel_scheduled_wake`
+instead of deleting the request:
+
+```json
+{
+  "session_id": "issue-11-session",
+  "request_id": "wake-3f2d8a5c8d2e4b2cb8f0f0d4e9b8b7c1",
+  "reason": "No longer needed.",
+  "metadata": {
+    "source": "agent"
+  }
+}
+```
+
+Successful cancellation returns `status="cancelled"` and preserves the request in wake history:
+
+```json
+{
+  "session_id": "issue-11-session",
+  "request_id": "wake-3f2d8a5c8d2e4b2cb8f0f0d4e9b8b7c1",
+  "status": "cancelled",
+  "request": {
+    "status": "cancelled",
+    "cancelled_at": "2026-04-01T09:55:00Z",
+    "cancelled_by_session_id": "issue-11-session",
+    "cancel_reason": "No longer needed.",
+    "cancel_metadata": {
+      "source": "agent"
+    }
+  }
+}
+```
+
 MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
 prompt command resumes the last Codex context when no explicit thread id is available. Admin
 created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
 container Codex exec session.
+
+Cancelled requests remain visible in admin history, but already dispatched or completed one-time
+wakes are immutable and other sessions cannot cancel them. The tool also returns clear terminal
+statuses for `already_cancelled`, `already_dispatched`, `already_completed`, `not_found`,
+`missing_request_id`, and `permission_denied`.
 
 - Recurring cron schedule (host CLI):
 
