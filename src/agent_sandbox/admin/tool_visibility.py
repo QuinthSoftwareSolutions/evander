@@ -46,6 +46,7 @@ class ToolVisibilitySessionContextPayload(BaseModel):
     vm_id: str | None = None
     vm_provider: str | None = None
     expires_at: datetime
+    is_expired: bool = False
     capability_profile: str | None = None
     policy_metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -320,12 +321,16 @@ def _session_context_payload(session: SessionManifest) -> ToolVisibilitySessionC
     capability_profile = str(metadata.get("capability_profile") or "").strip() or None
     vm_id = str(session.vm_id or "").strip() or None
     vm_provider = str(session.vm_provider or "").strip() or None
+    expires_at = session.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
     return ToolVisibilitySessionContextPayload(
         session_id=session.session_id,
         directory_path=session.directory_path,
         vm_id=vm_id,
         vm_provider=vm_provider,
-        expires_at=session.expires_at,
+        expires_at=expires_at,
+        is_expired=expires_at <= datetime.now(UTC),
         capability_profile=capability_profile,
         policy_metadata=_policy_metadata(session),
     )
