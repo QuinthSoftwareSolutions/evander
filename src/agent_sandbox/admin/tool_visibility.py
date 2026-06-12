@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from enum import Enum
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from agent_sandbox.models import ApprovalGrantSettings, SessionManifest, ToolName
+from agent_sandbox.models import digest_payload
 from agent_sandbox.policy import ToolVisibility
 
 
@@ -19,6 +20,18 @@ class ToolVisibilityState(str, Enum):
 
 class ToolVisibilityExecutionState(str, Enum):
     DENIED_AT_EXECUTION = "denied_at_execution"
+
+
+class ToolVisibilityBindingState(str, Enum):
+    BOUND = "bound"
+    MISMATCH = "mismatch"
+    UNKNOWN = "unknown"
+
+
+class ToolVisibilityManifestState(str, Enum):
+    CURRENT = "current"
+    STALE_MANIFEST_POSSIBLE = "stale_manifest_possible"
+    UNKNOWN = "unknown"
 
 
 class ToolVisibilityNoticePayload(BaseModel):
@@ -40,6 +53,16 @@ class ToolVisibilitySessionContextPayload(BaseModel):
 class ToolVisibilityQueryContextPayload(BaseModel):
     workflow_run_id: str | None = None
     mcp_tool_approval_lease_id: str | None = None
+
+
+class ToolVisibilityBindingContextPayload(BaseModel):
+    state: ToolVisibilityBindingState = ToolVisibilityBindingState.UNKNOWN
+    manifest_state: ToolVisibilityManifestState = ToolVisibilityManifestState.UNKNOWN
+    transport_session_id: str | None = None
+    bound_session_id: str | None = None
+    last_tools_list_at: datetime | None = None
+    last_visible_tool_fingerprint: str | None = None
+    message: str = ""
 
 
 class ToolVisibilityToolPayload(BaseModel):
@@ -79,6 +102,9 @@ class ToolVisibilityPayload(BaseModel):
     session_context: ToolVisibilitySessionContextPayload
     query_context: ToolVisibilityQueryContextPayload = Field(
         default_factory=ToolVisibilityQueryContextPayload
+    )
+    binding_context: ToolVisibilityBindingContextPayload = Field(
+        default_factory=ToolVisibilityBindingContextPayload
     )
     tools: list[ToolVisibilityToolPayload] = Field(default_factory=list)
     counts: ToolVisibilityCountsPayload = Field(default_factory=ToolVisibilityCountsPayload)
@@ -380,6 +406,214 @@ def _tool_visibility_notices(session: SessionManifest) -> list[ToolVisibilityNot
     return notices
 
 
+def _stale_client_manifest_notice() -> ToolVisibilityNoticePayload:
+    return ToolVisibilityNoticePayload(
+        kind="stale_client_manifest",
+        message=(
+            "MCP clients may cache a client-side tool manifest until they reconnect or "
+            "refresh, so a server-side policy change may not be visible immediately."
+        ),
+    )
+
+
+def _datetime_sort_value(value: datetime | None) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _binding_sort_key(binding: Any) -> datetime:
+    candidates = [
+        _datetime_sort_value(getattr(binding, "last_tools_list_at", None)),
+        _datetime_sort_value(getattr(binding, "last_seen_at", None)),
+        _datetime_sort_value(getattr(binding, "updated_at", None)),
+        _datetime_sort_value(getattr(binding, "created_at", None)),
+    ]
+    return max(candidates)
+
+
+def _binding_matches_session(binding: Any, session_id: str) -> bool:
+    bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip()
+    if bound_session_id == session_id:
+        return True
+    conflict = getattr(binding, "latest_conflict", None)
+    if conflict is None:
+        return False
+    declared_session_id = str(getattr(conflict, "declared_session_id", "") or "").strip()
+    return declared_session_id == session_id
+
+
+def _latest_binding_for_session(service: Any, session_id: str) -> Any | None:
+    bindings = getattr(getattr(service, "runtime", None), "mcp_transport_bindings", None)
+    if bindings is None:
+        return None
+    try:
+        all_bindings = list(bindings.read_all().values())
+    except Exception:
+        return None
+    session_bindings = [binding for binding in all_bindings if _binding_matches_session(binding, session_id)]
+    if not session_bindings:
+        return None
+    return max(session_bindings, key=_binding_sort_key)
+
+
+def _resolve_binding_for_session(
+    service: Any,
+    session: SessionManifest,
+    *,
+    mcp_transport_session_id: str | None = None,
+) -> tuple[Any | None, ToolVisibilityBindingState]:
+    bindings = getattr(getattr(service, "runtime", None), "mcp_transport_bindings", None)
+    if bindings is None:
+        return None, ToolVisibilityBindingState.UNKNOWN
+
+    normalized_transport_session_id = str(mcp_transport_session_id or "").strip() or None
+    binding: Any | None = None
+    if normalized_transport_session_id:
+        try:
+            binding = bindings.get_binding(normalized_transport_session_id)
+        except Exception:
+            binding = None
+        if binding is not None:
+            bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip()
+            conflict = getattr(binding, "latest_conflict", None)
+            conflict_session_id = (
+                str(getattr(conflict, "declared_session_id", "") or "").strip()
+                if conflict is not None
+                else None
+            )
+            if bound_session_id == session.session_id:
+                return binding, ToolVisibilityBindingState.BOUND
+            if conflict_session_id == session.session_id:
+                return binding, ToolVisibilityBindingState.MISMATCH
+            if bound_session_id or conflict_session_id:
+                return binding, ToolVisibilityBindingState.MISMATCH
+            return binding, ToolVisibilityBindingState.UNKNOWN
+
+    binding = _latest_binding_for_session(service, session.session_id)
+    if binding is None:
+        return None, ToolVisibilityBindingState.UNKNOWN
+    bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip()
+    conflict = getattr(binding, "latest_conflict", None)
+    conflict_session_id = (
+        str(getattr(conflict, "declared_session_id", "") or "").strip()
+        if conflict is not None
+        else None
+    )
+    if bound_session_id == session.session_id:
+        return binding, ToolVisibilityBindingState.BOUND
+    if conflict_session_id == session.session_id:
+        return binding, ToolVisibilityBindingState.MISMATCH
+    if bound_session_id or conflict_session_id:
+        return binding, ToolVisibilityBindingState.MISMATCH
+    return binding, ToolVisibilityBindingState.UNKNOWN
+
+
+def _tool_names_fingerprint(tool_names: list[str]) -> str:
+    return digest_payload({"visible_tool_names": tool_names})
+
+
+def _binding_context_message(
+    *,
+    session: SessionManifest,
+    binding: Any | None,
+    state: ToolVisibilityBindingState,
+    manifest_state: ToolVisibilityManifestState,
+    mcp_transport_session_id: str | None = None,
+    policy_error: Exception | None = None,
+) -> str:
+    normalized_transport_session_id = str(mcp_transport_session_id or "").strip() or None
+    if binding is None or state is ToolVisibilityBindingState.UNKNOWN:
+        if policy_error is not None:
+            return (
+                "Transport binding telemetry is unavailable and current visibility could not "
+                f"be read: {policy_error}"
+            )
+        return f"No MCP transport binding telemetry is available for session {session.session_id}."
+
+    bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip() or None
+    transport_session_id = (
+        str(getattr(binding, "transport_session_id", "") or "").strip() or normalized_transport_session_id
+    )
+    if state is ToolVisibilityBindingState.MISMATCH:
+        if bound_session_id:
+            base = (
+                f"Transport {transport_session_id} is bound to session {bound_session_id}, "
+                f"not {session.session_id}."
+            )
+        else:
+            base = (
+                f"Transport {transport_session_id} has a conflicting declaration for "
+                f"session {session.session_id}."
+            )
+    else:
+        base = f"Transport {transport_session_id} is bound to session {session.session_id}."
+
+    if manifest_state is ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE:
+        base += " The latest served tool manifest may be stale after policy changes."
+    elif manifest_state is ToolVisibilityManifestState.CURRENT:
+        base += " The latest served tool manifest matches current visibility."
+    elif policy_error is not None:
+        base += f" Current visibility could not be compared: {policy_error}"
+    return base
+
+
+def _binding_context_payload(
+    service: Any,
+    session: SessionManifest,
+    *,
+    current_visible_tool_names: list[str] | None,
+    mcp_transport_session_id: str | None = None,
+    policy_error: Exception | None = None,
+) -> ToolVisibilityBindingContextPayload:
+    binding, state = _resolve_binding_for_session(
+        service,
+        session,
+        mcp_transport_session_id=mcp_transport_session_id,
+    )
+    manifest_state = ToolVisibilityManifestState.UNKNOWN
+    if binding is not None and policy_error is None and current_visible_tool_names is not None:
+        last_fingerprint = str(
+            getattr(binding, "last_visible_tool_fingerprint", "") or ""
+        ).strip() or None
+        if last_fingerprint is not None:
+            manifest_state = (
+                ToolVisibilityManifestState.CURRENT
+                if last_fingerprint == _tool_names_fingerprint(current_visible_tool_names)
+                else ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE
+            )
+    return ToolVisibilityBindingContextPayload(
+        state=state,
+        manifest_state=manifest_state,
+        transport_session_id=(
+            str(getattr(binding, "transport_session_id", "") or "").strip()
+            if binding is not None
+            else str(mcp_transport_session_id or "").strip() or None
+        ),
+        bound_session_id=(
+            str(getattr(binding, "bound_session_id", "") or "").strip() or None
+            if binding is not None
+            else None
+        ),
+        last_tools_list_at=(
+            getattr(binding, "last_tools_list_at", None) if binding is not None else None
+        ),
+        last_visible_tool_fingerprint=(
+            str(getattr(binding, "last_visible_tool_fingerprint", "") or "").strip() or None
+            if binding is not None
+            else None
+        ),
+        message=_binding_context_message(
+            session=session,
+            binding=binding,
+            state=state,
+            manifest_state=manifest_state,
+            mcp_transport_session_id=mcp_transport_session_id,
+            policy_error=policy_error,
+        ),
+    )
+
+
 def _execution_denial_payload(
     entry: Any,
 ) -> dict[str, Any]:
@@ -479,6 +713,7 @@ def build_tool_visibility_payload(
     service: Any,
     session: SessionManifest,
     *,
+    mcp_transport_session_id: str | None = None,
     workflow_run_id: str | None = None,
     mcp_tool_approval_lease_id: str | None = None,
 ) -> ToolVisibilityPayload:
@@ -541,6 +776,23 @@ def build_tool_visibility_payload(
                 case ToolVisibilityState.UNKNOWN:
                     counts.unknown += 1
 
+    current_visible_tool_names = sorted(
+        {
+            tool.tool_name
+            for tool in tools
+            if tool.visible and tool.visibility_state is ToolVisibilityState.VISIBLE
+        }
+    )
+    binding_context = _binding_context_payload(
+        service,
+        session,
+        current_visible_tool_names=current_visible_tool_names if policy_error is None else None,
+        mcp_transport_session_id=mcp_transport_session_id,
+        policy_error=policy_error,
+    )
+    if binding_context.state is not ToolVisibilityBindingState.UNKNOWN:
+        notices.append(_stale_client_manifest_notice())
+
     try:
         latest_denied_by_tool, denied_count = _tool_visibility_denied_execution_summary(service, session)
     except Exception:
@@ -566,6 +818,7 @@ def build_tool_visibility_payload(
     return ToolVisibilityPayload(
         session_context=session_context,
         query_context=query_context,
+        binding_context=binding_context,
         tools=tools,
         counts=counts,
         notices=notices,

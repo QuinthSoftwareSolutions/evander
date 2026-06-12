@@ -10325,6 +10325,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         self,
         *,
         target: str,
+        mcp_transport_session_id: str | None = None,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
     ) -> ToolVisibilityPayload:
@@ -10337,6 +10338,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return build_tool_visibility_payload(
             self,
             session,
+            mcp_transport_session_id=mcp_transport_session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
         )

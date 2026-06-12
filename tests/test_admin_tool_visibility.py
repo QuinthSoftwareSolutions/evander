@@ -6,7 +6,9 @@ from pathlib import Path
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.tool_visibility import (
+    ToolVisibilityBindingState,
     ToolVisibilityExecutionState,
+    ToolVisibilityManifestState,
     ToolVisibilityState,
 )
 from agent_sandbox.models import SessionManifest, ToolName
@@ -160,8 +162,100 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert payload.notices
     assert payload.notices[0].kind == "missing_capability_profile"
     assert "assistant tools are hidden" in payload.notices[0].message
+    assert payload.binding_context.state is ToolVisibilityBindingState.UNKNOWN
+    assert payload.binding_context.manifest_state is ToolVisibilityManifestState.UNKNOWN
     serialized_text = json.dumps(serialized)
     assert "visible-secret" not in serialized_text
     assert "visible-result-secret" not in serialized_text
     assert "unknown-secret" not in serialized_text
     assert "unknown-result-secret" not in serialized_text
+
+
+def test_admin_service_tool_visibility_payload_flags_stale_manifest(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    initial_session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt",
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"capability_profile": "full-admin"},
+    )
+    service.runtime.session_repository.upsert_session(initial_session)
+
+    visible_tool_names = sorted(
+        visibility.tool.value
+        for visibility in service.runtime.policy.visible_tools_for_session(initial_session)
+    )
+    service.runtime.mcp_transport_bindings.record_visible_tools(
+        transport_session_id="transport-1",
+        bound_session_id="session-1",
+        visible_tool_names=visible_tool_names,
+    )
+
+    updated_session = initial_session.model_copy(
+        update={"allowed_tools": [ToolName.RUN_SCRIPT]}
+    )
+    service.runtime.session_repository.upsert_session(updated_session)
+
+    payload = service.tool_visibility_payload(
+        target="session-1",
+        mcp_transport_session_id="transport-1",
+    )
+
+    assert payload.binding_context.state is ToolVisibilityBindingState.BOUND
+    assert payload.binding_context.manifest_state is ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE
+    assert payload.binding_context.bound_session_id == "session-1"
+    assert payload.binding_context.transport_session_id == "transport-1"
+    assert payload.binding_context.last_tools_list_at is not None
+    assert "stale" in payload.binding_context.message.lower()
+    assert any(notice.kind == "stale_client_manifest" for notice in payload.notices)
+
+
+def test_admin_service_tool_visibility_payload_reports_mismatch_for_other_session(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session_a = SessionManifest(
+        session_id="session-a",
+        vm_id="vm-a",
+        vm_provider="libvirt",
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    session_b = SessionManifest(
+        session_id="session-b",
+        vm_id="vm-b",
+        vm_provider="libvirt",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.session_repository.upsert_session(session_a)
+    service.runtime.session_repository.upsert_session(session_b)
+
+    visible_tool_names = sorted(
+        visibility.tool.value
+        for visibility in service.runtime.policy.visible_tools_for_session(session_a)
+    )
+    service.runtime.mcp_transport_bindings.record_visible_tools(
+        transport_session_id="transport-1",
+        bound_session_id="session-a",
+        visible_tool_names=visible_tool_names,
+    )
+
+    payload = service.tool_visibility_payload(
+        target="session-b",
+        mcp_transport_session_id="transport-1",
+    )
+
+    assert payload.binding_context.state is ToolVisibilityBindingState.MISMATCH
+    assert payload.binding_context.bound_session_id == "session-a"
+    assert payload.binding_context.transport_session_id == "transport-1"
+    assert payload.binding_context.manifest_state in {
+        ToolVisibilityManifestState.UNKNOWN,
+        ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE,
+        ToolVisibilityManifestState.CURRENT,
+    }
+    assert "not session-b" in payload.binding_context.message
