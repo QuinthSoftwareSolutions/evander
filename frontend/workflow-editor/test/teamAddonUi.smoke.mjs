@@ -295,7 +295,10 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
-  await page.getByText("No teams registered.").waitFor({ state: "visible" });
+  await page
+    .locator("#hierarchy-view")
+    .getByText("No teams registered.")
+    .waitFor({ state: "visible" });
 
   const teamForm = page.locator("#create-team-form");
   await teamForm.locator('[name="id"]').fill("team");
