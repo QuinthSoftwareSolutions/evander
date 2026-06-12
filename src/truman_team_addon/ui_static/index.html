@@ -29,6 +29,73 @@
             <div id="summary-grid" class="summary-grid"></div>
           </section>
 
+          <section class="content-panel runtime-operations-panel" aria-labelledby="runtime-operations-heading">
+            <div class="runtime-operations-header">
+              <div>
+                <p class="section-label">Operations</p>
+                <h2 id="runtime-operations-heading">Runtime / Blockers</h2>
+              </div>
+              <div
+                class="runtime-filter-group"
+                id="runtime-filter-group"
+                role="toolbar"
+                aria-label="Runtime filters"
+              >
+                <button class="runtime-filter-button" type="button" data-runtime-filter="all">All</button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="needs_attention">
+                  Needs attention
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="due_leased_agents">
+                  Due / leased agents
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="blocked_waiting_work">
+                  Blocked / waiting work
+                </button>
+                <button class="runtime-filter-button" type="button" data-runtime-filter="ephemeral_work">
+                  Ephemeral work
+                </button>
+              </div>
+            </div>
+            <div id="runtime-operations-view" class="runtime-operations-view"></div>
+          </section>
+
+          <section class="content-panel review-delivery-panel" aria-labelledby="review-delivery-heading">
+            <div class="review-delivery-header">
+              <div>
+                <p class="subheading">Workspace</p>
+                <h2 id="review-delivery-heading">Review &amp; Delivery</h2>
+              </div>
+              <div class="review-delivery-filters" role="toolbar" aria-label="Review and delivery filters">
+                <button type="button" id="delivery-filter-all" class="delivery-filter is-active" data-filter="all">
+                  All
+                </button>
+                <button type="button" id="delivery-filter-pending" class="delivery-filter" data-filter="pending">
+                  Pending
+                </button>
+                <button
+                  type="button"
+                  id="delivery-filter-waiting-for-review"
+                  class="delivery-filter"
+                  data-filter="waiting_for_review"
+                >
+                  Waiting for review
+                </button>
+                <button type="button" id="delivery-filter-accepted" class="delivery-filter" data-filter="accepted">
+                  Accepted
+                </button>
+                <button type="button" id="delivery-filter-rejected" class="delivery-filter" data-filter="rejected">
+                  Rejected
+                </button>
+                <button type="button" id="delivery-filter-blocked" class="delivery-filter" data-filter="blocked">
+                  Blocked
+                </button>
+              </div>
+            </div>
+            <div id="review-delivery-view" class="review-delivery-view">
+              <p class="empty-state">Review &amp; Delivery rows render here.</p>
+            </div>
+          </section>
+
           <section class="content-grid">
             <div class="content-panel" aria-labelledby="hierarchy-heading">
               <h2 id="hierarchy-heading">Hierarchy</h2>
@@ -55,11 +122,102 @@
             <h2 id="releases-heading">Releases</h2>
             <div id="releases-view" class="releases-view"></div>
           </section>
+
+          <section class="content-panel timeline-panel" aria-labelledby="timeline-heading">
+            <div class="timeline-header">
+              <div>
+                <h2 id="timeline-heading">Timeline / Audit</h2>
+                <p class="timeline-note">
+                  Derived from the current TeamState snapshot, not a persisted audit log.
+                </p>
+              </div>
+              <div id="timeline-summary" class="timeline-summary"></div>
+            </div>
+
+            <div class="timeline-filters" aria-label="Timeline filters">
+              <label>
+                Team
+                <select id="timeline-team-filter" data-options="timeline-teams" data-placeholder="All teams"></select>
+              </label>
+              <label>
+                Project
+                <select
+                  id="timeline-project-filter"
+                  data-options="timeline-projects"
+                  data-placeholder="All projects"
+                ></select>
+              </label>
+              <label>
+                Agent
+                <select id="timeline-agent-filter" data-options="timeline-agents" data-placeholder="All agents"></select>
+              </label>
+              <label>
+                Item type
+                <select id="timeline-type-filter" data-options="timeline-types" data-placeholder="All types"></select>
+              </label>
+              <label>
+                Status
+                <select id="timeline-status-filter" data-options="timeline-statuses" data-placeholder="All statuses"></select>
+              </label>
+              <label>
+                Attention needed
+                <select
+                  id="timeline-attention-filter"
+                  data-options="timeline-attention"
+                  data-placeholder="Any attention"
+                >
+                  <option value=""></option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="timeline-status" class="timeline-status" role="status" aria-live="polite"></div>
+            <div id="timeline-view" class="timeline-view"></div>
+          </section>
         </section>
 
         <aside class="forms-panel" aria-labelledby="forms-heading">
           <h2 id="forms-heading">Setup</h2>
           <div class="form-stack">
+            <details open class="template-setup">
+              <summary>Setup from template</summary>
+              <div class="template-setup-body">
+                <div id="template-preview" class="template-preview" aria-live="polite"></div>
+                <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
+                  <label>Template <select id="template-select" name="template_id" required></select></label>
+                  <p class="subheading">Team</p>
+                  <label>Team ID <input name="team_id" required /></label>
+                  <label>Team name <input name="team_name" required /></label>
+                  <label>Manager agent ID <input name="manager_agent_id" required /></label>
+                  <label>Manager session ID <input name="manager_session_id" required /></label>
+                  <label>Operator communication target id <input name="operator_communication_target_id" /></label>
+                  <p class="subheading">Project</p>
+                  <label>Project ID <input name="project_id" required /></label>
+                  <label>Project name <input name="project_name" required /></label>
+                  <label>Project lead agent ID <input name="project_lead_agent_id" required /></label>
+                  <label>Project lead session ID <input name="project_lead_session_id" required /></label>
+                  <p class="subheading">Git config (optional)</p>
+                  <label>Host repo path <input name="host_repo_path" /></label>
+                  <label>Bare repo name <input name="bare_repo_name" /></label>
+                  <label>Bare repo path <input name="bare_repo_path" /></label>
+                  <label>Base branch <input name="base_branch" placeholder="main" /></label>
+                  <label>Canonical origin URL <input name="canonical_origin_url" /></label>
+                  <label>Provider <input name="provider" /></label>
+                  <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+                  <p class="subheading">Agents</p>
+                  <label>Implementer agent ID <input name="implementer_agent_id" required /></label>
+                  <label>Implementer session ID <input name="implementer_session_id" required /></label>
+                  <label>Reviewer agent ID <input name="reviewer_agent_id" required /></label>
+                  <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
+                  <label>Release operator agent ID <input name="release_operator_agent_id" required /></label>
+                  <label>Release operator session ID <input name="release_operator_session_id" required /></label>
+                  <button type="submit">Materialize template</button>
+                </form>
+              </div>
+            </details>
+
             <details open>
               <summary>Create team</summary>
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
@@ -67,6 +225,7 @@
                 <label>Name <input name="name" required /></label>
                 <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
+                <label>Manager display name <input name="manager_display_name" /></label>
                 <label>Manager role <input name="manager_role" value="manager" /></label>
                 <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                 <button type="submit">Create team</button>
@@ -81,6 +240,7 @@
                 <label>Name <input name="name" required /></label>
                 <label>Lead agent ID <input name="lead_agent_id" required /></label>
                 <label>Lead session ID <input name="lead_session_id" required /></label>
+                <label>Lead display name <input name="lead_display_name" /></label>
                 <label>Lead role <input name="lead_role" value="project_lead" /></label>
                 <label>Goal ID <input name="goal_id" /></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
@@ -104,6 +264,7 @@
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
                 <label>Role <input name="role" required /></label>
                 <label>Session ID <input name="session_id" required /></label>
+                <label>Display name <input name="display_name" /></label>
                 <label>Reports to <select name="reports_to_agent_id" required data-options="agents"></select></label>
                 <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
                 <button type="submit">Register agent</button>

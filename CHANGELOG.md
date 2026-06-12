@@ -27,6 +27,65 @@ material. Newer entries are added incrementally as changes land.
 - Persisted delivered container steering interrupts in `operator-steering-notes.db`
   so Admin Web history survives refreshes.
 
+## 2026-06-12 - Team Add-on Template and Timeline Fixes
+
+- Applied template-defined ephemeral concurrency policies when materializing
+  persistent agents from the Auto-Dev Squad template.
+- Hardened derived timeline ordering for offset-naive timestamps and kept
+  completed Git promotions out of pending/attention-needed timeline filters.
+- Refreshed the Timeline / Audit panel after successful Team Add-on UI
+  mutations so operators do not see stale derived activity.
+
+## 2026-06-11 - Team Add-on Org Chart View
+
+- Added an org-chart hierarchy view to the Team Add-on UI with visible
+  supervisor/subordinate connector lines, display-name fallback to agent id,
+  active/paused/archived state pills, and hover/focus operational details.
+- Added optional persistent-agent display names through the team manager,
+  project lead, and register-agent create flows while keeping legacy state files
+  without display names valid.
+- Added Team Add-on smoke coverage for three-level org charts, malformed
+  hierarchy warnings, runtime/task/inbox/ephemeral detail rendering, and
+  display-name form payloads.
+
+## 2026-06-11 - Team Add-on Runtime Blockers Presentation
+
+- Tightened the Team Add-on Runtime / Blockers panel styling so long section
+  headings, filter controls, and runtime summary text wrap cleanly on narrow
+  viewports.
+- Kept derived runtime operations scoped in `query:team:state` responses so
+  project- and agent-filtered workflow queries do not expose unrelated teams'
+  runtime rows.
+- Kept the bundled add-on packaging contract unchanged while documenting the
+  new operator-facing runtime view in the project history.
+
+## 2026-06-11 - Team Add-on Review & Delivery Workspace
+
+- Added a dedicated Team Add-on Review & Delivery workspace that groups
+  deliverables by team, project, and delivery state while surfacing task,
+  producer, artifact, Git promotion, review, criterion, and release-package
+  details.
+- Added workspace-local review decision submission through the existing review
+  decision endpoint, including findings and criterion result payloads.
+- Extended focused smoke coverage for pending, accepted, rejected, and blocked
+  review/delivery states, status filters, Git refs, release inclusion, criterion
+  results, and workspace review decision submission.
+- Documented the dedicated Review & Delivery workspace in the Team Add-ons guide
+  while keeping the existing setup forms and Admin Web integration model intact.
+
+## 2026-06-11 - Team Add-on Timeline / Audit View
+
+- Added the derived Team Add-on timeline API and bundled UI view so operators
+  can inspect current-state activity for tasks, inbox items, deliverables,
+  reviews, action records, ephemeral assignments, Git promotions, and release
+  packages.
+- Exposed team, project, agent, type, status, and attention-needed filters, and
+  kept timeline ordering deterministic even when legacy review requests or
+  other records have no timestamp.
+- Documented the derived-current-state boundary, timestamp-missing behavior,
+  and the fact that the view is not a persisted audit log.
+>>>>>>> main
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`
