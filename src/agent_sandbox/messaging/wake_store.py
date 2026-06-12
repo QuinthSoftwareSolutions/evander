@@ -97,7 +97,7 @@ class WakeRequestStore:
         self._import_legacy_json_if_empty()
 
     def upsert_request(self, request: WakeScheduledRequest) -> None:
-        validated = WakeScheduledRequest.model_validate(request)
+        validated = self._normalize_cancelled_request(WakeScheduledRequest.model_validate(request))
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -149,7 +149,9 @@ class WakeRequestStore:
             ).fetchone()
         if row is None:
             return None
-        return WakeScheduledRequest.model_validate_json(row["payload_json"])
+        return self._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate_json(row["payload_json"])
+        )
 
     def delete_request(self, request_id: str) -> bool:
         normalized_request_id = str(request_id or "")
@@ -520,6 +522,7 @@ class WakeRequestStore:
                 continue
             if normalized_session_id and request.session_id != normalized_session_id:
                 continue
+            request = self._normalize_cancelled_request(request)
             if not include_disabled and not request.enabled:
                 continue
             requests.append(request)
@@ -567,6 +570,9 @@ class WakeRequestStore:
                 try:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
                 except Exception:
+                    continue
+                request = self._normalize_cancelled_request(request)
+                if request.status == "cancelled" or not request.enabled:
                     continue
                 next_run_at = request.next_run_at
                 if next_run_at is None:
@@ -808,7 +814,17 @@ class WakeRequestStore:
     def _validate_request(raw_value: object) -> WakeScheduledRequest | None:
         if not isinstance(raw_value, dict):
             return None
-        return WakeScheduledRequest.model_validate(raw_value)
+        return WakeRequestStore._normalize_cancelled_request(
+            WakeScheduledRequest.model_validate(raw_value)
+        )
+
+    @staticmethod
+    def _normalize_cancelled_request(request: WakeScheduledRequest) -> WakeScheduledRequest:
+        if request.status != "cancelled":
+            return request
+        if request.enabled is False and request.next_run_at is None:
+            return request
+        return request.model_copy(update={"enabled": False, "next_run_at": None}, deep=True)
 
     @staticmethod
     def _validate_dispatch(raw_value: object) -> WakeDispatchRecord | None:

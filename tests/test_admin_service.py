@@ -12352,6 +12352,31 @@ def test_create_and_list_wake_schedules_include_cancellation_fields(tmp_path: Pa
     assert schedules[0]["cancelled_at"] is not None
 
 
+def test_edit_wake_schedule_rejects_cancelled_schedule(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        source="admin_cli",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-1-session",
+        reason="No longer needed",
+        metadata={"source": "admin"},
+    )
+
+    with pytest.raises(ValueError, match="cancelled and cannot be edited"):
+        service.edit_wake_schedule(created.request_id, enabled=True)
+
+    refreshed = service.runtime.wake_store.get_request(created.request_id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
+
+
 def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     with pytest.raises(ValueError, match="Invalid cron expression"):

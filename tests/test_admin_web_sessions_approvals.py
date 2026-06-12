@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MethodType
 
 import pytest
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -51,6 +55,39 @@ def write_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config_path
+
+
+def _admin_json_request(
+    *,
+    method: str,
+    path: str,
+    path_params: dict[str, str] | None = None,
+    payload: dict[str, object] | None = None,
+) -> Request:
+    body = json.dumps(payload or {}).encode()
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+            "path_params": path_params or {},
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        },
+        receive,
+    )
 
 
 def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
@@ -1124,6 +1161,58 @@ def test_admin_web_session_detail_exposes_cancelled_wake_history(tmp_path: Path)
     assert item["cancel_reason"] == "No longer needed"
     assert item["cancel_metadata"] == {"source": "ui"}
     assert item["schedule_kind"] == "resume_at"
+
+
+def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    created = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work later",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.cancel_request(
+        created.request_id,
+        caller_session_id="issue-14086-session",
+        reason="No longer needed",
+        metadata={"source": "ui"},
+    )
+    update_endpoint = next(
+        route.endpoint
+        for route in session_approval_routes(service, object())
+        if getattr(route, "path", "") == "/api/admin/sessions/wake-schedules/{request_id:str}"
+        and "PATCH" in getattr(route, "methods", set())
+    )
+
+    response = asyncio.run(
+        update_endpoint(
+            _admin_json_request(
+                method="PATCH",
+                path=f"/api/admin/sessions/wake-schedules/{created.request_id}",
+                path_params={"request_id": created.request_id},
+                payload={"enabled": True},
+            )
+        )
+    )
+
+    assert response.status_code == 400
+    payload = json.loads(response.body)
+    assert "cancelled and cannot be edited" in payload["error"]
+    refreshed = service.runtime.wake_store.get_request(created.request_id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
 
 
 def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) -> None:

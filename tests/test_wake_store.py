@@ -381,6 +381,59 @@ def test_cancel_request_marks_request_cancelled_and_is_idempotent(
     assert repeated.request.cancelled_by_session_id == "session-1"
 
 
+def test_find_due_requests_ignores_cancelled_request_even_if_enabled(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    due_time = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=due_time),
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    store.cancel_request(
+        "wake-1",
+        caller_session_id="session-1",
+        reason="obsolete wake",
+        metadata={"source": "test"},
+        now_utc=due_time,
+    )
+    cancelled = store.get_request("wake-1")
+    assert cancelled is not None
+    stale_payload = cancelled.model_copy(
+        update={"enabled": True, "next_run_at": due_time},
+        deep=True,
+    ).model_dump(mode="json")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            """
+            UPDATE wake_requests
+            SET enabled = 1,
+                next_run_at = ?,
+                payload_json = ?
+            WHERE request_id = ?
+            """,
+            (
+                WakeRequestStore._datetime_to_storage(due_time),
+                json.dumps(stale_payload, sort_keys=True, separators=(",", ":")),
+                "wake-1",
+            ),
+        )
+
+    assert store.find_due_requests(now_utc=due_time + timedelta(minutes=1)) == []
+    assert store.list_requests(include_disabled=False) == []
+    refreshed = store.get_request("wake-1")
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
+
+
 def test_cancel_request_denies_cross_session_without_mutation(
     tmp_path: Path,
 ) -> None:

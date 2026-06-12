@@ -473,6 +473,10 @@ class SessionAdminFacade:
         existing = self._deps.runtime.wake_store.get_request(request_id.strip())
         if existing is None:
             raise ValueError(f"Wake schedule not found: {request_id}")
+        if existing.status == "cancelled":
+            raise ValueError(
+                f"Wake schedule {existing.request_id} is cancelled and cannot be edited."
+            )
         updated_prompt = existing.resume_prompt.prompt if prompt is None else str(prompt).strip()
         if not updated_prompt:
             raise ValueError("prompt cannot be empty")

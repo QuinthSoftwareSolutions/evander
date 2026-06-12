@@ -4,6 +4,10 @@ export type WakeScheduleVisibilityItem = {
   status?: string | null;
 };
 
+export function canToggleWakeScheduleEnabled(item: WakeScheduleVisibilityItem): boolean {
+  return item.status !== "cancelled";
+}
+
 export function isPastOneTimeWakeSchedule(
   item: WakeScheduleVisibilityItem,
   nowMs = Date.now(),
