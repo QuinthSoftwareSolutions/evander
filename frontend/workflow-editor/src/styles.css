@@ -5033,6 +5033,120 @@ select {
   gap: 0.45rem;
 }
 
+.approval-payload-diagnostic {
+  display: grid;
+  gap: 1rem;
+}
+
+.approval-payload-diagnostic-grid {
+  margin-bottom: 0.1rem;
+}
+
+.approval-payload-diagnostic-summary-note {
+  margin: 0;
+}
+
+.approval-payload-diagnostic-summaries {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.approval-payload-diagnostic-summary {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(93, 75, 48, 0.14);
+  border-radius: 14px;
+  background: rgba(248, 244, 235, 0.92);
+}
+
+.approval-payload-diagnostic-summary h4,
+.approval-payload-diagnostic-bucket-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.approval-payload-diagnostic-summary pre,
+.approval-payload-diagnostic-value-cell pre {
+  margin: 0;
+  min-height: 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(93, 75, 48, 0.14);
+  border-radius: 10px;
+  background: #f3efe8;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #302619;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-payload-diagnostic-differences {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.approval-payload-diagnostic-bucket {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(93, 75, 48, 0.14);
+  border-radius: 14px;
+  background: rgba(248, 244, 235, 0.92);
+}
+
+.approval-payload-diagnostic-bucket-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.approval-payload-diagnostic-entry-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.approval-payload-diagnostic-entry {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.approval-payload-diagnostic-path {
+  display: inline-block;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.84rem;
+  line-height: 1.35;
+  color: #302619;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-payload-diagnostic-value-grid {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.approval-payload-diagnostic-value-cell {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.approval-payload-diagnostic-value-cell span {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b563f;
+}
+
+.approval-payload-diagnostic-empty {
+  margin: 0;
+}
+
 .feature-list-item.selected {
   border-color: #2d5fa8;
   box-shadow: 0 0 0 2px rgba(45, 95, 168, 0.12);
@@ -6834,6 +6948,10 @@ select {
 
 @media (min-width: 1120px) {
   .tool-calls-page .tool-call-json-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .approval-payload-diagnostic-summaries {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -9287,6 +9405,10 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .field-header,
 :root[data-theme="dark"] .mode-select span,
 :root[data-theme="dark"] .field-description,
+:root[data-theme="dark"] .approval-payload-diagnostic-path,
+:root[data-theme="dark"] .approval-payload-diagnostic-value-cell span,
+:root[data-theme="dark"] .approval-payload-diagnostic-summary h4,
+:root[data-theme="dark"] .approval-payload-diagnostic-bucket-header h4,
 :root[data-theme="dark"] .field-inline span,
 :root[data-theme="dark"] .checkbox-row,
 :root[data-theme="dark"] .option-checkbox-section-header,
@@ -9295,6 +9417,19 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .raw-json-panel summary,
 :root[data-theme="dark"] .runtime-run-node {
   color: #b8a386;
+}
+
+:root[data-theme="dark"] .approval-payload-diagnostic-summary,
+:root[data-theme="dark"] .approval-payload-diagnostic-bucket {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(26, 33, 37, 0.92);
+}
+
+:root[data-theme="dark"] .approval-payload-diagnostic-summary pre,
+:root[data-theme="dark"] .approval-payload-diagnostic-value-cell pre {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(17, 22, 25, 0.95);
+  color: #eef4f7;
 }
 
 :root[data-theme="dark"] .permission-chip {

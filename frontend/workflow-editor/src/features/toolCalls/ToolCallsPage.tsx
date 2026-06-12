@@ -90,6 +90,41 @@ type ToolCallRelation = {
   tooltip: string;
 };
 
+type ApprovalPayloadDifferenceEntry = {
+  path: string;
+  approved_value?: unknown;
+  attempted_value?: unknown;
+};
+
+type ApprovalPayloadDifferenceBucket = {
+  entries: ApprovalPayloadDifferenceEntry[];
+  truncated: boolean;
+};
+
+type ApprovalPayloadDifferences = {
+  changed: ApprovalPayloadDifferenceBucket;
+  missing: ApprovalPayloadDifferenceBucket;
+  extra: ApprovalPayloadDifferenceBucket;
+  truncated: boolean;
+};
+
+type ApprovalPayloadDiagnostic = {
+  approval_request_id?: string | null;
+  status?: string | null;
+  rejection_kind?: string | null;
+  reason?: string | null;
+  payload_match?: boolean | null;
+  approved_payload_digest?: string | null;
+  attempted_payload_digest?: string | null;
+  payload_summary?: string | null;
+  approved_payload_summary?: unknown;
+  attempted_payload_summary?: unknown;
+  approved_payload?: unknown;
+  attempted_payload?: unknown;
+  requested_payload?: unknown;
+  differences: ApprovalPayloadDifferences;
+};
+
 const POLL_INTERVAL_MS = 10_000;
 const DEFAULT_LIMIT = 100;
 
@@ -157,6 +192,14 @@ function jsonText(value: unknown, fallback = "{}"): string {
   } catch {
     return typeof value === "string" ? value : String(value);
   }
+}
+
+function textField(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  return text ? text : null;
 }
 
 function truncateText(value: string | null | undefined, maxLength = 120): string {
@@ -445,6 +488,226 @@ function relationButtonLabel(link: ToolCallRelation): string {
   return `${link.label}: ${link.value.length > 24 ? `${link.value.slice(0, 10)}…${link.value.slice(-8)}` : link.value}`;
 }
 
+function normalizeDiagnosticEntries(value: unknown): ApprovalPayloadDifferenceEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    const path = textField(entry.path) ?? "<root>";
+    const normalized: ApprovalPayloadDifferenceEntry = { path };
+    if ("approved_value" in entry) {
+      normalized.approved_value = entry.approved_value;
+    }
+    if ("attempted_value" in entry) {
+      normalized.attempted_value = entry.attempted_value;
+    }
+    return [normalized];
+  });
+}
+
+function normalizeDiagnosticBucket(value: unknown): ApprovalPayloadDifferenceBucket {
+  if (Array.isArray(value)) {
+    return {
+      entries: normalizeDiagnosticEntries(value),
+      truncated: false,
+    };
+  }
+  if (!isRecord(value)) {
+    return {
+      entries: [],
+      truncated: false,
+    };
+  }
+  return {
+    entries: normalizeDiagnosticEntries(value.entries),
+    truncated: Boolean(value.truncated),
+  };
+}
+
+function normalizeDiagnosticDifferences(value: unknown): ApprovalPayloadDifferences {
+  if (!isRecord(value)) {
+    const emptyBucket = { entries: [], truncated: false };
+    return {
+      changed: emptyBucket,
+      missing: emptyBucket,
+      extra: emptyBucket,
+      truncated: false,
+    };
+  }
+  const changed = normalizeDiagnosticBucket(value.changed);
+  const missing = normalizeDiagnosticBucket(value.missing);
+  const extra = normalizeDiagnosticBucket(value.extra);
+  return {
+    changed,
+    missing,
+    extra,
+    truncated: Boolean(value.truncated || changed.truncated || missing.truncated || extra.truncated),
+  };
+}
+
+function normalizeApprovalPayloadDiagnostic(value: unknown): ApprovalPayloadDiagnostic | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    approval_request_id: textField(value.approval_request_id),
+    status: textField(value.status),
+    rejection_kind: textField(value.rejection_kind),
+    reason: textField(value.reason),
+    payload_match: typeof value.payload_match === "boolean" ? value.payload_match : null,
+    approved_payload_digest: textField(value.approved_payload_digest),
+    attempted_payload_digest: textField(value.attempted_payload_digest),
+    payload_summary: textField(value.payload_summary),
+    approved_payload_summary: value.approved_payload_summary ?? value.approved_payload ?? value.requested_payload ?? null,
+    attempted_payload_summary: value.attempted_payload_summary ?? value.attempted_payload ?? null,
+    approved_payload: value.approved_payload ?? null,
+    attempted_payload: value.attempted_payload ?? null,
+    requested_payload: value.requested_payload ?? null,
+    differences: normalizeDiagnosticDifferences(value.differences),
+  };
+}
+
+function approvalDiagnosticFromItem(item: ToolCallItem | null | undefined): ApprovalPayloadDiagnostic | null {
+  if (!item) {
+    return null;
+  }
+  const rawResult = isRecord(item.result) ? item.result : null;
+  const rawDiagnostic = rawResult?.approval_diagnostic ?? jsonValue(item, "approval_diagnostic");
+  return normalizeApprovalPayloadDiagnostic(rawDiagnostic);
+}
+
+function diagnosticMatchLabel(value: boolean | null | undefined): string {
+  if (value === true) {
+    return "Match";
+  }
+  if (value === false) {
+    return "Mismatch";
+  }
+  return "Unknown";
+}
+
+function diagnosticMatchClass(value: boolean | null | undefined): string {
+  if (value === true) {
+    return "state-running";
+  }
+  if (value === false) {
+    return "state-fail";
+  }
+  return "state-idle";
+}
+
+function renderDiagnosticBucket(label: string, bucket: ApprovalPayloadDifferenceBucket, emptyText: string) {
+  return (
+    <section className="approval-payload-diagnostic-bucket">
+      <div className="approval-payload-diagnostic-bucket-header">
+        <h4>{label}</h4>
+        <span className="panel-meta">
+          {bucket.entries.length} {bucket.entries.length === 1 ? "entry" : "entries"}
+          {bucket.truncated ? " truncated" : ""}
+        </span>
+      </div>
+      {bucket.entries.length > 0 ? (
+        <div className="approval-payload-diagnostic-entry-list">
+          {bucket.entries.map((entry) => (
+            <div key={`${label}-${entry.path}`} className="approval-payload-diagnostic-entry">
+              <code className="approval-payload-diagnostic-path">{entry.path}</code>
+              <div className="approval-payload-diagnostic-value-grid">
+                {"approved_value" in entry ? (
+                  <div className="approval-payload-diagnostic-value-cell">
+                    <span>Approved</span>
+                    <pre>{jsonText(entry.approved_value)}</pre>
+                  </div>
+                ) : null}
+                {"attempted_value" in entry ? (
+                  <div className="approval-payload-diagnostic-value-cell">
+                    <span>Attempted</span>
+                    <pre>{jsonText(entry.attempted_value)}</pre>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state approval-payload-diagnostic-empty">{emptyText}</div>
+      )}
+    </section>
+  );
+}
+
+function ToolCallApprovalDiagnosticSection({
+  diagnostic,
+}: {
+  diagnostic: ApprovalPayloadDiagnostic;
+}) {
+  return (
+    <section className="panel approval-payload-diagnostic tool-call-approval-diagnostic">
+      <div className="panel-header">
+        <div>
+          <h3>Approval payload diagnostic</h3>
+          <p className="field-description">
+            Diagnostic only: the diff explains why the payload was rejected, but it does not loosen the approval boundary.
+          </p>
+        </div>
+        <span className={`status-pill ${diagnosticMatchClass(diagnostic.payload_match)}`}>{diagnosticMatchLabel(diagnostic.payload_match)}</span>
+      </div>
+
+      <dl className="property-grid approval-payload-diagnostic-grid">
+        <div>
+          <dt>Approval request</dt>
+          <dd>{diagnostic.approval_request_id ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{diagnostic.status ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Rejection kind</dt>
+          <dd>{diagnostic.rejection_kind ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Reason</dt>
+          <dd>{diagnostic.reason ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Approved digest</dt>
+          <dd>{diagnostic.approved_payload_digest ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Attempted digest</dt>
+          <dd>{diagnostic.attempted_payload_digest ?? "n/a"}</dd>
+        </div>
+      </dl>
+
+      {diagnostic.payload_summary ? (
+        <p className="muted-copy approval-payload-diagnostic-summary-note">
+          Payload summary: <span>{diagnostic.payload_summary}</span>
+        </p>
+      ) : null}
+
+      <div className="approval-payload-diagnostic-summaries">
+        <div className="approval-payload-diagnostic-summary">
+          <h4>Approved payload summary</h4>
+          <pre>{jsonText(diagnostic.approved_payload_summary ?? diagnostic.approved_payload, "None")}</pre>
+        </div>
+        <div className="approval-payload-diagnostic-summary">
+          <h4>Attempted payload summary</h4>
+          <pre>{jsonText(diagnostic.attempted_payload_summary ?? diagnostic.attempted_payload ?? diagnostic.requested_payload, "None")}</pre>
+        </div>
+      </div>
+
+      <div className="approval-payload-diagnostic-differences">
+        {renderDiagnosticBucket("Changed fields", diagnostic.differences.changed, "No changed fields were reported.")}
+        {renderDiagnosticBucket("Missing fields", diagnostic.differences.missing, "No missing fields were reported.")}
+        {renderDiagnosticBucket("Extra fields", diagnostic.differences.extra, "No extra fields were reported.")}
+      </div>
+    </section>
+  );
+}
+
 function toolCallSelectionMatchesQuery(item: ToolCallItem, query: string): boolean {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {
@@ -493,6 +756,7 @@ export function ToolCallsPage() {
     return items.find((item, index) => toolCallRowKey(item, index) === selectedCallKey) ?? null;
   }, [items, selectedCallKey]);
   const relations = useMemo(() => (selectedCall ? relationLinks(selectedCall) : []), [selectedCall]);
+  const approvalDiagnostic = useMemo(() => approvalDiagnosticFromItem(selectedCall), [selectedCall]);
   const counts = response?.counts;
   const statusCounts = counts?.status_counts ?? {};
   const successCount = counts?.success ?? statusCounts.success ?? 0;
@@ -866,6 +1130,8 @@ export function ToolCallsPage() {
                 {stringField(selectedCall, "error_summary", "error") ? (
                   <div className="callout error-callout">{stringField(selectedCall, "error_summary", "error")}</div>
                 ) : null}
+
+                {approvalDiagnostic ? <ToolCallApprovalDiagnosticSection diagnostic={approvalDiagnostic} /> : null}
 
                 <dl className="detail-list">
                   <div>
