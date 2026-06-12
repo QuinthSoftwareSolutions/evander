@@ -614,8 +614,14 @@ def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
             query_params={"session_id": "session-1"},
         )
 
+    binding = context.mcp_transport_bindings.get_binding(mcp_session_id)
+
     assert "get_workflow_snapshot" in tool_names
     assert "run_script" not in tool_names
+    assert binding is not None
+    assert binding.bound_session_id == "session-1"
+    assert binding.last_visible_tool_names == ["get_workflow_snapshot"]
+    assert binding.last_tools_list_at is not None
 
 
 def test_gateway_mcp_tools_list_rejects_conflicting_bound_transport_session(
@@ -663,6 +669,14 @@ def test_gateway_mcp_tools_list_rejects_conflicting_bound_transport_session(
     assert "run_script" not in bound_tool_names
     assert conflict_response.status_code == 409
     assert conflict_response.json()["error"] == (
+        "session_id is bound by the MCP connection; omit it or use the connected session"
+    )
+    binding = context.mcp_transport_bindings.get_binding(mcp_session_id)
+    assert binding is not None
+    assert binding.bound_session_id == "session-1"
+    assert binding.latest_conflict is not None
+    assert binding.latest_conflict.declared_session_id == "session-2"
+    assert binding.latest_conflict.reason == (
         "session_id is bound by the MCP connection; omit it or use the connected session"
     )
 

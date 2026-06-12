@@ -7,6 +7,7 @@ export type BuiltinAdminTab =
   | "vms"
   | "issues"
   | "sessions"
+  | "tool-visibility"
   | "mcp-tools"
   | "tool-calls"
   | "configuration"
@@ -55,6 +56,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
+  { key: "tool-visibility", label: "Tool Visibility", shortLabel: "Visibility", description: "Effective tool visibility, transport binding, and denied execution evidence." },
   { key: "mcp-tools", label: "MCP Tools", shortLabel: "MCP", description: "Directory-scoped MCP tool approval and deny policy." },
   { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },

@@ -687,6 +687,21 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Response payload includes the active workflow editor document: config path, layout path, revision,
   saved timestamp, normalized workflow config, layout, graph metadata, and derived output schemas.
 
+## Tool Visibility Inspector
+
+- Admin Web exposes a read-only `Tool Visibility` tab for diagnosing a single session's effective
+  tool set.
+- Choose a session from the left sidebar or deep-link with `#tool-visibility?session_id=<id>`.
+- The inspector compares policy visibility, transport binding telemetry, and denied-at-execution
+  evidence without exposing raw tool arguments or results.
+- Use the `State` filter to compare `Visible`, `Hidden by policy`, `Unavailable to session`,
+  `Denied at execution`, and `Unknown` rows. The detail panel shows the policy reason and safe
+  denial summary only.
+- The transport banner can report `Bound`, `Mismatch`, `Unknown`, or `Stale manifest possible`.
+  `Denied at execution` is historical audit evidence, not a live policy grant.
+- If the manifest is stale, reconnect or refresh the MCP client so it fetches the current server
+  manifest. The inspector is diagnostic only and cannot force a client refresh or grant new tools.
+
 ## Host-Side Azure DevOps Backlog Tools
 
 - Gateway tool name: `create_ado_backlog_item`.

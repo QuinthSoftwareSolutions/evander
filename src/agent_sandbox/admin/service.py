@@ -68,6 +68,10 @@ from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expressi
 from agent_sandbox.admin.directory import DirectoryAdminService
 from agent_sandbox.admin.release_metadata import read_release_metadata
 from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from agent_sandbox.admin.tool_visibility import (
+    ToolVisibilityPayload,
+    build_tool_visibility_payload,
+)
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -10456,6 +10460,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "mcp_tool_policies": mcp_tool_policies,
             "tool_argument_policies": tool_argument_policies,
         }
+
+    def tool_visibility_payload(
+        self,
+        *,
+        target: str,
+        mcp_transport_session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+    ) -> ToolVisibilityPayload:
+        normalized_target = str(target or "").strip()
+        if not normalized_target:
+            raise ValueError("target is required")
+        session = self.runtime.session_repository.get_session(normalized_target)
+        if session is None:
+            raise ValueError(f"Unknown session: {normalized_target}")
+        return build_tool_visibility_payload(
+            self,
+            session,
+            mcp_transport_session_id=mcp_transport_session_id,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
 
     def _read_agent_prompt_queue_records(self) -> tuple[dict[str, Any], str | None]:
         queue_path = self.config.runtime_dir / "queued-agent-prompts.json"
