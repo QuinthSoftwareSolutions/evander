@@ -317,7 +317,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'name="manager_display_name"' in ui.text
     assert 'name="lead_display_name"' in ui.text
     assert 'name="display_name"' in ui.text
+    assert "Review &amp; Delivery" in ui.text
+    assert 'id="review-delivery-view"' in ui.text
+    assert 'id="delivery-filter-blocked"' in ui.text
     assert 'name="parent_task_id"' in ui.text
+    assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
 
@@ -334,10 +338,18 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "dependency_task_ids" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
+    assert "renderReviewDeliveryWorkspace" in script.text
+    assert "submitReviewDecision" in script.text
+    assert "bindWorkspaceReviewDecisionForms" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
     assert ".team-shell" in stylesheet.text
+    assert ".review-delivery-panel" in stylesheet.text
+    assert ".review-delivery-view" in stylesheet.text
+    assert ".delivery-filter" in stylesheet.text
+    assert ".state-pill.rejected" in stylesheet.text
+    assert ".state-pill.blocked" in stylesheet.text
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:

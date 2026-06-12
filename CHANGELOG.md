@@ -28,6 +28,20 @@ material. Newer entries are added incrementally as changes land.
 - Kept the bundled add-on packaging contract unchanged while documenting the
   new operator-facing runtime view in the project history.
 
+## 2026-06-11 - Team Add-on Review & Delivery Workspace
+
+- Added a dedicated Team Add-on Review & Delivery workspace that groups
+  deliverables by team, project, and delivery state while surfacing task,
+  producer, artifact, Git promotion, review, criterion, and release-package
+  details.
+- Added workspace-local review decision submission through the existing review
+  decision endpoint, including findings and criterion result payloads.
+- Extended focused smoke coverage for pending, accepted, rejected, and blocked
+  review/delivery states, status filters, Git refs, release inclusion, criterion
+  results, and workspace review decision submission.
+- Documented the dedicated Review & Delivery workspace in the Team Add-ons guide
+  while keeping the existing setup forms and Admin Web integration model intact.
+
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
 - Added bridge-side inbound call handling for marked Asterisk `StasisStart`

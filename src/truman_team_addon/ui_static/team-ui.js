@@ -46,6 +46,7 @@ const elements = {
   summaryGrid: document.querySelector("#summary-grid"),
   runtimeOperationsView: document.querySelector("#runtime-operations-view"),
   runtimeFilterButtons: Array.from(document.querySelectorAll("[data-runtime-filter]")),
+  reviewDeliveryView: document.querySelector("#review-delivery-view"),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
   projectsView: document.querySelector("#projects-view"),
@@ -56,9 +57,29 @@ const elements = {
   refreshButton: document.querySelector("#refresh-button"),
 };
 
+const deliveryStatusOrder = [
+  "pending",
+  "waiting_for_review",
+  "accepted",
+  "rejected",
+  "blocked",
+];
+const deliveryFilterOptions = new Set(["all", ...deliveryStatusOrder]);
+const deliveryStatusLabels = {
+  pending: "Pending",
+  waiting_for_review: "Waiting for review",
+  accepted: "Accepted",
+  rejected: "Rejected",
+  blocked: "Blocked",
+  all: "All",
+};
+
+let selectedDeliveryFilter = "all";
+
 document.addEventListener("DOMContentLoaded", () => {
   bindForms();
   bindRuntimeFilters();
+  bindDeliveryFilters();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplatePreview();
   });
@@ -125,6 +146,28 @@ function bindForms() {
   });
 }
 
+function bindWorkspaceReviewDecisionForms() {
+  document.querySelectorAll("form[data-review-decision-form]").forEach((form) => {
+    if (form.dataset.boundReviewDecision === "true") {
+      return;
+    }
+    form.dataset.boundReviewDecision = "true";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitReviewDecision(form);
+    });
+  });
+}
+
+function bindDeliveryFilters() {
+  document.querySelectorAll(".delivery-filter").forEach((button) => {
+    button.addEventListener("click", () => {
+      const filter = button.dataset.filter || "all";
+      setDeliveryFilter(filter);
+    });
+  });
+}
+
 async function loadState({ preserveForms = false } = {}) {
   const drafts = preserveForms ? captureFormDrafts() : null;
   setStatus("Loading team state.", "loading");
@@ -169,6 +212,7 @@ function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   renderSummary();
   renderRuntimeOperations();
+  renderReviewDeliveryWorkspace();
   renderHierarchy();
   renderAgents();
   renderProjects();
@@ -176,6 +220,57 @@ function render() {
   renderReleases();
   renderTemplateSetup();
   refreshSelects();
+}
+
+function setDeliveryFilter(filter) {
+  const nextFilter = deliveryFilterOptions.has(filter) ? filter : "all";
+  if (selectedDeliveryFilter === nextFilter) {
+    updateDeliveryFilterButtons();
+    return;
+  }
+  const drafts = captureFormDrafts();
+  selectedDeliveryFilter = nextFilter;
+  renderReviewDeliveryWorkspace();
+  restoreFormDrafts(drafts);
+}
+
+function updateDeliveryFilterButtons() {
+  document.querySelectorAll(".delivery-filter").forEach((button) => {
+    const active = (button.dataset.filter || "all") === selectedDeliveryFilter;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function renderReviewDeliveryWorkspace() {
+  if (!elements.reviewDeliveryView) {
+    return;
+  }
+  updateDeliveryFilterButtons();
+  const workspaceRows = buildReviewDeliveryRows();
+  const visibleRows =
+    selectedDeliveryFilter === "all"
+      ? workspaceRows
+      : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
+
+  if (!visibleRows.length) {
+    elements.reviewDeliveryView.innerHTML = `
+      <p class="empty-state">
+        No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
+      </p>
+    `;
+    bindWorkspaceReviewDecisionForms();
+    return;
+  }
+
+  const teamGroups = groupReviewDeliveryRows(visibleRows);
+  const bucketStatuses =
+    selectedDeliveryFilter === "all" ? deliveryStatusOrder : [selectedDeliveryFilter];
+
+  elements.reviewDeliveryView.innerHTML = teamGroups
+    .map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses))
+    .join("");
+  bindWorkspaceReviewDecisionForms();
 }
 
 function renderSummary() {
@@ -1131,7 +1226,7 @@ function renderDeliverables(deliverables) {
   `;
 }
 
-function renderReviewSummary(reviewIds) {
+function renderReviewSummary(reviewIds, { interactive = false } = {}) {
   if (!reviewIds.length) {
     return "";
   }
@@ -1143,22 +1238,88 @@ function renderReviewSummary(reviewIds) {
     <ul class="review-list">
       ${reviews
         .map((review) => {
+          const profile = review.review_profile_id
+            ? state.review_profiles[review.review_profile_id] || null
+            : null;
           return `
             <li class="record-item">
               <div class="record-line">
                 <strong>${escapeHtml(review.id)}</strong>
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
-              <div class="meta-line">Reviewer ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
+              <div class="meta-line">Reviewer id ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}${profile?.name ? ` (${escapeHtml(profile.name)})` : ""}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
               ${renderCriterionResults(review.criteria || [])}
+              ${interactive ? renderReviewDecisionForm(review, profile) : ""}
             </li>
           `;
         })
         .join("")}
     </ul>
   `;
+}
+
+function renderReviewDecisionForm(review, profile) {
+  if (terminalRecordStates.has(review.state)) {
+    return "";
+  }
+  const selectedState = decisionStates.includes(review.state) ? review.state : "";
+  const criteriaPlaceholder = renderReviewCriteriaPlaceholder(profile?.criteria || []);
+  const criteriaHelp = renderReviewCriteriaHelp(profile?.criteria || []);
+  return `
+    <form
+      class="review-decision-form"
+      id="review-decision-form-${escapeAttr(review.id)}"
+      data-review-decision-form="true"
+      data-review-request-id="${escapeAttr(review.id)}"
+    >
+      <label>
+        Decision
+        <select name="state" required>
+          <option value="">Select</option>
+          ${decisionStates
+            .map((stateValue) => {
+              const selected = stateValue === selectedState ? " selected" : "";
+              return `<option value="${escapeAttr(stateValue)}"${selected}>${escapeHtml(stateValue)}</option>`;
+            })
+            .join("")}
+        </select>
+      </label>
+      <label>
+        Findings
+        <textarea name="findings" rows="2"></textarea>
+      </label>
+      <label>
+        Criteria results
+        <textarea name="criteria" rows="3" placeholder="${escapeAttr(criteriaPlaceholder)}"></textarea>
+      </label>
+      ${criteriaHelp}
+      <button type="submit">Submit decision</button>
+    </form>
+  `;
+}
+
+function renderReviewCriteriaHelp(criteria) {
+  if (!criteria.length) {
+    return "";
+  }
+  return `
+    <div class="meta-line">Profile criteria:</div>
+    ${renderProfileCriteria(criteria)}
+  `;
+}
+
+function renderReviewCriteriaPlaceholder(criteria) {
+  if (!criteria.length) {
+    return "criterion_id | passed | finding";
+  }
+  return criteria
+    .map((criterion) => {
+      const finding = criterion.description || criterion.label || "finding";
+      return `${criterion.id} | passed | ${finding}`;
+    })
+    .join("\n");
 }
 
 function renderCriterionResults(criteria) {
@@ -1184,10 +1345,8 @@ function renderArtifactRefs(refs) {
   return `<div class="meta-line">Artifacts: ${refs.map((ref) => escapeHtml(ref)).join(", ")}</div>`;
 }
 
-function renderGitRefs(gitRefs) {
-  if (!gitRefs) {
-    return "";
-  }
+function renderGitRefs(gitRefs, extraPromotionIds = []) {
+  const refs = gitRefs || {};
   const branchLabels = [
     ["agent_branch", "agent"],
     ["review_branch", "review"],
@@ -1195,12 +1354,15 @@ function renderGitRefs(gitRefs) {
     ["release_branch", "release"],
   ];
   const parts = branchLabels
-    .filter(([key]) => gitRefs[key])
-    .map(([key, label]) => `${label} ${gitRefs[key]}`);
-  if (gitRefs.commit_sha) {
-    parts.push(`commit ${gitRefs.commit_sha}`);
+    .filter(([key]) => refs[key])
+    .map(([key, label]) => `${label} ${refs[key]}`);
+  if (refs.commit_sha) {
+    parts.push(`commit ${refs.commit_sha}`);
   }
-  const promotionIds = gitRefs.promotion_record_ids || [];
+  const promotionIds = uniqueTextList([
+    ...(refs.promotion_record_ids || []),
+    ...extraPromotionIds,
+  ]);
   const promotions = promotionIds
     .map((promotionId) => state.git_promotions[promotionId])
     .filter(Boolean);
@@ -1212,7 +1374,10 @@ function renderGitRefs(gitRefs) {
     : "";
   const promotionLine = promotions.length
     ? `<div class="meta-line">Promotions: ${promotions
-        .map((promotion) => `${escapeHtml(promotion.promotion_kind)}:${escapeHtml(promotion.state)}`)
+        .map(
+          (promotion) =>
+            `${escapeHtml(promotion.id)} ${escapeHtml(promotion.promotion_kind)}:${escapeHtml(promotion.state)}`,
+        )
         .join(", ")}</div>`
     : "";
   return `${branchLine}${promotionLine}`;
@@ -1498,6 +1663,341 @@ function selectedTemplate() {
     return templates.find((template) => template.id === selectedId) || null;
   }
   return templates[0] || null;
+}
+
+function buildReviewDeliveryRows() {
+  const taskByDeliverable = new Map();
+  const projectByTask = new Map();
+  const teamByProject = new Map();
+  const reviewsByDeliverable = new Map();
+  const releasePackagesByDeliverable = new Map();
+  const gitPromotionsById = new Map();
+
+  values(state.tasks).forEach((task) => {
+    taskByDeliverable.set(task.id, task);
+    projectByTask.set(task.id, state.projects[task.project_id] || null);
+  });
+
+  values(state.projects).forEach((project) => {
+    teamByProject.set(project.id, state.teams[project.team_id] || null);
+  });
+
+  values(state.review_requests).forEach((review) => {
+    const reviews = reviewsByDeliverable.get(review.deliverable_id) || [];
+    reviews.push(review);
+    reviewsByDeliverable.set(review.deliverable_id, reviews);
+  });
+
+  values(state.release_packages).forEach((release) => {
+    (release.deliverable_ids || []).forEach((deliverableId) => {
+      const releasePackages = releasePackagesByDeliverable.get(deliverableId) || [];
+      releasePackages.push(release);
+      releasePackagesByDeliverable.set(deliverableId, releasePackages);
+    });
+  });
+
+  values(state.git_promotions).forEach((promotion) => {
+    gitPromotionsById.set(promotion.id, promotion);
+  });
+
+  return values(state.deliverables)
+    .map((deliverable) => {
+      const task = taskByDeliverable.get(deliverable.task_id) || null;
+      const project = task ? projectByTask.get(task.id) || null : null;
+      const team = project ? teamByProject.get(project.id) || null : null;
+      const reviewRequests = (reviewsByDeliverable.get(deliverable.id) || []).slice().sort(byId);
+      const releasePackages = (releasePackagesByDeliverable.get(deliverable.id) || []).slice().sort(byId);
+      const gitPromotionIds = [
+        ...(deliverable.git_refs?.promotion_record_ids || []),
+        ...releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
+      ];
+      const gitPromotions = uniqueTextList(gitPromotionIds)
+        .map((promotionId) => gitPromotionsById.get(promotionId))
+        .filter(Boolean);
+      const effectiveStatus = deriveDeliveryStatus(
+        deliverable,
+        task,
+        reviewRequests,
+        releasePackages,
+        gitPromotions,
+      );
+      return {
+        deliverable,
+        task,
+        project,
+        team,
+        reviewRequests,
+        releasePackages,
+        gitPromotions,
+        effectiveStatus,
+      };
+    })
+    .sort(compareReviewDeliveryRows);
+}
+
+function compareReviewDeliveryRows(left, right) {
+  return (
+    deliveryStatusRank(left.effectiveStatus) - deliveryStatusRank(right.effectiveStatus) ||
+    teamSortKey(left.team).localeCompare(teamSortKey(right.team)) ||
+    projectSortKey(left.project).localeCompare(projectSortKey(right.project)) ||
+    byId(left.deliverable, right.deliverable)
+  );
+}
+
+function deliveryStatusRank(status) {
+  const index = deliveryStatusOrder.indexOf(status);
+  return index === -1 ? deliveryStatusOrder.length : index;
+}
+
+function teamSortKey(team) {
+  return String(team?.name || team?.id || "unknown-team");
+}
+
+function projectSortKey(project) {
+  return String(project?.name || project?.id || "unknown-project");
+}
+
+function groupReviewDeliveryRows(rows) {
+  const teamGroups = new Map();
+
+  rows.forEach((row) => {
+    const teamId = row.team?.id || "__unknown_team__";
+    const projectId = row.project?.id || "__unknown_project__";
+    let teamGroup = teamGroups.get(teamId);
+    if (!teamGroup) {
+      teamGroup = {
+        team: row.team || null,
+        projects: new Map(),
+      };
+      teamGroups.set(teamId, teamGroup);
+    }
+    let projectGroup = teamGroup.projects.get(projectId);
+    if (!projectGroup) {
+      projectGroup = {
+        project: row.project || null,
+        rows: [],
+      };
+      teamGroup.projects.set(projectId, projectGroup);
+    }
+    projectGroup.rows.push(row);
+  });
+
+  return Array.from(teamGroups.values())
+    .sort((left, right) => teamSortKey(left.team).localeCompare(teamSortKey(right.team)))
+    .map((teamGroup) => {
+      return {
+        team: teamGroup.team,
+        projects: Array.from(teamGroup.projects.values())
+          .sort((left, right) => projectSortKey(left.project).localeCompare(projectSortKey(right.project)))
+          .map((projectGroup) => ({
+            project: projectGroup.project,
+            rows: projectGroup.rows.sort(compareReviewDeliveryRows),
+          })),
+      };
+    });
+}
+
+function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
+  const teamLabel = teamGroup.team
+    ? `${escapeHtml(teamGroup.team.name)} (${escapeHtml(teamGroup.team.id)})`
+    : "Unknown team";
+  const visibleRowCount = teamGroup.projects.reduce((count, projectGroup) => {
+    return count + projectGroup.rows.length;
+  }, 0);
+  return `
+    <section class="delivery-team">
+      <div class="delivery-team-title">
+        <div>
+          <p class="section-label">Team</p>
+          <h3>${teamLabel}</h3>
+        </div>
+        <span class="delivery-bucket-count">${visibleRowCount} deliverable${visibleRowCount === 1 ? "" : "s"}</span>
+      </div>
+      <div class="delivery-project-list">
+        ${teamGroup.projects.map((projectGroup) => renderDeliveryProjectGroup(projectGroup, bucketStatuses)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
+  const project = projectGroup.project;
+  const projectLabel = project
+    ? `${escapeHtml(project.name)} (${escapeHtml(project.id)})`
+    : "Unknown project";
+  const projectCount = projectGroup.rows.length;
+  const bucketMarkup = bucketStatuses
+    .map((status) => {
+      const rows = projectGroup.rows.filter((row) => row.effectiveStatus === status);
+      if (!rows.length) {
+        return "";
+      }
+      return renderDeliveryBucket(status, rows);
+    })
+    .filter(Boolean)
+    .join("");
+  if (!bucketMarkup) {
+    return "";
+  }
+  return `
+    <article class="delivery-project">
+      <div class="delivery-project-title">
+        <div>
+          <p class="section-label">Project</p>
+          <h4>${projectLabel}</h4>
+          ${project ? `<div class="meta-line">Team ${escapeHtml(project.team_id)}</div>` : ""}
+        </div>
+        <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>
+      </div>
+      <div class="delivery-buckets">
+        ${bucketMarkup}
+      </div>
+    </article>
+  `;
+}
+
+function renderDeliveryBucket(status, rows) {
+  const label = deliveryStatusLabels[status] || status;
+  return `
+    <section class="delivery-bucket" data-status="${escapeAttr(status)}">
+      <div class="delivery-bucket-title">
+        <strong>${escapeHtml(label)}</strong>
+        <span class="delivery-bucket-count">${rows.length} deliverable${rows.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="delivery-row-list">
+        ${rows.map((row) => renderDeliveryRow(row)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderDeliveryRow(row) {
+  const deliverable = row.deliverable;
+  const task = row.task;
+  const project = row.project;
+  const team = row.team;
+  const projectLabel = project
+    ? `${escapeHtml(project.name)} (${escapeHtml(project.id)})`
+    : "Unknown project";
+  const teamLabel = team ? `${escapeHtml(team.name)} (${escapeHtml(team.id)})` : "Unknown team";
+  const reviewIds = row.reviewRequests.map((review) => review.id);
+  const releaseSummaries = renderReleaseSummary(row.releasePackages);
+  const gitPromotionIds = uniqueTextList([
+    ...(deliverable.git_refs?.promotion_record_ids || []),
+    ...row.releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
+  ]);
+  return `
+    <article class="delivery-row" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
+      <div class="delivery-row-header">
+        <div class="delivery-row-title">
+          <strong>${escapeHtml(deliverable.id)}</strong>
+          <span class="state-pill ${escapeAttr(row.effectiveStatus)}">${escapeHtml(row.effectiveStatus)}</span>
+        </div>
+        <span class="delivery-bucket-count">${escapeHtml(teamLabel)} - ${escapeHtml(projectLabel)}</span>
+      </div>
+      <div class="delivery-row-body">
+        <div class="delivery-detail-grid">
+          <div>
+            <div class="delivery-detail-label">Deliverable</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Task</div>
+            <div class="delivery-detail-value">
+              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(task.state)}` : "missing"}
+            </div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Producer</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.producer_agent_id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Deliverable state</div>
+            <div class="delivery-detail-value">
+              <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
+        ${renderArtifactRefs(deliverable.artifact_refs || [])}
+        ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
+        ${
+          reviewIds.length
+            ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
+            : ""
+        }
+        ${releaseSummaries}
+      </div>
+    </article>
+  `;
+}
+
+function renderReleaseSummary(releasePackages) {
+  if (!releasePackages.length) {
+    return "";
+  }
+  return `
+    <div class="delivery-row-releases">
+      <div class="meta-line">Release packages:</div>
+      <ul class="release-list">
+        ${releasePackages
+          .map((release) => {
+            const deliverables = (release.deliverable_ids || []).join(", ");
+            const promotionIds = uniqueTextList(release.git_promotion_record_ids || []);
+            const promotionText = promotionIds.length ? promotionIds.join(", ") : "";
+            const artifactText = (release.artifact_refs || []).length
+              ? release.artifact_refs.map((ref) => escapeHtml(ref)).join(", ")
+              : "";
+            return `
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(release.id)}</strong>
+                  <span class="state-pill ${escapeAttr(release.state)}">${escapeHtml(release.state)}</span>
+                </div>
+                <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
+                ${release.release_branch ? `<div class="meta-line">Release ${escapeHtml(release.release_branch)}</div>` : ""}
+                ${release.canonical_branch ? `<div class="meta-line">Canonical ${escapeHtml(release.canonical_branch)}</div>` : ""}
+                ${release.published_commit_sha ? `<div class="meta-line">Commit ${escapeHtml(release.published_commit_sha)}</div>` : ""}
+                ${promotionText ? `<div class="meta-line">Git promotions: ${escapeHtml(promotionText)}</div>` : ""}
+                ${artifactText ? `<div class="meta-line">Artifact refs: ${artifactText}</div>` : ""}
+                ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
+                ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPromotions) {
+  if (deliverable.state === "blocked") {
+    return "blocked";
+  }
+  if (task && (task.state === "blocked" || task.state === "rejected")) {
+    return "blocked";
+  }
+  if (reviews.some((review) => review.state === "blocked")) {
+    return "blocked";
+  }
+  if (releasePackages.some((release) => release.state === "blocked" || release.state === "rejected")) {
+    return "blocked";
+  }
+  if (gitPromotions.some((promotion) => promotion.state === "failed")) {
+    return "blocked";
+  }
+  if (deliverable.state === "rejected" || reviews.some((review) => review.state === "rejected")) {
+    return "rejected";
+  }
+  const reviewsPending = reviews.some((review) => review.state === "pending");
+  if (deliverable.state === "accepted" && reviews.every((review) => review.state === "accepted")) {
+    return "accepted";
+  }
+  if ((task && task.state === "waiting_for_review") || reviewsPending) {
+    return "waiting_for_review";
+  }
+  return "pending";
 }
 
 function refreshSelects() {
@@ -1840,7 +2340,7 @@ function gitConfigForForm(data) {
 
 async function submitReviewDecision(form) {
   const data = formData(form);
-  const reviewId = text(data.review_request_id);
+  const reviewId = text(data.review_request_id || form.dataset.reviewRequestId);
   if (!reviewId) {
     setStatus("Review is required.", "error");
     return;
