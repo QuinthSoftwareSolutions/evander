@@ -1218,6 +1218,74 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
 
 
+def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\nlatest raw output\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        started_at=started_at,
+        finished_at=None,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=10)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "No response requested."},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=20)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "real session status"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = daemon.get_logs(record, mode="execution")
+
+    assert output == (
+        f"session id: {thread_id}\n"
+        "latest raw output\n"
+        "real session status\n"
+    )
+
+
 def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> None:
     thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
@@ -1414,6 +1482,71 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
     assert daemon.get_logs(record, mode="execution") == (
         f"session id: {thread_id}\n"
         "Claude response during this job.\n"
+    )
+
+
+def test_execution_logs_skip_claude_no_response_requested_artifact(tmp_path: Path) -> None:
+    thread_id = "9c50cf46-1c43-4119-befd-23582d367152"
+    started_at = datetime(2026, 6, 8, 4, 26, 3, tzinfo=UTC)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-claude"] = f"session id: {thread_id}\nlatest raw output\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "claude-test-agent")
+    record = WorkerJobRecord(
+        job_id="job-claude",
+        session_id="claude-test-agent",
+        image="agent-sandbox-runner-claude:latest",
+        command=["true"],
+        container_name="agent-worker-job-claude",
+        status="running",
+        started_at=started_at,
+        finished_at=None,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = paths.agent_home / ".claude" / "projects" / "-home-agent"
+    session_dir.mkdir(parents=True)
+    (session_dir / f"{thread_id}.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at + timedelta(seconds=1)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "No response requested."}],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": thread_id,
+                    "timestamp": (started_at + timedelta(seconds=2)).isoformat(),
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "real Claude status"}],
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = daemon.get_logs(record, mode="execution")
+
+    assert output == (
+        f"session id: {thread_id}\n"
+        "latest raw output\n"
+        "real Claude status\n"
     )
 
 

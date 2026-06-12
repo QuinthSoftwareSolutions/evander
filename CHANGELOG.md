@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   queued prompt counts, coalesced counts, timestamps, queue keys, and prompt
   previews on the Agents page.
 
+## 2026-06-12 - Container Worker Log Artifact Filtering
+
+- Stopped reconstructed Codex and Claude session logs from surfacing synthetic
+  `No response requested.` messages in container-worker execution logs, so real
+  live output no longer appears above a stale terminal artifact in Admin Web.
+
 ## 2026-06-12 - Voice Wake Cleanup
 
 - Disabled pending `voice_session_query` wake requests when
