@@ -1,5 +1,3 @@
-import { adminHash } from "../../adminRouting.ts";
-
 export const WORKFLOW_FAILURE_CLUSTERS_REPORT_ENDPOINT =
   "/api/admin/reports/workflow-failure-clusters";
 
@@ -104,12 +102,19 @@ export function workflowFailureClusterRepresentativeRunHref(
   example: WorkflowFailureClusterExamplePayload,
 ): string | null {
   if (example.event_id) {
-    return adminHash("workflow", { event_id: example.event_id });
+    return workflowRunHash("event_id", example.event_id);
   }
   if (example.trace_id) {
-    return adminHash("workflow", { trace_id: example.trace_id });
+    return workflowRunHash("trace_id", example.trace_id);
   }
   return null;
+}
+
+function workflowRunHash(key: "event_id" | "trace_id", value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const query = new URLSearchParams({ [key]: normalized });
+  return `#workflow?${query.toString()}`;
 }
 
 export function workflowFailureClusterRepresentativeRunLabel(

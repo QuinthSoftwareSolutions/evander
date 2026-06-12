@@ -17755,7 +17755,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             pr_ids = collect_keyed_values(*linked_payloads, suffixes=("pr_id", "pr_ids"))
             ado_item_ids = collect_keyed_values(
                 *linked_payloads,
-                suffixes=("ado_item_id", "ado_item_ids"),
+                suffixes=("ado_item_id", "ado_item_ids", "work_item_id", "work_item_ids"),
             )
             issue_ids = collect_keyed_values(*linked_payloads, suffixes=("issue_id", "issue_ids"))
             artifact_ids = collect_artifact_ids(*linked_payloads)
@@ -17800,6 +17800,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "failure_candidate": failure_candidate,
                 "success_activity": success_activity,
                 "dismissed": bool(raw_record.get("dismissed_at")),
+                "cleared": bool(
+                    raw_record.get("cleared_at")
+                    or (source_kind == "trigger" and raw_record.get("clear_reason"))
+                ),
                 "raw_status": raw_status,
                 "graph_id": graph_id,
                 "graph_name": graph_info["graph_name"],
@@ -18006,6 +18010,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "_example_limit": WORKFLOW_FAILURE_CLUSTER_EXAMPLE_LIMIT,
                     "_latest_failure_at": record["activity_at"],
                     "_latest_failure_dismissed": bool(record["dismissed"]),
+                    "_latest_failure_cleared": bool(record["cleared"]),
+                    "_latest_failure_status": record["raw_status"],
                     "_node_source_key": node_source_key,
                 }
                 clusters[key] = cluster
@@ -18018,9 +18024,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 cluster["latest_error_summary"] = record["error_signature"]
                 cluster["_latest_failure_at"] = record["activity_at"]
                 cluster["_latest_failure_dismissed"] = bool(record["dismissed"])
+                cluster["_latest_failure_cleared"] = bool(record["cleared"])
+                cluster["_latest_failure_status"] = record["raw_status"]
             elif cluster.get("_latest_failure_at") is None:
                 cluster["_latest_failure_at"] = record["activity_at"]
                 cluster["_latest_failure_dismissed"] = bool(record["dismissed"])
+                cluster["_latest_failure_cleared"] = bool(record["cleared"])
+                cluster["_latest_failure_status"] = record["raw_status"]
 
             for value in [record["event_id"]]:
                 if value and value not in cluster["event_ids"]:
@@ -18072,6 +18082,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         for cluster in clusters.values():
             latest_failure_at = cluster.pop("_latest_failure_at", None)
             latest_failure_dismissed = bool(cluster.pop("_latest_failure_dismissed", False))
+            latest_failure_cleared = bool(cluster.pop("_latest_failure_cleared", False))
+            latest_failure_status = _coerce_optional_string(
+                cluster.pop("_latest_failure_status", None)
+            )
             node_source_key = cluster.pop("_node_source_key", None)
             latest_success_at = (
                 latest_success_at_by_node_source.get(node_source_key)
@@ -18084,12 +18098,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 and latest_success_at > latest_failure_at
             ):
                 cluster["state"] = "resolved"
-            elif latest_failure_dismissed:
+            elif latest_failure_dismissed or latest_failure_cleared:
                 cluster["state"] = "historical"
+            elif latest_failure_status == "failed":
+                cluster["state"] = "active"
             elif latest_failure_at is not None and latest_failure_at >= end_at - recent_threshold:
                 cluster["state"] = "recent"
             else:
-                cluster["state"] = "active"
+                cluster["state"] = "historical"
 
             cluster["examples"] = list(cluster["examples"])
 

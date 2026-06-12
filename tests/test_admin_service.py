@@ -7031,6 +7031,7 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
             },
             input_payload={
                 "issue_id": "issue-a",
+                "work_item_id": "work-789",
             },
             outputs={
                 "message": error_a,
@@ -7124,10 +7125,11 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     assert report.has_more is False
     assert report.clusters and len(report.clusters) == 3
 
-    by_state = {cluster.state: cluster for cluster in report.clusters}
-    resolved = by_state["resolved"]
-    recent = by_state["recent"]
-    active = by_state["active"]
+    resolved = next(cluster for cluster in report.clusters if cluster.count == 2)
+    active = next(cluster for cluster in report.clusters if cluster.event_ids == ["evt-effect-3"])
+    historical = next(
+        cluster for cluster in report.clusters if cluster.event_ids == ["evt-trigger-root"]
+    )
 
     assert resolved.graph_id == "graph-ticket"
     assert resolved.graph_name == "Ticket intake"
@@ -7140,7 +7142,7 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     assert resolved.session_ids[0] == "session-b"
     assert set(resolved.session_ids) >= {"session-a", "session-b"}
     assert set(resolved.pr_ids) >= {"pr-101", "pr-102"}
-    assert set(resolved.ado_item_ids) >= {"ado-556"}
+    assert set(resolved.ado_item_ids) >= {"ado-556", "work-789"}
     assert set(resolved.issue_ids) >= {"issue-a", "issue-b"}
     assert set(resolved.artifact_ids) >= {
         "comm_00000000000000000000000000000002",
@@ -7155,21 +7157,22 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
         "/api/workflow-editor/run-detail?event_id=evt-effect-2"
     )
 
-    assert recent.graph_id == "graph-ticket"
-    assert recent.state == "recent"
-    assert recent.count == 1
-    assert recent.event_ids == ["evt-effect-3"]
-    assert recent.latest_error_summary.startswith("Existing branch")
-    assert recent.examples[0].event_id == "evt-effect-3"
-
-    assert active.graph_id == "root"
-    assert active.graph_name == "Unassigned"
-    assert active.source_kind == "trigger"
-    assert active.trigger_type == "trigger:ticket:created"
+    assert active.graph_id == "graph-ticket"
+    assert active.state == "active"
     assert active.count == 1
-    assert active.event_ids == ["evt-trigger-root"]
-    assert active.latest_error_summary.startswith("Rejected branch update")
-    assert active.examples[0].event_id == "evt-trigger-root"
+    assert active.event_ids == ["evt-effect-3"]
+    assert active.latest_error_summary.startswith("Existing branch")
+    assert active.examples[0].event_id == "evt-effect-3"
+
+    assert historical.graph_id == "root"
+    assert historical.graph_name == "Unassigned"
+    assert historical.state == "historical"
+    assert historical.source_kind == "trigger"
+    assert historical.trigger_type == "trigger:ticket:created"
+    assert historical.count == 1
+    assert historical.event_ids == ["evt-trigger-root"]
+    assert historical.latest_error_summary.startswith("Rejected branch update")
+    assert historical.examples[0].event_id == "evt-trigger-root"
 
     empty_period = service.read_workflow_failure_clusters_report(
         period_start=datetime(2026, 6, 13, 0, 0, tzinfo=UTC),
