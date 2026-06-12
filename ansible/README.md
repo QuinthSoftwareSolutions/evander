@@ -200,10 +200,9 @@ running `agent_sandbox_qdrant_image` (`qdrant/qdrant:v1.18.0` by default). It pe
 `agent_sandbox_qdrant_bind_host:agent_sandbox_qdrant_port` (`127.0.0.1:6333` by default). The role
 verifies Qdrant readiness through `/healthz`.
 
-Worker/global JSON files are also editable from the Admin GUI. Set
-`agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings
-after first install; the playbook will still create missing worker config files but will not replace
-existing ones.
+Worker/global JSON files are also editable from the Admin GUI. The playbook creates missing worker
+config files from Ansible variables, but never replaces existing worker config files. To re-seed one
+from Ansible defaults, remove that specific live config file before a deployment.
 
 ## First Install
 
@@ -314,8 +313,8 @@ The playbook is intended to be safe to re-run:
 - when `agent_sandbox_admin_web_caddy_enabled` is true, the managed Caddyfile is reconciled after
   the frontend bundle is built
 - `init-state` is re-run against the same runtime directory
-- managed config files are re-rendered from variables
-- worker/global JSON files are preserved when `agent_sandbox_force_render_worker_config: false`
+- managed env files and workflow pack files are re-rendered from variables
+- worker/global JSON files are created when missing and otherwise preserved
 - `create_libvirt_network.sh` and `create_base_vm.sh` are repo-native and idempotent in the `full`
   profile
 - if the configured run user's supplementary groups change, managed services are restarted so
