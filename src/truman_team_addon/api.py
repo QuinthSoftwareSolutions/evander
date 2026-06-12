@@ -25,6 +25,8 @@ from .models import (
     TeamTaskState,
     team_state_payload,
 )
+from .templates import get_template, template_catalog
+from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 
 
@@ -34,6 +36,73 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def get_state(_request: Request) -> JSONResponse:
         return JSONResponse(team_state_payload(repository.read()))
 
+    async def list_templates(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "templates": [
+                    template.model_dump(mode="json") for template in template_catalog()
+                ]
+            }
+        )
+
+    async def get_template_details(request: Request) -> JSONResponse:
+        template = get_template(request.path_params["template_id"])
+        if template is None:
+            return JSONResponse({"error": "template not found"}, status_code=404)
+        return JSONResponse(template.model_dump(mode="json"))
+
+    async def materialize_template(request: Request) -> JSONResponse:
+        template_id = request.path_params["template_id"]
+        if get_template(template_id) is None:
+            return JSONResponse({"error": "template not found"}, status_code=404)
+        payload = await _read_payload(request)
+        state, result = repository.materialize_template(
+            template_id,
+            inputs=payload,
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = team_state_payload(state)
+        response_payload["materialized"] = result
+        return JSONResponse(response_payload, status_code=201)
+
+    async def get_timeline(request: Request) -> JSONResponse:
+        state = repository.read()
+        team_id = _query_text(request, "team_id")
+        project_id = _query_text(request, "project_id")
+        agent_id = _query_text(request, "agent_id")
+        types = _query_values(request, "type")
+        statuses = _query_values(request, "status")
+        attention_needed = _query_bool(request, "attention_needed")
+        timeline = derive_team_timeline(
+            state,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=types,
+            statuses=statuses,
+            attention_needed=attention_needed,
+        )
+        filters: dict[str, object] = {}
+        if team_id is not None:
+            filters["team_id"] = team_id
+        if project_id is not None:
+            filters["project_id"] = project_id
+        if agent_id is not None:
+            filters["agent_id"] = agent_id
+        if types is not None:
+            filters["type"] = types
+        if statuses is not None:
+            filters["status"] = statuses
+        if attention_needed is not None:
+            filters["attention_needed"] = attention_needed
+        payload = {
+            **timeline,
+            "source": "derived_from_current_team_state",
+            "description": "Derived timeline from the current TeamState snapshot.",
+            "filters": filters,
+        }
+        return JSONResponse(payload)
+
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         state = repository.create_team(
@@ -41,6 +110,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             name=_required(payload, "name"),
             manager_agent_id=_required(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
+            manager_display_name=_optional(payload, "manager_display_name"),
             manager_role=_optional(payload, "manager_role") or "manager",
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
@@ -69,6 +139,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             name=_required(payload, "name"),
             lead_agent_id=_required(payload, "lead_agent_id"),
             lead_session_id=_required(payload, "lead_session_id"),
+            lead_display_name=_optional(payload, "lead_display_name"),
             lead_role=_optional(payload, "lead_role") or "project_lead",
             goals=goals,
             git=_optional_git_config(payload),
@@ -104,6 +175,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             role=_required(payload, "role"),
             session_id=_required(payload, "session_id"),
             reports_to_agent_id=_required(payload, "reports_to_agent_id"),
+            display_name=_optional(payload, "display_name"),
             ephemeral_policy=(
                 EphemeralAgentPolicy.model_validate(ephemeral_policy)
                 if ephemeral_policy is not None
@@ -312,6 +384,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     return [
         Route("/state", _with_errors(get_state), methods=["GET"]),
+        Route("/templates", _with_errors(list_templates), methods=["GET"]),
+        Route(
+            "/templates/{template_id}",
+            _with_errors(get_template_details),
+            methods=["GET"],
+        ),
+        Route(
+            "/templates/{template_id}/materialize",
+            _with_errors(materialize_template),
+            methods=["POST"],
+        ),
+        Route("/timeline", _with_errors(get_timeline), methods=["GET"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
@@ -434,6 +518,41 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _query_text(request: Request, field_name: str) -> str | None:
+    value = request.query_params.get(field_name)
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _query_values(request: Request, field_name: str) -> list[str] | None:
+    values = request.query_params.getlist(field_name)
+    normalized: list[str] = []
+    for value in values:
+        for item in value.split(","):
+            text = item.strip()
+            if text:
+                normalized.append(text)
+    if not normalized:
+        return None
+    return list(dict.fromkeys(normalized))
+
+
+def _query_bool(request: Request, field_name: str) -> bool | None:
+    value = request.query_params.get(field_name)
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{field_name} must be true or false")
 
 
 def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:

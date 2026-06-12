@@ -1087,7 +1087,106 @@ def _filtered_team_state_payload(
         and value.get("project_id") in visible_project_ids
         and value.get("task_id") in visible_task_ids
     }
+    filtered["runtime_operations"] = _filter_runtime_operations(
+        filtered.get("runtime_operations"),
+        visible_agent_ids=visible_agent_ids,
+        visible_project_ids=visible_project_ids,
+        visible_task_ids=visible_task_ids,
+        visible_deliverable_ids=visible_deliverable_ids,
+        visible_inbox_ids=set(filtered["inbox"]),
+        visible_action_ids=set(filtered["action_records"]),
+        visible_release_ids=visible_release_ids,
+        visible_git_promotion_ids=visible_git_promotion_ids,
+        visible_assignment_ids=set(filtered["ephemeral_assignments"]),
+    )
     return filtered
+
+
+def _filter_runtime_operations(
+    value: object,
+    *,
+    visible_agent_ids: set[str],
+    visible_project_ids: set[str],
+    visible_task_ids: set[str],
+    visible_deliverable_ids: set[str],
+    visible_inbox_ids: set[str],
+    visible_action_ids: set[str],
+    visible_release_ids: set[str],
+    visible_git_promotion_ids: set[str],
+    visible_assignment_ids: set[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"generated_at": None, "agents": [], "attention": []}
+    agents = [
+        row
+        for row in _mapping_items(value.get("agents"))
+        if _optional_text(row.get("id")) in visible_agent_ids
+    ]
+    attention = [
+        row
+        for row in _mapping_items(value.get("attention"))
+        if _runtime_row_is_visible(
+            row,
+            visible_agent_ids=visible_agent_ids,
+            visible_project_ids=visible_project_ids,
+            visible_task_ids=visible_task_ids,
+            visible_deliverable_ids=visible_deliverable_ids,
+            visible_inbox_ids=visible_inbox_ids,
+            visible_action_ids=visible_action_ids,
+            visible_release_ids=visible_release_ids,
+            visible_git_promotion_ids=visible_git_promotion_ids,
+            visible_assignment_ids=visible_assignment_ids,
+        )
+    ]
+    return {
+        "generated_at": value.get("generated_at"),
+        "agents": agents,
+        "attention": attention,
+    }
+
+
+def _runtime_row_is_visible(
+    row: dict[str, Any],
+    *,
+    visible_agent_ids: set[str],
+    visible_project_ids: set[str],
+    visible_task_ids: set[str],
+    visible_deliverable_ids: set[str],
+    visible_inbox_ids: set[str],
+    visible_action_ids: set[str],
+    visible_release_ids: set[str],
+    visible_git_promotion_ids: set[str],
+    visible_assignment_ids: set[str],
+) -> bool:
+    checks = (
+        (_optional_text(row.get("agent_id")), visible_agent_ids),
+        (_optional_text(row.get("project_id")), visible_project_ids),
+        (_optional_text(row.get("task_id")), visible_task_ids),
+        (_optional_text(row.get("deliverable_id")), visible_deliverable_ids),
+        (_optional_text(row.get("inbox_item_id")), visible_inbox_ids),
+        (_optional_text(row.get("action_record_id")), visible_action_ids),
+        (_optional_text(row.get("release_package_id")), visible_release_ids),
+        (_optional_text(row.get("promotion_id")), visible_git_promotion_ids),
+        (_optional_text(row.get("assignment_id")), visible_assignment_ids),
+    )
+    if not any(identifier is not None for identifier, _allowed in checks):
+        return False
+    for identifier, allowed in checks:
+        if identifier is not None and identifier not in allowed:
+            return False
+    deliverable_ids = _string_items(row.get("deliverable_ids"))
+    if deliverable_ids and any(
+        deliverable_id not in visible_deliverable_ids
+        for deliverable_id in deliverable_ids
+    ):
+        return False
+    return True
+
+
+def _mapping_items(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _filter_ids(value: object, allowed: set[str]) -> list[str]:

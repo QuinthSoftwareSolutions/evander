@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -7,6 +8,19 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from truman_team_addon.models import (
+    AgentActionRecord,
+    AgentInboxItem,
+    AgentRuntime,
+    EphemeralAssignment,
+    EphemeralAssignmentState,
+    GitPromotionRecord,
+    ReleasePackage,
+    TeamInboxItemState,
+    TeamInboxItemType,
+    TeamRecordState,
+    TeamTaskState,
+)
 from truman_team_addon.repository import TeamStateRepository
 
 
@@ -38,12 +52,228 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
 
+def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role="backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+    repo.create_or_reprioritize_task(
+        task_id="blocked-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Blocked task",
+        description="This task is blocked.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.BLOCKED,
+    )
+    repo.create_or_reprioritize_task(
+        task_id="dependency-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Dependency task",
+        description="This task is still open.",
+        created_by_agent_id="lead",
+    )
+    repo.create_or_reprioritize_task(
+        task_id="waiting-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=3,
+        title="Waiting task",
+        description="This task waits on another task.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependency-task"],
+    )
+    repo.record_deliverable(
+        deliverable_id="deliverable",
+        task_id="waiting-task",
+        producer_agent_id="backend",
+        summary="Waiting task deliverable.",
+        artifact_refs=["artifacts/backend.tar.gz"],
+    )
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    lease_until = datetime(2099, 1, 1, tzinfo=UTC)
+    next_wake_at = datetime(2000, 1, 1, tzinfo=UTC)
+
+    def _mutate(state):
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            wake_leased_until=lease_until,
+            active_dispatch_id="dispatch-backend",
+            wake_reason="inbox",
+            last_wake_at=now - timedelta(minutes=5),
+            next_wake_at=next_wake_at,
+            no_progress_count=4,
+            last_progress_at=now - timedelta(minutes=10),
+            updated_at=now,
+        )
+        state.inbox["inbox-1"] = AgentInboxItem(
+            id="inbox-1",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="waiting-task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            state=TeamInboxItemState.PENDING,
+            payload={"question": "Status update?"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.inbox["escalation-1"] = AgentInboxItem(
+            id="escalation-1",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="waiting-task",
+            item_type=TeamInboxItemType.ESCALATION,
+            state=TeamInboxItemState.PENDING,
+            payload={"reason": "blocked too long"},
+            created_at=now,
+            updated_at=now,
+        )
+        state.action_records["action-1"] = AgentActionRecord(
+            id="action-1",
+            agent_id="backend",
+            dispatch_id="dispatch-backend",
+            action={"type": "build"},
+            success=False,
+            error="build failed",
+            created_at=now,
+        )
+        state.release_packages["release-1"] = ReleasePackage(
+            id="release-1",
+            project_id="project",
+            deliverable_ids=["deliverable"],
+            artifact_refs=["artifacts/backend.tar.gz"],
+            feature_branches=["team/team/features/waiting-task"],
+            release_branch="team/team/releases/release-1",
+            canonical_branch="team/releases/release-1",
+            git_promotion_record_ids=["promotion-1"],
+            state=TeamRecordState.BLOCKED,
+            error="manual hold",
+            created_at=now,
+        )
+        state.git_promotions["promotion-1"] = GitPromotionRecord(
+            id="promotion-1",
+            project_id="project",
+            actor_agent_id="backend",
+            source_branch="team/team/features/waiting-task",
+            target_branch="team/team/releases/release-1",
+            promotion_kind="release",
+            task_id="waiting-task",
+            deliverable_id="deliverable",
+            release_package_id="release-1",
+            state="failed",
+            commit_sha="abc123",
+            outputs={"reason": "merge conflict"},
+            error="merge conflict",
+            created_at=now,
+            updated_at=now,
+        )
+        state.ephemeral_assignments["ephemeral-failed"] = EphemeralAssignment(
+            id="ephemeral-failed",
+            parent_agent_id="backend",
+            project_id="project",
+            task_id="waiting-task",
+            session_id="session-backend-ephemeral",
+            title="Failed ephemeral work",
+            prompt="Run the failing ephemeral task.",
+            state=EphemeralAssignmentState.FAILED,
+            error="spawn failed",
+            created_at=now,
+            updated_at=now,
+        )
+        state.ephemeral_assignments["ephemeral-cleanup"] = EphemeralAssignment(
+            id="ephemeral-cleanup",
+            parent_agent_id="backend",
+            project_id="project",
+            task_id="waiting-task",
+            session_id="session-backend-cleanup",
+            title="Cleanup ephemeral work",
+            prompt="Clean up the ephemeral task.",
+            state=EphemeralAssignmentState.CLEANUP_PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_mutate)
+    return repo
+
+
+def _auto_dev_squad_materialization_payload(
+    *,
+    duplicate_reviewer_agent_id: str | None = None,
+    bad_git: bool = False,
+    expected_revision: int = 0,
+) -> dict[str, object]:
+    git_payload: dict[str, object] = {
+        "host_repo_path": "/srv/repos/auto-dev-squad",
+        "bare_repo_name": "auto-dev-squad.git",
+    }
+    if bad_git:
+        git_payload["bare_repo_path"] = "/srv/git/auto-dev-squad.git"
+
+    return {
+        "expected_revision": expected_revision,
+        "team": {
+            "id": "team-auto-dev-squad",
+            "name": "Auto-Dev Squad",
+            "manager_agent_id": "manager-auto-dev-squad",
+            "manager_session_id": "session-manager-auto-dev-squad",
+            "operator_communication_target_id": "slack://ops-channel",
+        },
+        "project": {
+            "id": "project-auto-dev-squad",
+            "name": "Reviewed Auto-Dev Delivery",
+            "lead_agent_id": "project-lead-auto-dev-squad",
+            "lead_session_id": "session-project-lead-auto-dev-squad",
+            "git": git_payload,
+        },
+        "agents": {
+            "implementer": {
+                "agent_id": "implementer-auto-dev-squad",
+                "session_id": "session-implementer-auto-dev-squad",
+            },
+            "reviewer": {
+                "agent_id": (
+                    duplicate_reviewer_agent_id or "reviewer-auto-dev-squad"
+                ),
+                "session_id": "session-reviewer-auto-dev-squad",
+            },
+            "release_operator": {
+                "agent_id": "release-operator-auto-dev-squad",
+                "session_id": "session-release-operator-auto-dev-squad",
+            },
+        },
+    }
+
 
 def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> None:
     disabled = _client(tmp_path / "disabled", enable_team_addon=False)
     enabled = _client(tmp_path / "enabled", enable_team_addon=True)
 
     assert disabled.get("/api/addons/team-addon/state").status_code == 404
+    assert disabled.get("/api/addons/team-addon/timeline").status_code == 404
     assert disabled.get("/addons/team-addon/").status_code == 404
 
     admin_state = enabled.get("/api/admin/state")
@@ -64,25 +294,243 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     response = enabled.get("/api/addons/team-addon/state")
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 0
+    state = response.json()
+    assert state["revision"] == 0
+    assert state["runtime_operations"]["agents"] == []
+    assert state["runtime_operations"]["attention"] == []
+
+    catalog = enabled.get("/api/addons/team-addon/templates")
+    assert catalog.status_code == 200
+    assert [template["id"] for template in catalog.json()["templates"]] == [
+        "auto-dev-squad"
+    ]
+
+    template = enabled.get("/api/addons/team-addon/templates/auto-dev-squad")
+    assert template.status_code == 200
+    assert template.json()["root_role_key"] == "manager"
+
+    missing_template = enabled.get("/api/addons/team-addon/templates/missing")
+    assert missing_template.status_code == 404
+
+    timeline = enabled.get("/api/addons/team-addon/timeline")
+    assert timeline.status_code == 200
+    assert timeline.json() == {
+        "revision": 0,
+        "derived": True,
+        "audit_log": False,
+        "timestampless_count": 0,
+        "entries": [],
+        "source": "derived_from_current_team_state",
+        "description": "Derived timeline from the current TeamState snapshot.",
+        "filters": {},
+    }
 
     ui = enabled.get("/addons/team-addon/")
     assert ui.status_code == 200
     assert "data-team-addon-ui" in ui.text
+    assert 'name="manager_display_name"' in ui.text
+    assert 'name="lead_display_name"' in ui.text
+    assert 'name="display_name"' in ui.text
+    assert "Review &amp; Delivery" in ui.text
+    assert 'id="review-delivery-view"' in ui.text
+    assert 'id="delivery-filter-blocked"' in ui.text
     assert 'name="parent_task_id"' in ui.text
+    assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "renderRuntimeOperations" in script.text
+    assert "runtimeOperationsView" in script.text
+    assert "data-runtime-filter" in script.text
+    assert "needs_attention" in script.text
+    assert "due_leased_agents" in script.text
+    assert "blocked_waiting_work" in script.text
+    assert "ephemeral_work" in script.text
     assert "dependency_task_ids" in script.text
     assert "review_profile_id" in script.text
     assert "parseCriterionResults" in script.text
+    assert "renderReviewDeliveryWorkspace" in script.text
+    assert "submitReviewDecision" in script.text
+    assert "bindWorkspaceReviewDecisionForms" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
     assert ".team-shell" in stylesheet.text
+    assert ".review-delivery-panel" in stylesheet.text
+    assert ".review-delivery-view" in stylesheet.text
+    assert ".delivery-filter" in stylesheet.text
+    assert ".state-pill.rejected" in stylesheet.text
+    assert ".state-pill.blocked" in stylesheet.text
+
+
+def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/state")
+    assert response.status_code == 200
+    state = response.json()
+
+    agents = {row["id"]: row for row in state["runtime_operations"]["agents"]}
+    assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
+        "backend",
+        "lead",
+        "manager",
+    }
+    backend = agents["backend"]
+    assert backend["wake_due"] is True
+    assert backend["lease_active"] is True
+    assert backend["active_dispatch_id"] == "dispatch-backend"
+    assert backend["wake_reason"] == "inbox"
+
+    attention = {row["kind"]: row for row in state["runtime_operations"]["attention"]}
+    assert set(attention) == {
+        "blocked_task",
+        "waiting_dependency_task",
+        "pending_inbox_item",
+        "pending_escalation",
+        "failed_action_record",
+        "failed_git_promotion",
+        "blocked_release_package",
+        "failed_ephemeral_assignment",
+        "cleanup_pending_ephemeral_assignment",
+    }
+    assert attention["blocked_task"]["id"] == "blocked-task"
+    assert attention["blocked_task"]["state"] == "blocked"
+    assert attention["waiting_dependency_task"]["id"] == "waiting-task"
+    assert attention["waiting_dependency_task"]["dependency_status"] == "waiting"
+    assert attention["pending_inbox_item"]["inbox_item_id"] == "inbox-1"
+    assert attention["pending_escalation"]["inbox_item_id"] == "escalation-1"
+    assert attention["failed_action_record"]["dispatch_id"] == "dispatch-backend"
+    assert attention["failed_action_record"]["error"] == "build failed"
+    assert attention["failed_git_promotion"]["promotion_id"] == "promotion-1"
+    assert attention["failed_git_promotion"]["release_package_id"] == "release-1"
+    assert attention["blocked_release_package"]["release_package_id"] == "release-1"
+    assert attention["blocked_release_package"]["state"] == "blocked"
+    assert attention["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
+    assert attention["failed_ephemeral_assignment"]["state"] == "failed"
+    assert attention["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
+    assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 2,
+        },
+    )
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+            "created_by_agent_id": "lead",
+            "state": "accepted",
+            "expected_revision": 3,
+        },
+    )
+    assert response.status_code == 201
+    response = client.patch(
+        "/api/addons/team-addon/tasks/task",
+        json={
+            "title": "Build backend v2",
+            "expected_revision": 4,
+        },
+    )
+    assert response.status_code == 200
+    response = client.post(
+        "/api/addons/team-addon/deliverables",
+        json={
+            "id": "deliverable",
+            "task_id": "task",
+            "producer_agent_id": "backend",
+            "summary": "Backend task is ready.",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/review-requests",
+        json={
+            "id": "review",
+            "deliverable_id": "deliverable",
+            "reviewer_agent_id": "lead",
+            "state": "accepted",
+            "decision_at": "2026-01-01T12:00:00",
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 201
+
+    timeline = client.get(
+        "/api/addons/team-addon/timeline",
+        params=[
+            ("type", "task"),
+            ("type", "review"),
+            ("status", "accepted"),
+            ("attention_needed", "false"),
+            ("agent_id", "lead"),
+        ],
+    )
+
+    assert timeline.status_code == 200
+    payload = timeline.json()
+    assert payload["derived"] is True
+    assert payload["audit_log"] is False
+    assert payload["source"] == "derived_from_current_team_state"
+    assert payload["filters"] == {
+        "agent_id": "lead",
+        "type": ["task", "review"],
+        "status": ["accepted"],
+        "attention_needed": False,
+    }
+    assert payload["timestampless_count"] == 0
+    assert {entry["id"] for entry in payload["entries"]} == {
+        "task:task:created",
+        "task:task:updated",
+        "review:review:created",
+        "review:review:decision",
+    }
+    assert all(entry["status"] == "accepted" for entry in payload["entries"])
+    assert all(entry["attention_needed"] is False for entry in payload["entries"])
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
@@ -95,11 +543,13 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "manager_display_name": "  Team Manager  ",
             "expected_revision": 0,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 1
+    assert response.json()["agents"]["manager"]["display_name"] == "Team Manager"
 
     response = client.post(
         "/api/addons/team-addon/projects",
@@ -109,12 +559,14 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "lead_display_name": "  Project Lead  ",
             "goals": [{"id": "goal", "description": "Ship reviewed work"}],
             "expected_revision": 1,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 2
+    assert response.json()["agents"]["lead"]["display_name"] == "Project Lead"
 
     response = client.post(
         "/api/addons/team-addon/agents",
@@ -125,12 +577,14 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "role": "backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "display_name": "  Backend Agent  ",
             "ephemeral_policy": {"max_concurrent": 2},
             "expected_revision": 2,
         },
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 3
+    assert response.json()["agents"]["backend"]["display_name"] == "Backend Agent"
 
     response = client.post(
         "/api/addons/team-addon/tasks",
@@ -185,6 +639,109 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     state = response.json()
     assert state["revision"] == 7
     assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
+    assert "runtime_operations" in state
+    assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
+        "backend",
+        "lead",
+        "manager",
+    }
+
+
+def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert response.status_code == 201
+    body = response.json()
+
+    assert body["materialized"]["success"] is True
+    assert body["materialized"]["template_id"] == "auto-dev-squad"
+    assert body["materialized"]["revision"] == 1
+    assert body["revision"] == 1
+    assert len(body["agents"]) == 5
+    assert {
+        role_key: body["agents"][agent_id]["ephemeral_policy"]["max_concurrent"]
+        for role_key, agent_id in body["materialized"]["agent_ids"].items()
+    } == {
+        "manager": 0,
+        "project_lead": 1,
+        "implementer": 2,
+        "reviewer": 1,
+        "release_operator": 1,
+    }
+    assert len(body["projects"]) == 1
+    assert len(body["review_profiles"]) == 1
+    assert len(body["tasks"]) == 2
+    assert body["teams"]["team-auto-dev-squad"]["project_ids"] == [
+        "project-auto-dev-squad"
+    ]
+    assert body["projects"]["project-auto-dev-squad"]["goals"][0]["id"] == (
+        "project-auto-dev-squad-auto-dev-reviewed-delivery"
+    )
+    assert body["tasks"]["project-auto-dev-squad-release-handoff"]["dependency_task_ids"] == [
+        "project-auto-dev-squad-implement-scoped-slice"
+    ]
+    assert (
+        body["review_profiles"]["project-auto-dev-squad-auto-dev-review"]["criteria"][0]["id"]
+        == "scope"
+    )
+
+
+def test_team_addon_admin_api_materialize_template_rejects_duplicates_and_reruns(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    duplicate_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(
+            duplicate_reviewer_agent_id="implementer-auto-dev-squad"
+        ),
+    )
+    assert duplicate_response.status_code == 400
+    assert "duplicate ids" in duplicate_response.json()["error"]
+    assert client.get("/api/addons/team-addon/state").json()["revision"] == 0
+
+    success_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert success_response.status_code == 201
+    assert success_response.json()["revision"] == 1
+
+    rerun_response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(expected_revision=1),
+    )
+    assert rerun_response.status_code == 400
+    assert client.get("/api/addons/team-addon/state").json()["revision"] == 1
+
+
+def test_team_addon_admin_api_materialize_template_rejects_stale_revision(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "existing-team",
+            "name": "Existing Team",
+            "manager_agent_id": "existing-manager",
+            "manager_session_id": "existing-session",
+            "expected_revision": 0,
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/templates/auto-dev-squad/materialize",
+        json=_auto_dev_squad_materialization_payload(),
+    )
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == 1
 
 
 def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> None:
