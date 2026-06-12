@@ -308,12 +308,19 @@ def test_list_agents_includes_matching_prompt_queue_summary(
     )
     monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
 
-    agents = service.list_agents(
-        directory_path="root",
-        direct_only=True,
-        include_inactive=True,
-        reconcile_containers=False,
-    )
+    list_kwargs = {
+        "directory_path": "root",
+        "direct_only": True,
+        "include_inactive": True,
+        "reconcile_containers": False,
+    }
+
+    unprivileged_agents = service.list_agents(**list_kwargs)
+    assert len(unprivileged_agents) == 1
+    assert unprivileged_agents[0].prompt_queue.record_count == 0
+    assert unprivileged_agents[0].prompt_queue.records == []
+
+    agents = service.list_agents(**list_kwargs, include_prompt_queue=True)
 
     assert len(agents) == 1
     queue = agents[0].prompt_queue

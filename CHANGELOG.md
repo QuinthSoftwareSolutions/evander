@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced
   queued prompt counts, coalesced counts, timestamps, queue keys, and prompt
   previews on the Agents page.
+- Restricted prompt queue enrichment to Admin Web agent listing requests and
+  stripped prompt queue fields from assistant MCP agent listings.
 
 ## 2026-06-12 - Container Worker Log Artifact Filtering
 

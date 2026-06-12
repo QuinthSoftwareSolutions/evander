@@ -10897,6 +10897,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         summary_only: bool = False,
         backend: str | None = None,
         all_directories: bool = False,
+        include_prompt_queue: bool = False,
     ) -> list[AgentRecord]:
         normalized_directory = self._normalize_directory_path(directory_path)
         selected_backend = self._normalize_agent_backend_filter(backend)
@@ -10954,7 +10955,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 raise RuntimeError(vm_inventory_error)
 
         if selected_backend == "libvirt_vm":
-            return self._agent_records_with_prompt_queue(records)
+            return (
+                self._agent_records_with_prompt_queue(records)
+                if include_prompt_queue
+                else records
+            )
 
         container_repository = self._container_worker_execution_repository()
         list_all_ordered = getattr(container_repository, "list_all_ordered", None)
@@ -11004,7 +11009,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
-        return self._agent_records_with_prompt_queue(records)
+        return (
+            self._agent_records_with_prompt_queue(records)
+            if include_prompt_queue
+            else records
+        )
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         selected_backend = self._normalize_agent_backend(

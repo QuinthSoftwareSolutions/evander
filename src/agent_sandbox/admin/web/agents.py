@@ -95,6 +95,7 @@ def agent_routes(
                 omit_vm_state=omit_vm_state,
                 summary_only=summary_only,
                 backend=backend,
+                include_prompt_queue=True,
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
