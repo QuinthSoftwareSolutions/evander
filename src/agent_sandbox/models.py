@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     AliasChoices,
@@ -2814,12 +2814,17 @@ class WakeScheduledRequest(BaseModel):
     schedule: WakeScheduleDefinition
     resume_prompt: WakeResumePromptPayload
     resume_mode: str = Field(default="same_context")
+    status: str = Field(default="pending", min_length=1)
     enabled: bool = True
     source: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by_session_id: str | None = None
+    cancel_reason: str | None = None
+    cancel_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("resume_mode")
     @classmethod
@@ -2828,6 +2833,31 @@ class WakeScheduledRequest(BaseModel):
         if normalized not in {"same_context", "new_context"}:
             raise ValueError("resume_mode must be one of: same_context, new_context")
         return normalized
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("status must be a non-empty string")
+        return normalized
+
+
+WakeRequestCancellationStatus = Literal[
+    "cancelled",
+    "already_cancelled",
+    "already_dispatched",
+    "already_completed",
+    "not_found",
+    "missing_request_id",
+    "permission_denied",
+]
+
+
+class WakeRequestCancellationResult(BaseModel):
+    status: WakeRequestCancellationStatus
+    request_id: str | None = None
+    request: WakeScheduledRequest | None = None
 
 
 class WakeDispatchRecord(BaseModel):

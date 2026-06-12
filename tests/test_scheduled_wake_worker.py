@@ -506,6 +506,26 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
     assert refreshed.next_run_at is None
 
 
+def test_scheduled_wake_worker_ignores_cancelled_due_requests(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_cron_request(worker, request_id="wake-cancelled", session_id="session-a", due_at=due_at)
+
+    cancelled = worker.runtime.wake_store.cancel_request(
+        "wake-cancelled",
+        caller_session_id="session-a",
+        reason="obsolete wake",
+        metadata={"source": "test"},
+        now_utc=datetime.now(UTC),
+    )
+
+    assert cancelled.status == "cancelled"
+    assert worker.runtime.wake_store.find_due_requests(now_utc=datetime.now(UTC)) == []
+
+
 def test_scheduled_wake_worker_dispatches_due_cron_range_request(
     tmp_path: Path, monkeypatch
 ) -> None:
