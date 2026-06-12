@@ -13,6 +13,8 @@ material. Newer entries are added incrementally as changes land.
 - Noted that normalized failure signatures remove volatile IDs and timestamps
   and that the active/recent/resolved labels are heuristic signals that should
   be validated against representative workflow run detail before remediation.
+- Kept root/unassigned failure clusters visible in the Admin Web/API report for
+  users with root workflow-run read access when workflow graphs exist.
 
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 

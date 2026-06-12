@@ -4058,6 +4058,90 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
     )
 
 
+def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_root_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        service,
+        "read_workflow_editor_document",
+        lambda: SimpleNamespace(
+            graphs=[
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "description": "Ops graph",
+                    "directory_path": "root/ops",
+                    "node_ids": ["ops-trigger", "ops-effect"],
+                }
+            ]
+        ),
+    )
+
+    unassigned_cluster = WorkflowFailureClusterPayload(
+        cluster_id="cluster-unassigned",
+        graph_id="root",
+        graph_name="Unassigned",
+        graph_description=None,
+        directory_path="root",
+        node_id="root",
+        node_display_name="Unassigned",
+        node_type=None,
+        source_kind="trigger",
+        error_signature="Deleted workflow node failed",
+        error_signature_key="deleted workflow node failed",
+        count=1,
+        first_seen_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        latest_error_summary="Deleted workflow node failed",
+        state="historical",
+        event_ids=["evt-unassigned"],
+        examples=[
+            _workflow_failure_cluster_example(
+                event_id="evt-unassigned",
+                occurred_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+                error_summary="Deleted workflow node failed",
+                run_state="errored",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "read_workflow_failure_clusters_report",
+        lambda **kwargs: _workflow_failure_cluster_report(
+            [unassigned_cluster],
+            generated_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+            period_start=datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id=AUDITOR_GROUP_ID, directory_path="root"
+    )
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    response = client.get("/api/admin/reports/workflow-failure-clusters")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == [
+        "cluster-unassigned"
+    ]
+    cluster = payload["clusters"][0]
+    assert cluster["graph_id"] == "root"
+    assert cluster["graph_name"] == "Unassigned"
+    assert cluster["node_id"] == "root"
+
+
 def test_admin_web_workflow_run_controls_require_workflow_runs_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

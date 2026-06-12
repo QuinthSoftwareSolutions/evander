@@ -53,7 +53,10 @@ def _parse_optional_recent_seconds(value: str | None) -> int | None:
 
 
 def _filter_workflow_failure_clusters_report_payload(
-    payload: object, *, readable_node_ids: set[str]
+    payload: object,
+    *,
+    readable_node_ids: set[str],
+    can_read_root_workflow_runs: bool = False,
 ) -> dict[str, object]:
     payload_dict = payload.model_dump(mode="json")
     clusters = payload_dict.get("clusters")
@@ -62,7 +65,14 @@ def _filter_workflow_failure_clusters_report_payload(
             cluster
             for cluster in clusters
             if isinstance(cluster, dict)
-            and str(cluster.get("node_id") or "").strip() in readable_node_ids
+            and (
+                str(cluster.get("node_id") or "").strip() in readable_node_ids
+                or (
+                    can_read_root_workflow_runs
+                    and str(cluster.get("graph_id") or "").strip() == "root"
+                    and str(cluster.get("directory_path") or "").strip() == "root"
+                )
+            )
         ]
     return payload_dict
 
@@ -134,7 +144,11 @@ def report_routes(
         if readable_node_ids is not None:
             return JSONResponse(
                 _filter_workflow_failure_clusters_report_payload(
-                    payload, readable_node_ids=readable_node_ids
+                    payload,
+                    readable_node_ids=readable_node_ids,
+                    can_read_root_workflow_runs=auth.can(
+                        request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
+                    ),
                 )
             )
         return JSONResponse(payload.model_dump(mode="json"))
