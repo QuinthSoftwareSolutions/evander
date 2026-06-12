@@ -51,7 +51,60 @@ type WorkflowGraphActivityReport = {
   graphs: WorkflowGraphActivityGraph[];
 };
 
-type ReportView = "workflow-graph-activity" | "conformance";
+type ReportView = "workflow-graph-activity" | "conformance" | "pr-integration-preflight";
+type MergePreflightMode = "single" | "pairwise" | "ordered";
+type MergePreflightStatus =
+  | "clean"
+  | "conflict"
+  | "missing_ref"
+  | "stale_target_branch"
+  | "repo_error"
+  | "provider_error";
+
+type MergePreflightParticipant = {
+  pr_id: string;
+  source_branch: string | null;
+  target_branch: string | null;
+  source_commit: string | null;
+  target_commit: string | null;
+  current_target_commit: string | null;
+  url: string | null;
+  status: MergePreflightStatus;
+  explanation: string | null;
+};
+
+type MergePreflightCheck = {
+  index: number;
+  kind: MergePreflightMode;
+  pr_ids: string[];
+  source_commits: string[];
+  left_commit: string | null;
+  right_commit: string | null;
+  target_commit: string | null;
+  current_target_commit: string | null;
+  tree_oid: string | null;
+  conflicted_paths: string[];
+  status: MergePreflightStatus;
+  explanation: string;
+};
+
+type PrIntegrationPreflightReport = {
+  provider: string;
+  repo: string;
+  directory_path: string;
+  repo_path: string;
+  mode: MergePreflightMode;
+  status: MergePreflightStatus;
+  target_branch: string | null;
+  target_commit: string | null;
+  current_target_commit: string | null;
+  participants: MergePreflightParticipant[];
+  checks: MergePreflightCheck[];
+  warnings: string[];
+  errors: string[];
+  summary_text: string | null;
+  generated_at: string | null;
+};
 
 const HOUR_MS = 60 * 60 * 1000;
 const CONFORMANCE_REPORT_KIND_ORDER: ConformanceReportKind[] = ["trigger", "effect"];
@@ -114,6 +167,36 @@ function summarizeItems(items: string[] | null | undefined, limit = 5): string {
   return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
 }
 
+function humanizeLabel(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function mergePreflightStatusClassName(status: MergePreflightStatus): string {
+  switch (status) {
+    case "clean":
+      return "state-pass";
+    case "conflict":
+      return "state-fail";
+    case "missing_ref":
+      return "state-missing";
+    case "stale_target_branch":
+      return "state-stale";
+    case "repo_error":
+    case "provider_error":
+      return "state-invalid";
+    default:
+      return "";
+  }
+}
+
+function normalizeOptionalText(value: string): string | null {
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
 function formatRequirementCount(report: ConformanceReportRecord): string {
   return `${report.requirement_count} total`;
 }
@@ -135,6 +218,19 @@ export function ReportsPage() {
   const [conformanceLoading, setConformanceLoading] = useState(true);
   const [conformanceError, setConformanceError] = useState<string | null>(null);
   const [conformanceRunKind, setConformanceRunKind] = useState<ConformanceReportKind | null>(null);
+  const [prIntegrationProvider, setPrIntegrationProvider] = useState("azure_devops");
+  const [prIntegrationRepo, setPrIntegrationRepo] = useState("");
+  const [prIntegrationDirectoryPath, setPrIntegrationDirectoryPath] = useState("root");
+  const [prIntegrationRepoSource, setPrIntegrationRepoSource] = useState("");
+  const [prIntegrationOrganizationUrl, setPrIntegrationOrganizationUrl] = useState("");
+  const [prIntegrationProject, setPrIntegrationProject] = useState("");
+  const [prIntegrationMode, setPrIntegrationMode] = useState<MergePreflightMode>("single");
+  const [prIntegrationPrIds, setPrIntegrationPrIds] = useState("");
+  const [prIntegrationReport, setPrIntegrationReport] =
+    useState<PrIntegrationPreflightReport | null>(null);
+  const [prIntegrationLoading, setPrIntegrationLoading] = useState(false);
+  const [prIntegrationError, setPrIntegrationError] = useState<string | null>(null);
+  const [selectedPrIntegrationCheckIndex, setSelectedPrIntegrationCheckIndex] = useState(0);
 
   const selectedGraph =
     report?.graphs.find((graph) => graph.graph_id === selectedGraphId) ?? report?.graphs[0] ?? null;
@@ -154,6 +250,14 @@ export function ReportsPage() {
       null
     );
   }, [conformanceReports, conformanceSelectedKind]);
+  const selectedPrIntegrationCheck = useMemo(() => {
+    const checks = prIntegrationReport?.checks ?? [];
+    return (
+      checks.find((check) => check.index === selectedPrIntegrationCheckIndex) ??
+      checks[0] ??
+      null
+    );
+  }, [prIntegrationReport, selectedPrIntegrationCheckIndex]);
 
   async function loadWorkflowReport(nextStart = startValue, nextEnd = endValue) {
     const params = new URLSearchParams({
@@ -302,6 +406,42 @@ export function ReportsPage() {
     }
   }
 
+  async function handlePrIntegrationSubmit(event: FormEvent) {
+    event.preventDefault();
+    const prIds = prIntegrationPrIds.trim();
+    if (!prIds) {
+      setPrIntegrationError("PR IDs are required.");
+      return;
+    }
+
+    try {
+      setPrIntegrationLoading(true);
+      const payload = await fetchJson<PrIntegrationPreflightReport>(
+        "/api/admin/pr-integration-preflight",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            provider: prIntegrationProvider,
+            repo: prIntegrationRepo,
+            pr_ids: prIds,
+            mode: prIntegrationMode,
+            directory_path: prIntegrationDirectoryPath,
+            repo_source: normalizeOptionalText(prIntegrationRepoSource),
+            organization_url: normalizeOptionalText(prIntegrationOrganizationUrl),
+            project: normalizeOptionalText(prIntegrationProject),
+          }),
+        },
+      );
+      setPrIntegrationReport(payload);
+      setSelectedPrIntegrationCheckIndex(payload.checks[0]?.index ?? 0);
+      setPrIntegrationError(null);
+    } catch (reason: unknown) {
+      setPrIntegrationError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPrIntegrationLoading(false);
+    }
+  }
+
   return (
     <div className="feature-page reports-page">
       <section className="feature-sidebar">
@@ -335,6 +475,19 @@ export function ReportsPage() {
               <span className="status-pill">{conformanceReport ? conformanceReports.length : 2}</span>
             </div>
             <div className="feature-list-meta">Trigger and effect traceability snapshots.</div>
+          </button>
+          <button
+            type="button"
+            className={`feature-list-item ${
+              selectedReportView === "pr-integration-preflight" ? "selected" : ""
+            }`}
+            onClick={() => void handleReportViewChange("pr-integration-preflight")}
+          >
+            <div className="feature-list-title-row">
+              <strong>PR integration preflight</strong>
+              <span className="status-pill">{prIntegrationReport?.participants.length ?? 0}</span>
+            </div>
+            <div className="feature-list-meta">Read-only merge rehearsal for Azure DevOps PRs.</div>
           </button>
         </div>
       </section>
@@ -559,7 +712,7 @@ export function ReportsPage() {
               </article>
             </div>
           </>
-        ) : (
+        ) : selectedReportView === "conformance" ? (
           <>
             <div className="feature-toolbar">
               <div>
@@ -818,6 +971,456 @@ export function ReportsPage() {
                 ) : (
                   <div className="empty-state">
                     {conformanceLoading ? "Loading conformance reports..." : "Select a report to inspect details."}
+                  </div>
+                )}
+              </article>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="feature-toolbar">
+              <div>
+                <h2>PR integration preflight</h2>
+                <p className="muted-text">
+                  Read-only Git merge rehearsal for Azure DevOps pull requests. The report keeps
+                  refs untouched and mirrors the configured directory-scoped repository source.
+                </p>
+              </div>
+            </div>
+
+            <form className="admin-toolbar" onSubmit={(event) => void handlePrIntegrationSubmit(event)}>
+              <div className="form-grid">
+                <label className="field-stack">
+                  <span>Provider</span>
+                  <select
+                    value={prIntegrationProvider}
+                    onChange={(event) => setPrIntegrationProvider(event.target.value)}
+                  >
+                    <option value="azure_devops">azure_devops</option>
+                  </select>
+                </label>
+                <label className="field-stack">
+                  <span>Mode</span>
+                  <select
+                    value={prIntegrationMode}
+                    onChange={(event) =>
+                      setPrIntegrationMode(event.target.value as MergePreflightMode)
+                    }
+                  >
+                    <option value="single">single</option>
+                    <option value="pairwise">pairwise</option>
+                    <option value="ordered">ordered</option>
+                  </select>
+                </label>
+                <label className="field-stack field-span-2">
+                  <span>Repo</span>
+                  <input
+                    type="text"
+                    value={prIntegrationRepo}
+                    onChange={(event) => setPrIntegrationRepo(event.target.value)}
+                    placeholder="repo-name"
+                    required
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Directory path</span>
+                  <input
+                    type="text"
+                    value={prIntegrationDirectoryPath}
+                    onChange={(event) => setPrIntegrationDirectoryPath(event.target.value)}
+                    placeholder="root/team-a"
+                    required
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Repo source</span>
+                  <input
+                    type="text"
+                    value={prIntegrationRepoSource}
+                    onChange={(event) => setPrIntegrationRepoSource(event.target.value)}
+                    placeholder="/home/agent/repos/project"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Organization URL</span>
+                  <input
+                    type="text"
+                    value={prIntegrationOrganizationUrl}
+                    onChange={(event) => setPrIntegrationOrganizationUrl(event.target.value)}
+                    placeholder="https://dev.azure.com/org"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Project</span>
+                  <input
+                    type="text"
+                    value={prIntegrationProject}
+                    onChange={(event) => setPrIntegrationProject(event.target.value)}
+                    placeholder="project"
+                  />
+                </label>
+                <label className="field-stack field-span-2">
+                  <span>PR IDs</span>
+                  <textarea
+                    rows={3}
+                    value={prIntegrationPrIds}
+                    onChange={(event) => setPrIntegrationPrIds(event.target.value)}
+                    placeholder="17, 18\n19"
+                    required
+                  />
+                </label>
+              </div>
+              <div className="action-row compact">
+                <button type="submit" className="admin-action-button primary compact" disabled={prIntegrationLoading}>
+                  <RefreshIcon />
+                  {prIntegrationLoading ? "Running..." : "Run preflight"}
+                </button>
+              </div>
+            </form>
+
+            {prIntegrationError ? <div className="callout warning-callout">{prIntegrationError}</div> : null}
+
+            <div className="admin-grid two-column report-grid">
+              <article className="admin-panel">
+                <div className="panel-heading">
+                  <div className="eyebrow">Merge checks</div>
+                  <h2>{prIntegrationReport ? `${prIntegrationReport.checks.length} checks` : "No report yet"}</h2>
+                </div>
+                <div className="table-wrap mobile-paired-table">
+                  <table className="admin-table report-preflight-table">
+                    <thead>
+                      <tr>
+                        <th>Check</th>
+                        <th>PR IDs</th>
+                        <th>Status</th>
+                        <th>Conflicted paths</th>
+                        <th>Explanation</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prIntegrationReport?.checks.map((check) => (
+                        <tr
+                          key={`${check.kind}-${check.index}`}
+                          className={
+                            selectedPrIntegrationCheck?.index === check.index ? "selected" : ""
+                          }
+                          onClick={() => setSelectedPrIntegrationCheckIndex(check.index)}
+                        >
+                          <td>
+                            <strong>{humanizeLabel(check.kind)}</strong>
+                            <div className="feature-list-meta">Step {check.index}</div>
+                          </td>
+                          <td>{check.pr_ids.length > 0 ? check.pr_ids.join(", ") : "None"}</td>
+                          <td>
+                            <span
+                              className={`status-pill ${mergePreflightStatusClassName(check.status)}`}
+                            >
+                              {humanizeLabel(check.status)}
+                            </span>
+                          </td>
+                          <td>{summarizeItems(check.conflicted_paths)}</td>
+                          <td>{truncateText(check.explanation, 220)}</td>
+                        </tr>
+                      ))}
+                      {prIntegrationLoading && !prIntegrationReport ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={5}>
+                            Running PR integration preflight...
+                          </td>
+                        </tr>
+                      ) : null}
+                      {!prIntegrationLoading && !prIntegrationReport ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={5}>
+                            Run a preflight to inspect merge checks.
+                          </td>
+                        </tr>
+                      ) : null}
+                      {prIntegrationReport && prIntegrationReport.checks.length === 0 ? (
+                        <tr>
+                          <td className="empty-state-cell" colSpan={5}>
+                            No checks were produced.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mobile-record-list report-preflight-mobile-record-list" aria-label="Merge checks">
+                  {prIntegrationReport?.checks.map((check) => (
+                    <button
+                      key={`${check.kind}-${check.index}`}
+                      type="button"
+                      className={`mobile-record-card${
+                        selectedPrIntegrationCheck?.index === check.index ? " selected" : ""
+                      }`}
+                      aria-pressed={selectedPrIntegrationCheck?.index === check.index}
+                      onClick={() => setSelectedPrIntegrationCheckIndex(check.index)}
+                    >
+                      <div className="mobile-record-title-row">
+                        <strong>
+                          {humanizeLabel(check.kind)} #{check.index}
+                        </strong>
+                        <span className={`status-pill ${mergePreflightStatusClassName(check.status)}`}>
+                          {humanizeLabel(check.status)}
+                        </span>
+                      </div>
+                      <div className="feature-list-meta">
+                        {check.pr_ids.length > 0 ? check.pr_ids.join(", ") : "None"}
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Conflicted paths</span>
+                        <span>{summarizeItems(check.conflicted_paths)}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Explanation</span>
+                        <span>{truncateText(check.explanation, 220)}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {prIntegrationLoading && !prIntegrationReport ? (
+                    <div className="empty-state mobile-record-empty">
+                      Running PR integration preflight...
+                    </div>
+                  ) : null}
+                  {!prIntegrationLoading && !prIntegrationReport ? (
+                    <div className="empty-state mobile-record-empty">
+                      Run a preflight to inspect merge checks.
+                    </div>
+                  ) : null}
+                  {prIntegrationReport && prIntegrationReport.checks.length === 0 ? (
+                    <div className="empty-state mobile-record-empty">No checks were produced.</div>
+                  ) : null}
+                </div>
+              </article>
+
+              <article className="admin-panel detail-panel">
+                <div className="panel-heading">
+                  <div>
+                    <div className="eyebrow">Merge report</div>
+                    <h2>{prIntegrationReport?.repo || "Awaiting preflight"}</h2>
+                  </div>
+                  {prIntegrationReport ? (
+                    <span
+                      className={`status-pill ${mergePreflightStatusClassName(prIntegrationReport.status)}`}
+                    >
+                      {humanizeLabel(prIntegrationReport.status)}
+                    </span>
+                  ) : null}
+                </div>
+                {prIntegrationReport ? (
+                  <div className="panel-body report-detail">
+                    <div className="detail-list">
+                      <div>
+                        <span>Status</span>
+                        <strong>
+                          <span
+                            className={`status-pill ${mergePreflightStatusClassName(
+                              prIntegrationReport.status,
+                            )}`}
+                          >
+                            {humanizeLabel(prIntegrationReport.status)}
+                          </span>
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Mode</span>
+                        <strong>{humanizeLabel(prIntegrationReport.mode)}</strong>
+                      </div>
+                      <div>
+                        <span>Provider</span>
+                        <strong>{prIntegrationReport.provider}</strong>
+                      </div>
+                      <div>
+                        <span>Repo</span>
+                        <strong>{prIntegrationReport.repo}</strong>
+                      </div>
+                      <div>
+                        <span>Directory</span>
+                        <strong>{prIntegrationReport.directory_path}</strong>
+                      </div>
+                      <div>
+                        <span>Repo path</span>
+                        <strong>{prIntegrationReport.repo_path}</strong>
+                      </div>
+                      <div>
+                        <span>Target branch</span>
+                        <strong>{prIntegrationReport.target_branch || "n/a"}</strong>
+                      </div>
+                      <div>
+                        <span>Target commit</span>
+                        <strong>{prIntegrationReport.target_commit || "n/a"}</strong>
+                      </div>
+                      <div>
+                        <span>Current target</span>
+                        <strong>{prIntegrationReport.current_target_commit || "n/a"}</strong>
+                      </div>
+                      <div>
+                        <span>Generated</span>
+                        <strong>{formatTimestamp(prIntegrationReport.generated_at)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Summary text</span>
+                      <pre className="report-guidance">
+                        {prIntegrationReport.summary_text || "None"}
+                      </pre>
+                    </div>
+
+                    {prIntegrationReport.warnings.length > 0 ? (
+                      <div className="report-meta-block">
+                        <span className="section-label">Warnings</span>
+                        <div className="report-task-list">
+                          {prIntegrationReport.warnings.map((warning, index) => (
+                            <div key={`${warning}-${index}`} className="report-task-item">
+                              <p>{warning}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {prIntegrationReport.errors.length > 0 ? (
+                      <div className="report-meta-block">
+                        <span className="section-label">Errors</span>
+                        <div className="report-issue-list">
+                          {prIntegrationReport.errors.map((item, index) => (
+                            <div key={`${item}-${index}`} className="report-issue-item">
+                              <p>{item}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Selected check</span>
+                      {selectedPrIntegrationCheck ? (
+                        <div className="report-task-item">
+                          <div className="report-task-heading">
+                            <strong>
+                              {humanizeLabel(selectedPrIntegrationCheck.kind)} #{selectedPrIntegrationCheck.index}
+                            </strong>
+                            <span
+                              className={`status-pill ${mergePreflightStatusClassName(
+                                selectedPrIntegrationCheck.status,
+                              )}`}
+                            >
+                              {humanizeLabel(selectedPrIntegrationCheck.status)}
+                            </span>
+                          </div>
+                          <p>
+                            PR IDs: {selectedPrIntegrationCheck.pr_ids.join(", ") || "None"}
+                          </p>
+                          <p>
+                            Source commits: {selectedPrIntegrationCheck.source_commits.join(", ") || "None"}
+                          </p>
+                          <p>
+                            Left commit: {selectedPrIntegrationCheck.left_commit || "n/a"}
+                          </p>
+                          <p>
+                            Right commit: {selectedPrIntegrationCheck.right_commit || "n/a"}
+                          </p>
+                          <p>
+                            Current target: {selectedPrIntegrationCheck.current_target_commit || "n/a"}
+                          </p>
+                          <p>
+                            Conflicted paths: {summarizeItems(selectedPrIntegrationCheck.conflicted_paths)}
+                          </p>
+                          <p>{selectedPrIntegrationCheck.explanation}</p>
+                        </div>
+                      ) : (
+                        <p>{prIntegrationLoading ? "Running PR integration preflight..." : "Run a preflight to inspect check details."}</p>
+                      )}
+                    </div>
+
+                    <div className="report-meta-block">
+                      <span className="section-label">Participants</span>
+                      <div className="table-wrap mobile-paired-table">
+                        <table className="admin-table report-preflight-participants-table">
+                          <thead>
+                            <tr>
+                              <th>PR</th>
+                              <th>Source branch</th>
+                              <th>Target branch</th>
+                              <th>Source commit</th>
+                              <th>Target commit</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {prIntegrationReport.participants.map((participant) => (
+                              <tr key={participant.pr_id}>
+                                <td>
+                                  <strong>{participant.pr_id}</strong>
+                                  {participant.url ? (
+                                    <div className="feature-list-meta">{participant.url}</div>
+                                  ) : null}
+                                </td>
+                                <td>{participant.source_branch || "n/a"}</td>
+                                <td>{participant.target_branch || "n/a"}</td>
+                                <td>{participant.source_commit || "n/a"}</td>
+                                <td>{participant.target_commit || "n/a"}</td>
+                                <td>
+                                  <span
+                                    className={`status-pill ${mergePreflightStatusClassName(
+                                      participant.status,
+                                    )}`}
+                                  >
+                                    {humanizeLabel(participant.status)}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div
+                        className="mobile-record-list report-preflight-participants-mobile-record-list"
+                        aria-label="Merge participants"
+                      >
+                        {prIntegrationReport.participants.map((participant) => (
+                          <div key={participant.pr_id} className="mobile-record-card">
+                            <div className="mobile-record-title-row">
+                              <strong>{participant.pr_id}</strong>
+                              <span
+                                className={`status-pill ${mergePreflightStatusClassName(
+                                  participant.status,
+                                )}`}
+                              >
+                                {humanizeLabel(participant.status)}
+                              </span>
+                            </div>
+                            {participant.url ? (
+                              <div className="feature-list-meta">{participant.url}</div>
+                            ) : null}
+                            <div className="mobile-record-row">
+                              <span>Source branch</span>
+                              <span>{participant.source_branch || "n/a"}</span>
+                            </div>
+                            <div className="mobile-record-row">
+                              <span>Target branch</span>
+                              <span>{participant.target_branch || "n/a"}</span>
+                            </div>
+                            <div className="mobile-record-row">
+                              <span>Source commit</span>
+                              <span>{participant.source_commit || "n/a"}</span>
+                            </div>
+                            <div className="mobile-record-row">
+                              <span>Target commit</span>
+                              <span>{participant.target_commit || "n/a"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    {prIntegrationLoading
+                      ? "Running PR integration preflight..."
+                      : "Enter a repo and PR IDs to run the read-only preflight."}
                   </div>
                 )}
               </article>
