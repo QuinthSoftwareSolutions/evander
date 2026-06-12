@@ -112,6 +112,60 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
           status: "pending_approval",
           message: "Approval required",
         },
+        result: {
+          status: "pending_approval",
+          message: "Approval required",
+          approval_diagnostic: {
+            approval_request_id: "approval-2",
+            status: "pending_approval",
+            rejection_kind: "payload_mismatch",
+            reason: "Payload mismatch for approval-2",
+            payload_match: false,
+            approved_payload_digest: "digest-approval-2",
+            attempted_payload_digest: "attempted-digest-2",
+            payload_summary: '{"channel":"ops","secret":"<redacted>"}',
+            approved_payload_summary: {
+              channel: "ops",
+              secret: "<redacted>",
+            },
+            attempted_payload_summary: {
+              channel: "ops",
+              secret: "<redacted>",
+              extra: "value",
+            },
+            differences: {
+              changed: {
+                entries: [
+                  {
+                    path: "arguments.channel",
+                    approved_value: "ops",
+                    attempted_value: "engineering",
+                  },
+                ],
+                truncated: false,
+              },
+              missing: {
+                entries: [
+                  {
+                    path: "arguments.recipient",
+                    approved_value: "team",
+                  },
+                ],
+                truncated: false,
+              },
+              extra: {
+                entries: [
+                  {
+                    path: "arguments.trace_id",
+                    attempted_value: "trace-2",
+                  },
+                ],
+                truncated: false,
+              },
+              truncated: false,
+            },
+          },
+        },
         metadata: {
           correlation_id: "correlation-2",
           workflow_run_id: "run-2",
@@ -297,9 +351,26 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   await assert.doesNotReject(() => page.getByRole("button", { name: "Workflow run: run-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agent: agent-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "VM: vm-2" }).waitFor({ state: "visible" }));
-  const detailStatus = page.locator(".tool-call-detail-panel .status-pill");
+  const detailStatus = page.locator(".tool-call-detail-panel > .panel-header .status-pill");
   await assert.doesNotReject(() => detailStatus.waitFor({ state: "visible" }));
   assert.match(await detailStatus.innerText(), /pending approval/i);
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page
+      .getByText(
+        "Diagnostic only: the diff explains why the payload was rejected, but it does not loosen the approval boundary.",
+        {
+          exact: true,
+        },
+      )
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() => page.getByText("Mismatch", { exact: true }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Approved payload summary", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Attempted payload summary", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.channel", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.recipient", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("arguments.trace_id", { exact: true }).waitFor({ state: "visible" }));
 
   const argumentsValue = await page.getByLabel("Arguments").inputValue();
   const resultValue = await page.getByLabel("Result").inputValue();
@@ -323,6 +394,8 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   assert.doesNotMatch(resultValue, /secret-token/i);
   assert.doesNotMatch(bodyText, /secret-token/i);
   assert.doesNotMatch(bodyText, /raw-secret/i);
+  assert.doesNotMatch(bodyText, /approved-secret/i);
+  assert.doesNotMatch(bodyText, /attempted-secret/i);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

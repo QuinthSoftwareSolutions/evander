@@ -211,15 +211,18 @@ Common tasks:
 1. Open **Approvals** and confirm the directory scope.
 2. Filter by status, session, VM, tool, minimum age, or direct-directory-only scope.
 3. Select a request from the queue.
-4. Review queue health, request summary, intended effect, digest, redacted payload, decision
-   history, and matching audit context.
+4. Review queue health, request summary, intended effect, digest, redacted payload, approval
+   payload diagnostic, decision history, and matching audit context.
 5. Unlock privileges.
 6. Enter the approver identity and a reason.
 7. Click **Approve** or **Deny**.
 8. Re-open Tool Calls if you need to compare the request to the original audited tool invocation.
 
 Approval requests are intentionally shown with redacted payloads. Do not assume redacted JSON is
-the full original request body.
+the full original request body. When a later tool call reuses an approval but is blocked because the
+approval is missing, denied, expired, stale, or payload-mismatched, the approval payload diagnostic
+shows a redacted field-level changed/missing/extra summary. That summary is for diagnosis only; it
+does not loosen exact-payload approval enforcement.
 
 ## Artifacts
 
@@ -636,7 +639,8 @@ view or changing directory while there are unsaved workflow changes prompts for 
 1. Open **Approvals**.
 2. Filter to pending requests and the relevant session/tool.
 3. Select the request.
-4. Compare summary, intended effect, payload digest, redacted payload, and audit context.
+4. Compare summary, intended effect, payload digest, redacted payload, approval payload diagnostic,
+   and audit context.
 5. Unlock privileges.
 6. Enter approver and reason.
 7. Approve or deny.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MethodType
@@ -105,6 +106,59 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
+    service.config.audit_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "issue-14084-session",
+                        "vm_id": "vm-14084",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "payload mismatch",
+                        "args": {
+                            "session_id": "issue-14084-session",
+                            "request_id": "approval-1",
+                            "token": "secret",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "request_id": "approval-1",
+                            "approval_diagnostic": {
+                                "approval_request_id": "approval-1",
+                                "rejection_kind": "payload_mismatch",
+                                "approved_payload_digest": "digest",
+                                "attempted_payload_digest": "attempted-digest",
+                                "approved_payload": {
+                                    "body": "hello",
+                                    "token": "approved-secret",
+                                },
+                                "attempted_payload": {
+                                    "body": "hello",
+                                    "token": "attempted-secret",
+                                },
+                                "differences": {
+                                    "changed": [
+                                        {
+                                            "path": "payload.token",
+                                            "approved_value": "<redacted>",
+                                            "attempted_value": "<redacted>",
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                        "created_at": "2026-05-18T10:00:00+00:00",
+                    },
+                    sort_keys=True,
+                )
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     client = TestClient(create_app(service))
 
     index_response = client.get("/api/admin/approvals?statuses=pending")
@@ -122,10 +176,24 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
     assert detail_payload["request"]["tool_name"] == "email_send_approved"
     assert detail_payload["request"]["payload"]["token"] == "<redacted>"
     assert detail_payload["redacted_payload"]["token"] == "<redacted>"
+    assert detail_payload["payload_summary"] == '{"body":"hello","token":"<redacted>"}'
+    assert detail_payload["approval_diagnostics"]["request_id"] == "approval-1"
+    assert detail_payload["approval_diagnostics"]["status"] == "pending"
+    assert detail_payload["approval_diagnostics"]["approved_payload"]["token"] == "<redacted>"
+    assert detail_payload["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+        "attempted_payload"
+    ]["token"] == "<redacted>"
+    assert detail_payload["audit_context"][0]["result"]["approval_diagnostic"]["attempted_payload"][
+        "token"
+    ] == "<redacted>"
     assert detail_payload["request"]["notification_status"] == "delivered"
     assert detail_payload["request"]["notification_target_ids"] == ["ops-approvals"]
     assert detail_payload["request"]["notification_deliveries"][0]["target_id"] == "ops-approvals"
     assert detail_payload["request"]["notification_deliveries"][0]["status"] == "sent"
+    serialized_detail = json.dumps(detail_payload)
+    assert "approved-secret" not in serialized_detail
+    assert "attempted-secret" not in serialized_detail
+    assert "blocked-diagnostic-secret" not in serialized_detail
     assert decision_response.status_code == 200
     assert decision_response.json()["request"]["status"] == "denied"
 

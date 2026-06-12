@@ -1348,7 +1348,11 @@ After approval, the agent retries the same tool call and includes `approval_requ
 executes only if the request is approved, belongs to the same session, targets the same tool, has not
 expired, has remaining uses, and satisfies the configured payload matching mode. Denied, expired,
 exhausted, wrong-tool, wrong-session, or changed-payload retries are blocked and audited with the
-approval request id for review in Admin Web -> Tool Calls.
+approval request id for review in Admin Web -> Tool Calls. Approval-gate audit events now include a
+redacted approval payload diagnostic with the attempted payload digest and, when safe, field-level
+changed/missing/extra summaries. Admin Web shows the same diagnostic on Approval and Tool Call
+detail panes for operator diagnosis only; it does not change the approval boundary or exact-payload
+matching requirement.
 
 Directory policy can also set `mcp_tool_policies` for known tools. A rule can deny a tool outright,
 force per-invocation approval, provide default grant settings, cap TTL or use count, or force exact

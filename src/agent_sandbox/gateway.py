@@ -35,6 +35,7 @@ from agent_sandbox.bootstrap import (
 )
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
+from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.ado_reports import (
     DEFAULT_DONE_STATES,
     DEFAULT_EFFORT_FIELDS,
@@ -361,6 +362,60 @@ def _approval_gate_intended_effect(tool_name: str, session_id: str) -> str:
         f"Execute the exact approved MCP tool invocation {tool_name!r} "
         f"for session {session_id!r}."
     )
+
+
+def _approval_gate_pending_diagnostic(
+    *,
+    approval_request_id: str,
+    approval_payload: dict[str, Any],
+    redacted_keys: set[str],
+    status: str,
+    reason: str,
+) -> dict[str, Any]:
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approval_payload,
+        attempted_payload=approval_payload,
+        redacted_keys=redacted_keys,
+        status=status,
+        reason=reason,
+        approved_payload_digest=digest_payload(approval_payload),
+        attempted_payload_digest=digest_payload(approval_payload),
+    )
+    diagnostic["approval_request_id"] = approval_request_id
+    return diagnostic
+
+
+def _approval_gate_blocked_diagnostic(
+    *,
+    approval_request_id: str,
+    attempted_payload: dict[str, Any],
+    error: PolicyError,
+) -> dict[str, Any]:
+    diagnostic = getattr(error, "approval_diagnostic", None)
+    if isinstance(diagnostic, dict):
+        result = dict(diagnostic)
+    else:
+        approval_request = getattr(error, "approval_request", None)
+        status = None
+        if approval_request is not None:
+            approval_status = getattr(approval_request, "status", None)
+            status = getattr(approval_status, "value", approval_status)
+        result = {
+            "approval_request_id": approval_request_id,
+            "rejection_kind": getattr(error, "rejection_kind", None) or "blocked",
+            "status": status,
+            "reason": str(error),
+            "attempted_payload_digest": digest_payload(attempted_payload),
+        }
+    result.setdefault("approval_request_id", approval_request_id)
+    rejection_kind = getattr(error, "rejection_kind", None)
+    if rejection_kind and not result.get("rejection_kind"):
+        result["rejection_kind"] = rejection_kind
+    if "reason" not in result:
+        result["reason"] = str(error)
+    if "attempted_payload_digest" not in result:
+        result["attempted_payload_digest"] = digest_payload(attempted_payload)
+    return result
 
 
 def _tool_call_context() -> _ToolCallAuditContext | None:
@@ -9038,6 +9093,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return None
         if not context.policy.approval_required_for_tool(session, tool_enum):
             return None
+        redacted_keys = redacted_keys_for_session_id(session_id)
 
         approval_payload = _approval_gate_payload(
             tool_name=tool_enum.value,
@@ -9066,6 +9122,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "status": status,
                 "approval_request_id": approval.request_id,
                 "payload_digest": payload_digest,
+                "approval_diagnostic": _approval_gate_pending_diagnostic(
+                    approval_request_id=approval.request_id,
+                    approval_payload=approval_payload,
+                    redacted_keys=redacted_keys,
+                    status=status,
+                    reason=(
+                        f"Tool {tool_enum.value} requires approval before execution. "
+                        f"Retry the exact same payload with approval_request_id={approval.request_id} "
+                        "after a human approves it."
+                    ),
+                ),
                 "approval_settings": grant_settings.model_dump(mode="json"),
                 "used_count": approval.used_count,
                 "message": (
@@ -9101,12 +9168,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     f"{tool_enum.value}"
                 )
         except PolicyError as exc:
+            approval_request_id = getattr(exc, "approval_request_id", None) or supplied_request_id
             result = {
                 "status": "blocked",
-                "approval_request_id": supplied_request_id,
+                "approval_request_id": approval_request_id,
                 "payload_digest": payload_digest,
                 "error": str(exc),
                 "error_class": "approval_blocked",
+                "rejection_kind": getattr(exc, "rejection_kind", None),
+                "approval_diagnostic": _approval_gate_blocked_diagnostic(
+                    approval_request_id=approval_request_id,
+                    attempted_payload=approval_payload,
+                    error=exc,
+                ),
             }
             audit_approval_gate(
                 session_id=session_id,

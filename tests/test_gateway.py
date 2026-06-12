@@ -827,6 +827,14 @@ def test_approval_required_tool_creates_pending_request_without_execution(
     assert tool_events[0]["decision"] == "pending_approval"
     assert tool_events[0]["approval_request_id"] == approval.request_id
     assert tool_events[0]["result"]["status"] == "pending_approval"
+    pending_diagnostic = tool_events[0]["result"]["approval_diagnostic"]
+    assert pending_diagnostic["approval_request_id"] == approval.request_id
+    assert pending_diagnostic["status"] == "pending_approval"
+    assert pending_diagnostic["payload_match"] is True
+    assert pending_diagnostic["approved_payload_summary"]["arguments"]["session_id"] == "session-1"
+    assert pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"][
+        "payload_digest"
+    ]
 
 
 def test_approval_required_tool_approved_exact_retry_executes_and_links_audit(
@@ -879,6 +887,10 @@ def test_approval_required_tool_approved_exact_retry_executes_and_links_audit(
         "blocked",
     ]
     assert tool_events[1]["approval_request_id"] == approval.request_id
+    blocked_diagnostic = tool_events[2]["result"]["approval_diagnostic"]
+    assert blocked_diagnostic["approval_request_id"] == approval.request_id
+    assert blocked_diagnostic["rejection_kind"] == "exhausted"
+    assert blocked_diagnostic["status"] == ApprovalStatus.EXHAUSTED.value
 
     with pytest.raises(ToolError, match="requires approval"):
         _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
@@ -920,6 +932,22 @@ def test_approval_required_tool_blocks_mismatched_denied_and_disallowed_retries(
                 "approval_request_id": approval.request_id,
             },
         )
+    mismatch_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    mismatch_diagnostic = mismatch_events[-1]["result"]["approval_diagnostic"]
+    assert mismatch_diagnostic["approval_request_id"] == approval.request_id
+    assert mismatch_diagnostic["rejection_kind"] == "payload_mismatch"
+    assert mismatch_diagnostic["payload_match"] is False
+    extra = {
+        entry["path"]: entry for entry in mismatch_diagnostic["differences"]["extra"]["entries"]
+    }
+    assert extra["arguments.include_runs"] == {
+        "path": "arguments.include_runs",
+        "attempted_value": True,
+    }
 
     approval.status = ApprovalStatus.DENIED
     context.approvals.put(approval.request_id, approval)
@@ -929,6 +957,34 @@ def test_approval_required_tool_blocks_mismatched_denied_and_disallowed_retries(
             "get_workflow_snapshot",
             {"session_id": "session-1", "approval_request_id": approval.request_id},
         )
+    denied_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    denied_diagnostic = denied_events[-1]["result"]["approval_diagnostic"]
+    assert denied_diagnostic["approval_request_id"] == approval.request_id
+    assert denied_diagnostic["rejection_kind"] == "denied"
+    assert denied_diagnostic["payload_match"] is True
+
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "get_workflow_snapshot",
+            {
+                "session_id": "session-1",
+                "approval_request_id": "missing-approval-request",
+            },
+        )
+    missing_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    missing_diagnostic = missing_events[-1]["result"]["approval_diagnostic"]
+    assert missing_diagnostic["approval_request_id"] == "missing-approval-request"
+    assert missing_diagnostic["rejection_kind"] == "missing"
+    assert missing_diagnostic["status"] == "missing"
 
     context.approvals.write_all({})
     denied_context = _build_runtime_with_workflow_config(tmp_path / "denied", allowed_tools=[])
@@ -940,6 +996,126 @@ def test_approval_required_tool_blocks_mismatched_denied_and_disallowed_retries(
     with pytest.raises(ToolError, match="Tool get_workflow_snapshot is not allowed"):
         _call_tool(denied_server, "get_workflow_snapshot", {"session_id": "session-1"})
     assert denied_context.approvals.read_all() == {}
+
+
+def test_approval_required_tool_blocks_expired_retry_with_diagnostic(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    manifest.approval_required_tools = [ToolName.GET_WORKFLOW_SNAPSHOT]
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    with pytest.raises(ToolError):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1", "approval_request_id": approval.request_id},
+        )
+
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    expired_diagnostic = tool_events[-1]["result"]["approval_diagnostic"]
+    assert expired_diagnostic["approval_request_id"] == approval.request_id
+    assert expired_diagnostic["rejection_kind"] == "expired"
+    assert expired_diagnostic["status"] == ApprovalStatus.EXPIRED.value
+
+
+def test_approval_required_tool_redacts_secret_values_in_payload_diagnostic(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.RESPOND_TO_AGENT],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    manifest.approval_required_tools = [ToolName.RESPOND_TO_AGENT]
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    secret_response_token = "response-token-secret"
+    with pytest.raises(ToolError, match="requires approval"):
+        _call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "session-1",
+                "message_id": "message-1",
+                "response_token": secret_response_token,
+                "response_text": "hello",
+            },
+        )
+
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    attempted_response_token = "attempted-response-token-secret"
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "session-1",
+                "message_id": "message-1",
+                "response_token": attempted_response_token,
+                "response_text": "hello",
+                "approval_request_id": approval.request_id,
+            },
+        )
+
+    audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
+    assert secret_response_token not in audit_text
+    assert attempted_response_token not in audit_text
+
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.RESPOND_TO_AGENT.value
+    ]
+    assert tool_events[0]["decision"] == "pending_approval"
+    pending_diagnostic = tool_events[0]["result"]["approval_diagnostic"]
+    assert pending_diagnostic["approval_request_id"] == approval.request_id
+    assert pending_diagnostic["approved_payload_summary"]["arguments"]["response_token"] == "<redacted>"
+    assert pending_diagnostic["attempted_payload_summary"]["arguments"]["response_token"] == "<redacted>"
+    assert pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"][
+        "payload_digest"
+    ]
+
+    blocked_diagnostic = tool_events[-1]["result"]["approval_diagnostic"]
+    assert blocked_diagnostic["approval_request_id"] == approval.request_id
+    assert blocked_diagnostic["rejection_kind"] == "payload_mismatch"
+    assert blocked_diagnostic["attempted_payload_summary"]["arguments"]["response_token"] == "<redacted>"
+    assert blocked_diagnostic["approved_payload_summary"]["arguments"]["response_token"] == "<redacted>"
+    changed = {
+        entry["path"]: entry for entry in blocked_diagnostic["differences"]["changed"]["entries"]
+    }
+    assert changed["arguments.response_token"] == {
+        "path": "arguments.response_token",
+        "approved_value": "<redacted>",
+        "attempted_value": "<redacted>",
+    }
 
 
 def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path: Path) -> None:

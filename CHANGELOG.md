@@ -35,6 +35,14 @@ material. Newer entries are added incrementally as changes land.
   bindings so operators can identify bound, mismatched, unknown, and possibly
   stale client manifests without exposing raw tool arguments or results.
 
+## 2026-06-12 - Approval Retry Diagnostics
+
+- Stopped approval retry diagnostics from reporting redacted stored fields as
+  changed when the attempted payload still matches the canonical approved
+  payload digest.
+- Changed approval detail diagnostics to prioritize the latest blocked retry so
+  operators see the most recent failed attempt first.
+
 ## 2026-06-12 - Admin Agent Prompt Queue Visibility
 
 - Added read-only prompt queue summaries to Admin Web agent records and surfaced
