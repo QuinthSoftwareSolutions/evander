@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
@@ -29,6 +30,7 @@ from agent_sandbox.models import (
     SessionManifest,
     TeamsMessageEnvelope,
     ToolName,
+    digest_payload,
 )
 from agent_sandbox.policy import (
     PolicyEngine,
@@ -1126,6 +1128,170 @@ def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
         assert "mismatch" in str(exc)
     else:
         raise AssertionError("Expected PolicyError")
+
+
+def test_build_payload_diagnostic_reports_changed_missing_and_extra_fields() -> None:
+    approved = {
+        "project": "Truman",
+        "title": "Implement policy engine",
+        "details": {"owner": "alice", "count": 1},
+        "tags": ["alpha", "beta"],
+    }
+    attempted = {
+        "project": "Truman",
+        "title": "Implement approval diagnostics",
+        "details": {"count": 1},
+        "tags": ["alpha", "gamma", "delta"],
+        "extra": "value",
+    }
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        status="approved",
+        reason="payload mismatch",
+        redacted_keys=set(),
+    )
+
+    assert diagnostic["status"] == "approved"
+    assert diagnostic["reason"] == "payload mismatch"
+    assert diagnostic["payload_match"] is False
+    assert diagnostic["approved_payload_digest"] == digest_payload(approved)
+    assert diagnostic["attempted_payload_digest"] == digest_payload(attempted)
+    assert diagnostic["approved_payload_summary"] == approved
+    assert diagnostic["attempted_payload_summary"] == attempted
+    changed = {entry["path"]: entry for entry in diagnostic["differences"]["changed"]["entries"]}
+    missing = {entry["path"]: entry for entry in diagnostic["differences"]["missing"]["entries"]}
+    extra = {entry["path"]: entry for entry in diagnostic["differences"]["extra"]["entries"]}
+    assert changed == {
+        "title": {
+            "path": "title",
+            "approved_value": "Implement policy engine",
+            "attempted_value": "Implement approval diagnostics",
+        },
+        "tags[1]": {
+            "path": "tags[1]",
+            "approved_value": "beta",
+            "attempted_value": "gamma",
+        },
+    }
+    assert missing == {
+        "details.owner": {"path": "details.owner", "approved_value": "alice"}
+    }
+    assert extra == {
+        "tags[2]": {"path": "tags[2]", "attempted_value": "delta"},
+        "extra": {"path": "extra", "attempted_value": "value"},
+    }
+    assert diagnostic["differences"]["truncated"] is False
+
+
+def test_build_payload_diagnostic_redacts_sensitive_values() -> None:
+    approved = {
+        "token": "approved-secret",
+        "authorization": "Bearer approved",
+        "nested": {
+            "cookie": "approved-cookie",
+            "private_key": "approved-key",
+            "safe": "ok",
+        },
+    }
+    attempted = {
+        "token": "attempted-secret",
+        "authorization": "Bearer attempted",
+        "nested": {
+            "cookie": "attempted-cookie",
+            "private_key": "attempted-key",
+            "safe": "ok",
+        },
+    }
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        redacted_keys={"token"},
+    )
+
+    assert diagnostic["approved_payload_summary"]["token"] == "<redacted>"
+    assert diagnostic["approved_payload_summary"]["authorization"] == "<redacted>"
+    assert diagnostic["approved_payload_summary"]["nested"]["cookie"] == "<redacted>"
+    assert diagnostic["approved_payload_summary"]["nested"]["private_key"] == "<redacted>"
+    assert diagnostic["approved_payload_summary"]["nested"]["safe"] == "ok"
+    assert diagnostic["attempted_payload_summary"]["token"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["authorization"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["nested"]["cookie"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["nested"]["private_key"] == "<redacted>"
+    assert diagnostic["attempted_payload_summary"]["nested"]["safe"] == "ok"
+    changed = {entry["path"]: entry for entry in diagnostic["differences"]["changed"]["entries"]}
+    assert changed == {
+        "authorization": {
+            "path": "authorization",
+            "approved_value": "<redacted>",
+            "attempted_value": "<redacted>",
+        },
+        "nested.cookie": {
+            "path": "nested.cookie",
+            "approved_value": "<redacted>",
+            "attempted_value": "<redacted>",
+        },
+        "nested.private_key": {
+            "path": "nested.private_key",
+            "approved_value": "<redacted>",
+            "attempted_value": "<redacted>",
+        },
+        "token": {
+            "path": "token",
+            "approved_value": "<redacted>",
+            "attempted_value": "<redacted>",
+        },
+    }
+
+
+def test_build_payload_diagnostic_uses_raw_attempted_payload_for_digest() -> None:
+    approved = {"token": "approved-secret", "value": "same"}
+    attempted = {"token": "attempted-secret", "value": "same"}
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        redacted_keys={"token"},
+    )
+
+    assert diagnostic["attempted_payload_digest"] == digest_payload(attempted)
+    assert diagnostic["attempted_payload_digest"] != digest_payload(
+        diagnostic["attempted_payload_summary"]
+    )
+
+
+def test_build_payload_diagnostic_truncates_deep_array_diffs() -> None:
+    approved = {"items": [{"value": index} for index in range(6)]}
+    attempted = {"items": [{"value": index + 100} for index in range(6)]}
+
+    diagnostic = build_payload_diagnostic(
+        approved_payload=approved,
+        attempted_payload=attempted,
+        redacted_keys=set(),
+        max_diff_entries=3,
+    )
+
+    assert diagnostic["differences"]["changed"]["entries"] == [
+        {
+            "path": "items[0].value",
+            "approved_value": 0,
+            "attempted_value": 100,
+        },
+        {
+            "path": "items[1].value",
+            "approved_value": 1,
+            "attempted_value": 101,
+        },
+        {
+            "path": "items[2].value",
+            "approved_value": 2,
+            "attempted_value": 102,
+        },
+    ]
+    assert diagnostic["differences"]["changed"]["truncated"] is True
+    assert diagnostic["differences"]["truncated"] is True
 
 
 def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
