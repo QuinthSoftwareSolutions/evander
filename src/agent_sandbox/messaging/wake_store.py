@@ -1388,6 +1388,9 @@ class WakeRequestStore:
             "last_error_at": self._datetime_to_storage(request.last_error_at),
             "completed_at": self._datetime_to_storage(request.completed_at),
             "completion_evidence": dict(request.completion_evidence or {}),
+            "confirmation_state": "awaiting_confirmation"
+            if status == "dispatched" and request.completed_at is None
+            else None,
             "retry_available": status in {"failed", "missed_or_late"},
             "failure_reason": failure_reason,
             "enabled": request.enabled,

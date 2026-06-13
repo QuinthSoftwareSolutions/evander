@@ -144,6 +144,7 @@ type WakeLedgerEntry = {
   last_error_at?: string | null;
   completed_at?: string | null;
   completion_evidence?: Record<string, unknown>;
+  confirmation_state?: string | null;
   retry_available: boolean;
   failure_reason?: string | null;
   enabled: boolean;
@@ -665,6 +666,13 @@ function wakeLedgerStatusLabel(status: string): string {
   return labels[normalized] ?? normalized.replace(/_/g, " ");
 }
 
+function wakeLedgerDisplayLabel(item: WakeLedgerEntry): string {
+  if (item.status === "dispatched" && item.confirmation_state === "awaiting_confirmation") {
+    return "Dispatched, awaiting confirmation";
+  }
+  return wakeLedgerStatusLabel(item.status);
+}
+
 function wakeLedgerStatusClass(status: string): string {
   const normalized = status.trim().toLowerCase();
   if (normalized === "failed" || normalized === "missed_or_late") return "failed";
@@ -676,6 +684,14 @@ function wakeLedgerStatusClass(status: string): string {
 
 function wakeLedgerMatchesFilter(item: WakeLedgerEntry, filter: WakeLedgerFilter): boolean {
   return filter === "all" || item.status === filter;
+}
+
+function formatWakeCompletionEvidence(evidence: Record<string, unknown> | undefined): string | null {
+  const entries = Object.entries(evidence ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length === 0) return null;
+  return entries
+    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .join(" • ");
 }
 
 function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferredSessionId?: string): string {
@@ -2415,7 +2431,7 @@ export function SessionsScreen() {
                         <div key={item.request_id} className="feature-list-item wake-ledger-item">
                           <div className="feature-list-title-row">
                             <strong>{item.request_id}</strong>
-                            <span className={`status-pill state-${wakeLedgerStatusClass(item.status)}`}>{wakeLedgerStatusLabel(item.status)}</span>
+                            <span className={`status-pill state-${wakeLedgerStatusClass(item.status)}`}>{wakeLedgerDisplayLabel(item)}</span>
                           </div>
                           <div className="feature-list-meta">
                             {item.prompt_summary ?? item.redacted_prompt ?? "Prompt unavailable"}
@@ -2437,6 +2453,14 @@ export function SessionsScreen() {
                               ? `${item.latest_dispatch.status} at ${formatTimestamp(item.latest_dispatch.dispatched_at)}`
                               : "none"}
                           </div>
+                          {item.confirmation_state === "awaiting_confirmation" ? (
+                            <div className="feature-list-meta">Awaiting confirmation</div>
+                          ) : null}
+                          {item.completed_at ? (
+                            <div className="feature-list-meta">
+                              Completion evidence {formatWakeCompletionEvidence(item.completion_evidence) ?? "unavailable"}
+                            </div>
+                          ) : null}
                           {item.failure_reason ? <div className="callout warning-callout">{item.failure_reason}</div> : null}
                           {!item.failure_reason && item.latest_dispatch?.error ? (
                             <div className="callout warning-callout">{item.latest_dispatch.error}</div>
