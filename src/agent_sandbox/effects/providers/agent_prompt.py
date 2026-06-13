@@ -953,30 +953,34 @@ class AgentPromptEffectProvider(EffectProviderBase):
     ) -> TriggerQueueRecord:
         finished_at = datetime.now(UTC)
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        wake_dispatch_id = str(record.outputs.get("wake_dispatch_id") or "").strip()
         thread_id = cls._thread_id_from_logs(logs) or str(record.outputs.get("thread_id") or "")
+        payload: dict[str, object] = {
+            "dispatch_id": dispatch_id,
+            "thread_id": thread_id,
+            "session_id": session_id,
+            "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "worker_execution_id": execution_id,
+            "worker_status": worker_status,
+            "success": success,
+            "message": message or f"container worker job status={worker_status}",
+            "agent_state": "idle" if success else "failed",
+            "scope": {
+                "directory_path": str(record.resolved_config.get("directory_path") or "root"),
+                "session_id": session_id,
+                "vm_name": None,
+                "vm_user": str(record.resolved_config.get("vm_user") or "agent"),
+            },
+        }
+        if wake_dispatch_id:
+            payload["wake_dispatch_id"] = wake_dispatch_id
         return TriggerQueueRecord(
             event_id=f"__await-agent-completion__:{dispatch_id}:{finished_at.isoformat()}",
             trigger_id="__await-agent-completion__",
             trigger_type="trigger:agent:run:completed",
             trace_id=record.trace_id,
             occurred_at=finished_at,
-            payload={
-                "dispatch_id": dispatch_id,
-                "thread_id": thread_id,
-                "session_id": session_id,
-                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
-                "worker_execution_id": execution_id,
-                "worker_status": worker_status,
-                "success": success,
-                "message": message or f"container worker job status={worker_status}",
-                "agent_state": "idle" if success else "failed",
-                "scope": {
-                    "directory_path": str(record.resolved_config.get("directory_path") or "root"),
-                    "session_id": session_id,
-                    "vm_name": None,
-                    "vm_user": str(record.resolved_config.get("vm_user") or "agent"),
-                },
-            },
+            payload=payload,
             delivery_state="delivered",
             delivered_at=finished_at,
             idempotency_key=f"__await-agent-completion__:{dispatch_id}",
@@ -1028,6 +1032,40 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 runtime_dir=runtime_dir,
                 dispatch_id=dispatch_id,
             )
+        wake_dispatch_id = str(queue_record.payload.get("wake_dispatch_id") or "").strip()
+        if wake_dispatch_id:
+            wake_store = getattr(getattr(worker, "runtime", None), "wake_store", None)
+            mark_completed = getattr(wake_store, "mark_completed_by_dispatch_id", None)
+            if callable(mark_completed):
+                scope = queue_record.payload.get("scope")
+                if not isinstance(scope, Mapping):
+                    scope = {}
+                completed_at = finished_at
+                evidence = {
+                    "trigger_event_id": queue_record.event_id,
+                    "trigger_type": queue_record.trigger_type,
+                    "dispatch_id": wake_dispatch_id,
+                    "session_id": queue_record.payload.get("session_id") or scope.get(
+                        "session_id"
+                    ),
+                    "directory_path": scope.get("directory_path"),
+                    "vm_user": scope.get("vm_user"),
+                    "agent_state": queue_record.payload.get("agent_state"),
+                    "completed_at": completed_at.isoformat().replace("+00:00", "Z"),
+                }
+                try:
+                    mark_completed(
+                        wake_dispatch_id,
+                        completed_at=completed_at,
+                        evidence={key: value for key, value in evidence.items() if value is not None},
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to mark queued container wake completed dispatch_id=%s event_id=%s",
+                        wake_dispatch_id,
+                        queue_record.event_id,
+                        exc_info=True,
+                    )
 
     @classmethod
     def _build_completion_queue_record_for_waiting_record(

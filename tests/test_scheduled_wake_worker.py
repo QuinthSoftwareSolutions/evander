@@ -9,6 +9,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionBackendKind
+from agent_sandbox.daemons.effect_orchestrator import JsonExecutionStore
+from agent_sandbox.effects.providers.lifecycle_hooks import (
+    AgentEnqueuePromptQueueDispatchHook,
+)
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.models import (
     SessionManifest,
@@ -64,6 +68,7 @@ def _register_container_session(
     session_id: str = "session-a",
     vm_provider: str | None = "container_worker_vm",
     vm_provider_id: str | None = "truman",
+    model: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
     worker.runtime.session_repository.upsert_session(
@@ -73,6 +78,7 @@ def _register_container_session(
             vm_provider=vm_provider,
             vm_provider_id=vm_provider_id,
             directory_path="root/team-a",
+            model=model,
             allowed_tools=[ToolName.APPROVAL_CHECK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata=metadata or {},
@@ -155,6 +161,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "jitter_seconds": 1.5,
                 "cooldown_seconds": 45.0,
                 "late_threshold_seconds": 90.0,
+                "completion_confirmation_timeout_seconds": 120.0,
             }
         ),
         encoding="utf-8",
@@ -166,6 +173,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
     assert worker.config.wake_schedule_late_threshold_seconds == 90.0
+    assert worker.config.wake_completion_confirmation_timeout_seconds == 120.0
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
@@ -288,9 +296,11 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert dispatched == ["session-a"]
     refreshed = worker.runtime.wake_store.get_request("wake-1")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
     assert refreshed.status == "dispatched"
+    assert refreshed.completed_at is None
     assert refreshed.last_dispatch_id == "dispatch-one-time-success"
     assert refreshed.last_dispatch_status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
@@ -389,9 +399,137 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     )
     refreshed = worker.runtime.wake_store.get_request("wake-container")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
+    assert refreshed.completed_at is None
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
+
+def test_scheduled_wake_worker_dispatches_due_claude_container_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={"agent_provider": "claude"},
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    backend = _ContainerBackendStub(active=False)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert len(backend.prepared_specs) == 1
+    assert len(backend.started_specs) == 1
+    spec = backend.started_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.session_id == "session-container-claude"
+    assert "claude --continue -p" in str(spec.command)
+    assert "--model claude-sonnet-4-6" in str(spec.command)
+    assert "codex exec" not in str(spec.command)
+    assert spec.metadata["source"] == "scheduled_once"
+    assert spec.metadata["resume_mode"] == "same_context"
+    assert spec.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert latest.status == "dispatched"
+
+
+def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={
+            "agent_provider": "claude",
+            "target_name": "metadata-target",
+        },
+        vm_provider_id="metadata-target",
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    dispatch_backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: dispatch_backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    queued = queue_store.get("scheduled-wake:wake-container-claude")
+    assert queued is not None
+    assert queued.model == "claude-sonnet-4-6"
+    assert queued.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert queued.metadata["wake_dispatch_id"] == latest.dispatch_id
+
+    replay_backend = _ContainerBackendStub(active=False)
+    execution_store = JsonExecutionStore(tmp_path / "runtime" / "effect-orchestrator-executions.json")
+    replay_config = GatewayConfig(
+        runtime_dir=tmp_path / "runtime",
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda resolved_config, *, admin_service: replay_backend,
+    )
+    orchestrator_worker = SimpleNamespace(
+        config=replay_config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _session_id: replay_config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=worker.runtime.session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: "started",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(
+        worker=orchestrator_worker
+    )
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    command = str(replay_backend.started_specs[0].command)
+    assert "claude --continue -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "codex exec" not in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["agent_provider"] == "claude"
+    assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
 
 
 def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_advances_cron(
@@ -551,8 +689,9 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
     assert len(fake_store.upserted_requests) == 1
     refreshed = fake_store.upserted_requests[0]
     assert refreshed.request_id == "wake-direct"
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
 
 
 def test_scheduled_wake_worker_ignores_cancelled_due_requests(

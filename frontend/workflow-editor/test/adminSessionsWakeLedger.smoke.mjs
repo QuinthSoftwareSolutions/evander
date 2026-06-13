@@ -185,8 +185,42 @@ test("admin shell sessions page surfaces wake ledger entries and retry controls"
     last_error_at: "2026-05-17T12:20:00Z",
     completed_at: null,
     completion_evidence: {},
+    confirmation_state: null,
     retry_available: true,
     failure_reason: "wake dispatch failed with status failed",
+    enabled: true,
+  };
+  const dispatchedLedgerEntry = {
+    request_id: "wake-dispatched",
+    session_id: "session-1",
+    source: "admin_web",
+    resume_at: "2026-05-18T12:40:00Z",
+    next_run_at: "2026-05-18T12:40:00Z",
+    scheduled_for: "2026-05-18T12:40:00Z",
+    schedule_cron: null,
+    created_at: "2026-05-17T12:18:00Z",
+    updated_at: "2026-05-17T12:22:00Z",
+    status: "dispatched",
+    status_reason: null,
+    status_updated_at: "2026-05-17T12:22:00Z",
+    prompt_summary: "Waiting for the resumed turn to finish.",
+    redacted_prompt: "[redacted]",
+    latest_dispatch: {
+      dispatch_id: "dispatch-dispatched",
+      status: "dispatched",
+      dispatched_at: "2026-05-17T12:22:00Z",
+      source: "admin_web",
+      error: null,
+    },
+    latest_dispatch_id: "dispatch-dispatched",
+    latest_dispatch_status: "dispatched",
+    last_error: null,
+    last_error_at: null,
+    completed_at: null,
+    completion_evidence: {},
+    confirmation_state: "awaiting_confirmation",
+    retry_available: false,
+    failure_reason: null,
     enabled: true,
   };
   const completedLedgerEntry = {
@@ -220,12 +254,13 @@ test("admin shell sessions page surfaces wake ledger entries and retry controls"
       dispatch_id: "dispatch-completed",
       trigger_type: "agent_run_completed",
     },
+    confirmation_state: null,
     retry_available: false,
     failure_reason: null,
     enabled: false,
   };
   let ledgerResponse = {
-    items: [failedLedgerEntry, completedLedgerEntry],
+    items: [failedLedgerEntry, dispatchedLedgerEntry, completedLedgerEntry],
   };
 
   await t.after(async () => {
@@ -340,9 +375,15 @@ test("admin shell sessions page surfaces wake ledger entries and retry controls"
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => ledgerSection.getByRole("heading", { name: "Wake ledger" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => ledgerSection.getByText("wake-failed").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => ledgerSection.getByText("wake-dispatched").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => ledgerSection.getByText("wake-completed").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => ledgerSection.getByText("Dispatched, awaiting confirmation").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    ledgerSection.getByText("Completion evidence dispatch_id=dispatch-completed • trigger_type=agent_run_completed").waitFor({ state: "visible" }),
+  );
   await ledgerSection.getByLabel("Status").selectOption("failed");
   await assert.doesNotReject(() => ledgerSection.getByText("wake-failed").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => ledgerSection.getByText("wake-dispatched").waitFor({ state: "hidden" }));
   await assert.doesNotReject(() => ledgerSection.getByText("wake-completed").waitFor({ state: "hidden" }));
   await assert.doesNotReject(() => ledgerSection.getByRole("button", { name: "Retry now" }).waitFor({ state: "visible" }));
   await ledgerSection.getByRole("button", { name: "Retry now" }).click();

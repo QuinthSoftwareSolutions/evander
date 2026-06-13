@@ -237,6 +237,7 @@ class WakeRequestStore:
                 ).fetchone()
                 if row is not None:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+                    was_enabled = request.enabled
                     request.updated_at = now
                     request.status_updated_at = validated.dispatched_at
                     request.last_dispatch_id = validated.dispatch_id
@@ -255,9 +256,10 @@ class WakeRequestStore:
                         request.status = "dispatched"
                         request.status_reason = None
                         request.last_dispatched_at = validated.dispatched_at
-                        if request.schedule.resume_at is not None:
-                            request.next_run_at = None
-                            request.enabled = False
+                        if request.schedule.resume_at is not None and was_enabled:
+                            request.enabled = True
+                            if request.next_run_at is None:
+                                request.next_run_at = request.schedule.resume_at
                     connection.execute(
                         """
                         UPDATE wake_requests
@@ -652,6 +654,9 @@ class WakeRequestStore:
             request.last_error = None
             request.last_error_at = None
             request.updated_at = completed_at
+            if request.schedule.resume_at is not None:
+                request.enabled = False
+                request.next_run_at = None
             connection.execute(
                 """
                 UPDATE wake_requests
@@ -1294,9 +1299,18 @@ class WakeRequestStore:
                 return latest_dispatch_status, request.status_reason
             return "missed_or_late", "Previous dispatch attempt did not complete."
 
+        if current_status == "dispatched" and request.completed_at is None:
+            next_run_at = request.next_run_at
+            if next_run_at is not None and next_run_at <= now_utc:
+                return (
+                    "missed_or_late",
+                    request.status_reason
+                    or "Wake dispatch was not confirmed before the confirmation window expired.",
+                )
+            return "dispatched", request.status_reason
+
         if current_status in {
             "queued",
-            "dispatched",
             "failed",
             "missed_or_late",
             "completed_or_acknowledged",
@@ -1322,6 +1336,14 @@ class WakeRequestStore:
         latest_dispatch: WakeDispatchRecord | None,
     ) -> str:
         current_status = self._normalize_status(request.status) or "pending"
+        if current_status == "dispatched" and request.completed_at is None:
+            derived_status, _reason = self._derived_due_status(
+                request,
+                now_utc=datetime.now(UTC),
+                grace=timedelta(0),
+                latest_dispatch=latest_dispatch,
+            )
+            return derived_status
         if current_status in {
             "due",
             "queued",
@@ -1388,6 +1410,9 @@ class WakeRequestStore:
             "last_error_at": self._datetime_to_storage(request.last_error_at),
             "completed_at": self._datetime_to_storage(request.completed_at),
             "completion_evidence": dict(request.completion_evidence or {}),
+            "confirmation_state": "awaiting_confirmation"
+            if status == "dispatched" and request.completed_at is None
+            else None,
             "retry_available": status in {"failed", "missed_or_late"},
             "failure_reason": failure_reason,
             "enabled": request.enabled,

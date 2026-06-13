@@ -13188,6 +13188,42 @@ def test_list_scheduled_wake_ledger_filters_statuses_and_completed_entries(
     assert {item["request_id"] for item in open_entries} == {failed.request_id}
 
 
+def test_list_scheduled_wake_ledger_marks_dispatched_wakes_awaiting_confirmation(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=30)
+    dispatched = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Still waiting.",
+        resume_at=scheduled_for,
+        source="admin_cli",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-dispatched",
+            request_id=dispatched.request_id,
+            session_id="issue-1-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Still waiting."),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    entries = service.list_scheduled_wake_ledger(
+        session_id="issue-1-session",
+        statuses=["dispatched"],
+        include_completed=True,
+    )
+
+    assert [item["request_id"] for item in entries] == [dispatched.request_id]
+    item = entries[0]
+    assert item["status"] == "dispatched"
+    assert item["confirmation_state"] == "awaiting_confirmation"
+    assert item["completed_at"] is None
+    assert item["completion_evidence"] == {}
+
+
 def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
     tmp_path: Path,
 ) -> None:

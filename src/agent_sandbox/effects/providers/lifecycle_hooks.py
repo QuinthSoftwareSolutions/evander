@@ -387,6 +387,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         now = datetime.now(UTC)
         directory_path = str(getattr(session, "directory_path", None) or "root")
         vm_user = str(getattr(record, "vm_user", None) or "agent")
+        wake_dispatch_id = ""
+        if isinstance(getattr(record, "metadata", {}), dict):
+            wake_dispatch_id = str(record.metadata.get("wake_dispatch_id") or "").strip()
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -402,6 +405,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "agent_provider": agent_harness,
             "queue_key": queue_key,
+            "wake_dispatch_id": wake_dispatch_id,
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -415,6 +419,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": execution_id,
             "queue_key": queue_key,
+            "wake_dispatch_id": wake_dispatch_id,
         }
         input_payload = {
             "target": record.target,

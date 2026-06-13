@@ -1801,6 +1801,14 @@ live provider APIs.
   the Sessions page, and operators can use `GET /api/admin/scheduled-wakes` with
   `statuses`, `session_id`, `limit`, and `include_completed` query parameters to
   list/filter recent wake delivery state.
+- A `dispatched` scheduled wake means the resume command was launched or handed
+  to the worker backend; it is not treated as completed until agent-run
+  completion evidence is recorded. One-time wakes stay enabled while awaiting
+  confirmation, and Admin Web labels these entries as awaiting confirmation.
+  `completion_confirmation_timeout_seconds` in
+  `config/scheduled-wake/config.json` controls how long the scheduled-wake
+  worker waits before an unconfirmed one-time dispatch becomes recoverable
+  again.
 - Failed, due, and missed/late scheduled wakes can be retried immediately or
   rescheduled with `POST /api/admin/scheduled-wakes/{request_id}/retry`. Send
   `{ "run_now": true }` for immediate retry or `{ "resume_at": "<ISO-8601>" }`

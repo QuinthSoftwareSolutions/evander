@@ -404,6 +404,7 @@ class GatewayConfig(BaseModel):
     wake_jitter_seconds: float = Field(default=5.0, ge=0)
     wake_cooldown_seconds: float = Field(default=60.0, ge=0)
     wake_schedule_late_threshold_seconds: float = Field(default=300.0, ge=0)
+    wake_completion_confirmation_timeout_seconds: float = Field(default=300.0, ge=0)
     wake_session_cooldown_path: Path = Path(
         "/var/lib/agent-sandbox/wake-session-cooldown.json"
     )
@@ -1002,6 +1003,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
     wake_state_path: Path | None = None
     vm_user: str = "agent"
     resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+    completion_confirmation_timeout_seconds: float = Field(default=300.0, ge=0)
     scheduled_wake_prefix_text: str = (
         "You have unread PR comments. Please fetch them with list_unread_feedback."
     )

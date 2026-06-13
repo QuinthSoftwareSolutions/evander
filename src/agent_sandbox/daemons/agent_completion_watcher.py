@@ -32,6 +32,7 @@ def build_agent_run_completed_event(
     session_id: str | None,
     directory_path: str | None,
     previous_state: str = "running",
+    wake_dispatch_id: str | None = None,
 ) -> TriggerEvent:
     updated_at = summary.last_state_update_at or datetime.now(UTC)
     payload: dict[str, object] = {
@@ -57,6 +58,8 @@ def build_agent_run_completed_event(
         },
         "dispatch_id": dispatch_id,
     }
+    if wake_dispatch_id:
+        payload["wake_dispatch_id"] = wake_dispatch_id
     if summary.ip_address is not None:
         payload["ip_address"] = summary.ip_address
     return TriggerEvent(
@@ -71,7 +74,7 @@ def build_agent_run_completed_event(
 
 def _mark_wake_completed_from_event(*, admin_service: Any, event: TriggerEvent) -> None:
     payload = event.payload if isinstance(event.payload, Mapping) else {}
-    dispatch_id = str(payload.get("dispatch_id") or "").strip()
+    dispatch_id = str(payload.get("wake_dispatch_id") or payload.get("dispatch_id") or "").strip()
     if not dispatch_id:
         return
     wake_store = getattr(getattr(admin_service, "runtime", None), "wake_store", None)

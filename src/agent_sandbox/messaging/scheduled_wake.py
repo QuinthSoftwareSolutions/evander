@@ -287,12 +287,13 @@ class ScheduledWakeWorker:
                 was_handled=True,
             )
         elif dispatch_handled:
-            _advance_cron_wake_request(
+            _defer_one_time_wake_confirmation(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
-                mark_consumed=True,
-                was_handled=True,
+                confirmation_timeout_seconds=(
+                    scoped_config.wake_completion_confirmation_timeout_seconds
+                ),
             )
         return dispatch_handled
 
@@ -382,6 +383,9 @@ def build_scheduled_wake_worker(
             "wake_jitter_seconds": worker_config.jitter_seconds,
             "wake_cooldown_seconds": worker_config.cooldown_seconds,
             "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
+            "wake_completion_confirmation_timeout_seconds": (
+                worker_config.completion_confirmation_timeout_seconds
+            ),
             "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,
             "host_resume_script_path": worker_config.resume_script_path,
@@ -467,4 +471,27 @@ def _advance_cron_wake_request(
         return
     next_base = request.next_run_at or now_utc
     request.next_run_at = next_cron_time(cron, next_base)
+    wake_store.upsert_request(request)
+
+
+def _defer_one_time_wake_confirmation(
+    *,
+    wake_store: Any,
+    request: WakeScheduledRequest,
+    now_utc: datetime,
+    confirmation_timeout_seconds: float,
+) -> None:
+    get_request = getattr(wake_store, "get_request", None)
+    if callable(get_request):
+        refreshed = get_request(request.request_id)
+        if refreshed is not None:
+            request = refreshed
+
+    if request.last_dispatched_at is None:
+        request.last_dispatched_at = now_utc
+    request.enabled = True
+    request.updated_at = now_utc
+    request.next_run_at = now_utc + timedelta(
+        seconds=max(0.0, float(confirmation_timeout_seconds))
+    )
     wake_store.upsert_request(request)

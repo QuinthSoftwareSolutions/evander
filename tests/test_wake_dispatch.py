@@ -12,7 +12,13 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionStatusKind
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.messaging.wake_dispatch import HostWakeDispatcher, SessionWakeBinding
 from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import (
+    SessionManifest,
+    ToolName,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
+    WakeScheduleDefinition,
+)
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
@@ -79,11 +85,20 @@ def _build_dispatcher(tmp_path: Path) -> tuple[
     return dispatcher, config, session_repository, wake_store
 
 
+@pytest.fixture(autouse=True)
+def _disable_completion_watcher_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+
+
 def _upsert_container_session(
     session_repository: JsonSessionManifestRepository,
     *,
     session_id: str,
     metadata: dict[str, object] | None = None,
+    model: str | None = "gpt-5.4-mini",
     vm_provider_id: str | None = None,
     web_search_enabled: bool = False,
     expires_at: datetime | None = None,
@@ -94,7 +109,7 @@ def _upsert_container_session(
         vm_provider="container_worker_vm",
         vm_provider_id=vm_provider_id,
         directory_path="root/team-a",
-        model="gpt-5.4-mini",
+        model=model,
         allowed_tools=[ToolName.SCHEDULE_RESUME],
         web_search_enabled=web_search_enabled,
         expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
@@ -155,6 +170,7 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
     resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     worker_config = config.model_copy(update={"host_resume_script_path": resume_script})
     captured: dict[str, object] = {}
+    watcher_calls: list[dict[str, object]] = []
 
     def fake_run(cmd: list[str], **kwargs: object):
         captured["cmd"] = cmd
@@ -162,6 +178,11 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        dispatcher,
+        "_spawn_agent_completion_watcher",
+        lambda **kwargs: watcher_calls.append(dict(kwargs)),
+    )
 
     result = dispatcher.resume_binding(
         SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
@@ -173,8 +194,64 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
 
     assert result is not None
     assert result.status == "dispatched"
+    assert "--dispatch-id" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--dispatch-id") + 1] == result.dispatch_id
+    assert captured["env"]["AGENT_PROVIDER"] == "codex"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4-mini"
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
+    assert watcher_calls == [
+        {
+            "vm_name": "vm-a",
+            "dispatch_id": result.dispatch_id,
+            "vm_user": worker_config.wake_vm_user,
+            "session_id": "session-1",
+            "directory_path": None,
+        }
+    ]
+
+
+def test_resume_binding_uses_session_agent_provider_and_default_model_when_model_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    del wake_store
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-claude",
+            vm_id="vm-claude",
+            directory_path="root/team-a",
+            model=None,
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            web_search_enabled=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"agent_provider": "claude"},
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(update={"host_resume_script_path": resume_script})
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-claude", vm_id="vm-claude", source="test"),
+        worker_config=worker_config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-claude",
+    )
+
+    assert result is not None
+    assert result.status == "dispatched"
+    assert captured["env"]["AGENT_PROVIDER"] == "claude"
+    assert captured["env"]["AGENT_MODEL"] == "claude-sonnet-4-6"
 
 
 def test_resume_binding_records_failed_dispatch_when_script_is_missing(
@@ -367,6 +444,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     )
     backend = _ContainerBackendStub(active=False)
     captured: dict[str, object] = {}
+    monitor_calls: list[dict[str, object]] = []
 
     def build_backend(resolved_config, *, admin_service):
         captured["config"] = resolved_config
@@ -374,6 +452,11 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         return backend
 
     monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.build_execution_backend", build_backend)
+    monkeypatch.setattr(
+        dispatcher,
+        "_spawn_container_completion_monitor",
+        lambda **kwargs: monitor_calls.append(dict(kwargs)),
+    )
 
     result = dispatcher.resume_container_binding(
         session,
@@ -412,6 +495,152 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert latest.metadata["target_name"].startswith("agent-session-1-")
     assert latest.metadata["source"] == "scheduled_once"
     assert latest.metadata["execution_id"].startswith("execution:agent-session-1-")
+    assert monitor_calls == [
+        {
+            "backend": backend,
+            "execution_id": latest.metadata["execution_id"],
+            "dispatch_id": result.dispatch_id,
+            "session_id": "session-1",
+            "directory_path": "root/team-a",
+            "vm_user": config.wake_vm_user,
+        }
+    ]
+
+
+def test_resume_container_binding_dispatches_idle_claude_session_and_records_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository,
+        session_id="session-claude",
+        model=None,
+        vm_provider_id="provider-target",
+        web_search_enabled=False,
+        metadata={"container_worker": {"image": "runner:wake-image"}, "agent_provider": "claude"},
+    )
+    backend = _ContainerBackendStub(active=False)
+    captured: dict[str, object] = {}
+
+    def build_backend(resolved_config, *, admin_service):
+        captured["config"] = resolved_config
+        captured["admin_service"] = admin_service
+        return backend
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.build_execution_backend", build_backend)
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        resume_mode="same_context",
+        dispatch_source="scheduled_once",
+        request_id="wake-claude",
+        scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        wake_metadata={"schedule_cron": ""},
+    )
+
+    assert result is not None
+    assert captured["config"].execution_backend == "container_worker_vm"
+    assert captured["admin_service"] is not None
+    assert len(backend.prepared_specs) == 1
+    assert len(backend.started_specs) == 1
+    spec = backend.prepared_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.session_id == "session-claude"
+    assert spec.directory_path == "root/team-a"
+    assert spec.image == "runner:wake-image"
+    assert spec.target_name.startswith("agent-session-claude-")
+    assert "claude --continue -p" in str(spec.command)
+    assert "--model claude-sonnet-4-6" in str(spec.command)
+    assert "codex exec" not in str(spec.command)
+    assert spec.metadata["source"] == "scheduled_once"
+    assert spec.metadata["resume_mode"] == "same_context"
+    assert spec.metadata["agent_provider"] == "claude"
+
+    latest = wake_store.latest_dispatch_by_request_id()["wake-claude"]
+    assert latest.status == "dispatched"
+    assert latest.request_id == "wake-claude"
+    assert latest.resume_mode == "same_context"
+    assert latest.metadata["backend"] == "container_worker_vm"
+    assert latest.metadata["target_name"].startswith("agent-session-claude-")
+    assert latest.metadata["source"] == "scheduled_once"
+    assert latest.metadata["execution_id"].startswith("execution:agent-session-claude-")
+
+
+def test_monitor_container_execution_completion_marks_wake_request_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, _config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            vm_provider_id="provider-target",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"agent_provider": "claude"},
+        )
+    )
+    scheduled_for = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
+        request_id="wake-container",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="wake-dispatch-1",
+            request_id="wake-container",
+            session_id="session-1",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            dispatched_at=datetime(2026, 4, 1, 10, 30, 5, tzinfo=UTC),
+            source="scheduled_once",
+            metadata={"backend": "container_worker_vm", "target_name": "execution-1"},
+        )
+    )
+    inspect_calls: list[str] = []
+    destroy_calls: list[str] = []
+    statuses = [
+        SimpleNamespace(status=ExecutionStatusKind.RUNNING),
+        SimpleNamespace(status=ExecutionStatusKind.STOPPED),
+    ]
+    backend = SimpleNamespace(
+        inspect=lambda execution_id: inspect_calls.append(execution_id) or statuses.pop(0),
+        destroy=lambda execution_id: destroy_calls.append(execution_id) or SimpleNamespace(),
+    )
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.time.sleep", lambda _: None)
+
+    dispatcher._monitor_container_execution_completion(
+        backend=backend,
+        execution_id="execution-1",
+        dispatch_id="wake-dispatch-1",
+        session_id="session-1",
+        directory_path="root/team-a",
+        vm_user="agent",
+    )
+
+    completed = wake_store.get_request("wake-container")
+    assert completed is not None
+    assert completed.completed_at is not None
+    assert completed.completion_evidence["dispatch_id"] == "wake-dispatch-1"
+    assert completed.completion_evidence["trigger_type"] == "trigger:agent:run:completed"
+    assert completed.completion_evidence["agent_state"] == "idle"
+    assert inspect_calls == ["execution-1", "execution-1"]
+    assert destroy_calls == ["execution-1"]
 
 
 def test_resume_container_binding_records_failed_dispatch_for_expired_session_before_backend(
@@ -510,6 +739,63 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     assert latest.metadata["backend"] == "container_worker_vm"
     assert latest.metadata["target_name"] == "metadata-target"
     assert latest.metadata["queue_key"] == "scheduled-wake:wake-busy"
+    assert latest.metadata["source"] == "scheduled_cron"
+    assert latest.resume_prompt.metadata["schedule_cron"] == "* * * * *"
+
+
+def test_resume_container_binding_queues_busy_claude_session_with_provider_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository,
+        session_id="session-claude",
+        model=None,
+        metadata={
+            "target_name": "metadata-target",
+            "agent_provider": "claude",
+        },
+        vm_provider_id="provider-target",
+    )
+    backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        resume_mode="same_context",
+        dispatch_source="scheduled_cron",
+        request_id="wake-busy-claude",
+        scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        wake_metadata={"schedule_cron": "* * * * *"},
+    )
+
+    assert result is not None
+    assert backend.prepared_specs == []
+    assert backend.started_specs == []
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = queue_store.get("scheduled-wake:wake-busy-claude")
+    assert queued is not None
+    assert queued.model == "claude-sonnet-4-6"
+    assert queued.metadata["agent_provider"] == "claude"
+    assert queued.metadata["wake_dispatch_id"] == result.dispatch_id
+    assert queued.metadata["source"] == "scheduled_cron"
+    assert queued.metadata["resume_mode"] == "same_context"
+    assert queued.metadata["request_id"] == "wake-busy-claude"
+
+    latest = wake_store.latest_dispatch_by_request_id()["wake-busy-claude"]
+    assert latest.status == "queued"
+    assert latest.request_id == "wake-busy-claude"
+    assert latest.resume_mode == "same_context"
+    assert latest.metadata["backend"] == "container_worker_vm"
+    assert latest.metadata["target_name"] == "metadata-target"
+    assert latest.metadata["queue_key"] == "scheduled-wake:wake-busy-claude"
     assert latest.metadata["source"] == "scheduled_cron"
     assert latest.resume_prompt.metadata["schedule_cron"] == "* * * * *"
 
