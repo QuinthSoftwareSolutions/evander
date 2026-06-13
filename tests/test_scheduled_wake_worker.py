@@ -9,6 +9,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionBackendKind
+from agent_sandbox.daemons.effect_orchestrator import JsonExecutionStore
+from agent_sandbox.effects.providers.lifecycle_hooks import (
+    AgentEnqueuePromptQueueDispatchHook,
+)
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.models import (
     SessionManifest,
@@ -438,6 +442,88 @@ def test_scheduled_wake_worker_dispatches_due_claude_container_request(
     assert spec.metadata["agent_provider"] == "claude"
     latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
     assert latest.status == "dispatched"
+
+
+def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={
+            "agent_provider": "claude",
+            "target_name": "metadata-target",
+        },
+        vm_provider_id="metadata-target",
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    dispatch_backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: dispatch_backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    queued = queue_store.get("scheduled-wake:wake-container-claude")
+    assert queued is not None
+    assert queued.model == "claude-sonnet-4-6"
+    assert queued.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert queued.metadata["wake_dispatch_id"] == latest.dispatch_id
+
+    replay_backend = _ContainerBackendStub(active=False)
+    execution_store = JsonExecutionStore(tmp_path / "runtime" / "effect-orchestrator-executions.json")
+    replay_config = GatewayConfig(
+        runtime_dir=tmp_path / "runtime",
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda resolved_config, *, admin_service: replay_backend,
+    )
+    orchestrator_worker = SimpleNamespace(
+        config=replay_config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _session_id: replay_config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=worker.runtime.session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: "started",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(
+        worker=orchestrator_worker
+    )
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    command = str(replay_backend.started_specs[0].command)
+    assert "claude --continue -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "codex exec" not in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["agent_provider"] == "claude"
+    assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
 
 
 def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_advances_cron(
