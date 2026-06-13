@@ -64,6 +64,7 @@ def _register_container_session(
     session_id: str = "session-a",
     vm_provider: str | None = "container_worker_vm",
     vm_provider_id: str | None = "truman",
+    model: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
     worker.runtime.session_repository.upsert_session(
@@ -73,6 +74,7 @@ def _register_container_session(
             vm_provider=vm_provider,
             vm_provider_id=vm_provider_id,
             directory_path="root/team-a",
+            model=model,
             allowed_tools=[ToolName.APPROVAL_CHECK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata=metadata or {},
@@ -392,6 +394,50 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     assert refreshed.enabled is False
     assert refreshed.next_run_at is None
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
+
+def test_scheduled_wake_worker_dispatches_due_claude_container_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={"agent_provider": "claude"},
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    backend = _ContainerBackendStub(active=False)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert len(backend.prepared_specs) == 1
+    assert len(backend.started_specs) == 1
+    spec = backend.started_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.session_id == "session-container-claude"
+    assert "claude --continue -p" in str(spec.command)
+    assert "--model claude-sonnet-4-6" in str(spec.command)
+    assert "codex exec" not in str(spec.command)
+    assert spec.metadata["source"] == "scheduled_once"
+    assert spec.metadata["resume_mode"] == "same_context"
+    assert spec.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert latest.status == "dispatched"
 
 
 def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_advances_cron(

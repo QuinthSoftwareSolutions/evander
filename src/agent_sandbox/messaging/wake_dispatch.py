@@ -23,6 +23,8 @@ from agent_sandbox.effects.providers.agent_session import (
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
+    default_agent_model_for_provider,
+    default_agent_provider_for_config,
     gateway_url_with_session_context,
     normalize_optional_string,
     safe_effect_execution_id,
@@ -295,8 +297,20 @@ class HostWakeDispatcher:
             "text": True,
             "timeout": worker_config.wake_resume_timeout_seconds,
         }
-        agent_model = self._resolve_agent_model_for_binding(binding)
-        agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
+        agent_provider = self._resolve_agent_provider_for_binding(
+            binding,
+            scoped_config=worker_config,
+        )
+        agent_model = self._resolve_agent_model_for_binding(
+            binding,
+            scoped_config=worker_config,
+            agent_provider=agent_provider,
+        )
+        agent_env = {
+            "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)
+        }
+        if agent_provider:
+            agent_env["AGENT_PROVIDER"] = agent_provider
         if agent_model:
             agent_env["AGENT_MODEL"] = agent_model
         run_kwargs["env"] = os.environ | agent_env
@@ -463,13 +477,20 @@ class HostWakeDispatcher:
         base_config = worker_config.model_copy(
             update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
         )
+        binding_for_resolution = SessionWakeBinding(
+            session_id=session_id,
+            vm_id=None,
+            source=dispatch_source,
+            directory_path=directory_path,
+        )
+        agent_provider = self._resolve_agent_provider_for_binding(
+            binding_for_resolution,
+            scoped_config=base_config,
+        )
         agent_model = self._resolve_agent_model_for_binding(
-            SessionWakeBinding(
-                session_id=session_id,
-                vm_id=None,
-                source=dispatch_source,
-                directory_path=directory_path,
-            )
+            binding_for_resolution,
+            scoped_config=base_config,
+            agent_provider=agent_provider,
         )
         try:
             backend = build_execution_backend(
@@ -509,6 +530,8 @@ class HostWakeDispatcher:
                 "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 "target_name": target_name,
             }
+            if agent_provider:
+                queue_metadata["agent_provider"] = agent_provider
             if request_id:
                 queue_metadata["request_id"] = request_id
             try:
@@ -578,8 +601,9 @@ class HostWakeDispatcher:
         execution_id = safe_effect_execution_id("agent", session_id)
         command = container_prompt_command(
             prompt=prompt,
-            model=agent_model or str(getattr(session, "model", "") or "").strip() or "gpt-5.4",
+            model=agent_model or str(getattr(session, "model", "") or "").strip(),
             resume_thread_id=None,
+            agent_provider=agent_provider,
             resume_mode=effective_resume_mode,
             mcp_gateway_url=gateway_url_with_session_context(
                 container_worker_guest_gateway_url(base_config),
@@ -601,6 +625,7 @@ class HostWakeDispatcher:
                             "source": dispatch_source,
                             "dispatch_id": dispatch_id,
                             "resume_mode": effective_resume_mode,
+                            "agent_provider": agent_provider,
                         },
                     )
                 )
@@ -652,15 +677,46 @@ class HostWakeDispatcher:
             wake_store.record_dispatch(dispatch_record)
         return dispatch_record
 
-    def _resolve_agent_model_for_binding(self, binding: SessionWakeBinding) -> str | None:
+    def _resolve_agent_provider_for_binding(
+        self,
+        binding: SessionWakeBinding,
+        *,
+        scoped_config: GatewayConfig | None = None,
+    ) -> str:
         session = self.runtime.session_repository.get_session(binding.session_id)
         if session is None:
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_provider_for_config(scoped_config)
+        metadata = getattr(session, "metadata", {})
+        if isinstance(metadata, Mapping):
+            candidate = normalize_optional_string(
+                metadata.get("agent_provider") or metadata.get("agent_harness")
+            )
+            if candidate:
+                return candidate
+        return default_agent_provider_for_config(scoped_config)
+
+    def _resolve_agent_model_for_binding(
+        self,
+        binding: SessionWakeBinding,
+        *,
+        scoped_config: GatewayConfig | None = None,
+        agent_provider: str | None = None,
+    ) -> str | None:
+        session = self.runtime.session_repository.get_session(binding.session_id)
+        provider = normalize_optional_string(agent_provider) or self._resolve_agent_provider_for_binding(
+            binding,
+            scoped_config=scoped_config,
+        )
+        if session is None:
+            return os.environ.get("AGENT_MODEL") or default_agent_model_for_provider(
+                provider,
+                scoped_config,
+            )
+        session_model = str(getattr(session, "model", "") or "").strip()
+        if session_model:
+            return session_model
         if not hasattr(self.runtime, "directories"):
-            session_model = str(getattr(session, "model", "") or "").strip()
-            if session_model:
-                return session_model
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_model_for_provider(provider, scoped_config)
         try:
             issue_setup = resolve_effective_issue_setup_config(
                 config=self.config,
@@ -670,10 +726,7 @@ class HostWakeDispatcher:
             )
             return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
         except ValueError:
-            session_model = str(getattr(session, "model", "") or "").strip()
-            if session_model:
-                return session_model
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_model_for_provider(provider, scoped_config)
 
     def _web_search_mode_for_session(self, session_id: str) -> str:
         session = self.runtime.session_repository.get_session(session_id)
