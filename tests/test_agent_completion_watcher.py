@@ -51,6 +51,69 @@ def test_build_agent_run_completed_event_uses_dispatch_scope() -> None:
     }
 
 
+def test_mark_wake_completed_from_event_prefers_wake_dispatch_id(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
+    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=UTC)
+    wake_store.schedule_resume_request(
+        session_id="session-14724",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
+        request_id="wake-1",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="wake-1",
+            request_id="wake-1",
+            session_id="session-14724",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=UTC),
+            source="scheduled_once",
+        )
+    )
+    summary = VmSummary(
+        vm_name="vm-issue-14724",
+        session_ids=["session-14724"],
+        labels={"vm-type": "issue"},
+        directory_paths=["root/example-industry/app"],
+        libvirt_state="running",
+        ip_address="192.0.2.10",
+        agent_state="idle",
+        agent_repo_names=["ExampleIndustryAPP"],
+        last_state_update_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC),
+        dispatch_id="effect-dispatch-123",
+    )
+    event = watcher.build_agent_run_completed_event(
+        trigger_id="__await-agent-completion__",
+        dispatch_id="effect-dispatch-123",
+        wake_dispatch_id="wake-1",
+        vm_user="agent",
+        summary=summary,
+        session_id="session-14724",
+        directory_path="root/example-industry/app",
+    )
+    admin_service = SimpleNamespace(runtime=SimpleNamespace(wake_store=wake_store))
+
+    watcher._mark_wake_completed_from_event(admin_service=admin_service, event=event)
+
+    completed = wake_store.get_request("wake-1")
+    assert completed is not None
+    assert completed.completed_at == event.occurred_at
+    assert completed.completion_evidence["dispatch_id"] == "wake-1"
+    assert completed.completion_evidence["trigger_event_id"] == event.event_id
+    assert completed.completion_evidence["trigger_type"] == "trigger:agent:run:completed"
+
+
 def test_await_agent_completion_publishes_when_dispatch_settles(
     monkeypatch, tmp_path: Path
 ) -> None:
