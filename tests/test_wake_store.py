@@ -220,10 +220,11 @@ def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
 
 def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> None:
     store = WakeRequestStore(tmp_path / "wake-store.json")
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=5)
     store.schedule_resume_request(
         session_id="session-1",
         prompt="Resume work.",
-        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
         request_id="wake-1",
         source="gateway-tool",
         resume_mode="same_context",
@@ -231,7 +232,7 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
         metadata={},
     )
 
-    dispatch_time = datetime(2026, 4, 1, 10, 31, tzinfo=UTC)
+    dispatch_time = datetime.now(UTC)
     store.record_dispatch(
         WakeDispatchRecord(
             dispatch_id="dispatch-1",
@@ -247,11 +248,18 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
     request = store.get_request("wake-1")
 
     assert request is not None
-    assert request.enabled is False
+    assert request.enabled is True
+    assert request.status == "dispatched"
     assert request.last_dispatched_at == dispatch_time
-    assert request.next_run_at is None
+    assert request.next_run_at == scheduled_for
+    assert request.completed_at is None
+    assert request.completion_evidence == {}
     assert payload["dispatches"]["dispatch-1"]["status"] == "dispatched"
     assert payload["messages"]["wake:dispatch-1"]["session_id"] == "session-1"
+
+    ledger_entry = store.list_ledger_entries(session_id="session-1")[0]
+    assert ledger_entry["status"] == "dispatched"
+    assert ledger_entry["confirmation_state"] == "awaiting_confirmation"
 
 
 @pytest.mark.parametrize("status", ["failed", "timed_out"])
@@ -398,7 +406,7 @@ def test_wake_request_store_imports_legacy_requests_with_lifecycle_defaults(
 @pytest.mark.parametrize(
     ("dispatch_status", "expected_request_status", "expected_last_dispatched_at", "expected_enabled"),
     [
-        ("dispatched", "dispatched", True, False),
+        ("dispatched", "dispatched", True, True),
         ("queued", "queued", False, True),
         ("failed", "failed", False, True),
         ("timed_out", "failed", False, True),
@@ -541,6 +549,51 @@ def test_mark_request_due_or_missed_overwrites_stale_last_error_reason(
     assert updated.last_error_at == now
 
 
+def test_mark_request_due_or_missed_recovers_stale_unconfirmed_dispatch(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    now = datetime(2026, 4, 1, 10, 40, tzinfo=UTC)
+    due_at = now - timedelta(minutes=10)
+    dispatch_at = now - timedelta(minutes=8)
+    store.schedule_resume_request(
+        session_id="session-stale",
+        prompt="Resume stale work.",
+        schedule=WakeScheduleDefinition(resume_at=due_at),
+        request_id="wake-stale-dispatch",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-stale",
+            request_id="wake-stale-dispatch",
+            session_id="session-stale",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume stale work."),
+            dispatched_at=dispatch_at,
+        )
+    )
+    request = store.get_request("wake-stale-dispatch")
+    assert request is not None
+    request.next_run_at = now - timedelta(minutes=1)
+    store.upsert_request(request)
+
+    refreshed = store.mark_request_due_or_missed(now_utc=now, late_after=timedelta(0))
+
+    assert [item.request_id for item in refreshed] == ["wake-stale-dispatch"]
+    updated = store.get_request("wake-stale-dispatch")
+    assert updated is not None
+    assert updated.enabled is True
+    assert updated.status == "missed_or_late"
+    assert updated.status_reason is not None
+    assert "not confirmed" in updated.status_reason
+    assert updated.last_error == updated.status_reason
+    assert updated.completed_at is None
+
+
 def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_summary(
     tmp_path: Path,
 ) -> None:
@@ -591,6 +644,8 @@ def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_
     assert completed.completion_evidence["dispatch_id"] == "dispatch-1"
     assert completed.last_dispatch_id == "dispatch-1"
     assert completed.last_dispatch_status == "dispatched"
+    assert completed.enabled is False
+    assert completed.next_run_at is None
 
     entries = store.list_ledger_entries(session_id="session-1")
     assert len(entries) == 1

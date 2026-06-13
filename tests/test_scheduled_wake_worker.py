@@ -161,6 +161,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "jitter_seconds": 1.5,
                 "cooldown_seconds": 45.0,
                 "late_threshold_seconds": 90.0,
+                "completion_confirmation_timeout_seconds": 120.0,
             }
         ),
         encoding="utf-8",
@@ -172,6 +173,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
     assert worker.config.wake_schedule_late_threshold_seconds == 90.0
+    assert worker.config.wake_completion_confirmation_timeout_seconds == 120.0
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
@@ -294,9 +296,11 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert dispatched == ["session-a"]
     refreshed = worker.runtime.wake_store.get_request("wake-1")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
     assert refreshed.status == "dispatched"
+    assert refreshed.completed_at is None
     assert refreshed.last_dispatch_id == "dispatch-one-time-success"
     assert refreshed.last_dispatch_status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
@@ -395,8 +399,10 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     )
     refreshed = worker.runtime.wake_store.get_request("wake-container")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
+    assert refreshed.completed_at is None
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
 
 
@@ -683,8 +689,9 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
     assert len(fake_store.upserted_requests) == 1
     refreshed = fake_store.upserted_requests[0]
     assert refreshed.request_id == "wake-direct"
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
 
 
 def test_scheduled_wake_worker_ignores_cancelled_due_requests(
