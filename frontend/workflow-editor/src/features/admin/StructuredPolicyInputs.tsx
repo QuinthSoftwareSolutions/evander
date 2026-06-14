@@ -70,6 +70,7 @@ type StringMapEditorProps = {
 type JsonObjectKeyValueEditorProps = {
   value: Record<string, unknown>;
   onChange: (nextValue: Record<string, unknown>) => void;
+  onValidationChange?: (error: string | null) => void;
   fieldLabel: string;
   disabled?: boolean;
   className?: string;
@@ -378,6 +379,7 @@ export function StringMapEditor({
 export function JsonObjectKeyValueEditor({
   value,
   onChange,
+  onValidationChange,
   fieldLabel,
   disabled = false,
   className,
@@ -406,6 +408,19 @@ export function JsonObjectKeyValueEditor({
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     }
   }
+
+  const validationError = error ?? (() => {
+    try {
+      parseJsonObjectDraftRows(rows, fieldLabel);
+      return null;
+    } catch (nextError) {
+      return nextError instanceof Error ? nextError.message : String(nextError);
+    }
+  })();
+
+  useEffect(() => {
+    onValidationChange?.(validationError);
+  }, [onValidationChange, validationError]);
 
   return (
     <div className={["structured-input-editor", className].filter(Boolean).join(" ")}>
