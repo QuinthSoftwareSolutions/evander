@@ -398,6 +398,15 @@ class IssueProviderAdapter(Protocol):
         include_updates: bool = False,
     ) -> dict[str, Any]: ...
 
+    def delete_issue(
+        self,
+        *,
+        remote_issue_id: str,
+        directory_path: str,
+        project: str | None = None,
+        destroy: bool = False,
+    ) -> dict[str, Any]: ...
+
 
 class AzureDevOpsIssueAdapter:
     provider_name = "azure_devops"
@@ -1918,6 +1927,59 @@ class AzureDevOpsIssueAdapter:
             item["inline_media"] = inline_media
             return item
 
+    def delete_issue(
+        self,
+        *,
+        remote_issue_id: str,
+        directory_path: str,
+        project: str | None = None,
+        destroy: bool = False,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps backlog item deletion.")
+        auth_header = self._auth_header(pat)
+        delete_url = (
+            f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/workItems/{remote_issue_id}"
+        )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.delete(
+                delete_url,
+                params={
+                    "api-version": "7.1",
+                    "destroy": "true" if destroy else "false",
+                },
+                headers={"Authorization": auth_header},
+            )
+            if response.is_error:
+                self._raise_ado_http_error(action="delete work item", response=response)
+            payload: dict[str, Any] = {}
+            if response.content:
+                try:
+                    candidate = response.json()
+                except ValueError:
+                    candidate = {}
+                if isinstance(candidate, dict):
+                    payload = candidate
+            fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+            project_name = (
+                str(
+                    payload.get("project")
+                    or fields.get("System.TeamProject")
+                    or normalized_project
+                ).strip()
+                or normalized_project
+            )
+            return {
+                "provider": self.provider_name,
+                "work_item_id": str(payload.get("id") or remote_issue_id).strip(),
+                "project": project_name,
+                "deleted": True,
+                "destroy": destroy,
+                "delete_kind": "permanent_destroy" if destroy else "soft_delete",
+            }
+
 
 class AzureDevOpsIssueInlineMediaProvider:
     """Inline-media adapter for Azure DevOps work item/backlog media."""
@@ -2277,6 +2339,25 @@ class IssueService:
             include_comments=include_comments,
             include_relations=include_relations,
             include_updates=include_updates,
+        )
+
+    def delete_remote_issue(
+        self,
+        *,
+        provider: str,
+        remote_issue_id: str,
+        directory_path: str,
+        project: str | None = None,
+        destroy: bool = False,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.delete_issue(
+            remote_issue_id=remote_issue_id,
+            directory_path=directory_path,
+            project=project,
+            destroy=destroy,
         )
 
 

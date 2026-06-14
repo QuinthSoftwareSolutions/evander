@@ -150,6 +150,10 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert rows["create_ado_backlog_item"]["requires_approval"] is True
     assert rows["create_ado_backlog_item"]["execution_state"] == "denied_at_execution"
     assert rows["create_ado_backlog_item"]["error_summary"] == "blocked by execution policy"
+    assert rows["delete_ado_backlog_item"]["provider"] == "azure_devops"
+    assert rows["delete_ado_backlog_item"]["category"] == "Azure DevOps"
+    assert rows["delete_ado_backlog_item"]["requires_approval"] is True
+    assert rows["delete_ado_backlog_item"]["visibility_state"] == "hidden_by_policy"
     assert rows["run_script"]["visibility_state"] == "hidden_by_policy"
     assert rows["run_script"]["source"] == "directory.mcp_tool_policies"
     assert rows["assistant_create_workflow"]["visibility_state"] == "hidden_by_policy"
@@ -172,6 +176,31 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert payload["counts"]["requires_approval"] == 1
     assert "visible-secret" not in json.dumps(payload)
     assert "visible-result-secret" not in json.dumps(payload)
+
+
+def test_admin_web_tool_visibility_classifies_update_title_tool(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt",
+        allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.session_repository.upsert_session(session)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/tool-visibility", params={"session_id": "session-1"})
+    payload = response.json()
+    rows = {row["tool_name"]: row for row in payload["tools"]}
+
+    assert response.status_code == 200
+    assert rows["update_ado_backlog_title"]["visibility_state"] == "visible"
+    assert rows["update_ado_backlog_title"]["source"] == "session.allowed_tools"
+    assert rows["update_ado_backlog_title"]["provider"] == "azure_devops"
+    assert rows["update_ado_backlog_title"]["category"] == "Azure DevOps"
 
 
 def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(

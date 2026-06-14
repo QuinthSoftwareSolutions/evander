@@ -11,6 +11,10 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_sandbox.cron import next_cron_time
+from agent_sandbox.messaging.scheduled_wake_queue import (
+    discard_scheduled_wake_queue_record,
+    scheduled_wake_queue_should_be_discarded,
+)
 from agent_sandbox.models import (
     WakeDispatchRecord,
     WakeMessageEnvelope,
@@ -58,6 +62,16 @@ class WakeRequestRepository(Protocol):
         now_utc: datetime,
         reason: str | None = None,
     ) -> WakeScheduledRequest | None: ...
+
+    def refresh_one_time_retry_state(
+        self,
+        *,
+        now_utc: datetime,
+        retry_max_attempts: int,
+        retry_window_seconds: float,
+        retry_base_backoff_seconds: float,
+        retry_max_backoff_seconds: float,
+    ) -> list[WakeScheduledRequest]: ...
 
     def mark_completed_by_dispatch_id(
         self,
@@ -237,6 +251,7 @@ class WakeRequestStore:
                 ).fetchone()
                 if row is not None:
                     request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+                    was_enabled = request.enabled
                     request.updated_at = now
                     request.status_updated_at = validated.dispatched_at
                     request.last_dispatch_id = validated.dispatch_id
@@ -255,9 +270,10 @@ class WakeRequestStore:
                         request.status = "dispatched"
                         request.status_reason = None
                         request.last_dispatched_at = validated.dispatched_at
-                        if request.schedule.resume_at is not None:
-                            request.next_run_at = None
-                            request.enabled = False
+                        if request.schedule.resume_at is not None and was_enabled:
+                            request.enabled = True
+                            if request.next_run_at is None:
+                                request.next_run_at = request.schedule.resume_at
                     connection.execute(
                         """
                         UPDATE wake_requests
@@ -360,40 +376,18 @@ class WakeRequestStore:
                 )
 
             latest_dispatch = self._latest_dispatch_for_request(connection, normalized_request_id)
-            if request.status == "cancelled":
-                return WakeRequestCancellationResult(
-                    status="already_cancelled",
-                    request_id=normalized_request_id,
-                    request=request,
-                )
-
             if request.schedule.resume_at is not None:
-                if latest_dispatch is not None:
-                    if latest_dispatch.status == "completed":
-                        return WakeRequestCancellationResult(
-                            status="already_completed",
-                            request_id=normalized_request_id,
-                            request=request,
-                        )
-                    if latest_dispatch.status in {"dispatched", "queued"}:
-                        return WakeRequestCancellationResult(
-                            status="already_dispatched",
-                            request_id=normalized_request_id,
-                            request=request,
-                        )
-                if request.last_dispatched_at is not None:
+                if request.completed_at is not None or (
+                    latest_dispatch is not None and latest_dispatch.status == "completed"
+                ):
                     return WakeRequestCancellationResult(
-                        status="already_dispatched",
+                        status="already_completed",
                         request_id=normalized_request_id,
                         request=request,
                     )
-                if not request.enabled:
-                    return WakeRequestCancellationResult(
-                        status="already_cancelled",
-                        request_id=normalized_request_id,
-                        request=request,
-                    )
-            elif not request.enabled:
+            if request.status == "cancelled" or (
+                request.cancelled_at is not None and request.enabled is False
+            ):
                 return WakeRequestCancellationResult(
                     status="already_cancelled",
                     request_id=normalized_request_id,
@@ -427,11 +421,13 @@ class WakeRequestStore:
                 self._request_update_row(request),
             )
             self._compact(connection)
-            return WakeRequestCancellationResult(
+            result = WakeRequestCancellationResult(
                 status="cancelled",
                 request_id=normalized_request_id,
                 request=request,
             )
+        discard_scheduled_wake_queue_record(self.path.parent, normalized_request_id)
+        return result
 
     def schedule_resume_request(
         self,
@@ -555,6 +551,12 @@ class WakeRequestStore:
                 )
                 updated_requests.append(request)
             self._compact(connection)
+        for updated_request in updated_requests:
+            if scheduled_wake_queue_should_be_discarded(updated_request):
+                discard_scheduled_wake_queue_record(
+                    self.path.parent,
+                    updated_request.request_id,
+                )
         return updated_requests
 
     def mark_request_dispatching(
@@ -605,6 +607,81 @@ class WakeRequestStore:
             self._compact(connection)
         return request
 
+    def refresh_one_time_retry_state(
+        self,
+        *,
+        now_utc: datetime,
+        retry_max_attempts: int,
+        retry_window_seconds: float,
+        retry_base_backoff_seconds: float,
+        retry_max_backoff_seconds: float,
+    ) -> list[WakeScheduledRequest]:
+        latest_dispatches = self.latest_dispatch_by_request_id()
+        updated_requests: list[WakeScheduledRequest] = []
+        retry_window_seconds = max(0.0, float(retry_window_seconds))
+        retry_base_backoff_seconds = max(0.0, float(retry_base_backoff_seconds))
+        retry_max_backoff_seconds = max(
+            retry_base_backoff_seconds, float(retry_max_backoff_seconds)
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM wake_requests
+                WHERE enabled = 1
+                  AND schedule_resume_at IS NOT NULL
+                ORDER BY COALESCE(next_run_at, updated_at, created_at) ASC, request_id ASC
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    request = WakeScheduledRequest.model_validate_json(row["payload_json"])
+                except Exception:
+                    continue
+                if request.schedule.cron is not None:
+                    continue
+                if request.completed_at is not None or request.status == "cancelled":
+                    continue
+                updated_request = self._apply_one_time_retry_state(
+                    request,
+                    latest_dispatch=latest_dispatches.get(request.request_id),
+                    now_utc=now_utc,
+                    retry_max_attempts=retry_max_attempts,
+                    retry_window_seconds=retry_window_seconds,
+                    retry_base_backoff_seconds=retry_base_backoff_seconds,
+                    retry_max_backoff_seconds=retry_max_backoff_seconds,
+                )
+                if updated_request is None:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE wake_requests
+                    SET session_id = ?,
+                        enabled = ?,
+                        created_at = ?,
+                        updated_at = ?,
+                        last_dispatched_at = ?,
+                        next_run_at = ?,
+                        schedule_resume_at = ?,
+                        schedule_cron = ?,
+                        source = ?,
+                        resume_mode = ?,
+                        payload_json = ?
+                    WHERE request_id = ?
+                    """,
+                    self._request_update_row(updated_request),
+                )
+                updated_requests.append(updated_request)
+            self._compact(connection)
+        for updated_request in updated_requests:
+            if scheduled_wake_queue_should_be_discarded(updated_request):
+                discard_scheduled_wake_queue_record(
+                    self.path.parent,
+                    updated_request.request_id,
+                )
+        return updated_requests
+
     def mark_completed_by_dispatch_id(
         self,
         dispatch_id: str,
@@ -652,6 +729,9 @@ class WakeRequestStore:
             request.last_error = None
             request.last_error_at = None
             request.updated_at = completed_at
+            if request.schedule.resume_at is not None:
+                request.enabled = False
+                request.next_run_at = None
             connection.execute(
                 """
                 UPDATE wake_requests
@@ -1271,6 +1351,191 @@ class WakeRequestStore:
             return status
         return status or "pending"
 
+    @staticmethod
+    def _retry_backoff_seconds(
+        *,
+        attempts: int,
+        base_backoff_seconds: float,
+        max_backoff_seconds: float,
+    ) -> float:
+        attempt_index = max(0, int(attempts) - 1)
+        if attempt_index <= 0:
+            backoff_seconds = base_backoff_seconds
+        else:
+            backoff_seconds = base_backoff_seconds * (2**attempt_index)
+        return min(max_backoff_seconds, max(base_backoff_seconds, backoff_seconds))
+
+    @staticmethod
+    def _retry_failure_reason(
+        request: WakeScheduledRequest,
+        *,
+        latest_dispatch: WakeDispatchRecord | None,
+    ) -> str:
+        if request.status == "failed":
+            dispatch_reason = (
+                WakeRequestStore._dispatch_failure_reason(latest_dispatch)
+                if latest_dispatch is not None
+                else None
+            )
+            return (
+                request.last_error
+                or request.status_reason
+                or dispatch_reason
+                or "wake dispatch failed"
+            )
+        return (
+            request.status_reason
+            or request.last_error
+            or "Wake dispatch was not confirmed before the confirmation window expired."
+        )
+
+    @staticmethod
+    def _retry_terminal_status(
+        request: WakeScheduledRequest,
+    ) -> str:
+        if request.status == "failed":
+            return "failed"
+        return "missed_or_late"
+
+    @staticmethod
+    def _retry_terminal_reason(
+        *,
+        request: WakeScheduledRequest,
+        latest_dispatch: WakeDispatchRecord | None,
+        attempts: int,
+        retry_max_attempts: int,
+        retry_window_seconds: float,
+        started_at: datetime,
+        backoff_seconds: float,
+    ) -> str:
+        failure_reason = WakeRequestStore._retry_failure_reason(
+            request, latest_dispatch=latest_dispatch
+        )
+        window_text = f"window={retry_window_seconds:.3f}s"
+        if retry_window_seconds == 0:
+            window_text = "window=0.000s"
+        return (
+            "One-time wake retry limit reached after "
+            f"{attempts}/{retry_max_attempts} attempts ({window_text}, "
+            f"backoff={backoff_seconds:.3f}s): {failure_reason}"
+        )
+
+    @staticmethod
+    def _retry_transition_allowed(
+        *,
+        now_utc: datetime,
+        started_at: datetime,
+        attempts: int,
+        retry_max_attempts: int,
+        retry_window_seconds: float,
+        backoff_seconds: float,
+    ) -> bool:
+        if attempts >= retry_max_attempts:
+            return False
+        if retry_window_seconds <= 0:
+            return False
+        retry_deadline = started_at + timedelta(seconds=retry_window_seconds)
+        candidate_next_run = now_utc + timedelta(seconds=backoff_seconds)
+        return candidate_next_run <= retry_deadline
+
+    def _apply_one_time_retry_state(
+        self,
+        request: WakeScheduledRequest,
+        *,
+        latest_dispatch: WakeDispatchRecord | None,
+        now_utc: datetime,
+        retry_max_attempts: int,
+        retry_window_seconds: float,
+        retry_base_backoff_seconds: float,
+        retry_max_backoff_seconds: float,
+    ) -> WakeScheduledRequest | None:
+        current_status = self._normalize_status(request.status) or "pending"
+        if request.schedule.resume_at is None:
+            return None
+        if request.schedule.cron is not None:
+            return None
+        if current_status not in {"dispatching", "dispatched", "queued", "failed"}:
+            return None
+
+        attempt_started_at = request.auto_retry_started_at
+        if attempt_started_at is None:
+            attempt_started_at = (
+                request.last_dispatched_at
+                or getattr(latest_dispatch, "dispatched_at", None)
+                or now_utc
+            )
+            request.auto_retry_started_at = attempt_started_at
+
+        if current_status in {"dispatched", "queued"} and (
+            request.next_run_at is None or request.next_run_at > now_utc
+        ):
+            return None
+
+        retry_attempts = max(0, request.auto_dispatch_attempts)
+        count_attempt = current_status == "failed"
+        if current_status == "dispatching" and latest_dispatch is None:
+            count_attempt = True
+        if count_attempt:
+            retry_attempts += 1
+            request.auto_dispatch_attempts = retry_attempts
+
+        backoff_seconds = self._retry_backoff_seconds(
+            attempts=max(1, retry_attempts),
+            base_backoff_seconds=retry_base_backoff_seconds,
+            max_backoff_seconds=retry_max_backoff_seconds,
+        )
+        retry_allowed = self._retry_transition_allowed(
+            now_utc=now_utc,
+            started_at=attempt_started_at,
+            attempts=max(1, retry_attempts),
+            retry_max_attempts=retry_max_attempts,
+            retry_window_seconds=retry_window_seconds,
+            backoff_seconds=backoff_seconds,
+        )
+        request.auto_retry_last_backoff_seconds = backoff_seconds
+        if not retry_allowed:
+            terminal_reason = self._retry_terminal_reason(
+                request=request,
+                latest_dispatch=latest_dispatch,
+                attempts=max(1, retry_attempts),
+                retry_max_attempts=retry_max_attempts,
+                retry_window_seconds=retry_window_seconds,
+                started_at=attempt_started_at,
+                backoff_seconds=backoff_seconds,
+            )
+            request.enabled = False
+            request.next_run_at = None
+            request.status = self._retry_terminal_status(request)
+            request.status_reason = terminal_reason
+            request.status_updated_at = now_utc
+            request.last_error = terminal_reason
+            request.last_error_at = now_utc
+            request.auto_retry_exhausted_at = now_utc
+            request.updated_at = now_utc
+            return request
+
+        retry_reason = (
+            "Wake dispatch was not confirmed before the confirmation window expired."
+            if current_status in {"dispatching", "dispatched", "queued"}
+            else self._retry_failure_reason(request, latest_dispatch=latest_dispatch)
+        )
+        request.enabled = True
+        request.status = "pending"
+        request.status_reason = retry_reason
+        request.status_updated_at = now_utc
+        request.next_run_at = now_utc + timedelta(seconds=backoff_seconds)
+        if current_status == "failed":
+            request.last_error = request.last_error or retry_reason
+            request.last_error_at = request.last_error_at or getattr(
+                latest_dispatch, "dispatched_at", None
+            ) or now_utc
+        else:
+            request.last_error = retry_reason
+            request.last_error_at = now_utc
+        request.auto_retry_exhausted_at = None
+        request.updated_at = now_utc
+        return request
+
     def _derived_due_status(
         self,
         request: WakeScheduledRequest,
@@ -1294,9 +1559,18 @@ class WakeRequestStore:
                 return latest_dispatch_status, request.status_reason
             return "missed_or_late", "Previous dispatch attempt did not complete."
 
+        if current_status == "dispatched" and request.completed_at is None:
+            next_run_at = request.next_run_at
+            if next_run_at is not None and next_run_at <= now_utc:
+                return (
+                    "missed_or_late",
+                    request.status_reason
+                    or "Wake dispatch was not confirmed before the confirmation window expired.",
+                )
+            return "dispatched", request.status_reason
+
         if current_status in {
             "queued",
-            "dispatched",
             "failed",
             "missed_or_late",
             "completed_or_acknowledged",
@@ -1322,6 +1596,14 @@ class WakeRequestStore:
         latest_dispatch: WakeDispatchRecord | None,
     ) -> str:
         current_status = self._normalize_status(request.status) or "pending"
+        if current_status == "dispatched" and request.completed_at is None:
+            derived_status, _reason = self._derived_due_status(
+                request,
+                now_utc=datetime.now(UTC),
+                grace=timedelta(0),
+                latest_dispatch=latest_dispatch,
+            )
+            return derived_status
         if current_status in {
             "due",
             "queued",
@@ -1388,6 +1670,9 @@ class WakeRequestStore:
             "last_error_at": self._datetime_to_storage(request.last_error_at),
             "completed_at": self._datetime_to_storage(request.completed_at),
             "completion_evidence": dict(request.completion_evidence or {}),
+            "confirmation_state": "awaiting_confirmation"
+            if status == "dispatched" and request.completed_at is None
+            else None,
             "retry_available": status in {"failed", "missed_or_late"},
             "failure_reason": failure_reason,
             "enabled": request.enabled,

@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
-from agent_sandbox.issues.service import AzureDevOpsIssueAdapter
+from agent_sandbox.issues.service import AzureDevOpsIssueAdapter, IssueService
 
 
 class _DummyClient:
@@ -61,6 +61,10 @@ class _RecordingClient:
     def get(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "GET", "url": url, **kwargs})
         return self._with_request(self._responses.pop(0), method="GET", url=url)
+
+    def delete(self, url: str, **kwargs: object) -> httpx.Response:
+        self._calls.append({"method": "DELETE", "url": url, **kwargs})
+        return self._with_request(self._responses.pop(0), method="DELETE", url=url)
 
 
 def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1231,3 +1235,144 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
     assert item["comments"][0]["created_by_identity"]["displayName"] == "Ada"
     assert item["comments"][0]["inline_media"][0]["filename"] == "comment.gif"
     assert comment_media["comment_id"] == "7"
+
+
+def test_delete_issue_soft_delete_uses_destroy_false_and_returns_payload_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "project": "My Project",
+            },
+        )
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.delete_issue(directory_path="root", remote_issue_id="101")
+
+    assert calls[0]["method"] == "DELETE"
+    assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workItems/101"
+    assert calls[0]["params"] == {"api-version": "7.1", "destroy": "false"}
+    assert calls[0]["headers"] == {"Authorization": "Basic OnBhdA=="}
+    assert result == {
+        "provider": "azure_devops",
+        "work_item_id": "101",
+        "project": "My Project",
+        "deleted": True,
+        "destroy": False,
+        "delete_kind": "soft_delete",
+    }
+
+
+def test_delete_issue_permanent_destroy_sets_destroy_true_and_falls_back_to_requested_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "Default Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [httpx.Response(204)]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.delete_issue(
+        directory_path="root",
+        remote_issue_id="102",
+        project="Example Project",
+        destroy=True,
+    )
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/Example%20Project/_apis/wit/workItems/102"
+    assert calls[0]["params"] == {"api-version": "7.1", "destroy": "true"}
+    assert result["work_item_id"] == "102"
+    assert result["project"] == "Example Project"
+    assert result["destroy"] is True
+    assert result["delete_kind"] == "permanent_destroy"
+
+
+def test_delete_issue_raises_clear_error_for_ado_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            404,
+            json={"message": "Work item does not exist"},
+            headers={"Content-Type": "application/json"},
+        )
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Azure DevOps delete work item failed \(status 404\): Work item does not exist",
+    ):
+        adapter.delete_issue(directory_path="root", remote_issue_id="404")
+
+
+def test_delete_remote_issue_forwards_to_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = IssueService(config_resolver=object())
+    calls: list[dict[str, object]] = []
+
+    class _Adapter:
+        def delete_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {"provider": "azure_devops", "deleted": True}
+
+    service.adapters["azure_devops"] = _Adapter()  # type: ignore[assignment]
+
+    result = service.delete_remote_issue(
+        provider="azure_devops",
+        remote_issue_id="101",
+        directory_path="root/team-a",
+        project="example-project",
+        destroy=False,
+    )
+
+    assert calls == [
+        {
+            "remote_issue_id": "101",
+            "directory_path": "root/team-a",
+            "project": "example-project",
+            "destroy": False,
+        }
+    ]
+    assert result == {"provider": "azure_devops", "deleted": True}
+
+
+def test_delete_remote_issue_rejects_unsupported_provider() -> None:
+    service = IssueService(config_resolver=object())
+
+    with pytest.raises(ValueError, match="Unsupported issue provider: github"):
+        service.delete_remote_issue(
+            provider="github",
+            remote_issue_id="101",
+            directory_path="root",
+        )

@@ -157,6 +157,25 @@ def test_wake_scheduled_request_normalizes_legacy_status_values(
     assert request.status == expected_status
 
 
+def test_wake_scheduled_request_backfills_legacy_retry_state_defaults() -> None:
+    request = WakeScheduledRequest.model_validate(
+        {
+            "request_id": "wake-legacy-retry-state",
+            "session_id": "session-1",
+            "schedule": {
+                "resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()
+            },
+            "resume_prompt": {"prompt": "Resume work."},
+            "status": "pending",
+        }
+    )
+
+    assert request.auto_dispatch_attempts == 0
+    assert request.auto_retry_started_at is None
+    assert request.auto_retry_last_backoff_seconds is None
+    assert request.auto_retry_exhausted_at is None
+
+
 def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
     tmp_path: Path,
 ) -> None:
@@ -220,10 +239,11 @@ def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
 
 def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> None:
     store = WakeRequestStore(tmp_path / "wake-store.json")
+    scheduled_for = datetime.now(UTC) + timedelta(minutes=5)
     store.schedule_resume_request(
         session_id="session-1",
         prompt="Resume work.",
-        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
         request_id="wake-1",
         source="gateway-tool",
         resume_mode="same_context",
@@ -231,7 +251,7 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
         metadata={},
     )
 
-    dispatch_time = datetime(2026, 4, 1, 10, 31, tzinfo=UTC)
+    dispatch_time = datetime.now(UTC)
     store.record_dispatch(
         WakeDispatchRecord(
             dispatch_id="dispatch-1",
@@ -247,11 +267,18 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
     request = store.get_request("wake-1")
 
     assert request is not None
-    assert request.enabled is False
+    assert request.enabled is True
+    assert request.status == "dispatched"
     assert request.last_dispatched_at == dispatch_time
-    assert request.next_run_at is None
+    assert request.next_run_at == scheduled_for
+    assert request.completed_at is None
+    assert request.completion_evidence == {}
     assert payload["dispatches"]["dispatch-1"]["status"] == "dispatched"
     assert payload["messages"]["wake:dispatch-1"]["session_id"] == "session-1"
+
+    ledger_entry = store.list_ledger_entries(session_id="session-1")[0]
+    assert ledger_entry["status"] == "dispatched"
+    assert ledger_entry["confirmation_state"] == "awaiting_confirmation"
 
 
 @pytest.mark.parametrize("status", ["failed", "timed_out"])
@@ -398,7 +425,7 @@ def test_wake_request_store_imports_legacy_requests_with_lifecycle_defaults(
 @pytest.mark.parametrize(
     ("dispatch_status", "expected_request_status", "expected_last_dispatched_at", "expected_enabled"),
     [
-        ("dispatched", "dispatched", True, False),
+        ("dispatched", "dispatched", True, True),
         ("queued", "queued", False, True),
         ("failed", "failed", False, True),
         ("timed_out", "failed", False, True),
@@ -541,6 +568,51 @@ def test_mark_request_due_or_missed_overwrites_stale_last_error_reason(
     assert updated.last_error_at == now
 
 
+def test_mark_request_due_or_missed_recovers_stale_unconfirmed_dispatch(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    now = datetime(2026, 4, 1, 10, 40, tzinfo=UTC)
+    due_at = now - timedelta(minutes=10)
+    dispatch_at = now - timedelta(minutes=8)
+    store.schedule_resume_request(
+        session_id="session-stale",
+        prompt="Resume stale work.",
+        schedule=WakeScheduleDefinition(resume_at=due_at),
+        request_id="wake-stale-dispatch",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-stale",
+            request_id="wake-stale-dispatch",
+            session_id="session-stale",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume stale work."),
+            dispatched_at=dispatch_at,
+        )
+    )
+    request = store.get_request("wake-stale-dispatch")
+    assert request is not None
+    request.next_run_at = now - timedelta(minutes=1)
+    store.upsert_request(request)
+
+    refreshed = store.mark_request_due_or_missed(now_utc=now, late_after=timedelta(0))
+
+    assert [item.request_id for item in refreshed] == ["wake-stale-dispatch"]
+    updated = store.get_request("wake-stale-dispatch")
+    assert updated is not None
+    assert updated.enabled is True
+    assert updated.status == "missed_or_late"
+    assert updated.status_reason is not None
+    assert "not confirmed" in updated.status_reason
+    assert updated.last_error == updated.status_reason
+    assert updated.completed_at is None
+
+
 def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_summary(
     tmp_path: Path,
 ) -> None:
@@ -591,6 +663,8 @@ def test_mark_completed_by_dispatch_id_and_list_ledger_entries_include_operator_
     assert completed.completion_evidence["dispatch_id"] == "dispatch-1"
     assert completed.last_dispatch_id == "dispatch-1"
     assert completed.last_dispatch_status == "dispatched"
+    assert completed.enabled is False
+    assert completed.next_run_at is None
 
     entries = store.list_ledger_entries(session_id="session-1")
     assert len(entries) == 1
@@ -793,15 +867,97 @@ def test_cancel_request_denies_cross_session_without_mutation(
 
 
 @pytest.mark.parametrize(
-    ("dispatch_status", "expected_status"),
+    "request_state",
     [
-        ("dispatched", "already_dispatched"),
-        ("queued", "already_dispatched"),
-        ("completed", "already_completed"),
+        "dispatching",
+        "queued",
+        "dispatched",
+        "failed",
+        "missed_or_late",
     ],
 )
-def test_cancel_request_rejects_terminal_one_time_dispatches(
-    tmp_path: Path, dispatch_status: str, expected_status: str
+def test_cancel_request_allows_nonterminal_one_time_dispatches(
+    tmp_path: Path, request_state: str
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    due_time = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=due_time),
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    if request_state == "dispatching":
+        current_request = store.mark_request_dispatching(
+            "wake-1",
+            now_utc=due_time,
+            reason="dispatch attempt started",
+        )
+    elif request_state == "missed_or_late":
+        current_request = store.get_request("wake-1")
+        assert current_request is not None
+        current_request.status = "missed_or_late"
+        current_request.enabled = False
+        current_request.next_run_at = None
+        current_request.status_reason = "Scheduled wake missed its window."
+        current_request.status_updated_at = due_time
+        current_request.updated_at = due_time
+        store.upsert_request(current_request)
+        current_request = store.get_request("wake-1")
+    else:
+        store.record_dispatch(
+            WakeDispatchRecord(
+                dispatch_id=f"dispatch-{request_state}",
+                request_id="wake-1",
+                session_id="session-1",
+                status=request_state,
+                resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+                dispatched_at=due_time,
+            )
+        )
+        current_request = store.get_request("wake-1")
+
+    before = store.read_raw()
+    assert current_request is not None
+
+    result = store.cancel_request(
+        "wake-1",
+        caller_session_id="session-1",
+        reason="obsolete wake",
+        metadata={"source": "test"},
+        now_utc=due_time + timedelta(minutes=1),
+    )
+
+    assert result.status == "cancelled"
+    assert result.request is not None
+    assert result.request.status == "cancelled"
+    assert result.request.enabled is False
+    assert result.request.next_run_at is None
+    assert result.request.cancelled_by_session_id == "session-1"
+    assert result.request.cancel_reason == "obsolete wake"
+    assert result.request.cancel_metadata == {"source": "test"}
+
+    saved_request = store.get_request("wake-1")
+    assert saved_request is not None
+    assert saved_request.status == "cancelled"
+    assert saved_request.enabled is False
+    assert saved_request.next_run_at is None
+    assert saved_request.cancelled_by_session_id == "session-1"
+    assert saved_request.cancel_reason == "obsolete wake"
+    assert saved_request.cancel_metadata == {"source": "test"}
+    if request_state in {"queued", "dispatched", "failed"}:
+        assert saved_request.last_dispatch_status == request_state
+        assert saved_request.last_dispatch_id == f"dispatch-{request_state}"
+    assert store.read_raw() != before
+
+
+def test_cancel_request_rejects_completed_one_time_dispatches(
+    tmp_path: Path,
 ) -> None:
     store = WakeRequestStore(tmp_path / "wake-store.json")
     due_time = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
@@ -818,10 +974,10 @@ def test_cancel_request_rejects_terminal_one_time_dispatches(
 
     store.record_dispatch(
         WakeDispatchRecord(
-            dispatch_id=f"dispatch-{dispatch_status}",
+            dispatch_id="dispatch-completed",
             request_id="wake-1",
             session_id="session-1",
-            status=dispatch_status,
+            status="completed",
             resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
             dispatched_at=due_time,
         )
@@ -838,7 +994,7 @@ def test_cancel_request_rejects_terminal_one_time_dispatches(
         now_utc=due_time + timedelta(minutes=1),
     )
 
-    assert result.status == expected_status
+    assert result.status == "already_completed"
     assert result.request is not None
     assert result.request == current_request
     assert store.read_raw() == before

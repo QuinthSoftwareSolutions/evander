@@ -498,6 +498,9 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert "List directory-configured contact ids" in tool_options["list_contacts"]["description"]
     assert "Start host-side phone calls" in tool_options["make_phone_call"]["description"]
     assert "Read phone call status" in tool_options["get_phone_call_result"]["description"]
+    assert "Delete Azure DevOps backlog items" in tool_options[
+        "delete_ado_backlog_item"
+    ]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert (
@@ -1248,6 +1251,53 @@ def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
     assert retry_item["latest_dispatch"]["status"] == "failed"
     assert retry_item["failure_reason"] is None
     assert retry_item["last_error"] is None
+
+
+def test_admin_web_lists_dispatched_wakes_with_confirmation_state(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    dispatched = service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Still waiting",
+        resume_at=datetime.now(UTC) + timedelta(minutes=20),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-dispatched",
+            request_id=dispatched.request_id,
+            session_id="issue-14086-session",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Still waiting"),
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/scheduled-wakes",
+        params={
+            "session_id": "issue-14086-session",
+            "statuses": "dispatched",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["request_id"] for item in payload["items"]] == [dispatched.request_id]
+    item = payload["items"][0]
+    assert item["status"] == "dispatched"
+    assert item["confirmation_state"] == "awaiting_confirmation"
+    assert item["completed_at"] is None
 
 
 def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:

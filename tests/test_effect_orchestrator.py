@@ -52,7 +52,15 @@ from agent_sandbox.messaging.agent_prompt_queue import (
 from agent_sandbox.model_usage.runtime import model_usage_store
 from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.models import SessionManifest, ToolName, VmSummary
+from agent_sandbox.messaging.wake_store import WakeRequestStore
+from agent_sandbox.models import (
+    SessionManifest,
+    ToolName,
+    VmSummary,
+    WakeDispatchRecord,
+    WakeResumePromptPayload,
+    WakeScheduleDefinition,
+)
 from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.queries.registry import QueryProviderFactory
@@ -5985,6 +5993,106 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     assert published_events[0][0] == "started"
 
 
+def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    wake_store = WakeRequestStore(tmp_path / "wake-requests-store.json")
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="resume scheduled work",
+        schedule=WakeScheduleDefinition(
+            resume_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+        ),
+        request_id="wake-1",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-queued",
+            request_id="wake-1",
+            session_id="session-1",
+            status="queued",
+            resume_prompt=WakeResumePromptPayload(prompt="resume scheduled work"),
+            resume_mode="same_context",
+            dispatched_at=datetime.now(timezone.utc),
+        )
+    )
+    cancellation = wake_store.cancel_request(
+        "wake-1",
+        caller_session_id="session-1",
+        reason="obsolete wake",
+    )
+    assert cancellation.status == "cancelled"
+
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="scheduled-wake:wake-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="resume scheduled work",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_mode="same_context",
+            effect_id="scheduled-wake:wake-1",
+            metadata={"request_id": "wake-1", "wake_dispatch_id": "dispatch-queued"},
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    session_repository=session_repository,
+                    wake_store=wake_store,
+                )
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: "done",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert queue_store.read_all() == {}
+    assert backend.started_specs == []
+    assert execution_store.read_all() == {}
+
+
 def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6006,6 +6114,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
                 "agent_provider": "claude",
+                "wake_dispatch_id": "wake-dispatch-1",
             },
         )
     )
@@ -6022,6 +6131,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
             resume_thread_id=None,
             resume_mode="same_context",
             effect_id="effect-agent-enqueue-prompt-1",
+            metadata={"wake_dispatch_id": "wake-dispatch-1"},
         )
     )
     backend = _ContainerDispatchBackendStub()
@@ -6055,12 +6165,106 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
     waiting_records = list(execution_store.read_all().values())
     assert waiting_records[0].resolved_config["agent_provider"] == "claude"
     assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
+    assert waiting_records[0].resolved_config["wake_dispatch_id"] == "wake-dispatch-1"
+    assert waiting_records[0].outputs["wake_dispatch_id"] == "wake-dispatch-1"
     context = model_usage_store(tmp_path).get_active_correlation_context(
         session_id="session-1",
         dispatch_id=waiting_records[0].outputs["dispatch_id"],
     )
     assert context is not None
     assert context.agent_harness == "claude"
+
+
+def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_dispatch_id(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
+    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=timezone.utc)
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
+        request_id="wake-1",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="wake-dispatch-1",
+            request_id="wake-1",
+            session_id="session-1",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=timezone.utc),
+            source="scheduled_once",
+        )
+    )
+    published_events: list[tuple[object, object]] = []
+    worker = SimpleNamespace(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        runtime=SimpleNamespace(wake_store=wake_store),
+        execution_store=SimpleNamespace(put=lambda record: None),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            published_events.append((branch_port, outputs)) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+    record = SimpleNamespace(
+        event_id="queued-agent-prompt:wake-dispatch-1",
+        effect_type="effect:agent:enqueue-prompt",
+        effect_id="effect-agent-enqueue-prompt-1",
+        trace_id="trace-1",
+        outputs={
+            "dispatch_id": "effect-dispatch-123",
+            "wake_dispatch_id": "wake-dispatch-1",
+            "session_id": "session-1",
+            "vm_name": "truman",
+            "execution_backend": "container_worker_vm",
+        },
+    )
+    queue_record = TriggerQueueRecord(
+        event_id="__await-agent-completion__:effect-dispatch-123:2026-04-07T14:05:00Z",
+        trigger_id="__await-agent-completion__",
+        trigger_type="trigger:agent:run:completed",
+        trace_id="trace-1",
+        occurred_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=timezone.utc),
+        payload={
+            "dispatch_id": "effect-dispatch-123",
+            "wake_dispatch_id": "wake-dispatch-1",
+            "session_id": "session-1",
+            "agent_state": "idle",
+            "scope": {
+                "directory_path": "root/team-a",
+                "session_id": "session-1",
+                "vm_name": None,
+                "vm_user": "agent",
+            },
+        },
+        delivery_state="delivered",
+        delivered_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=timezone.utc),
+        idempotency_key="__await-agent-completion__:effect-dispatch-123",
+    )
+
+    AgentPromptEffectProvider._finalize_waiting_record(
+        worker=worker,
+        record=record,
+        queue_record=queue_record,
+    )
+
+    completed = wake_store.get_request("wake-1")
+    assert completed is not None
+    assert completed.completed_at is not None
+    assert completed.completion_evidence["dispatch_id"] == "wake-dispatch-1"
+    assert completed.completion_evidence["trigger_event_id"] == queue_record.event_id
+    assert completed.completion_evidence["trigger_type"] == queue_record.trigger_type
+    assert published_events
+    assert published_events[0][1]["wake_dispatch_id"] == "wake-dispatch-1"
 
 
 def test_agent_prompt_container_reconciliation_times_out_running_job(

@@ -854,6 +854,15 @@ def test_wake_poll_interval_must_be_positive() -> None:
         GatewayConfig.model_validate({"wake_poll_interval_seconds": 0})
 
 
+def test_wake_completion_confirmation_retry_policy_defaults_are_conservative() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.wake_completion_confirmation_retry_max_attempts == 3
+    assert config.wake_completion_confirmation_retry_window_seconds == 24 * 60 * 60
+    assert config.wake_completion_confirmation_retry_base_backoff_seconds == 60.0
+    assert config.wake_completion_confirmation_retry_max_backoff_seconds == 600.0
+
+
 def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = DiscordWakeWorkerGlobalConfig.model_validate(
         {"runtime_dir": "/tmp/agent-sandbox-runtime"}
@@ -892,6 +901,10 @@ def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> No
     assert config.directories == []
     assert config.backoff_seconds == 60.0
     assert config.late_threshold_seconds == 300.0
+    assert config.completion_confirmation_retry_max_attempts == 3
+    assert config.completion_confirmation_retry_window_seconds == 24 * 60 * 60
+    assert config.completion_confirmation_retry_base_backoff_seconds == 60.0
+    assert config.completion_confirmation_retry_max_backoff_seconds == 600.0
 
 
 def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() -> None:
@@ -902,6 +915,23 @@ def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() ->
         }
     )
     assert config.directories == ["root/team-a", "root/team-a/subdir"]
+
+
+def test_scheduled_wake_worker_global_config_accepts_retry_policy_overrides() -> None:
+    config = ScheduledWakeWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "completion_confirmation_retry_max_attempts": 5,
+            "completion_confirmation_retry_window_seconds": 7200,
+            "completion_confirmation_retry_base_backoff_seconds": 90,
+            "completion_confirmation_retry_max_backoff_seconds": 900,
+        }
+    )
+
+    assert config.completion_confirmation_retry_max_attempts == 5
+    assert config.completion_confirmation_retry_window_seconds == 7200.0
+    assert config.completion_confirmation_retry_base_backoff_seconds == 90.0
+    assert config.completion_confirmation_retry_max_backoff_seconds == 900.0
 
 
 def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:

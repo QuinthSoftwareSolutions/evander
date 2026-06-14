@@ -6,10 +6,12 @@ import os
 import random
 import re
 import subprocess
+import sys
 import time
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,8 @@ from agent_sandbox.effects.providers.agent_session import (
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
+    default_agent_model_for_provider,
+    default_agent_provider_for_config,
     gateway_url_with_session_context,
     normalize_optional_string,
     safe_effect_execution_id,
@@ -53,6 +57,15 @@ _ACTIVE_CONTAINER_STATUSES = {
     "running",
 }
 
+_MODEL_UNAVAILABLE_PATTERNS = (
+    re.compile(r"\bmodel[_\s-]?not[_\s-]?found\b", re.IGNORECASE),
+    re.compile(r"\binvalid[_\s-]?model\b", re.IGNORECASE),
+    re.compile(r"\bunknown model\b", re.IGNORECASE),
+    re.compile(r"\bmodel\b.*\bunavailable\b", re.IGNORECASE),
+    re.compile(r"\bmodel\b.*\bdoes not exist\b", re.IGNORECASE),
+    re.compile(r"\bdoes not have access to model\b", re.IGNORECASE),
+)
+
 
 def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
     text = str(value or "").strip()
@@ -72,6 +85,45 @@ def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _normalize_failure_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _is_model_unavailable_failure(
+    *,
+    stdout: object = None,
+    stderr: object = None,
+    exception: object = None,
+    reason: object = None,
+) -> bool:
+    for value in (stdout, stderr, exception, reason):
+        text = _normalize_failure_text(value)
+        if not text:
+            continue
+        if any(pattern.search(text) for pattern in _MODEL_UNAVAILABLE_PATTERNS):
+            return True
+    return False
+
+
+def _model_unavailable_failure_summary(
+    *,
+    agent_provider: str | None = None,
+    agent_model: str | None = None,
+) -> str:
+    provider = _sanitize_operator_text(agent_provider, limit=80)
+    model = _sanitize_operator_text(agent_model, limit=120)
+    if provider and model:
+        return (
+            f"model unavailable: configured {provider} model '{model}' "
+            "is unavailable or not permitted"
+        )
+    if provider:
+        return f"model unavailable: configured {provider} model is unavailable or not permitted"
+    if model:
+        return f"model unavailable: configured model '{model}' is unavailable or not permitted"
+    return "model unavailable: configured model is unavailable or not permitted"
+
+
 def _build_dispatch_failure_details(
     *,
     backend: str,
@@ -84,6 +136,8 @@ def _build_dispatch_failure_details(
     stderr: str | None = None,
     exception: BaseException | None = None,
     reason: str | None = None,
+    agent_provider: str | None = None,
+    agent_model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     metadata: dict[str, Any] = {"backend": backend, "session_id": session_id}
     context_parts = [f"backend={backend}", f"session_id={session_id}"]
@@ -93,6 +147,10 @@ def _build_dispatch_failure_details(
     if target_name:
         metadata["target_name"] = target_name
         context_parts.append(f"target_name={target_name}")
+    if agent_provider is not None:
+        metadata["agent_provider"] = agent_provider
+    if agent_model is not None:
+        metadata["agent_model"] = agent_model
     if timeout_seconds is not None:
         metadata["timeout_seconds"] = timeout_seconds
         context_parts.append(f"timeout_seconds={timeout_seconds:.3f}")
@@ -101,13 +159,19 @@ def _build_dispatch_failure_details(
         context_parts.append(f"exit_code={exit_code}")
     sanitized_stdout = _sanitize_operator_text(stdout, limit=240)
     sanitized_stderr = _sanitize_operator_text(stderr, limit=240)
-    if sanitized_stdout is not None:
-        metadata["stdout"] = sanitized_stdout
-        context_parts.append(f"stdout={sanitized_stdout}")
-    if sanitized_stderr is not None:
-        metadata["stderr"] = sanitized_stderr
-        context_parts.append(f"stderr={sanitized_stderr}")
-    if exception is not None:
+    model_unavailable = _is_model_unavailable_failure(
+        stdout=stdout,
+        stderr=stderr,
+        exception=exception,
+        reason=reason,
+    )
+    if model_unavailable:
+        metadata["failure_kind"] = "model_unavailable"
+        summary = _model_unavailable_failure_summary(
+            agent_provider=agent_provider,
+            agent_model=agent_model,
+        )
+    elif exception is not None:
         exception_type = type(exception).__name__
         metadata["exception_type"] = exception_type
         message = _sanitize_operator_text(exception, limit=180) or exception_type
@@ -118,6 +182,12 @@ def _build_dispatch_failure_details(
         summary = f"exit_code={exit_code}"
     else:
         summary = "dispatch failed"
+    if sanitized_stdout is not None:
+        metadata["stdout"] = sanitized_stdout
+        context_parts.append(f"stdout={sanitized_stdout}")
+    if sanitized_stderr is not None:
+        metadata["stderr"] = sanitized_stderr
+        context_parts.append(f"stderr={sanitized_stderr}")
     summary = f"{summary} {' '.join(context_parts)}".strip()
     return _sanitize_operator_text(summary, limit=320) or summary, metadata
 
@@ -209,6 +279,7 @@ class HostWakeDispatcher:
         if not binding.vm_id:
             return None
         wake_store = getattr(self.runtime, "wake_store", None)
+        dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}"
         session = self.runtime.session_repository.get_session(binding.session_id)
         if session is not None:
             try:
@@ -221,7 +292,7 @@ class HostWakeDispatcher:
                     exception=exc,
                 )
                 dispatch_record = self._build_dispatch_record(
-                    dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                    dispatch_id=dispatch_id,
                     request_id=request_id,
                     session_id=binding.session_id,
                     status="failed",
@@ -253,7 +324,7 @@ class HostWakeDispatcher:
                 reason=f"resume script missing path={script_path}",
             )
             dispatch_record = self._build_dispatch_record(
-                dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                dispatch_id=dispatch_id,
                 request_id=request_id,
                 session_id=binding.session_id,
                 status="failed",
@@ -278,6 +349,8 @@ class HostWakeDispatcher:
             binding.vm_id,
             "--session-id",
             binding.session_id,
+            "--dispatch-id",
+            dispatch_id,
             "--vm-user",
             worker_config.wake_vm_user,
             "--resume-mode",
@@ -295,8 +368,20 @@ class HostWakeDispatcher:
             "text": True,
             "timeout": worker_config.wake_resume_timeout_seconds,
         }
-        agent_model = self._resolve_agent_model_for_binding(binding)
-        agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
+        agent_provider = self._resolve_agent_provider_for_binding(
+            binding,
+            scoped_config=worker_config,
+        )
+        agent_model = self._resolve_agent_model_for_binding(
+            binding,
+            scoped_config=worker_config,
+            agent_provider=agent_provider,
+        )
+        agent_env = {
+            "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)
+        }
+        if agent_provider:
+            agent_env["AGENT_PROVIDER"] = agent_provider
         if agent_model:
             agent_env["AGENT_MODEL"] = agent_model
         run_kwargs["env"] = os.environ | agent_env
@@ -315,9 +400,11 @@ class HostWakeDispatcher:
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
-                dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                dispatch_id=dispatch_id,
                 request_id=request_id,
                 session_id=binding.session_id,
                 status="failed",
@@ -348,9 +435,11 @@ class HostWakeDispatcher:
                 vm_id=binding.vm_id,
                 timeout_seconds=worker_config.wake_resume_timeout_seconds,
                 reason="resume script timed out",
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
-                dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                dispatch_id=dispatch_id,
                 request_id=request_id,
                 session_id=binding.session_id,
                 status="timed_out",
@@ -370,7 +459,7 @@ class HostWakeDispatcher:
 
         if completed.returncode == 0:
             dispatch_record = self._build_dispatch_record(
-                dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                dispatch_id=dispatch_id,
                 request_id=request_id,
                 session_id=binding.session_id,
                 status="dispatched",
@@ -385,6 +474,13 @@ class HostWakeDispatcher:
             )
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
+            self._spawn_agent_completion_watcher(
+                vm_name=binding.vm_id,
+                dispatch_id=dispatch_id,
+                vm_user=worker_config.wake_vm_user,
+                session_id=binding.session_id,
+                directory_path=binding.directory_path,
+            )
             return dispatch_record
 
         error, failure_metadata = _build_dispatch_failure_details(
@@ -394,9 +490,11 @@ class HostWakeDispatcher:
             exit_code=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            agent_provider=agent_provider,
+            agent_model=agent_model,
         )
         dispatch_record = self._build_dispatch_record(
-            dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
+            dispatch_id=dispatch_id,
             request_id=request_id,
             session_id=binding.session_id,
             status="failed",
@@ -434,6 +532,8 @@ class HostWakeDispatcher:
         target_name = self._container_target_name(session=session, session_id=session_id)
         effective_resume_mode = normalize_optional_string(resume_mode) or "same_context"
         dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{session_id}"
+        agent_provider: str | None = None
+        agent_model: str | None = None
         try:
             ensure_session_not_expired(session)
         except SessionExpiredError as exc:
@@ -442,6 +542,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=target_name,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -463,13 +565,20 @@ class HostWakeDispatcher:
         base_config = worker_config.model_copy(
             update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
         )
+        binding_for_resolution = SessionWakeBinding(
+            session_id=session_id,
+            vm_id=None,
+            source=dispatch_source,
+            directory_path=directory_path,
+        )
+        agent_provider = self._resolve_agent_provider_for_binding(
+            binding_for_resolution,
+            scoped_config=base_config,
+        )
         agent_model = self._resolve_agent_model_for_binding(
-            SessionWakeBinding(
-                session_id=session_id,
-                vm_id=None,
-                source=dispatch_source,
-                directory_path=directory_path,
-            )
+            binding_for_resolution,
+            scoped_config=base_config,
+            agent_provider=agent_provider,
         )
         try:
             backend = build_execution_backend(
@@ -482,6 +591,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=target_name,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -508,7 +619,10 @@ class HostWakeDispatcher:
                 "resume_mode": effective_resume_mode,
                 "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 "target_name": target_name,
+                "wake_dispatch_id": dispatch_id,
             }
+            if agent_provider:
+                queue_metadata["agent_provider"] = agent_provider
             if request_id:
                 queue_metadata["request_id"] = request_id
             try:
@@ -535,6 +649,8 @@ class HostWakeDispatcher:
                     session_id=session_id,
                     target_name=target_name,
                     exception=exc,
+                    agent_provider=agent_provider,
+                    agent_model=agent_model,
                 )
                 dispatch_record = self._build_dispatch_record(
                     dispatch_id=dispatch_id,
@@ -578,8 +694,9 @@ class HostWakeDispatcher:
         execution_id = safe_effect_execution_id("agent", session_id)
         command = container_prompt_command(
             prompt=prompt,
-            model=agent_model or str(getattr(session, "model", "") or "").strip() or "gpt-5.4",
+            model=agent_model or str(getattr(session, "model", "") or "").strip(),
             resume_thread_id=None,
+            agent_provider=agent_provider,
             resume_mode=effective_resume_mode,
             mcp_gateway_url=gateway_url_with_session_context(
                 container_worker_guest_gateway_url(base_config),
@@ -601,6 +718,7 @@ class HostWakeDispatcher:
                             "source": dispatch_source,
                             "dispatch_id": dispatch_id,
                             "resume_mode": effective_resume_mode,
+                            "agent_provider": agent_provider,
                         },
                     )
                 )
@@ -611,6 +729,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=execution_id,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -650,17 +770,208 @@ class HostWakeDispatcher:
         )
         if wake_store is not None:
             wake_store.record_dispatch(dispatch_record)
+        self._spawn_container_completion_monitor(
+            backend=backend,
+            execution_id=getattr(handle, "execution_id", execution_id),
+            dispatch_id=dispatch_id,
+            session_id=session_id,
+            directory_path=directory_path,
+            vm_user=worker_config.wake_vm_user,
+        )
         return dispatch_record
 
-    def _resolve_agent_model_for_binding(self, binding: SessionWakeBinding) -> str | None:
+    def _spawn_agent_completion_watcher(
+        self,
+        *,
+        vm_name: str,
+        dispatch_id: str,
+        vm_user: str,
+        session_id: str | None,
+        directory_path: str | None,
+    ) -> None:
+        runtime_dir = self.config.runtime_dir
+        watcher_cmd = [
+            sys.executable,
+            "-m",
+            "agent_sandbox.daemons.agent_completion_watcher",
+            "--runtime-dir",
+            str(runtime_dir),
+            "--vm-name",
+            vm_name,
+            "--dispatch-id",
+            dispatch_id,
+            "--vm-user",
+            vm_user,
+            "--poll-interval-seconds",
+            "1.0",
+            "--timeout-seconds",
+            "172800",
+            "--event-queue-store-path",
+            str(runtime_dir / "trigger-orchestrator-events.json"),
+            "--workflow-event-journal-path",
+            str(runtime_dir / "workflow-events.jsonl"),
+            "--effect-lock-path",
+            str(runtime_dir / "effect-orchestrator.lock"),
+            "--orchestration-store-backend",
+            "sqlite",
+            "--orchestration-store-path",
+            str(runtime_dir / "orchestration.db"),
+        ]
+        if session_id:
+            watcher_cmd.extend(["--session-id", session_id])
+        if directory_path:
+            watcher_cmd.extend(["--directory-path", directory_path])
+        try:
+            subprocess.Popen(
+                watcher_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=str(runtime_dir.parent),
+                env=os.environ.copy(),
+                text=True,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to spawn wake completion watcher vm_name=%s dispatch_id=%s",
+                vm_name,
+                dispatch_id,
+                exc_info=True,
+            )
+
+    def _spawn_container_completion_monitor(
+        self,
+        *,
+        backend: Any,
+        execution_id: str,
+        dispatch_id: str,
+        session_id: str,
+        directory_path: str,
+        vm_user: str,
+    ) -> None:
+        thread = threading.Thread(
+            target=self._monitor_container_execution_completion,
+            kwargs={
+                "backend": backend,
+                "execution_id": execution_id,
+                "dispatch_id": dispatch_id,
+                "session_id": session_id,
+                "directory_path": directory_path,
+                "vm_user": vm_user,
+            },
+            daemon=True,
+            name=f"wake-container-monitor:{session_id}:{dispatch_id}",
+        )
+        thread.start()
+
+    def _monitor_container_execution_completion(
+        self,
+        *,
+        backend: Any,
+        execution_id: str,
+        dispatch_id: str,
+        session_id: str,
+        directory_path: str,
+        vm_user: str,
+    ) -> None:
+        wake_store = getattr(self.runtime, "wake_store", None)
+        mark_completed = getattr(wake_store, "mark_completed_by_dispatch_id", None)
+        if not callable(mark_completed):
+            return
+        timeout_seconds = float(
+            getattr(self.config, "container_worker_job_timeout_seconds", 1800.0)
+        )
+        poll_interval_seconds = 1.0
+        started_at = time.monotonic()
+        while time.monotonic() - started_at < timeout_seconds:
+            try:
+                status = backend.inspect(execution_id)
+            except Exception:
+                return
+            status_value = getattr(status, "status", None)
+            normalized_status = str(getattr(status_value, "value", status_value) or "").strip()
+            if normalized_status.casefold() in _ACTIVE_CONTAINER_STATUSES:
+                time.sleep(poll_interval_seconds)
+                continue
+            if normalized_status != ExecutionStatusKind.STOPPED.value:
+                return
+            if normalized_status != ExecutionStatusKind.DESTROYED.value:
+                try:
+                    backend.destroy(execution_id)
+                except Exception:
+                    pass
+            completed_at = datetime.now(UTC)
+            evidence = {
+                "trigger_event_id": f"container:{execution_id}:{completed_at.isoformat()}",
+                "trigger_type": "trigger:agent:run:completed",
+                "dispatch_id": dispatch_id,
+                "session_id": session_id,
+                "directory_path": directory_path,
+                "vm_user": vm_user,
+                "agent_state": "idle",
+                "completed_at": completed_at.isoformat().replace("+00:00", "Z"),
+            }
+            try:
+                mark_completed(
+                    dispatch_id,
+                    completed_at=completed_at,
+                    evidence=evidence,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to mark container wake completed dispatch_id=%s execution_id=%s",
+                    dispatch_id,
+                    execution_id,
+                    exc_info=True,
+                )
+            return
+        logger.warning(
+            "Timed out waiting for container wake completion dispatch_id=%s execution_id=%s",
+            dispatch_id,
+            execution_id,
+        )
+
+    def _resolve_agent_provider_for_binding(
+        self,
+        binding: SessionWakeBinding,
+        *,
+        scoped_config: GatewayConfig | None = None,
+    ) -> str:
         session = self.runtime.session_repository.get_session(binding.session_id)
         if session is None:
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_provider_for_config(scoped_config)
+        metadata = getattr(session, "metadata", {})
+        if isinstance(metadata, Mapping):
+            candidate = normalize_optional_string(
+                metadata.get("agent_provider") or metadata.get("agent_harness")
+            )
+            if candidate:
+                return candidate
+        return default_agent_provider_for_config(scoped_config)
+
+    def _resolve_agent_model_for_binding(
+        self,
+        binding: SessionWakeBinding,
+        *,
+        scoped_config: GatewayConfig | None = None,
+        agent_provider: str | None = None,
+    ) -> str | None:
+        session = self.runtime.session_repository.get_session(binding.session_id)
+        provider = normalize_optional_string(agent_provider) or self._resolve_agent_provider_for_binding(
+            binding,
+            scoped_config=scoped_config,
+        )
+        if session is None:
+            return os.environ.get("AGENT_MODEL") or default_agent_model_for_provider(
+                provider,
+                scoped_config,
+            )
+        session_model = str(getattr(session, "model", "") or "").strip()
+        if session_model:
+            return session_model
         if not hasattr(self.runtime, "directories"):
-            session_model = str(getattr(session, "model", "") or "").strip()
-            if session_model:
-                return session_model
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_model_for_provider(provider, scoped_config)
         try:
             issue_setup = resolve_effective_issue_setup_config(
                 config=self.config,
@@ -670,10 +981,7 @@ class HostWakeDispatcher:
             )
             return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
         except ValueError:
-            session_model = str(getattr(session, "model", "") or "").strip()
-            if session_model:
-                return session_model
-            return os.environ.get("AGENT_MODEL") or None
+            return default_agent_model_for_provider(provider, scoped_config)
 
     def _web_search_mode_for_session(self, session_id: str) -> str:
         session = self.runtime.session_repository.get_session(session_id)

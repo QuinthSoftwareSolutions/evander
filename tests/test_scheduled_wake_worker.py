@@ -9,7 +9,14 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionBackendKind
-from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+from agent_sandbox.daemons.effect_orchestrator import JsonExecutionStore
+from agent_sandbox.effects.providers.lifecycle_hooks import (
+    AgentEnqueuePromptQueueDispatchHook,
+)
+from agent_sandbox.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 from agent_sandbox.models import (
     SessionManifest,
     ToolName,
@@ -64,6 +71,7 @@ def _register_container_session(
     session_id: str = "session-a",
     vm_provider: str | None = "container_worker_vm",
     vm_provider_id: str | None = "truman",
+    model: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
     worker.runtime.session_repository.upsert_session(
@@ -73,6 +81,7 @@ def _register_container_session(
             vm_provider=vm_provider,
             vm_provider_id=vm_provider_id,
             directory_path="root/team-a",
+            model=model,
             allowed_tools=[ToolName.APPROVAL_CHECK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata=metadata or {},
@@ -155,6 +164,11 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "jitter_seconds": 1.5,
                 "cooldown_seconds": 45.0,
                 "late_threshold_seconds": 90.0,
+                "completion_confirmation_timeout_seconds": 120.0,
+                "completion_confirmation_retry_max_attempts": 4,
+                "completion_confirmation_retry_window_seconds": 7200.0,
+                "completion_confirmation_retry_base_backoff_seconds": 75.0,
+                "completion_confirmation_retry_max_backoff_seconds": 900.0,
             }
         ),
         encoding="utf-8",
@@ -166,6 +180,15 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
     assert worker.config.wake_schedule_late_threshold_seconds == 90.0
+    assert worker.config.wake_completion_confirmation_timeout_seconds == 120.0
+    assert worker.worker_config.completion_confirmation_retry_max_attempts == 4
+    assert worker.worker_config.completion_confirmation_retry_window_seconds == 7200.0
+    assert worker.worker_config.completion_confirmation_retry_base_backoff_seconds == 75.0
+    assert worker.worker_config.completion_confirmation_retry_max_backoff_seconds == 900.0
+    assert worker.config.wake_completion_confirmation_retry_max_attempts == 4
+    assert worker.config.wake_completion_confirmation_retry_window_seconds == 7200.0
+    assert worker.config.wake_completion_confirmation_retry_base_backoff_seconds == 75.0
+    assert worker.config.wake_completion_confirmation_retry_max_backoff_seconds == 900.0
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
@@ -288,9 +311,11 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert dispatched == ["session-a"]
     refreshed = worker.runtime.wake_store.get_request("wake-1")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
     assert refreshed.status == "dispatched"
+    assert refreshed.completed_at is None
     assert refreshed.last_dispatch_id == "dispatch-one-time-success"
     assert refreshed.last_dispatch_status == "dispatched"
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
@@ -355,6 +380,280 @@ def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
     assert not worker.worker_config.session_cooldown_path.exists()
 
 
+def test_scheduled_wake_worker_retries_failed_one_time_request_with_backoff_and_exhausts_at_cap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 2,
+            "completion_confirmation_retry_window_seconds": 3600.0,
+            "completion_confirmation_retry_base_backoff_seconds": 1.0,
+            "completion_confirmation_retry_max_backoff_seconds": 1.0,
+        },
+    )
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(worker, request_id="wake-failed", session_id="session-a", due_at=due_at)
+
+    dispatch_calls: list[str] = []
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+
+    def resume_binding(binding, **kwargs):
+        dispatch_calls.append(binding.session_id)
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-failed-{len(dispatch_calls)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            error="resume failed",
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 1
+    assert first_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    refreshed = worker.runtime.wake_store.get_request("wake-failed")
+    assert refreshed is not None
+    assert refreshed.status == "pending"
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > datetime.now(UTC)
+    assert refreshed.auto_dispatch_attempts == 1
+    assert refreshed.auto_retry_started_at is not None
+    assert refreshed.auto_retry_last_backoff_seconds == 1.0
+    assert refreshed.auto_retry_exhausted_at is None
+
+    second_cycle = worker.run_once()
+    assert second_cycle.requests_due == 0
+    assert second_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    retry_ready = worker.runtime.wake_store.get_request("wake-failed")
+    assert retry_ready is not None
+    retry_ready.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(retry_ready)
+
+    third_cycle = worker.run_once()
+    assert third_cycle.requests_due == 1
+    assert third_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a", "session-a"]
+
+    exhausted = worker.runtime.wake_store.get_request("wake-failed")
+    assert exhausted is not None
+    assert exhausted.enabled is False
+    assert exhausted.next_run_at is None
+    assert exhausted.status == "failed"
+    assert exhausted.auto_dispatch_attempts == 2
+    assert exhausted.auto_retry_exhausted_at is not None
+    assert exhausted.last_error is not None
+    assert "retry limit" in exhausted.last_error.casefold()
+
+
+def test_scheduled_wake_worker_failed_retry_backoff_uses_dispatch_completion_time(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 3,
+            "completion_confirmation_retry_window_seconds": 3600.0,
+            "completion_confirmation_retry_base_backoff_seconds": 60.0,
+            "completion_confirmation_retry_max_backoff_seconds": 60.0,
+        },
+    )
+    _register_session(worker)
+    due_at = datetime(2026, 4, 1, 9, 59, tzinfo=UTC)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-slow-failed",
+        session_id="session-a",
+        due_at=due_at,
+    )
+    cycle_started_at = datetime(2026, 4, 1, 10, 0, tzinfo=UTC)
+    dispatch_completed_at = datetime(2026, 4, 1, 10, 5, tzinfo=UTC)
+
+    class _FakeDateTime:
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            cls.calls += 1
+            if cls.calls == 1:
+                return cycle_started_at
+            return dispatch_completed_at
+
+    monkeypatch.setattr("agent_sandbox.messaging.scheduled_wake.datetime", _FakeDateTime)
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        lambda **kwargs: "idle",
+    )
+
+    def resume_binding(binding, **kwargs):
+        record = WakeDispatchRecord(
+            dispatch_id="dispatch-slow-failed",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=dispatch_completed_at,
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            error="resume failed after timeout",
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 0
+    refreshed = worker.runtime.wake_store.get_request("wake-slow-failed")
+    assert refreshed is not None
+    assert refreshed.status == "pending"
+    assert refreshed.next_run_at == dispatch_completed_at + timedelta(seconds=60)
+    assert refreshed.next_run_at > cycle_started_at + timedelta(seconds=60)
+
+
+def test_scheduled_wake_worker_backs_off_unconfirmed_one_time_dispatch_before_retrying(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 2,
+            "completion_confirmation_retry_window_seconds": 3600.0,
+            "completion_confirmation_retry_base_backoff_seconds": 1.0,
+            "completion_confirmation_retry_max_backoff_seconds": 1.0,
+        },
+    )
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker, request_id="wake-unconfirmed", session_id="session-a", due_at=due_at
+    )
+
+    dispatch_time = datetime.now(UTC) - timedelta(minutes=2)
+    worker.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-unconfirmed",
+            request_id="wake-unconfirmed",
+            session_id="session-a",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=dispatch_time,
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="scheduled-wake:wake-unconfirmed",
+            target="session-a",
+            vm_name="vm-a",
+            session_id="session-a",
+            prompt="Resume work.",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_mode="same_context",
+            effect_id="scheduled-wake:wake-unconfirmed",
+            metadata={
+                "request_id": "wake-unconfirmed",
+                "wake_dispatch_id": "dispatch-unconfirmed",
+            },
+        )
+    )
+    pending = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert pending is not None
+    pending.auto_dispatch_attempts = 1
+    pending.auto_retry_started_at = dispatch_time
+    pending.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(pending)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 0
+    assert first_cycle.wakes_dispatched == 0
+
+    refreshed = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert refreshed is not None
+    assert refreshed.status == "pending"
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > datetime.now(UTC)
+    assert refreshed.auto_dispatch_attempts == 1
+    assert refreshed.auto_retry_last_backoff_seconds == 1.0
+    assert refreshed.last_error is not None
+    assert "confirmation window" in refreshed.last_error.casefold()
+
+    retry_ready = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert retry_ready is not None
+    retry_ready.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(retry_ready)
+
+    dispatch_calls: list[str] = []
+
+    def resume_binding(binding, **kwargs):
+        dispatch_calls.append(binding.session_id)
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-unconfirmed-{len(dispatch_calls)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            error="resume failed",
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    second_cycle = worker.run_once()
+    assert second_cycle.requests_due == 1
+    assert second_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    exhausted = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert exhausted is not None
+    assert exhausted.enabled is False
+    assert exhausted.next_run_at is None
+    assert exhausted.status == "failed"
+    assert exhausted.auto_dispatch_attempts == 2
+    assert exhausted.auto_retry_exhausted_at is not None
+    assert exhausted.last_error is not None
+    assert "retry limit" in exhausted.last_error.casefold()
+    assert queue_store.get("scheduled-wake:wake-unconfirmed") is None
+
+
 def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_binding(
     tmp_path: Path,
     monkeypatch,
@@ -389,9 +688,181 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     )
     refreshed = worker.runtime.wake_store.get_request("wake-container")
     assert refreshed is not None
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
+    assert refreshed.completed_at is None
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
+
+def test_scheduled_wake_worker_dispatches_due_claude_container_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={"agent_provider": "claude"},
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    backend = _ContainerBackendStub(active=False)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert len(backend.prepared_specs) == 1
+    assert len(backend.started_specs) == 1
+    spec = backend.started_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.session_id == "session-container-claude"
+    assert "claude --continue -p" in str(spec.command)
+    assert "--model claude-sonnet-4-6" in str(spec.command)
+    assert "codex exec" not in str(spec.command)
+    assert spec.metadata["source"] == "scheduled_once"
+    assert spec.metadata["resume_mode"] == "same_context"
+    assert spec.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert latest.status == "dispatched"
+
+
+def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container-claude",
+        model=None,
+        metadata={
+            "agent_provider": "claude",
+            "target_name": "metadata-target",
+        },
+        vm_provider_id="metadata-target",
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-claude",
+        session_id="session-container-claude",
+        due_at=due_at,
+    )
+    dispatch_backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: dispatch_backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    queued = queue_store.get("scheduled-wake:wake-container-claude")
+    assert queued is not None
+    assert queued.model == "claude-sonnet-4-6"
+    assert queued.metadata["agent_provider"] == "claude"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-claude"]
+    assert queued.metadata["wake_dispatch_id"] == latest.dispatch_id
+
+    replay_backend = _ContainerBackendStub(active=False)
+    execution_store = JsonExecutionStore(tmp_path / "runtime" / "effect-orchestrator-executions.json")
+    replay_config = GatewayConfig(
+        runtime_dir=tmp_path / "runtime",
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda resolved_config, *, admin_service: replay_backend,
+    )
+    orchestrator_worker = SimpleNamespace(
+        config=replay_config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _session_id: replay_config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=worker.runtime.session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: "started",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(
+        worker=orchestrator_worker
+    )
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    command = str(replay_backend.started_specs[0].command)
+    assert "claude --continue -p" in command
+    assert "--model claude-sonnet-4-6" in command
+    assert "codex exec" not in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["agent_provider"] == "claude"
+    assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
+
+
+def test_cancel_queued_container_wake_deletes_prompt_queue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container",
+        vm_provider_id="metadata-target",
+        metadata={
+            "execution_backend": "container_worker_vm",
+            "target_name": "metadata-target",
+        },
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-container-cancel",
+        session_id="session-container",
+        due_at=due_at,
+    )
+    backend = _ContainerBackendStub(active=True)
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    assert queue_store.get("scheduled-wake:wake-container-cancel") is not None
+
+    cancellation = worker.runtime.wake_store.cancel_request(
+        "wake-container-cancel",
+        caller_session_id="session-container",
+        reason="obsolete wake",
+        metadata={"source": "test"},
+    )
+
+    assert cancellation.status == "cancelled"
+    assert queue_store.get("scheduled-wake:wake-container-cancel") is None
 
 
 def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_advances_cron(
@@ -551,8 +1022,9 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
     assert len(fake_store.upserted_requests) == 1
     refreshed = fake_store.upserted_requests[0]
     assert refreshed.request_id == "wake-direct"
-    assert refreshed.enabled is False
-    assert refreshed.next_run_at is None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
 
 
 def test_scheduled_wake_worker_ignores_cancelled_due_requests(
