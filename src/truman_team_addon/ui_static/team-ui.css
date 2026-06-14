@@ -522,8 +522,8 @@ button.runtime-filter-button.active {
   border-left: 3px solid var(--accent);
   border-radius: 8px;
   padding: 0.75rem;
-  background: linear-gradient(180deg, #ffffff 0%, #f7fbfa 100%);
-  box-shadow: 0 8px 20px rgba(27, 45, 47, 0.04);
+  background: var(--panel);
+  box-shadow: 0 8px 20px var(--shadow);
 }
 
 .timeline-entry-top {
@@ -847,6 +847,31 @@ button.runtime-filter-button.active {
   gap: 0.75rem;
 }
 
+.record-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: fit-content;
+}
+
+button.record-action {
+  min-height: 1.75rem;
+  border-color: var(--line);
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  padding: 0.22rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+button.record-action:hover {
+  border-color: var(--accent);
+  background: rgba(23, 111, 122, 0.1);
+  color: var(--accent-strong);
+}
+
 .agent-line strong,
 .task-line strong,
 .record-line strong,
@@ -1084,6 +1109,78 @@ form {
   padding: 0.8rem;
 }
 
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.checkbox-label input {
+  width: auto;
+}
+
+.edit-modal[hidden] {
+  display: none;
+}
+
+.edit-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.edit-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 16, 15, 0.58);
+}
+
+.edit-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(44rem, 100%);
+  max-height: min(52rem, calc(100vh - 2rem));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+}
+
+.edit-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.edit-modal-header h2 {
+  margin: 0;
+}
+
+.edit-record-form,
+#edit-record-form {
+  border-top: 0;
+}
+
+.edit-form-body {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.edit-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
 .review-decision-form {
   margin-top: 0.6rem;
   border-top: 1px dashed var(--line);
@@ -1101,6 +1198,83 @@ label {
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.field-label-text {
+  overflow-wrap: anywhere;
+}
+
+.field-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.field-tooltip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid rgba(23, 111, 122, 0.35);
+  border-radius: 50%;
+  background: rgba(23, 111, 122, 0.1);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.field-tooltip-bubble {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 20;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 2rem));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 12px 28px var(--shadow);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-0.15rem);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    visibility 0.12s ease;
+  visibility: hidden;
+}
+
+.field-tooltip:hover .field-tooltip-bubble,
+.field-tooltip:focus .field-tooltip-bubble,
+.field-tooltip:focus-within .field-tooltip-bubble {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.field-tooltip:focus-visible .field-tooltip-icon {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 label input,

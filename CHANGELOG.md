@@ -5,6 +5,19 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Team Add-on Editability
+
+- Added revision-checked editing for Team Add-on teams, projects, persistent
+  agents, tasks, and review profiles through the Admin Web Team Add-on UI.
+- Simplified Team Add-on project git setup with a single bare repo field and a
+  provider dropdown, while keeping the backend canonical bare repo name/path
+  model.
+- Added setup-time ID suggestions and existing-agent default pickers so team
+  and project setup forms no longer require hand-typing every identifier.
+- Added reusable field tooltips across Team Add-on setup, mutation, and edit
+  forms to explain IDs, sessions, git settings, hierarchy links, and review
+  criteria formats in place.
+
 ## 2026-06-14 - Scheduled Wake Config Hot Reload
 
 - Made the scheduled-wake worker reload `config/scheduled-wake/config.json`

@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from truman_team_addon.models import (
+    AgentStatus,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
     ProjectGitConfig,
@@ -163,6 +164,84 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
     assert state.agents["backend"].display_name == "Backend Agent"
+
+
+def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state = repo.update_team(
+        team_id="team",
+        name="Renamed Team",
+        operator_communication_target_id=None,
+        set_operator_communication_target_id=True,
+        archived=True,
+        expected_revision=4,
+    )
+
+    team = state.teams["team"]
+    assert state.revision == 5
+    assert team.name == "Renamed Team"
+    assert team.operator_communication_target_id is None
+    assert team.archived is True
+
+    state = repo.update_project(
+        project_id="project",
+        name="Renamed Project",
+        status=ProjectStatus.BLOCKED,
+        git=ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git"),
+        set_git=True,
+        goals=[ProjectGoal(id="goal-2", description="Updated goal")],
+        expected_revision=5,
+    )
+
+    project = state.projects["project"]
+    assert state.revision == 6
+    assert project.name == "Renamed Project"
+    assert project.status is ProjectStatus.BLOCKED
+    assert project.git is not None
+    assert project.git.bare_repo_name == "repo.git"
+    assert [goal.id for goal in project.goals] == ["goal-2"]
+
+    state = repo.update_agent(
+        agent_id="worker",
+        role="qa",
+        session_id="session-worker-2",
+        reports_to_agent_id="lead",
+        set_reports_to_agent_id=True,
+        display_name=None,
+        set_display_name=True,
+        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=3),
+        status=AgentStatus.PAUSED,
+        expected_revision=6,
+    )
+
+    worker = state.agents["worker"]
+    assert state.revision == 7
+    assert worker.role == "qa"
+    assert worker.session_id == "session-worker-2"
+    assert worker.display_name is None
+    assert worker.reports_to_agent_id == "lead"
+    assert worker.ephemeral_policy.max_concurrent == 3
+    assert worker.status is AgentStatus.PAUSED
+    assert state.agents["backend"].subordinate_agent_ids == []
+    assert state.agents["lead"].subordinate_agent_ids == ["backend", "worker"]
+
+
+def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    with pytest.raises(ValidationError, match="reporting cycle"):
+        repo.update_agent(
+            agent_id="lead",
+            reports_to_agent_id="worker",
+            set_reports_to_agent_id=True,
+            expected_revision=4,
+        )
+
+    state = repo.read()
+    assert state.revision == 4
+    assert state.agents["lead"].reports_to_agent_id == "manager"
+    assert state.agents["manager"].subordinate_agent_ids == ["lead"]
 
 
 def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> None:

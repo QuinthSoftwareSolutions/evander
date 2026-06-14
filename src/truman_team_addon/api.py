@@ -17,9 +17,11 @@ from agent_sandbox.events.internal import (
 )
 
 from .models import (
+    AgentStatus,
     EphemeralAgentPolicy,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectStatus,
     ReviewProfileCriterion,
     TeamRecordState,
     TeamTaskState,
@@ -121,11 +123,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def patch_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
+        raw_archived = payload.get("archived")
         state = repository.update_team(
             team_id=request.path_params["team_id"],
+            name=_optional(payload, "name"),
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
+            set_operator_communication_target_id="operator_communication_target_id" in payload,
+            archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -156,11 +162,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             if has_goals
             else None
         )
+        raw_status = _optional(payload, "status")
         state = repository.update_project(
             project_id=request.path_params["project_id"],
+            name=_optional(payload, "name"),
             git=_optional_git_config(payload),
             set_git=has_git,
             goals=goals,
+            status=ProjectStatus(raw_status) if raw_status else None,
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -184,6 +193,30 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_agent(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        ephemeral_policy = payload.get("ephemeral_policy")
+        raw_status = _optional(payload, "status")
+        state = repository.update_agent(
+            agent_id=request.path_params["agent_id"],
+            project_id=_optional(payload, "project_id"),
+            set_project_id="project_id" in payload,
+            role=_optional(payload, "role"),
+            session_id=_optional(payload, "session_id"),
+            reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
+            set_reports_to_agent_id="reports_to_agent_id" in payload,
+            display_name=_optional(payload, "display_name"),
+            set_display_name="display_name" in payload,
+            ephemeral_policy=(
+                EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                if ephemeral_policy is not None
+                else None
+            ),
+            status=AgentStatus(raw_status) if raw_status else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
 
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -401,6 +434,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/projects", _with_errors(create_project), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
+        Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
@@ -561,7 +595,19 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         return None
     if not isinstance(git_payload, Mapping):
         raise ValueError("git must be a JSON object")
-    return ProjectGitConfig.model_validate(dict(git_payload))
+    normalized = dict(git_payload)
+    bare_repo = _optional(normalized, "bare_repo")
+    normalized.pop("bare_repo", None)
+    if bare_repo:
+        if normalized.get("bare_repo_name") or normalized.get("bare_repo_path"):
+            raise ValueError(
+                "bare_repo cannot be combined with bare_repo_name or bare_repo_path"
+            )
+        if bare_repo.startswith("/"):
+            normalized["bare_repo_path"] = bare_repo
+        else:
+            normalized["bare_repo_name"] = bare_repo
+    return ProjectGitConfig.model_validate(normalized)
 
 
 def _expected_revision(payload: Mapping[str, Any]) -> int | None:

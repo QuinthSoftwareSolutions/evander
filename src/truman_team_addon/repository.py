@@ -160,12 +160,20 @@ class TeamStateRepository:
         self,
         *,
         team_id: str,
+        name: str | None = None,
         operator_communication_target_id: str | None = None,
+        set_operator_communication_target_id: bool = False,
+        archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, team_id, "team")
-            team.operator_communication_target_id = operator_communication_target_id
+            if name is not None:
+                team.name = name
+            if set_operator_communication_target_id:
+                team.operator_communication_target_id = operator_communication_target_id
+            if archived is not None:
+                team.archived = archived
             team.updated_at = utc_now()
             return state
 
@@ -222,17 +230,23 @@ class TeamStateRepository:
         self,
         *,
         project_id: str,
+        name: str | None = None,
         git: ProjectGitConfig | None = None,
         set_git: bool = False,
         goals: list[ProjectGoal] | None = None,
+        status: ProjectStatus | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
             project = _require_present(state.projects, project_id, "project")
+            if name is not None:
+                project.name = name
             if set_git:
                 project.git = git
             if goals is not None:
                 project.goals = goals
+            if status is not None:
+                project.status = status
             project.updated_at = utc_now()
             return state
 
@@ -272,6 +286,67 @@ class TeamStateRepository:
             )
             state.agents[agent.id] = agent
             superior.subordinate_agent_ids = _append_unique(superior.subordinate_agent_ids, agent.id)
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_agent(
+        self,
+        *,
+        agent_id: str,
+        project_id: str | None = None,
+        set_project_id: bool = False,
+        role: str | None = None,
+        session_id: str | None = None,
+        reports_to_agent_id: str | None = None,
+        set_reports_to_agent_id: bool = False,
+        display_name: str | None = None,
+        set_display_name: bool = False,
+        ephemeral_policy: EphemeralAgentPolicy | None = None,
+        status: AgentStatus | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, agent_id, "agent")
+            if set_project_id:
+                if project_id is not None:
+                    project = _require_present(state.projects, project_id, "project")
+                    if project.team_id != agent.team_id:
+                        raise ValueError(
+                            f"project {project_id} does not belong to team {agent.team_id}"
+                        )
+                agent.project_id = project_id
+            if role is not None:
+                agent.role = role
+            if session_id is not None:
+                agent.session_id = session_id
+            if set_display_name:
+                agent.display_name = display_name
+            if ephemeral_policy is not None:
+                agent.ephemeral_policy = ephemeral_policy
+            if status is not None:
+                agent.status = status
+            if set_reports_to_agent_id:
+                old_superior_id = agent.reports_to_agent_id
+                if reports_to_agent_id is not None:
+                    superior = _require_present(
+                        state.agents, reports_to_agent_id, "superior agent"
+                    )
+                    if superior.team_id != agent.team_id:
+                        raise ValueError(
+                            f"superior agent {reports_to_agent_id} is not in team {agent.team_id}"
+                        )
+                if old_superior_id and old_superior_id in state.agents:
+                    old_superior = state.agents[old_superior_id]
+                    old_superior.subordinate_agent_ids = _remove_value(
+                        old_superior.subordinate_agent_ids, agent.id
+                    )
+                agent.reports_to_agent_id = reports_to_agent_id
+                if reports_to_agent_id and reports_to_agent_id in state.agents:
+                    superior = state.agents[reports_to_agent_id]
+                    superior.subordinate_agent_ids = _append_unique(
+                        superior.subordinate_agent_ids, agent.id
+                    )
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -1842,6 +1917,10 @@ def _append_unique(values: list[str], value: str) -> list[str]:
     if value in values:
         return values
     return [*values, value]
+
+
+def _remove_value(values: list[str], value: str) -> list[str]:
+    return [item for item in values if item != value]
 
 
 def _mapping(value: object, field_name: str) -> dict[str, Any]:

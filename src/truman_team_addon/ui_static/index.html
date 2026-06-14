@@ -190,27 +190,86 @@
                   <p class="subheading">Team</p>
                   <label>Team ID <input name="team_id" required /></label>
                   <label>Team name <input name="team_name" required /></label>
+                  <label>
+                    Manager existing agent
+                    <select
+                      name="manager_existing_agent_id"
+                      data-options="agents"
+                      data-placeholder="Select existing agent"
+                      data-agent-source-picker
+                      data-id-field="manager_agent_id"
+                      data-session-field="manager_session_id"
+                      data-suggested-role="manager"
+                    ></select>
+                  </label>
                   <label>Manager agent ID <input name="manager_agent_id" required /></label>
                   <label>Manager session ID <input name="manager_session_id" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                   <p class="subheading">Project</p>
                   <label>Project ID <input name="project_id" required /></label>
                   <label>Project name <input name="project_name" required /></label>
+                  <label>
+                    Project lead existing agent
+                    <select
+                      name="project_lead_existing_agent_id"
+                      data-options="agents"
+                      data-placeholder="Select existing agent"
+                      data-agent-source-picker
+                      data-id-field="project_lead_agent_id"
+                      data-session-field="project_lead_session_id"
+                      data-suggested-role="project-lead"
+                    ></select>
+                  </label>
                   <label>Project lead agent ID <input name="project_lead_agent_id" required /></label>
                   <label>Project lead session ID <input name="project_lead_session_id" required /></label>
                   <p class="subheading">Git config (optional)</p>
                   <label>Host repo path <input name="host_repo_path" /></label>
-                  <label>Bare repo name <input name="bare_repo_name" /></label>
-                  <label>Bare repo path <input name="bare_repo_path" /></label>
+                  <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
                   <label>Base branch <input name="base_branch" placeholder="main" /></label>
                   <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                  <label>Provider <input name="provider" /></label>
+                  <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
                   <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                   <p class="subheading">Agents</p>
+                  <label>
+                    Implementer existing agent
+                    <select
+                      name="implementer_existing_agent_id"
+                      data-options="agents"
+                      data-placeholder="Select existing agent"
+                      data-agent-source-picker
+                      data-id-field="implementer_agent_id"
+                      data-session-field="implementer_session_id"
+                      data-suggested-role="implementer"
+                    ></select>
+                  </label>
                   <label>Implementer agent ID <input name="implementer_agent_id" required /></label>
                   <label>Implementer session ID <input name="implementer_session_id" required /></label>
+                  <label>
+                    Reviewer existing agent
+                    <select
+                      name="reviewer_existing_agent_id"
+                      data-options="agents"
+                      data-placeholder="Select existing agent"
+                      data-agent-source-picker
+                      data-id-field="reviewer_agent_id"
+                      data-session-field="reviewer_session_id"
+                      data-suggested-role="reviewer"
+                    ></select>
+                  </label>
                   <label>Reviewer agent ID <input name="reviewer_agent_id" required /></label>
                   <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
+                  <label>
+                    Release operator existing agent
+                    <select
+                      name="release_operator_existing_agent_id"
+                      data-options="agents"
+                      data-placeholder="Select existing agent"
+                      data-agent-source-picker
+                      data-id-field="release_operator_agent_id"
+                      data-session-field="release_operator_session_id"
+                      data-suggested-role="release-operator"
+                    ></select>
+                  </label>
                   <label>Release operator agent ID <input name="release_operator_agent_id" required /></label>
                   <label>Release operator session ID <input name="release_operator_session_id" required /></label>
                   <button type="submit">Materialize template</button>
@@ -223,6 +282,19 @@
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
                 <label>Team ID <input name="id" required /></label>
                 <label>Name <input name="name" required /></label>
+                <label>
+                  Manager existing agent
+                  <select
+                    name="manager_existing_agent_id"
+                    data-options="agents"
+                    data-placeholder="Select existing agent"
+                    data-agent-source-picker
+                    data-id-field="manager_agent_id"
+                    data-session-field="manager_session_id"
+                    data-display-field="manager_display_name"
+                    data-suggested-role="manager"
+                  ></select>
+                </label>
                 <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
                 <label>Manager display name <input name="manager_display_name" /></label>
@@ -238,6 +310,19 @@
                 <label>Project ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Name <input name="name" required /></label>
+                <label>
+                  Lead existing agent
+                  <select
+                    name="lead_existing_agent_id"
+                    data-options="agents"
+                    data-placeholder="Select existing agent"
+                    data-agent-source-picker
+                    data-id-field="lead_agent_id"
+                    data-session-field="lead_session_id"
+                    data-display-field="lead_display_name"
+                    data-suggested-role="project-lead"
+                  ></select>
+                </label>
                 <label>Lead agent ID <input name="lead_agent_id" required /></label>
                 <label>Lead session ID <input name="lead_session_id" required /></label>
                 <label>Lead display name <input name="lead_display_name" /></label>
@@ -246,11 +331,10 @@
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
                 <p class="subheading">Git config (optional)</p>
                 <label>Host repo path <input name="host_repo_path" /></label>
-                <label>Bare repo name <input name="bare_repo_name" /></label>
-                <label>Bare repo path <input name="bare_repo_path" /></label>
+                <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
                 <label>Base branch <input name="base_branch" placeholder="main" /></label>
                 <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                <label>Provider <input name="provider" /></label>
+                <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
                 <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                 <button type="submit">Create project</button>
               </form>
@@ -259,6 +343,22 @@
             <details>
               <summary>Register agent</summary>
               <form id="register-agent-form" data-endpoint="/agents" data-method="POST">
+                <label>
+                  Existing agent defaults
+                  <select
+                    name="existing_agent_id"
+                    data-options="agents"
+                    data-placeholder="Select existing agent"
+                    data-agent-source-picker
+                    data-id-field="id"
+                    data-session-field="session_id"
+                    data-display-field="display_name"
+                    data-role-field="role"
+                    data-project-field="project_id"
+                    data-reports-to-field="reports_to_agent_id"
+                    data-max-concurrent-field="max_concurrent"
+                  ></select>
+                </label>
                 <label>Agent ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
@@ -356,6 +456,25 @@
           </div>
         </aside>
       </main>
+      <div id="edit-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+        <div class="edit-modal-backdrop" data-edit-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Edit</p>
+              <h2 id="edit-modal-title">Edit record</h2>
+            </div>
+            <button type="button" class="record-action" data-edit-close>Close</button>
+          </div>
+          <form id="edit-record-form">
+            <div id="edit-form-body" class="edit-form-body"></div>
+            <div class="edit-modal-actions">
+              <button type="submit">Save changes</button>
+              <button type="button" class="record-action" data-edit-close>Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
     </div>
   </body>
 </html>
