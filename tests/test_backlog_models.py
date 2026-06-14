@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.models import AdoBacklogCreateRequest, AdoBacklogItemType
+from agent_sandbox.models import (
+    AdoBacklogCreateRequest,
+    AdoBacklogItemType,
+    AdoBacklogTitleUpdateRequest,
+)
 
 
 def test_backlog_create_request_normalizes_fields() -> None:
@@ -100,3 +104,30 @@ def test_backlog_create_request_rejects_boolean_parent_id(parent_id: bool) -> No
             title="Title",
             parent_backlog_item_id=parent_id,
         )
+
+
+def test_backlog_title_update_request_normalizes_fields() -> None:
+    payload = AdoBacklogTitleUpdateRequest(
+        id=15984,
+        project="  My Project  ",
+        title="  New title  ",
+    )
+
+    assert payload.id == "15984"
+    assert payload.project == "My Project"
+    assert payload.title == "New title"
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+def test_backlog_title_update_request_rejects_blank_title(title: str) -> None:
+    with pytest.raises(ValidationError, match="title cannot be empty"):
+        AdoBacklogTitleUpdateRequest(id=15984, title=title)
+
+
+@pytest.mark.parametrize("raw_id", ["abc", "12x", True])
+def test_backlog_title_update_request_rejects_non_numeric_id(raw_id: object) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="id must be a numeric backlog item id|id must be an integer",
+    ):
+        AdoBacklogTitleUpdateRequest(id=raw_id, title="New title")
