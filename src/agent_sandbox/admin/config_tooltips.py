@@ -436,8 +436,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "wake_session_cooldown_path": (
         "JSON state file path where wake workers track per-session cooldowns."
     ),
-    "wake_scheduled_prefix_text": (
-        "Static text prepended to MCP-scheduled resume prompts before dispatch (prefix + scheduled prompt)."
+    "scheduled_wake_prefix_text": (
+        "Static text prepended to scheduled resume prompts before dispatch (prefix + scheduled prompt)."
     ),
     "wake_schedule_max_active_per_session": (
         "Optional guardrail: maximum number of active scheduled wake requests allowed per session."

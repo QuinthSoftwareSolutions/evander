@@ -25,6 +25,7 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
 )
 from agent_sandbox.messaging.scheduled_wake import (
+    _build_scheduled_resume_prompt,
     ScheduledWakeCycleResult,
     build_scheduled_wake_worker,
 )
@@ -46,6 +47,21 @@ def _build_worker(
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     return build_scheduled_wake_worker(config, project_dir=project_dir)
+
+
+def test_build_scheduled_resume_prompt_defaults_to_requested_prompt() -> None:
+    prompt = _build_scheduled_resume_prompt(GatewayConfig(), " Resume work. ")
+
+    assert prompt == "Resume work."
+    assert "list_unread_feedback" not in prompt
+
+
+def test_build_scheduled_resume_prompt_applies_custom_prefix() -> None:
+    config = GatewayConfig.model_validate({"scheduled_wake_prefix_text": "Scheduled wake:"})
+
+    assert _build_scheduled_resume_prompt(config, "Resume work.") == (
+        "Scheduled wake: Resume work."
+    )
 
 
 def _register_session(
@@ -169,6 +185,7 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "completion_confirmation_retry_window_seconds": 7200.0,
                 "completion_confirmation_retry_base_backoff_seconds": 75.0,
                 "completion_confirmation_retry_max_backoff_seconds": 900.0,
+                "scheduled_wake_prefix_text": "Scheduled wake:",
             }
         ),
         encoding="utf-8",
@@ -185,10 +202,19 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
     assert worker.worker_config.completion_confirmation_retry_window_seconds == 7200.0
     assert worker.worker_config.completion_confirmation_retry_base_backoff_seconds == 75.0
     assert worker.worker_config.completion_confirmation_retry_max_backoff_seconds == 900.0
+    assert worker.worker_config.scheduled_wake_prefix_text == "Scheduled wake:"
+    assert worker.config.scheduled_wake_prefix_text == "Scheduled wake:"
     assert worker.config.wake_completion_confirmation_retry_max_attempts == 4
     assert worker.config.wake_completion_confirmation_retry_window_seconds == 7200.0
     assert worker.config.wake_completion_confirmation_retry_base_backoff_seconds == 75.0
     assert worker.config.wake_completion_confirmation_retry_max_backoff_seconds == 900.0
+
+
+def test_build_scheduled_wake_worker_defaults_prefix_to_empty_string(tmp_path: Path) -> None:
+    worker = _build_worker(tmp_path)
+
+    assert worker.worker_config.scheduled_wake_prefix_text == ""
+    assert worker.config.scheduled_wake_prefix_text == ""
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(

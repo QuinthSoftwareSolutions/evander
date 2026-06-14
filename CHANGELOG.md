@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Scheduled Wake Prefix Cleanup
+
+- Removed the false PR-comments default from the scheduled-wake example
+  config and operator docs so fresh installs start with an empty optional
+  prefix.
+- Kept the legacy `wake_scheduled_prefix_text` input normalized through the
+  canonical `scheduled_wake_prefix_text` field for backcompat.
+
 ## 2026-06-14 - Semantic Delete Approval Lock
 
 - Locked `semantic_delete_points` behind the policy engine's mandatory approval

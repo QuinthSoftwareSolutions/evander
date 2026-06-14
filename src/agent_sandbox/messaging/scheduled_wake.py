@@ -386,7 +386,7 @@ def _load_scheduled_wake_worker_global_config(
             "wake_state_path": source.runtime_dir / "scheduled-wake-state.json",
             "vm_user": source.wake_vm_user,
             "resume_timeout_seconds": source.wake_resume_timeout_seconds,
-            "scheduled_wake_prefix_text": source.wake_scheduled_prefix_text,
+            "scheduled_wake_prefix_text": source.scheduled_wake_prefix_text,
         }
     ).model_dump(mode="json")
     path = _worker_global_config_path(project_dir)
@@ -436,7 +436,7 @@ def build_scheduled_wake_worker(
             "wake_dispatch_state_path": worker_config.wake_state_path,
             "wake_vm_user": worker_config.vm_user,
             "wake_resume_timeout_seconds": worker_config.resume_timeout_seconds,
-            "wake_scheduled_prefix_text": worker_config.scheduled_wake_prefix_text,
+            "scheduled_wake_prefix_text": worker_config.scheduled_wake_prefix_text,
         }
     )
     runtime = build_runtime(effective_config)
@@ -473,7 +473,7 @@ def main() -> None:
 
 
 def _build_scheduled_resume_prompt(worker_config: GatewayConfig, requested_prompt: str) -> str:
-    preamble = str(worker_config.wake_scheduled_prefix_text).strip()
+    preamble = str(worker_config.scheduled_wake_prefix_text).strip()
     cleaned_requested = requested_prompt.strip()
     if preamble and cleaned_requested:
         return f"{preamble} {cleaned_requested}"
