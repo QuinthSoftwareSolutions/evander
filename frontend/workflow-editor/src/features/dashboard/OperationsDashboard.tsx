@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -1026,7 +1026,7 @@ function DashboardBlock({
             <div className="eyebrow">{title}</div>
             <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
           </div>
-          <p style={{ margin: "0.2rem 0 0", color: "inherit" }}>{remoteMessage(state, missingFallback, summary)}</p>
+          <p>{remoteMessage(state, missingFallback, summary)}</p>
         </div>
         {actions ? <div className="dashboard-block-actions">{actions}</div> : null}
       </div>
@@ -1066,7 +1066,7 @@ function DashboardCollapsibleBlock({
               <div className="eyebrow">{title}</div>
               <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
             </div>
-            <p style={{ margin: "0.2rem 0 0", color: "inherit" }}>{remoteMessage(state, missingFallback, summary)}</p>
+            <p>{remoteMessage(state, missingFallback, summary)}</p>
           </div>
           <div className="dashboard-block-actions">
             {actions}
@@ -1373,15 +1373,12 @@ function DashboardDiskDial({
   const usedPercent = diskUsedPercent(disk);
   const clampedPercent = usedPercent ?? 0;
   const tone = diskDialTone(disk);
-  const color = tone === "fail" ? "#be3144" : tone === "running" ? "#c58a1a" : tone === "pass" ? "#28885d" : "#8a99a3";
+  const dialStyle = {
+    "--dashboard-disk-dial-percent": `${clampedPercent}%`,
+  } as CSSProperties;
   return (
     <div className="dashboard-disk-card">
-      <div
-        className={`dashboard-disk-dial ${stateClassName(tone)}`}
-        style={{ background: `conic-gradient(${color} ${clampedPercent}%, rgba(32, 69, 78, 0.12) 0)` }}
-        role="img"
-        aria-label={`${label} disk usage ${formatPercent(usedPercent)}`}
-      >
+      <div className={`dashboard-disk-dial ${stateClassName(tone)}`} style={dialStyle} role="img" aria-label={`${label} disk usage ${formatPercent(usedPercent)}`}>
         <span>{formatPercent(usedPercent)}</span>
       </div>
       <div className="dashboard-disk-copy">
@@ -2116,12 +2113,12 @@ export function OperationsDashboard() {
   }
 
   return (
-    <div className="feature-page dashboard-page" style={{ display: "grid", gap: "1rem" }}>
+    <div className="feature-page dashboard-page">
       <div className="admin-toolbar">
-        <div style={{ display: "grid", gap: "0.2rem", minWidth: 0 }}>
+        <div className="dashboard-toolbar-copy">
           <span className="section-label">Operations dashboard</span>
-          <strong style={{ overflowWrap: "anywhere" }}>{selectedDirectoryPath}</strong>
-          <span style={{ color: "inherit", opacity: 0.8 }}>
+          <strong>{selectedDirectoryPath}</strong>
+          <span className="dashboard-toolbar-summary">
             {state.lastRefreshedAt ? `Last refreshed ${formatTimestamp(state.lastRefreshedAt)}` : "Refreshing live control-plane data."}
           </span>
         </div>
@@ -2233,60 +2230,13 @@ export function OperationsDashboard() {
             </DashboardBlock>
 
             <DashboardBlock
-              title="Workers"
-              state={state.workers}
-              missingFallback="No worker summary is available."
-              summary={workerSummary(workers)}
-              actions={<TabButton tab="workers" label="Workers" />}
-            >
-              {workers.length > 0 ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <DashboardMetricRows
-                    items={[
-                      {
-                        label: "Total",
-                        value: workers.length,
-                      },
-                      {
-                        label: "Running",
-                        value: countBy(workers, (worker) => worker.running),
-                      },
-                      {
-                        label: "Failed",
-                        value: countBy(workers, (worker) => worker.failed),
-                      },
-                    ]}
-                  />
-                  <DashboardCompactRows>
-                    {workers.map((worker) => {
-                      const metadata = worker.description ?? worker.unit;
-                      const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
-                        (part): part is string => Boolean(part),
-                      );
-                      return (
-                        <DashboardCompactRow
-                          key={worker.worker_id}
-                          title={worker.name}
-                          meta={metadata}
-                          detail={detailParts.length > 0 ? detailParts.join(" · ") : null}
-                          statusText={worker.active_state}
-                          statusTone={workerStatusTone(worker)}
-                        />
-                      );
-                    })}
-                  </DashboardCompactRows>
-                </div>
-              ) : null}
-            </DashboardBlock>
-
-            <DashboardBlock
               title="Capacity"
               state={state.capacityHealth}
               missingFallback="Capacity health is not available."
               summary={capacityHealth ? capacitySummary(capacityHealth) : null}
             >
               {capacityHealth ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <div className="dashboard-disk-grid">
                     <DashboardDiskDial
                       label="Control plane"
@@ -2383,6 +2333,53 @@ export function OperationsDashboard() {
             >
               {agents.length > 0 ? <DashboardAgentInventory agents={agents} onOpenAgent={openDashboardAgent} /> : null}
             </DashboardBlock>
+
+            <DashboardBlock
+              title="Workers"
+              state={state.workers}
+              missingFallback="No worker summary is available."
+              summary={workerSummary(workers)}
+              actions={<TabButton tab="workers" label="Workers" />}
+            >
+              {workers.length > 0 ? (
+                <div className="dashboard-block-stack">
+                  <DashboardMetricRows
+                    items={[
+                      {
+                        label: "Total",
+                        value: workers.length,
+                      },
+                      {
+                        label: "Running",
+                        value: countBy(workers, (worker) => worker.running),
+                      },
+                      {
+                        label: "Failed",
+                        value: countBy(workers, (worker) => worker.failed),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
+                    {workers.map((worker) => {
+                      const metadata = worker.description ?? worker.unit;
+                      const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
+                        (part): part is string => Boolean(part),
+                      );
+                      return (
+                        <DashboardCompactRow
+                          key={worker.worker_id}
+                          title={worker.name}
+                          meta={metadata}
+                          detail={detailParts.length > 0 ? detailParts.join(" · ") : null}
+                          statusText={worker.active_state}
+                          statusTone={workerStatusTone(worker)}
+                        />
+                      );
+                    })}
+                  </DashboardCompactRows>
+                </div>
+              ) : null}
+            </DashboardBlock>
         </DashboardPanel>
 
         <DashboardPanel
@@ -2399,7 +2396,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="agents" label="Agents" />}
             >
               {agents.length > 0 ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Total", value: agents.length },
@@ -2445,7 +2442,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="workflow" label="Workflow" />}
             >
               {runSnapshot ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Total", value: runSnapshot.runs.length },
@@ -2483,7 +2480,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="reports" label="Reports" />}
             >
               {activityReport ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Graphs", value: activityReport.graphs.length },
@@ -2529,7 +2526,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="approvals" label="Approvals" />}
             >
               {approvals ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Pending", value: approvals.health.pending },
@@ -2568,7 +2565,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="sessions" label="Sessions" />}
             >
               {sessions ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Active", value: sessions.counts.active },
@@ -2618,7 +2615,7 @@ export function OperationsDashboard() {
               actions={<TabButton tab="tool-calls" label="Tool calls" />}
             >
               {toolCalls ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Returned", value: toolCalls.counts?.returned ?? toolCalls.items.length },
@@ -2693,7 +2690,7 @@ export function OperationsDashboard() {
               }
               >
               {workflowDocument ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Config", value: workflowDocument.config_exists ? "Present" : "Missing" },
@@ -2733,7 +2730,7 @@ export function OperationsDashboard() {
               }
               >
               {workflowCatalog ? (
-                <div style={{ display: "grid", gap: "0.55rem" }}>
+                <div className="dashboard-block-stack">
                   <DashboardMetricRows
                     items={[
                       { label: "Worker", value: workflowCatalog.worker_id },
