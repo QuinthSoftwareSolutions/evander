@@ -13,7 +13,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
-from agent_sandbox.models import ApprovalStatus, SessionManifest, ToolName
+from agent_sandbox.models import (
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
+    ApprovalStatus,
+    SessionManifest,
+    ToolName,
+)
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.semantic.qdrant import (
     QdrantCollectionInfo,
@@ -516,6 +522,78 @@ def test_semantic_delete_points_creates_pending_approval_without_qdrant_call(
         "point_ids": [POINT_ID_1],
     }
     assert FakeQdrantClient.instances == []
+
+
+def test_semantic_delete_points_rejects_payload_replay_even_with_loose_session_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_semantic_fakes(monkeypatch)
+    context = build_gateway_context(
+        tmp_path, allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS]
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS],
+            approval_tool_settings={
+                ToolName.SEMANTIC_DELETE_POINTS.value: ApprovalGrantSettings(
+                    max_uses=None,
+                    payload_mode=ApprovalPayloadMode.ANY,
+                )
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    approved_arguments = {
+        "session_id": "session-1",
+        "collection_name": "memory",
+        "point_ids": [POINT_ID_1],
+        "wait": True,
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        call_tool(server, "semantic_delete_points", approved_arguments)
+
+    approval = next(iter(context.approvals.read_all().values()))
+    assert approval.approval_settings is not None
+    assert approval.approval_settings.max_uses == 1
+    assert approval.approval_settings.payload_mode is ApprovalPayloadMode.EXACT
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="payload mismatch"):
+        call_tool(
+            server,
+            "semantic_delete_points",
+            {
+                **approved_arguments,
+                "point_ids": [POINT_ID_2],
+                "approval_request_id": approval.request_id,
+            },
+        )
+
+    assert FakeQdrantClient.instances == []
+
+    result = call_tool(
+        server,
+        "semantic_delete_points",
+        {**approved_arguments, "approval_request_id": approval.request_id},
+    )
+
+    qdrant = FakeQdrantClient.instances[0]
+    assert qdrant.delete_calls == [
+        {"collection_name": "memory", "point_ids": [POINT_ID_1], "wait": True}
+    ]
+    assert result["deleted_count"] == 1
+    assert result["operation_status"] == "completed"
+    stored_approval = context.approvals.get(approval.request_id)
+    assert stored_approval is not None
+    assert stored_approval.status == ApprovalStatus.EXHAUSTED
 
 
 def test_semantic_rejects_arbitrary_string_point_ids_before_qdrant_call(
