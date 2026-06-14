@@ -196,6 +196,16 @@ def build_gateway_context(
     return context
 
 
+def approve_pending_approval(context) -> str:
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+    return approval.request_id
+
+
 def test_semantic_tools_register_with_schema_guidance(tmp_path: Path) -> None:
     context = build_gateway_context(tmp_path, allowed_tools=[])
     server = create_server(context)
@@ -273,6 +283,17 @@ def test_semantic_tools_require_matching_allowed_tool(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
+    if required_tool is ToolName.SEMANTIC_DELETE_POINTS:
+        with pytest.raises(ToolError, match="requires approval"):
+            call_tool(server, tool_name, {"session_id": "session-1", **arguments})
+        approvals = context.approvals.read_all()
+        assert len(approvals) == 1
+        approval = next(iter(approvals.values()))
+        assert approval.status == ApprovalStatus.PENDING
+        assert approval.tool_name == ToolName.SEMANTIC_DELETE_POINTS.value
+        assert FakeQdrantClient.instances == []
+        return
+
     result = call_tool(server, tool_name, {"session_id": "session-1", **arguments})
 
     assert result["success"] is True
@@ -447,17 +468,12 @@ def test_semantic_delete_uses_explicit_point_ids_only(
 
     with pytest.raises(ToolError, match="requires approval"):
         call_tool(server, "semantic_delete_points", arguments)
-    approval = next(iter(context.approvals.read_all().values()))
-    approval.status = ApprovalStatus.APPROVED
-    approval.approver = "operator"
-    approval.decision_at = datetime.now(UTC)
-    approval.decision_reason = "verified"
-    context.approvals.put(approval.request_id, approval)
+    approval_request_id = approve_pending_approval(context)
 
     result = call_tool(
         server,
         "semantic_delete_points",
-        {**arguments, "approval_request_id": approval.request_id},
+        {**arguments, "approval_request_id": approval_request_id},
     )
 
     qdrant = FakeQdrantClient.instances[0]
@@ -556,8 +572,14 @@ def test_semantic_search_get_and_delete_fail_when_collection_is_missing(
     context = build_gateway_context(tmp_path, allowed_tools=[allowed_tool])
     server = create_server(context)
 
+    call_arguments = {"session_id": "session-1", **arguments}
+    if tool_name == "semantic_delete_points":
+        with pytest.raises(ToolError, match="requires approval"):
+            call_tool(server, tool_name, call_arguments)
+        call_arguments["approval_request_id"] = approve_pending_approval(context)
+
     with pytest.raises(ToolError, match="does not exist"):
-        call_tool(server, tool_name, {"session_id": "session-1", **arguments})
+        call_tool(server, tool_name, call_arguments)
 
     if tool_name == "semantic_search":
         assert FakeEmbeddingClient.instances == []

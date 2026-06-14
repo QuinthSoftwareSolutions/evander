@@ -29,6 +29,7 @@ from agent_sandbox.models import (
     ToolName,
     normalize_mcp_tool_policies,
 )
+from agent_sandbox.policy import mandatory_approval_required_for_tool
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
@@ -599,6 +600,7 @@ def session_approval_routes(
         if not isinstance(raw_policies, dict):
             raw_policies = {}
         effective_policy = service.runtime.policy_config.resolve_for_directory(directory_path)
+        approval_required_tools = set(effective_policy.approval_required_tools)
         items: list[dict[str, Any]] = []
         for tool in sorted(ToolName, key=lambda item: item.value):
             effective_rule = effective_policy.mcp_tool_policies.get(tool.value)
@@ -612,7 +614,8 @@ def session_approval_routes(
                     else None,
                     "effective_settings": effective_settings.model_dump(mode="json"),
                     "approval_required": (
-                        tool in set(effective_policy.approval_required_tools)
+                        mandatory_approval_required_for_tool(tool)
+                        or tool in approval_required_tools
                         or bool(effective_rule and effective_rule.require_approval)
                     ),
                     "denied": bool(effective_rule and effective_rule.denied),

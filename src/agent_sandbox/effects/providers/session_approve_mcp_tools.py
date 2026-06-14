@@ -8,6 +8,7 @@ from agent_sandbox.approval_notification_targets import (
     resolve_approval_notification_target_ids_for_directory,
 )
 from agent_sandbox.models import SessionToolApprovalLease, ToolName, normalize_tool_names
+from agent_sandbox.policy import mandatory_approval_required_for_tool
 from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
@@ -143,6 +144,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
     ) -> dict[str, Any]:
         policy_resolver = self._policy_resolver()
         effective_policy = policy_resolver.resolve_for_session_manifest(session)
+        approval_required_tools = set(effective_policy.approval_required_tools)
         settings: dict[str, Any] = {}
         for tool in tools:
             rule = effective_policy.mcp_tool_policies.get(tool.value)
@@ -150,8 +152,10 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
                 raise ValueError(
                     f"Tool {tool.value} is denied by directory policy for session {session.session_id}"
                 )
-            if tool in set(effective_policy.approval_required_tools) or (
-                rule is not None and rule.require_approval
+            if (
+                mandatory_approval_required_for_tool(tool)
+                or tool in approval_required_tools
+                or (rule is not None and rule.require_approval)
             ):
                 raise ValueError(
                     f"Tool {tool.value} requires per-invocation approval in this directory"

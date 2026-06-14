@@ -104,6 +104,12 @@ _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
 )
 
 
+def mandatory_approval_required_for_tool(tool_name: ToolName) -> bool:
+    if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+        return False
+    return tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS
+
+
 def set_tool_approval_context(
     *,
     session_id: str | None,
@@ -375,7 +381,7 @@ class PolicyEngine:
     ) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
-        if tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS:
+        if mandatory_approval_required_for_tool(tool_name):
             return True
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = set(session.approval_required_tools or [])
