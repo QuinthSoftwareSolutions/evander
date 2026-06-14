@@ -17,6 +17,7 @@ from agent_sandbox.models import WakeScheduledRequest
 from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.runtime import RuntimeContext, build_runtime
+from agent_sandbox.workflow.runtime_config import _file_fingerprint
 from agent_sandbox.messaging.wake_dispatch import (
     HostWakeDispatcher,
     SessionWakeBinding,
@@ -45,14 +46,21 @@ class ScheduledWakeWorker:
         config: GatewayConfig,
         worker_config: ScheduledWakeWorkerGlobalConfig,
         runtime: RuntimeContext,
+        base_config: GatewayConfig | None = None,
+        config_reloader: ScheduledWakeWorkerGlobalConfigReloader | None = None,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._base_config = base_config or config
+        self._config_reloader = (
+            config_reloader
+            or FixedScheduledWakeWorkerGlobalConfigReloader(self.worker_config)
+        )
         self.runtime = runtime
         self.dispatcher = HostWakeDispatcher(
-            config=config,
+            config=self.config,
             runtime=runtime,
-            agent_control_store=AgentControlStore(config.host_agent_control_state_path),
+            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
         )
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
@@ -79,6 +87,7 @@ class ScheduledWakeWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> ScheduledWakeCycleResult:
+        self._refresh_config_from_reloader()
         now_utc = datetime.now(UTC)
         wake_store = getattr(self.runtime, "wake_store", None)
         if wake_store is not None:
@@ -173,6 +182,27 @@ class ScheduledWakeWorker:
 
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Scheduled wake worker cycle failed")
+
+    def _refresh_config_from_reloader(self) -> None:
+        latest_config, changed = self._config_reloader.get_latest()
+        if not changed:
+            return
+
+        self.worker_config = latest_config
+        self.config = _effective_gateway_config_for_scheduled_wake(
+            self._base_config,
+            self.worker_config,
+        )
+        self.dispatcher = HostWakeDispatcher(
+            config=self.config,
+            runtime=self.runtime,
+            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
+        )
+        logger.info(
+            "Scheduled wake worker config reloaded prefix_text=%r directories=%d",
+            self.worker_config.scheduled_wake_prefix_text,
+            len(self.worker_config.directories),
+        )
 
     def _dispatch_request(
         self, *, request: WakeScheduledRequest, session: Any, now_utc: datetime
@@ -398,18 +428,13 @@ def _load_scheduled_wake_worker_global_config(
     return ScheduledWakeWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
-def build_scheduled_wake_worker(
-    config: GatewayConfig,
-    *,
-    project_dir: Path | None = None,
-) -> ScheduledWakeWorker:
-    resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
-    worker_config = _load_scheduled_wake_worker_global_config(
-        resolved_project_dir, base_config=config
-    )
-    effective_config = GatewayConfig.model_validate(
+def _effective_gateway_config_for_scheduled_wake(
+    base_config: GatewayConfig,
+    worker_config: ScheduledWakeWorkerGlobalConfig,
+) -> GatewayConfig:
+    return GatewayConfig.model_validate(
         {
-            **config.model_dump(mode="json"),
+            **base_config.model_dump(mode="json"),
             "runtime_dir": worker_config.runtime_dir,
             "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
             "wake_jitter_seconds": worker_config.jitter_seconds,
@@ -439,9 +464,91 @@ def build_scheduled_wake_worker(
             "scheduled_wake_prefix_text": worker_config.scheduled_wake_prefix_text,
         }
     )
+
+
+class ScheduledWakeWorkerGlobalConfigReloader:
+    def __init__(
+        self,
+        *,
+        project_dir: Path,
+        initial_config: ScheduledWakeWorkerGlobalConfig,
+        base_config: GatewayConfig | None = None,
+    ) -> None:
+        self._project_dir = Path(project_dir)
+        self._path = _worker_global_config_path(self._project_dir)
+        self._base_config = base_config
+        self._current_config = initial_config
+        self._last_fingerprint = self._compute_fingerprint()
+
+    def get_latest(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._reload(force=False)
+
+    def reload_now(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._reload(force=True)
+
+    def _reload(self, *, force: bool) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        fingerprint = self._compute_fingerprint()
+        if not force and fingerprint == self._last_fingerprint:
+            return self._current_config, False
+
+        try:
+            next_config = _load_scheduled_wake_worker_global_config(
+                self._project_dir, base_config=self._base_config
+            )
+        except Exception:
+            self._last_fingerprint = fingerprint
+            logger.error(
+                "Failed to reload scheduled wake worker config path=%s; keeping last-known-good",
+                self._path,
+                exc_info=True,
+            )
+            return self._current_config, False
+
+        changed = next_config != self._current_config
+        self._current_config = next_config
+        self._last_fingerprint = fingerprint
+        return self._current_config, changed
+
+    def _compute_fingerprint(self) -> tuple[int, int, int, str]:
+        fingerprint = _file_fingerprint(self._path)
+        if fingerprint is None:
+            return (0, 0, 0, f"missing:{self._path}")
+        return fingerprint
+
+
+class FixedScheduledWakeWorkerGlobalConfigReloader:
+    def __init__(self, config: ScheduledWakeWorkerGlobalConfig) -> None:
+        self._config = config
+
+    def get_latest(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._config, False
+
+    def reload_now(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._config, False
+
+
+def build_scheduled_wake_worker(
+    config: GatewayConfig,
+    *,
+    project_dir: Path | None = None,
+) -> ScheduledWakeWorker:
+    resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
+    worker_config = _load_scheduled_wake_worker_global_config(
+        resolved_project_dir, base_config=config
+    )
+    effective_config = _effective_gateway_config_for_scheduled_wake(config, worker_config)
     runtime = build_runtime(effective_config)
+    config_reloader = ScheduledWakeWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     return ScheduledWakeWorker(
-        config=effective_config, worker_config=worker_config, runtime=runtime
+        config=effective_config,
+        worker_config=worker_config,
+        runtime=runtime,
+        base_config=config,
+        config_reloader=config_reloader,
     )
 
 

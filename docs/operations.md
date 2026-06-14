@@ -1819,6 +1819,9 @@ live provider APIs.
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+  The scheduled-wake worker reloads that file between cycles, so saved changes
+  such as `scheduled_wake_prefix_text` apply without restarting
+  `agent-sandbox-scheduled-wake.service`.
 - Scheduled wakes are recorded in the durable wake request store with current
   ledger status, latest dispatch evidence, sanitized failure reason, scheduled
   time, source, and redacted prompt summary. Admin Web exposes these entries on

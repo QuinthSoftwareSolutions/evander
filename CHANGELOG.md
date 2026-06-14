@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Scheduled Wake Config Hot Reload
+
+- Made the scheduled-wake worker reload `config/scheduled-wake/config.json`
+  between cycles so edits such as `scheduled_wake_prefix_text` take effect
+  without restarting the service.
+
 ## 2026-06-14 - Approval Grant Clamp Generalization
 
 - Generalized the exact-payload, single-use approval grant clamp to every tool
