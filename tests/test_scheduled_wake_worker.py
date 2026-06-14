@@ -162,6 +162,10 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
                 "cooldown_seconds": 45.0,
                 "late_threshold_seconds": 90.0,
                 "completion_confirmation_timeout_seconds": 120.0,
+                "completion_confirmation_retry_max_attempts": 4,
+                "completion_confirmation_retry_window_seconds": 7200.0,
+                "completion_confirmation_retry_base_backoff_seconds": 75.0,
+                "completion_confirmation_retry_max_backoff_seconds": 900.0,
             }
         ),
         encoding="utf-8",
@@ -174,6 +178,14 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
     assert worker.config.wake_schedule_late_threshold_seconds == 90.0
     assert worker.config.wake_completion_confirmation_timeout_seconds == 120.0
+    assert worker.worker_config.completion_confirmation_retry_max_attempts == 4
+    assert worker.worker_config.completion_confirmation_retry_window_seconds == 7200.0
+    assert worker.worker_config.completion_confirmation_retry_base_backoff_seconds == 75.0
+    assert worker.worker_config.completion_confirmation_retry_max_backoff_seconds == 900.0
+    assert worker.config.wake_completion_confirmation_retry_max_attempts == 4
+    assert worker.config.wake_completion_confirmation_retry_window_seconds == 7200.0
+    assert worker.config.wake_completion_confirmation_retry_base_backoff_seconds == 75.0
+    assert worker.config.wake_completion_confirmation_retry_max_backoff_seconds == 900.0
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(

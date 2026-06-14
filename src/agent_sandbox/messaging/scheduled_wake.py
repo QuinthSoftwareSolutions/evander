@@ -347,6 +347,18 @@ def _load_scheduled_wake_worker_global_config(
             "jitter_seconds": source.wake_jitter_seconds,
             "cooldown_seconds": source.wake_cooldown_seconds,
             "late_threshold_seconds": source.wake_schedule_late_threshold_seconds,
+            "completion_confirmation_retry_max_attempts": (
+                source.wake_completion_confirmation_retry_max_attempts
+            ),
+            "completion_confirmation_retry_window_seconds": (
+                source.wake_completion_confirmation_retry_window_seconds
+            ),
+            "completion_confirmation_retry_base_backoff_seconds": (
+                source.wake_completion_confirmation_retry_base_backoff_seconds
+            ),
+            "completion_confirmation_retry_max_backoff_seconds": (
+                source.wake_completion_confirmation_retry_max_backoff_seconds
+            ),
             "lock_path": source.runtime_dir / "scheduled-wake.lock",
             "session_cooldown_path": source.wake_session_cooldown_path,
             "busy_check_script_path": source.host_busy_check_script_path,
@@ -385,6 +397,18 @@ def build_scheduled_wake_worker(
             "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
             "wake_completion_confirmation_timeout_seconds": (
                 worker_config.completion_confirmation_timeout_seconds
+            ),
+            "wake_completion_confirmation_retry_max_attempts": (
+                worker_config.completion_confirmation_retry_max_attempts
+            ),
+            "wake_completion_confirmation_retry_window_seconds": (
+                worker_config.completion_confirmation_retry_window_seconds
+            ),
+            "wake_completion_confirmation_retry_base_backoff_seconds": (
+                worker_config.completion_confirmation_retry_base_backoff_seconds
+            ),
+            "wake_completion_confirmation_retry_max_backoff_seconds": (
+                worker_config.completion_confirmation_retry_max_backoff_seconds
             ),
             "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,

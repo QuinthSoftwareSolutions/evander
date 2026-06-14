@@ -157,6 +157,25 @@ def test_wake_scheduled_request_normalizes_legacy_status_values(
     assert request.status == expected_status
 
 
+def test_wake_scheduled_request_backfills_legacy_retry_state_defaults() -> None:
+    request = WakeScheduledRequest.model_validate(
+        {
+            "request_id": "wake-legacy-retry-state",
+            "session_id": "session-1",
+            "schedule": {
+                "resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()
+            },
+            "resume_prompt": {"prompt": "Resume work."},
+            "status": "pending",
+        }
+    )
+
+    assert request.auto_dispatch_attempts == 0
+    assert request.auto_retry_started_at is None
+    assert request.auto_retry_last_backoff_seconds is None
+    assert request.auto_retry_exhausted_at is None
+
+
 def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
     tmp_path: Path,
 ) -> None:

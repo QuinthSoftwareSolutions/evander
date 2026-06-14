@@ -2873,6 +2873,10 @@ class WakeScheduledRequest(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+    auto_dispatch_attempts: int = Field(default=0, ge=0)
+    auto_retry_started_at: datetime | None = None
+    auto_retry_last_backoff_seconds: float | None = Field(default=None, ge=0)
+    auto_retry_exhausted_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancelled_by_session_id: str | None = None
     cancel_reason: str | None = None
