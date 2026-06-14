@@ -665,6 +665,80 @@ test("admin shell sessions page discards approval settings edits without saving 
   assert.deepEqual(consoleErrors, []);
 });
 
+test("admin shell sessions page reset clears an existing approval settings override", async (t) => {
+  const permissiveApprovalSettings = {
+    ttl_seconds: 86400,
+    max_uses: null,
+    payload_mode: "any",
+  };
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+    policyBodies,
+    requestedEndpoints,
+  } = await createSessionsSmokeHarness(
+    t,
+    makeSessionRecord({
+      approval_tool_settings: {
+        prompt_agent: permissiveApprovalSettings,
+      },
+      effective_tool_policy: {
+        approval_tool_settings: {
+          prompt_agent: permissiveApprovalSettings,
+        },
+      },
+    }),
+    {
+      assertPolicyBody(body) {
+        assert.deepEqual(body.approval_required_tools, ["prompt_agent"]);
+        assert.deepEqual(body.approval_tool_settings, {});
+        assert.equal(Object.hasOwn(body.approval_tool_settings, "prompt_agent"), false);
+      },
+    },
+  );
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await ensureSectionsExpanded(page);
+  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
+  const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
+  const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
+  await assert.doesNotReject(() => promptAgentRow.waitFor({ state: "visible" }));
+
+  await page.getByRole("button", { name: "Configure approval settings for Prompt agent" }).click();
+  const approvalModal = page.getByRole("dialog", { name: "Prompt agent" });
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "visible" }));
+  await page.waitForFunction(() => {
+    const ttlLabel = Array.from(document.querySelectorAll("label.field-stack")).find((label) =>
+      label.textContent?.includes("TTL seconds"),
+    );
+    const ttlInput = ttlLabel?.querySelector("input");
+    return ttlInput instanceof HTMLInputElement && ttlInput.value === "86400";
+  });
+  assert.equal(await page.getByLabel("TTL seconds").inputValue(), "86400");
+  assert.equal(await page.getByLabel("Payload").inputValue(), "any");
+
+  await page.getByRole("button", { name: "Reset to inherited defaults" }).click();
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "hidden" }));
+
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  assert.equal(await saveButton.isDisabled(), false);
+  await saveButton.evaluate((button) => button.click());
+  await assert.doesNotReject(() =>
+    page.locator(".callout.success-callout").filter({ hasText: "Policy saved." }).waitFor({ state: "visible" }),
+  );
+
+  assert.equal(policyBodies.length, 1);
+  assert.deepEqual(policyBodies[0].approval_tool_settings, {});
+  assert.ok(requestedEndpoints.includes("/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
 test("admin shell sessions page exposes a tooltip for a disabled notification target add control", async (t) => {
   const sessionRecord = makeSessionRecord({
     approval_notification_target_ids: ["ops-notify"],
