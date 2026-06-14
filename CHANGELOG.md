@@ -12,6 +12,8 @@ material. Newer entries are added incrementally as changes land.
   status message with section context.
 - Made the approval-settings modal support a real discard flow so operators can
   close it without applying local edits to the session policy draft.
+- Made `Reset to inherited defaults` clear explicit per-session approval
+  setting overrides instead of restoring stale effective values.
 - Added an explanatory tooltip for the disabled `Add notification target`
   control when all notify-capable targets are already selected.
 

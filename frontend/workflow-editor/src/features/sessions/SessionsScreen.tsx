@@ -890,6 +890,12 @@ function ApprovalSettingsModal({
   }
 
   function handleResetToInheritedDefaults() {
+    if (hasExplicitOverride) {
+      onReset();
+      onClose();
+      return;
+    }
+
     const next = inherited;
     setDraftSettings(next);
     setTtlDraft(String(next.ttl_seconds));
