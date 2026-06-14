@@ -1690,7 +1690,7 @@ function ProductContextPanel({
           <section className="dashboard-release-secondary" aria-label="Release metadata">
             <div className="dashboard-release-secondary-heading">
               {releaseSummary ? (
-                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+                <p className="panel-meta dashboard-release-summary">
                   {releaseSummary}
                 </p>
               ) : null}
