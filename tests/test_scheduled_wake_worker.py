@@ -26,6 +26,8 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.messaging.scheduled_wake import (
     _build_scheduled_resume_prompt,
+    _load_scheduled_wake_worker_global_config,
+    ScheduledWakeWorkerGlobalConfigReloader,
     ScheduledWakeCycleResult,
     build_scheduled_wake_worker,
 )
@@ -215,6 +217,55 @@ def test_build_scheduled_wake_worker_defaults_prefix_to_empty_string(tmp_path: P
 
     assert worker.worker_config.scheduled_wake_prefix_text == ""
     assert worker.config.scheduled_wake_prefix_text == ""
+
+
+def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(
+    tmp_path: Path, caplog
+) -> None:
+    project_dir = tmp_path / "project"
+    path = project_dir / "config" / "scheduled-wake" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"scheduled_wake_prefix_text": "Initial:"}), encoding="utf-8")
+    base_config = GatewayConfig(runtime_dir=tmp_path / "runtime")
+    initial_config = _load_scheduled_wake_worker_global_config(
+        project_dir, base_config=base_config
+    )
+    reloader = ScheduledWakeWorkerGlobalConfigReloader(
+        project_dir=project_dir,
+        initial_config=initial_config,
+        base_config=base_config,
+    )
+
+    path.write_text("{not-json", encoding="utf-8")
+
+    latest, changed = reloader.get_latest()
+
+    assert changed is False
+    assert latest.scheduled_wake_prefix_text == "Initial:"
+    assert "keeping last-known-good" in caplog.text
+
+
+def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    path = project_dir / "config" / "scheduled-wake" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"scheduled_wake_prefix_text": "Initial:"}), encoding="utf-8")
+    base_config = GatewayConfig(runtime_dir=tmp_path / "runtime")
+    initial_config = _load_scheduled_wake_worker_global_config(
+        project_dir, base_config=base_config
+    )
+    reloader = ScheduledWakeWorkerGlobalConfigReloader(
+        project_dir=project_dir,
+        initial_config=initial_config,
+        base_config=base_config,
+    )
+
+    path.write_text(json.dumps({"scheduled_wake_prefix_text": "Updated:"}), encoding="utf-8")
+
+    latest, changed = reloader.reload_now()
+
+    assert changed is True
+    assert latest.scheduled_wake_prefix_text == "Updated:"
 
 
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(

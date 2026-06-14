@@ -17,6 +17,7 @@ from agent_sandbox.models import WakeScheduledRequest
 from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.runtime import RuntimeContext, build_runtime
+from agent_sandbox.workflow.runtime_config import _file_fingerprint
 from agent_sandbox.messaging.wake_dispatch import (
     HostWakeDispatcher,
     SessionWakeBinding,
@@ -396,6 +397,67 @@ def _load_scheduled_wake_worker_global_config(
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     return ScheduledWakeWorkerGlobalConfig.model_validate({**base_payload, **raw})
+
+
+class ScheduledWakeWorkerGlobalConfigReloader:
+    def __init__(
+        self,
+        *,
+        project_dir: Path,
+        initial_config: ScheduledWakeWorkerGlobalConfig,
+        base_config: GatewayConfig | None = None,
+    ) -> None:
+        self._project_dir = Path(project_dir)
+        self._path = _worker_global_config_path(self._project_dir)
+        self._base_config = base_config
+        self._current_config = initial_config
+        self._last_fingerprint = self._compute_fingerprint()
+
+    def get_latest(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._reload(force=False)
+
+    def reload_now(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._reload(force=True)
+
+    def _reload(self, *, force: bool) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        fingerprint = self._compute_fingerprint()
+        if not force and fingerprint == self._last_fingerprint:
+            return self._current_config, False
+
+        try:
+            next_config = _load_scheduled_wake_worker_global_config(
+                self._project_dir, base_config=self._base_config
+            )
+        except Exception:
+            self._last_fingerprint = fingerprint
+            logger.error(
+                "Failed to reload scheduled wake worker config path=%s; keeping last-known-good",
+                self._path,
+                exc_info=True,
+            )
+            return self._current_config, False
+
+        changed = next_config != self._current_config
+        self._current_config = next_config
+        self._last_fingerprint = fingerprint
+        return self._current_config, changed
+
+    def _compute_fingerprint(self) -> tuple[int, int, int, str]:
+        fingerprint = _file_fingerprint(self._path)
+        if fingerprint is None:
+            return (0, 0, 0, f"missing:{self._path}")
+        return fingerprint
+
+
+class FixedScheduledWakeWorkerGlobalConfigReloader:
+    def __init__(self, config: ScheduledWakeWorkerGlobalConfig) -> None:
+        self._config = config
+
+    def get_latest(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._config, False
+
+    def reload_now(self) -> tuple[ScheduledWakeWorkerGlobalConfig, bool]:
+        return self._config, False
 
 
 def build_scheduled_wake_worker(
