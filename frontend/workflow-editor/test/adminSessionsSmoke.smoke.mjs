@@ -513,6 +513,18 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
     },
     issue_number: null,
     is_expired: false,
+    container_lifecycle: {
+      state: "stopped",
+      last_signal_at: "2026-05-18T12:10:00Z",
+      actions: {
+        cleanup: {
+          supported: true,
+          kind: "cleanup_container_session",
+          label: "Cleanup session",
+          reason: null,
+        },
+      },
+    },
   };
   const sessionListResponse = {
     items: [explicitSession, legacySession, containerSession],
@@ -703,6 +715,12 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   await page.locator(".session-list-item").filter({ hasText: "container-session" }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Container image/i);
   await assert.match(await page.locator(".feature-content").innerText(), /runner:latest/);
+  const cleanupButton = page.getByRole("button", { name: "Clean up session" });
+  await assert.doesNotReject(() => cleanupButton.waitFor({ state: "visible" }));
+  assert.equal((await cleanupButton.innerText()).trim(), "");
+  const cleanupButtonBox = await cleanupButton.boundingBox();
+  assert.ok(cleanupButtonBox, "expected cleanup toolbar button to have a bounding box");
+  assert.ok(cleanupButtonBox.width <= 40, `expected cleanup toolbar button to stay icon-sized, got ${cleanupButtonBox.width}`);
 
   await page.getByPlaceholder("session, VM, issue, model").fill("runner:latest");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);

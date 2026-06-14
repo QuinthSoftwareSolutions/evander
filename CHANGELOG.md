@@ -5,6 +5,22 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-13 - Admin Agents Status Performance
+
+- Reduced Admin Web all-directory agent status expansion work by using
+  lightweight agent summaries for capacity health and reusing resolved policy
+  config while building effective tool-policy payloads.
+
+## 2026-06-13 - Agents Create Dialog Cleanup
+
+- Removed edit-after-create policy fields from the Admin Web Create agent dialog
+  and centered the generated caret on wrapped create-dialog selects.
+
+## 2026-06-13 - Sessions Toolbar Icon Fix
+
+- Replaced the Sessions page cleanup action label with an icon-only toolbar
+  button so it no longer overflows adjacent status and VM controls.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
+import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import type { RuntimeImageInfo } from "../admin/types";
@@ -1880,7 +1880,7 @@ export function SessionsScreen() {
                     disabled={busy === "cleanup" || mutationLocked}
                     aria-label={busy === "cleanup" ? "Cleaning up session" : "Clean up session"}
                   >
-                    {busy === "cleanup" ? "…" : "Cleanup"}
+                    {busy === "cleanup" ? "…" : <CleanupIcon />}
                   </button>
                 </Tooltip>
               ) : null}
