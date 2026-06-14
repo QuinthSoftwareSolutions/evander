@@ -323,6 +323,14 @@ function normalizeApprovalSettings(value: ApprovalGrantSettings | null | undefin
   };
 }
 
+function approvalSettingsEqual(left: ApprovalGrantSettings, right: ApprovalGrantSettings): boolean {
+  return (
+    left.ttl_seconds === right.ttl_seconds &&
+    left.max_uses === right.max_uses &&
+    left.payload_mode === right.payload_mode
+  );
+}
+
 function normalizeApprovalToolSettings(
   value: Record<string, ApprovalGrantSettings> | null | undefined,
 ): Record<string, ApprovalGrantSettings> {
@@ -799,9 +807,10 @@ function ApprovalSettingsModal({
   hardRule,
   busy,
   locked,
-  onChange,
+  onApply,
   onReset,
   onClose,
+  hasExplicitOverride,
 }: {
   open: boolean;
   toolLabel: string;
@@ -811,32 +820,20 @@ function ApprovalSettingsModal({
   hardRule: McpToolPolicyRule | null;
   busy: boolean;
   locked: boolean;
-  onChange: (settings: ApprovalGrantSettings) => void;
+  onApply: (settings: ApprovalGrantSettings) => void;
   onReset: () => void;
   onClose: () => void;
+  hasExplicitOverride: boolean;
 }) {
   const [ttlDraft, setTtlDraft] = useState("");
   const [usesDraft, setUsesDraft] = useState("");
+  const [draftSettings, setDraftSettings] = useState<ApprovalGrantSettings>(normalizeApprovalSettings(settings));
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const normalized = normalizeApprovalSettings(settings);
-    setTtlDraft(String(normalized.ttl_seconds));
-    setUsesDraft(normalized.max_uses == null ? "" : String(normalized.max_uses));
-    setError(null);
-  }, [open, settings.max_uses, settings.payload_mode, settings.ttl_seconds]);
-
-  if (!open) return null;
-
-  const effectiveSettings = normalizeApprovalSettings(settings);
-  const inherited = normalizeApprovalSettings(inheritedSettings);
-
-  function commit(update: Partial<ApprovalGrantSettings>) {
-    const next = normalizeApprovalSettings({ ...effectiveSettings, ...update });
+  function clampSettings(next: ApprovalGrantSettings): ApprovalGrantSettings {
     const ttlLimit = hardRule?.max_ttl_seconds;
     const usesLimit = hardRule?.max_uses;
-    const limited = {
+    return {
       ...next,
       ttl_seconds: ttlLimit == null ? next.ttl_seconds : Math.min(next.ttl_seconds, ttlLimit),
       max_uses:
@@ -845,15 +842,36 @@ function ApprovalSettingsModal({
           : next.max_uses == null
             ? usesLimit
             : Math.min(next.max_uses, usesLimit),
-      payload_mode: hardRule?.require_exact_payload ? "exact" as ApprovalPayloadMode : next.payload_mode,
+      payload_mode: hardRule?.require_exact_payload ? "exact" : next.payload_mode,
     };
-    onChange(limited);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const normalized = clampSettings(normalizeApprovalSettings(settings));
+    setDraftSettings(normalized);
+    setTtlDraft(String(normalized.ttl_seconds));
+    setUsesDraft(normalized.max_uses == null ? "" : String(normalized.max_uses));
+    setError(null);
+  }, [hardRule?.max_ttl_seconds, hardRule?.max_uses, hardRule?.require_exact_payload, open, settings.max_uses, settings.payload_mode, settings.ttl_seconds]);
+
+  if (!open) return null;
+
+  const effectiveSettings = draftSettings;
+  const inherited = clampSettings(normalizeApprovalSettings(inheritedSettings));
+  const initialSettings = clampSettings(normalizeApprovalSettings(settings));
+
+  function updateDraft(update: Partial<ApprovalGrantSettings>) {
+    setDraftSettings((current) => clampSettings({ ...current, ...update }));
+    setError(null);
   }
 
   function commitTtl() {
     try {
       const ttlSeconds = parsePositiveInteger(ttlDraft, "Grant expires after");
-      commit({ ttl_seconds: ttlSeconds });
+      const next = clampSettings({ ...effectiveSettings, ttl_seconds: ttlSeconds });
+      setDraftSettings(next);
+      setTtlDraft(String(next.ttl_seconds));
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -863,8 +881,57 @@ function ApprovalSettingsModal({
   function commitUses() {
     try {
       const maxUses = parseNullablePositiveInteger(usesDraft, "Max uses");
-      commit({ max_uses: maxUses });
+      const next = clampSettings({ ...effectiveSettings, max_uses: maxUses });
+      setDraftSettings(next);
+      setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
       setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function handleResetToInheritedDefaults() {
+    if (hasExplicitOverride) {
+      onReset();
+      onClose();
+      return;
+    }
+
+    const next = inherited;
+    setDraftSettings(next);
+    setTtlDraft(String(next.ttl_seconds));
+    setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
+    setError(null);
+  }
+
+  function handleDone() {
+    try {
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Grant expires after");
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Max uses");
+      const next = clampSettings({
+        ...effectiveSettings,
+        ttl_seconds: ttlSeconds,
+        max_uses: maxUses,
+      });
+      setDraftSettings(next);
+      setTtlDraft(String(next.ttl_seconds));
+      setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
+
+      if (approvalSettingsEqual(next, initialSettings)) {
+        onClose();
+        return;
+      }
+
+      if (approvalSettingsEqual(next, inherited)) {
+        if (hasExplicitOverride && !approvalSettingsEqual(initialSettings, inherited)) {
+          onReset();
+        }
+        onClose();
+        return;
+      }
+
+      onApply(next);
+      onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -878,7 +945,7 @@ function ApprovalSettingsModal({
         aria-modal="true"
         aria-labelledby="session-approval-settings-title"
         onClick={(event) => event.stopPropagation()}
-      >
+        >
         <div className="modal-header">
           <div>
             <div className="eyebrow">MCP approval settings</div>
@@ -887,7 +954,7 @@ function ApprovalSettingsModal({
           </div>
           <div className="inline-actions">
             <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose}>
-              Done
+              Cancel
             </button>
           </div>
         </div>
@@ -980,7 +1047,7 @@ function ApprovalSettingsModal({
               </Tooltip>
               <select
                 value={effectiveSettings.payload_mode}
-                onChange={(event) => commit({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
+                onChange={(event) => updateDraft({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
                 disabled={locked || busy || Boolean(hardRule?.require_exact_payload)}
               >
                 <option value="exact">Exact arguments</option>
@@ -995,17 +1062,20 @@ function ApprovalSettingsModal({
               onChange={(event) => {
                 const maxUses = event.target.checked ? null : 1;
                 setUsesDraft(maxUses == null ? "" : String(maxUses));
-                commit({ max_uses: maxUses });
+                updateDraft({ max_uses: maxUses });
               }}
               disabled={locked || busy || hardRule?.max_uses != null}
             />
             <span>Unlimited uses</span>
           </label>
           <div className="feature-toolbar-actions session-approval-settings-actions">
-            <button type="button" onClick={onReset} disabled={locked || busy}>
+            <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose} disabled={locked || busy}>
+              Discard changes
+            </button>
+            <button type="button" onClick={handleResetToInheritedDefaults} disabled={locked || busy}>
               Reset to inherited defaults
             </button>
-            <button type="button" className="primary" onClick={onClose}>
+            <button type="button" className="primary" onClick={handleDone} disabled={locked || busy}>
               Done
             </button>
           </div>
@@ -1068,9 +1138,6 @@ export function SessionsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [modelStatus, setModelStatus] = useState<string | null>(null);
-  const [toolsStatus, setToolsStatus] = useState<string | null>(null);
-  const [policyStatus, setPolicyStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [approvalSettingsTool, setApprovalSettingsTool] = useState("");
 
@@ -1215,7 +1282,6 @@ export function SessionsScreen() {
         if (modelBoundSessionId !== sessionId) {
           setModelDraft(payload.session.model ?? "");
           setModelDirty(false);
-          setModelStatus(null);
           setModelBoundSessionId(sessionId);
         } else if (!modelDirty) {
           setModelDraft(payload.session.model ?? "");
@@ -1223,7 +1289,6 @@ export function SessionsScreen() {
         if (toolsBoundSessionId !== sessionId) {
           setToolsDraft(sortTools(payload.session.allowed_tools));
           setToolsDirty(false);
-          setToolsStatus(null);
           setToolsBoundSessionId(sessionId);
         } else if (!toolsDirty) {
           setToolsDraft(sortTools(payload.session.allowed_tools));
@@ -1231,7 +1296,6 @@ export function SessionsScreen() {
         if (policyBoundSessionId !== sessionId) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
-          setPolicyStatus(null);
           setPolicyMetadataError(null);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
@@ -1336,6 +1400,10 @@ export function SessionsScreen() {
     return normalizeApprovalSettings(policyDraft.approvalToolSettings[toolValue] ?? effectiveApprovalSettingsForTool(toolValue));
   }
 
+  function hasExplicitApprovalSettingsDraft(toolValue: string): boolean {
+    return Object.prototype.hasOwnProperty.call(policyDraft.approvalToolSettings, toolValue);
+  }
+
   function updateApprovalSettingsDraft(toolValue: string, settings: ApprovalGrantSettings) {
     setPolicyDraft((current) => ({
       ...current,
@@ -1345,7 +1413,7 @@ export function SessionsScreen() {
       },
     }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function resetApprovalSettingsDraft(toolValue: string) {
@@ -1356,7 +1424,7 @@ export function SessionsScreen() {
       ),
     }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function openApprovalSettings(toolValue: string) {
@@ -1465,40 +1533,10 @@ export function SessionsScreen() {
     }
   }
 
-  async function saveModel() {
-    if (!selectedSession) return;
-    if (!modelDraft.trim()) {
-      setModelStatus("Model is required.");
-      return;
-    }
-    setBusy("model");
-    try {
-      const payload = await fetchJson<SessionMutationResponse>(
-        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ model: modelDraft.trim() }),
-        },
-      );
-      setStatus(payload.message);
-      setModelStatus("Saved.");
-      setModelDirty(false);
-      setModelBoundSessionId(selectedSession.session_id);
-      setError(null);
-      await refreshSessions();
-      await refreshSelectedSessionDetail(selectedSession.session_id);
-    } catch (reason) {
-      setModelStatus(null);
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
-  }
-
   function toggleTool(toolValue: string) {
     const wasEnabled = toolsDraft.includes(toolValue);
     setToolsDirty(true);
-    setToolsStatus(null);
+    setStatus(null);
     setToolsDraft((current) => {
       const next = current.includes(toolValue) ? current.filter((value) => value !== toolValue) : [...current, toolValue];
       return sortTools(next);
@@ -1515,7 +1553,7 @@ export function SessionsScreen() {
           ),
         }));
         setPolicyDirty(true);
-        setPolicyStatus(null);
+        setStatus(null);
       }
     }
   }
@@ -1523,7 +1561,7 @@ export function SessionsScreen() {
   function updatePolicyDraft(update: Partial<SessionPolicyDraft>) {
     setPolicyDraft((current) => ({ ...current, ...update }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function updateApprovalNotificationTargets(nextTargets: string[]) {
@@ -1540,6 +1578,28 @@ export function SessionsScreen() {
     const knownTargets = selectedSession?.approval_notification_target_options ?? [];
     const entries = policyDraft.approvalNotificationTargetIds;
     const nextAvailableTarget = knownTargets.find((option) => !entries.includes(option.value)) ?? null;
+    const addNotificationTargetDisabledReason = mutationLocked
+      ? "Unlock privileged operations to edit approval notification targets."
+      : knownTargets.length === 0
+        ? "No notify-capable communication targets are available for this session."
+        : nextAvailableTarget == null
+          ? "All notify-capable targets are already selected."
+          : null;
+
+    const addNotificationTargetButton = (
+      <button
+        type="button"
+        onClick={() => {
+          if (!nextAvailableTarget) {
+            return;
+          }
+          updateApprovalNotificationTargets([...entries, nextAvailableTarget.value]);
+        }}
+        disabled={mutationLocked || !nextAvailableTarget}
+      >
+        Add notification target
+      </button>
+    );
 
     return (
       <div className="string-list-selector">
@@ -1548,18 +1608,17 @@ export function SessionsScreen() {
             Select notify-capable communication targets from the selected session&apos;s directory.
           </p>
           <div className="inline-actions contacts-editor-actions">
-            <button
-              type="button"
-              onClick={() =>
-                updateApprovalNotificationTargets([
-                  ...entries,
-                  nextAvailableTarget?.value ?? "",
-                ])
-              }
-              disabled={mutationLocked || !nextAvailableTarget}
-            >
-              Add notification target
-            </button>
+            {addNotificationTargetDisabledReason ? (
+              <Tooltip
+                content={addNotificationTargetDisabledReason}
+                focusable
+                ariaLabel={addNotificationTargetDisabledReason}
+              >
+                {addNotificationTargetButton}
+              </Tooltip>
+            ) : (
+              addNotificationTargetButton
+            )}
           </div>
         </div>
         {entries.length === 0 ? (
@@ -1649,33 +1708,7 @@ export function SessionsScreen() {
       };
     });
     setPolicyDirty(true);
-    setPolicyStatus(null);
-  }
-
-  async function saveTools() {
-    if (!selectedSession) return;
-    setBusy("tools");
-    try {
-      const payload = await fetchJson<SessionMutationResponse>(
-        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/allowed-tools`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ allowed_tools: toolsDraft }),
-        },
-      );
-      setStatus(payload.message);
-      setToolsStatus("Saved.");
-      setToolsDirty(false);
-      setToolsBoundSessionId(selectedSession.session_id);
-      setError(null);
-      await refreshSessions();
-      await refreshSelectedSessionDetail(selectedSession.session_id);
-    } catch (reason) {
-      setToolsStatus(null);
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
+    setStatus(null);
   }
 
   function policyApprovalToolSettingsPayload(): Record<string, ApprovalGrantSettings> {
@@ -1691,50 +1724,50 @@ export function SessionsScreen() {
   async function saveSessionSettings() {
     if (!selectedSession || (!modelDirty && !toolsDirty && !policyDirty)) return;
     if (modelDirty && !modelDraft.trim()) {
-      setModelStatus("Model is required.");
+      setError("Model is required.");
+      setStatus(null);
       return;
     }
     if (policyDirty) {
       const validationError = sessionPolicyValidationError();
       if (validationError) {
         setError(validationError);
-        setPolicyStatus(null);
         return;
       }
     }
 
     setBusy("settings");
     try {
+      const savedSections: Array<"model" | "tools" | "policy"> = [];
+
       if (modelDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
           {
             method: "PUT",
             body: JSON.stringify({ model: modelDraft.trim() }),
           },
         );
-        setStatus(payload.message);
-        setModelStatus("Saved.");
         setModelDirty(false);
         setModelBoundSessionId(selectedSession.session_id);
+        savedSections.push("model");
       }
 
       if (toolsDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/allowed-tools`,
           {
             method: "PUT",
             body: JSON.stringify({ allowed_tools: toolsDraft }),
           },
         );
-        setStatus(payload.message);
-        setToolsStatus("Saved.");
         setToolsDirty(false);
         setToolsBoundSessionId(selectedSession.session_id);
+        savedSections.push("tools");
       }
 
       if (policyDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}`,
           {
             method: "PATCH",
@@ -1760,20 +1793,27 @@ export function SessionsScreen() {
             }),
           },
         );
-        setStatus(payload.message);
-        setPolicyStatus("Saved.");
         setPolicyDirty(false);
         setPolicyMetadataError(null);
         setPolicyBoundSessionId(selectedSession.session_id);
+        savedSections.push("policy");
+      }
+
+      if (savedSections.length > 0) {
+        const [firstSection, ...restSections] = savedSections;
+        const firstLabel = `${firstSection.charAt(0).toUpperCase()}${firstSection.slice(1)}`;
+        const statusMessage = restSections.length === 0
+          ? `${firstLabel} saved.`
+          : restSections.length === 1
+            ? `${firstLabel} and ${restSections[0]} saved.`
+            : `${firstLabel}, ${restSections.slice(0, -1).join(", ")}, and ${restSections[restSections.length - 1]} saved.`;
+        setStatus(statusMessage);
       }
 
       setError(null);
       await refreshSessions();
       await refreshSelectedSessionDetail(selectedSession.session_id);
     } catch (reason) {
-      if (modelDirty) setModelStatus(null);
-      if (toolsDirty) setToolsStatus(null);
-      if (policyDirty) setPolicyStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
@@ -2098,7 +2138,7 @@ export function SessionsScreen() {
                       onChange={(event) => {
                         setModelDraft(event.target.value);
                         setModelDirty(true);
-                        setModelStatus(null);
+                        setStatus(null);
                       }}
                       placeholder="Required to start or resume the agent"
                       disabled={mutationLocked}
@@ -2111,7 +2151,6 @@ export function SessionsScreen() {
                       ))}
                     </datalist>
                   </label>
-                  {modelStatus ? <div className="success-box">{modelStatus}</div> : null}
                   <div className="field-stack">
                     <span>Allowed tools</span>
                     <div className="session-tool-groups">
@@ -2202,7 +2241,6 @@ export function SessionsScreen() {
                       })}
                     </div>
                   </div>
-                  {toolsStatus ? <div className="success-box">{toolsStatus}</div> : null}
                   <div className="field-stack">
                     <span>Allowed scripts</span>
                     <p className="field-description">
@@ -2372,7 +2410,7 @@ export function SessionsScreen() {
                         setPolicyMetadataError(error);
                         if (error) {
                           setPolicyDirty(true);
-                          setPolicyStatus(null);
+                          setStatus(null);
                         }
                       }}
                       fieldLabel="Metadata"
@@ -2381,7 +2419,6 @@ export function SessionsScreen() {
                       emptyState="No metadata rows are configured."
                     />
                   </div>
-                  {policyStatus ? <div className="success-box">{policyStatus}</div> : null}
                   <div className="feature-toolbar-actions session-panel-actions">
                     <button
                       type="button"
@@ -2635,9 +2672,10 @@ export function SessionsScreen() {
               hardRule={effectiveRuleForTool(approvalSettingsTool)}
               busy={busy === "settings"}
               locked={mutationLocked}
-              onChange={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
+              onApply={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
               onReset={() => resetApprovalSettingsDraft(approvalSettingsTool)}
               onClose={() => setApprovalSettingsTool("")}
+              hasExplicitOverride={hasExplicitApprovalSettingsDraft(approvalSettingsTool)}
             />
           </div>
         ) : (

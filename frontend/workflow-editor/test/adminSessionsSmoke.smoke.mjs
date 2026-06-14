@@ -16,35 +16,30 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("admin shell sessions page clears approval gates when the allowed tool is removed", async (t) => {
-  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const server = await createServer({
-    root: projectRoot,
-    server: {
-      host: "127.0.0.1",
-      port: 0,
+function makeSessionRecord(overrides = {}) {
+  const effectiveToolPolicy = {
+    allowed_tools: ["prompt_agent"],
+    inherited_approval_required_tools: [],
+    approval_required_tools: ["prompt_agent"],
+    approval_tool_settings: {},
+    mcp_tool_policies: {
+      prompt_agent: {
+        max_ttl_seconds: 7200,
+        max_uses: 3,
+        require_exact_payload: true,
+      },
     },
-    logLevel: "error",
-  });
-  await server.listen();
-
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
-
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  const requestedEndpoints = [];
-  const allowedToolsBodies = [];
-  const policyBodies = [];
-  const sessionRecord = {
+    tool_argument_policies: {},
+    ...overrides.effective_tool_policy,
+  };
+  return {
     session_id: "session-1",
     vm_id: "vm-1",
     model: "gpt-5.4",
     directory_path: "root/team",
     allowed_tools: ["prompt_agent"],
     approval_required_tools: ["prompt_agent"],
+    approval_tool_settings: {},
     approval_notification_target_ids: ["notify-target-1"],
     approval_notification_target_options: [
       {
@@ -52,20 +47,6 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
         label: "Notify target",
       },
     ],
-    effective_tool_policy: {
-      allowed_tools: ["prompt_agent"],
-      inherited_approval_required_tools: [],
-      approval_required_tools: ["prompt_agent"],
-      approval_tool_settings: {},
-      mcp_tool_policies: {
-        prompt_agent: {
-          max_ttl_seconds: 7200,
-          max_uses: 3,
-          require_exact_payload: true,
-        },
-      },
-      tool_argument_policies: {},
-    },
     allowed_script_names: ["sync-session", "deploy-session"],
     discord_channel_allowlist: ["discord-channel-1", "communication-target-9"],
     teams_channel_allowlist: ["team-1/channel-2", "chat:chat-7", "communication-target-3"],
@@ -88,7 +69,48 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     },
     issue_number: null,
     is_expired: false,
+    ...overrides,
+    effective_tool_policy: {
+      ...effectiveToolPolicy,
+      ...(overrides.effective_tool_policy ?? {}),
+      approval_tool_settings: {
+        ...effectiveToolPolicy.approval_tool_settings,
+        ...((overrides.effective_tool_policy ?? {}).approval_tool_settings ?? {}),
+      },
+      mcp_tool_policies: {
+        ...effectiveToolPolicy.mcp_tool_policies,
+        ...((overrides.effective_tool_policy ?? {}).mcp_tool_policies ?? {}),
+      },
+      tool_argument_policies: {
+        ...effectiveToolPolicy.tool_argument_policies,
+        ...((overrides.effective_tool_policy ?? {}).tool_argument_policies ?? {}),
+      },
+    },
   };
+}
+
+async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}, overrides = {}) {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  const requestedEndpoints = [];
+  const allowedToolsBodies = [];
+  const policyBodies = [];
   const sessionListResponse = {
     items: [sessionRecord],
     active_items: [sessionRecord],
@@ -104,7 +126,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     wake_schedules: [],
     summary_json: {},
   };
-  const sessionCatalogResponse = {
+  const sessionCatalogResponse = overrides.sessionCatalogResponse ?? {
     tool_options: [
       {
         value: "prompt_agent",
@@ -129,7 +151,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     ],
     renew_extension_presets: ["1d"],
   };
-  const sessionResponse = {
+  const sessionResponse = overrides.sessionResponse ?? {
     auth_mode: "none",
     auth_required: false,
     authenticated: true,
@@ -144,7 +166,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       unlocked: true,
     },
   };
-  const adminStateResponse = {
+  const adminStateResponse = overrides.adminStateResponse ?? {
     selected_directory_path: "root",
     directory_scoped_config_enabled: false,
     execution_backend: "libvirt_vm",
@@ -170,7 +192,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     config_domains: [],
     children: [],
   };
-  const configurationStateResponse = {
+  const configurationStateResponse = overrides.configurationStateResponse ?? {
     directory_scoped_config_enabled: false,
     selected_directory_path: "root",
     execution_backend: "libvirt_vm",
@@ -249,6 +271,75 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         policyBodies.push(body);
+        routeAssertions.assertPolicyBody?.(body);
+        sessionRecord.approval_required_tools = body.approval_required_tools;
+        sessionRecord.approval_tool_settings = body.approval_tool_settings;
+        await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
+        return;
+      }
+      await route.fulfill(jsonResponse(sessionDetailResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/session-1/allowed-tools") {
+      const body = JSON.parse(route.request().postData() ?? "{}");
+      allowedToolsBodies.push(body);
+      routeAssertions.assertAllowedToolsBody?.(body);
+      sessionRecord.allowed_tools = body.allowed_tools;
+      await route.fulfill(jsonResponse({ action: "updated", message: "Updated allowed tools.", session: sessionRecord }));
+      return;
+    }
+
+    await route.continue();
+  });
+
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+
+  return {
+    address,
+    allowedToolsBodies,
+    browser,
+    consoleErrors,
+    context,
+    page,
+    pageErrors,
+    policyBodies,
+    requestedEndpoints,
+    server,
+    sessionCatalogResponse,
+    sessionDetailResponse,
+    sessionListResponse,
+    sessionRecord,
+  };
+}
+
+test("admin shell sessions page clears approval gates when the allowed tool is removed", async (t) => {
+  const {
+    address,
+    allowedToolsBodies,
+    consoleErrors,
+    page,
+    pageErrors,
+    policyBodies,
+    requestedEndpoints,
+    sessionRecord,
+    server,
+    browser,
+    context,
+  } = await createSessionsSmokeHarness(
+    t,
+    makeSessionRecord(),
+    {
+      assertPolicyBody(body) {
         assert.deepEqual(body.approval_notification_target_ids, sessionRecord.approval_notification_target_ids);
         assert.deepEqual(body.allowed_script_names, sessionRecord.allowed_script_names);
         assert.deepEqual(body.discord_channel_allowlist, sessionRecord.discord_channel_allowlist);
@@ -274,37 +365,12 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
           assert.deepEqual(body.approval_required_tools, []);
           assert.deepEqual(body.approval_tool_settings, {});
         }
-        sessionRecord.approval_required_tools = body.approval_required_tools;
-        sessionRecord.approval_tool_settings = body.approval_tool_settings;
-        await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
-        return;
-      }
-      await route.fulfill(jsonResponse(sessionDetailResponse));
-      return;
-    }
-
-    if (pathname === "/api/admin/sessions/session-1/allowed-tools") {
-      const body = JSON.parse(route.request().postData() ?? "{}");
-      allowedToolsBodies.push(body);
-      assert.deepEqual(body.allowed_tools, []);
-      sessionRecord.allowed_tools = body.allowed_tools;
-      await route.fulfill(jsonResponse({ action: "updated", message: "Updated allowed tools.", session: sessionRecord }));
-      return;
-    }
-
-    await route.continue();
-  });
-
-  const pageErrors = [];
-  const consoleErrors = [];
-  page.on("pageerror", (error) => {
-    pageErrors.push(error);
-  });
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleErrors.push(message.text());
-    }
-  });
+      },
+      assertAllowedToolsBody(body) {
+        assert.deepEqual(body.allowed_tools, []);
+      },
+    },
+  );
 
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
@@ -462,6 +528,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await ttlInput.blur();
   await usesInput.fill("2");
   await usesInput.blur();
+  await approvalSettingsDialog.getByRole("button", { name: "Done" }).first().click();
+  await assert.doesNotReject(() => approvalSettingsDialog.waitFor({ state: "hidden" }));
   const firstPolicySave = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/admin/sessions/session-1" && response.request().method() === "PATCH",
   );
@@ -475,7 +543,6 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       payload_mode: "exact",
     },
   });
-  await approvalSettingsDialog.getByRole("button", { name: "Done" }).first().click();
 
   const policyBodiesBeforeInvalidSave = policyBodies.length;
   await labelsValueInput.fill("{bad");
@@ -526,7 +593,10 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   );
   await saveButton.evaluate((button) => button.click());
   await Promise.all([secondToolsSave, secondPolicySave]);
-  await assert.doesNotReject(() => page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.locator(".callout.success-callout").filter({ hasText: "Tools and policy saved." }).waitFor({ state: "visible" }),
+  );
+  assert.equal(await page.locator(".session-tools-panel .success-box").count(), 0);
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(await navEntry.count(), 1);
@@ -538,6 +608,169 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.deepEqual(sessionRecord.approval_required_tools, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1/allowed-tools"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page discards approval settings edits without saving them to the session", async (t) => {
+  const sessionRecord = makeSessionRecord({
+    effective_tool_policy: {
+      mcp_tool_policies: {
+        prompt_agent: {
+          max_ttl_seconds: 7200,
+          max_uses: 3,
+          require_exact_payload: false,
+        },
+      },
+    },
+  });
+  const {
+    address,
+    allowedToolsBodies,
+    consoleErrors,
+    page,
+    pageErrors,
+    policyBodies,
+    requestedEndpoints,
+  } = await createSessionsSmokeHarness(t, sessionRecord);
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await ensureSectionsExpanded(page);
+  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
+  const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
+  const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
+  await assert.doesNotReject(() => promptAgentRow.waitFor({ state: "visible" }));
+
+  await page.getByRole("button", { name: "Configure approval settings for Prompt agent" }).click();
+  const approvalModal = page.getByRole("dialog", { name: "Prompt agent" });
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "visible" }));
+
+  const ttlInput = approvalModal.getByLabel("Grant expires after (seconds)");
+  const payloadSelect = approvalModal.getByLabel("Argument matching");
+  await ttlInput.fill("999");
+  await payloadSelect.selectOption("any");
+  await page.getByRole("button", { name: "Discard changes" }).click();
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "hidden" }));
+
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  assert.equal(await saveButton.isDisabled(), true);
+  assert.equal(allowedToolsBodies.length, 0);
+  assert.equal(policyBodies.length, 0);
+
+  assert.ok(requestedEndpoints.includes("/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page reset clears an existing approval settings override", async (t) => {
+  const permissiveApprovalSettings = {
+    ttl_seconds: 86400,
+    max_uses: null,
+    payload_mode: "any",
+  };
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+    policyBodies,
+    requestedEndpoints,
+  } = await createSessionsSmokeHarness(
+    t,
+    makeSessionRecord({
+      approval_tool_settings: {
+        prompt_agent: permissiveApprovalSettings,
+      },
+      effective_tool_policy: {
+        approval_tool_settings: {
+          prompt_agent: permissiveApprovalSettings,
+        },
+      },
+    }),
+    {
+      assertPolicyBody(body) {
+        assert.deepEqual(body.approval_required_tools, ["prompt_agent"]);
+        assert.deepEqual(body.approval_tool_settings, {});
+        assert.equal(Object.hasOwn(body.approval_tool_settings, "prompt_agent"), false);
+      },
+    },
+  );
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await ensureSectionsExpanded(page);
+  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
+  const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
+  const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
+  await assert.doesNotReject(() => promptAgentRow.waitFor({ state: "visible" }));
+
+  await page.getByRole("button", { name: "Configure approval settings for Prompt agent" }).click();
+  const approvalModal = page.getByRole("dialog", { name: "Prompt agent" });
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "visible" }));
+  await page.waitForFunction(() => {
+    const ttlLabel = Array.from(document.querySelectorAll("label.field-stack")).find((label) =>
+      label.textContent?.includes("TTL seconds"),
+    );
+    const ttlInput = ttlLabel?.querySelector("input");
+    return ttlInput instanceof HTMLInputElement && ttlInput.value === "86400";
+  });
+  assert.equal(await page.getByLabel("TTL seconds").inputValue(), "86400");
+  assert.equal(await page.getByLabel("Payload").inputValue(), "any");
+
+  await page.getByRole("button", { name: "Reset to inherited defaults" }).click();
+  await assert.doesNotReject(() => approvalModal.waitFor({ state: "hidden" }));
+
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  assert.equal(await saveButton.isDisabled(), false);
+  await saveButton.evaluate((button) => button.click());
+  await assert.doesNotReject(() =>
+    page.locator(".callout.success-callout").filter({ hasText: "Policy saved." }).waitFor({ state: "visible" }),
+  );
+
+  assert.equal(policyBodies.length, 1);
+  assert.deepEqual(policyBodies[0].approval_tool_settings, {});
+  assert.ok(requestedEndpoints.includes("/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page exposes a tooltip for a disabled notification target add control", async (t) => {
+  const sessionRecord = makeSessionRecord({
+    approval_notification_target_ids: ["ops-notify"],
+    approval_notification_target_options: [
+      {
+        value: "ops-notify",
+        label: "Ops notify",
+      },
+    ],
+  });
+  const {
+    address,
+    page,
+    pageErrors,
+    consoleErrors,
+  } = await createSessionsSmokeHarness(t, sessionRecord);
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await ensureSectionsExpanded(page);
+  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
+  const addTargetButton = page.getByRole("button", { name: "Add notification target" });
+  assert.equal(await addTargetButton.isDisabled(), true);
+
+  const disabledReason = "All notify-capable targets are already selected.";
+  await page.getByLabel(disabledReason).hover();
+  await assert.doesNotReject(() =>
+    page.locator('[role="tooltip"]').filter({ hasText: disabledReason }).waitFor({ state: "visible" }),
+  );
+
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });
