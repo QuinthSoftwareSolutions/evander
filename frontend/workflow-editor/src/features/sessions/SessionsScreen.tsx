@@ -1504,6 +1504,28 @@ export function SessionsScreen() {
     const knownTargets = selectedSession?.approval_notification_target_options ?? [];
     const entries = policyDraft.approvalNotificationTargetIds;
     const nextAvailableTarget = knownTargets.find((option) => !entries.includes(option.value)) ?? null;
+    const addNotificationTargetDisabledReason = mutationLocked
+      ? "Unlock privileged operations to edit approval notification targets."
+      : knownTargets.length === 0
+        ? "No notify-capable communication targets are available for this session."
+        : nextAvailableTarget == null
+          ? "All notify-capable targets are already selected."
+          : null;
+
+    const addNotificationTargetButton = (
+      <button
+        type="button"
+        onClick={() => {
+          if (!nextAvailableTarget) {
+            return;
+          }
+          updateApprovalNotificationTargets([...entries, nextAvailableTarget.value]);
+        }}
+        disabled={mutationLocked || !nextAvailableTarget}
+      >
+        Add notification target
+      </button>
+    );
 
     return (
       <div className="string-list-selector">
@@ -1512,18 +1534,17 @@ export function SessionsScreen() {
             Select notify-capable communication targets from the selected session&apos;s directory.
           </p>
           <div className="inline-actions contacts-editor-actions">
-            <button
-              type="button"
-              onClick={() =>
-                updateApprovalNotificationTargets([
-                  ...entries,
-                  nextAvailableTarget?.value ?? "",
-                ])
-              }
-              disabled={mutationLocked || !nextAvailableTarget}
-            >
-              Add notification target
-            </button>
+            {addNotificationTargetDisabledReason ? (
+              <Tooltip
+                content={addNotificationTargetDisabledReason}
+                focusable
+                ariaLabel={addNotificationTargetDisabledReason}
+              >
+                {addNotificationTargetButton}
+              </Tooltip>
+            ) : (
+              addNotificationTargetButton
+            )}
           </div>
         </div>
         {entries.length === 0 ? (
