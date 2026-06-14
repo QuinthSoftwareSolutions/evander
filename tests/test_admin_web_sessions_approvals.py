@@ -577,6 +577,106 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert revoke_response.json()["action"] == "revoke_session"
 
 
+def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "runtime" / "pricing.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "version": "test-pricing",
+                "currency": "usd",
+                "description": "Test pricing catalog.",
+                "sources": ["https://platform.openai.com/docs/pricing"],
+                "rules": [
+                    {
+                        "id": "provider-a:alpha",
+                        "provider": "provider-a",
+                        "models": ["alpha-model", "shared-model"],
+                        "model_patterns": ["alpha-*"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.00",
+                            "cached_input": "0.10",
+                            "output": "2.00",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                    {
+                        "id": "provider-b:shared",
+                        "provider": "provider-b",
+                        "models": ["shared-model", "beta-model"],
+                        "model_patterns": [],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.25",
+                            "cached_input": "0.12",
+                            "output": "2.50",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                    {
+                        "id": "provider-c:wildcard",
+                        "provider": "provider-c",
+                        "models": [],
+                        "model_patterns": ["wildcard-only-*"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.50",
+                            "cached_input": "0.15",
+                            "output": "3.00",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/catalog")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_options"] == [
+        {"value": "alpha-model", "label": "alpha-model"},
+        {"value": "shared-model", "label": "shared-model"},
+        {"value": "beta-model", "label": "beta-model"},
+    ]
+    assert any(item["value"] == "approval_check" for item in payload["tool_options"])
+
+
+def test_admin_web_sessions_catalog_returns_empty_model_options_when_pricing_catalog_errors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_MODEL_PRICING_PATH",
+        str(tmp_path / "runtime" / "missing-pricing.json"),
+    )
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/catalog")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_options"] == []
+    assert any(item["value"] == "approval_check" for item in payload["tool_options"])
+
+
 def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
     tmp_path: Path,
 ) -> None:

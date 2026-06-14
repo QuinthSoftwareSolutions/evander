@@ -52,6 +52,15 @@ const EMPTY_FORM: IssueFormState = {
   vmOptions: EMPTY_VM_OPTIONS,
 };
 
+const VM_OPTION_HELP = {
+  dotnet: ".NET SDK bootstrap installs the .NET tooling used by this VM.",
+  nugetEnabled: "NuGet packages bootstrap enables the optional restore target below.",
+  nuget: "Only enabled when NuGet packages is checked. Leave blank to use the default restore target.",
+  playwright: "Playwright browsers bootstrap installs browser and test dependencies.",
+  mssql: "MSSQL test database bootstrap provisions SQL Server and database setup using the optional init root.",
+  mssqlInitRoot: "Only enabled when MSSQL test database is checked. Leave blank to use the default init root.",
+} as const;
+
 const REFRESH_MS = 10000;
 const ISSUE_SELECTION_STORAGE_KEY = "admin-web:issues:selected-issue";
 
@@ -237,7 +246,9 @@ function VmOptionsEditor({
           />
         </label>
         <label className="field-stack">
-          <span>NuGet target</span>
+          <Tooltip content={VM_OPTION_HELP.nuget}>
+            <span>NuGet restore target</span>
+          </Tooltip>
           <input
             value={value.nuget}
             onChange={(event) => onChange({ ...value, nuget: event.target.value })}
@@ -246,7 +257,9 @@ function VmOptionsEditor({
           />
         </label>
         <label className="field-stack">
-          <span>MSSQL init root</span>
+          <Tooltip content={VM_OPTION_HELP.mssqlInitRoot}>
+            <span>MSSQL init root</span>
+          </Tooltip>
           <input
             value={value.mssqlInitRoot}
             onChange={(event) => onChange({ ...value, mssqlInitRoot: event.target.value })}
@@ -258,7 +271,9 @@ function VmOptionsEditor({
       <div className="toolbar-grid">
         <label className="checkbox-row">
           <input type="checkbox" checked={value.dotnet} onChange={(event) => onChange({ ...value, dotnet: event.target.checked })} disabled={disabled} />
-          <span>Bootstrap .NET</span>
+          <Tooltip content={VM_OPTION_HELP.dotnet}>
+            <span>Bootstrap .NET SDK</span>
+          </Tooltip>
         </label>
         <label className="checkbox-row">
           <input
@@ -267,7 +282,9 @@ function VmOptionsEditor({
             onChange={(event) => onChange({ ...value, nugetEnabled: event.target.checked, nuget: event.target.checked ? value.nuget : "" })}
             disabled={disabled}
           />
-          <span>Bootstrap NuGet</span>
+          <Tooltip content={VM_OPTION_HELP.nugetEnabled}>
+            <span>NuGet packages</span>
+          </Tooltip>
         </label>
         <label className="checkbox-row">
           <input
@@ -276,11 +293,15 @@ function VmOptionsEditor({
             onChange={(event) => onChange({ ...value, playwright: event.target.checked })}
             disabled={disabled}
           />
-          <span>Bootstrap Playwright</span>
+          <Tooltip content={VM_OPTION_HELP.playwright}>
+            <span>Playwright browsers</span>
+          </Tooltip>
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={value.mssql} onChange={(event) => onChange({ ...value, mssql: event.target.checked })} disabled={disabled} />
-          <span>Bootstrap MSSQL</span>
+          <Tooltip content={VM_OPTION_HELP.mssql}>
+            <span>MSSQL test database</span>
+          </Tooltip>
         </label>
       </div>
     </>

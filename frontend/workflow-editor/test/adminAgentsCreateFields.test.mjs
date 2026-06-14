@@ -59,21 +59,21 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
   assert.ok(libvirtBranch, "libvirt branch of buildCreatePayload not found");
   assert.doesNotMatch(libvirtBranch[1], /payload\.container_image/);
   assert.doesNotMatch(libvirtBranch[1], /payload\.target_name/);
-  // Policy fields are edited after creation, so direct UI creates do not send them.
+  // Initial policy fields are optional and emitted only after backend-specific target fields.
+  assert.match(source, /const initialPolicy = form\.initialPolicy;/);
   for (const field of [
-    "model",
-    "ttl_hours",
     "labels",
     "web_search_enabled",
     "allowed_tools",
     "allowed_script_names",
     "discord_channels",
+    "teams_channel_allowlist",
     "email_mailboxes",
     "email_folders",
-    "codex_skills",
   ]) {
-    assert.doesNotMatch(source, new RegExp(`payload\\.${field}|${field}:`));
+    assert.match(source, new RegExp(`payload\\.${field}`));
   }
+  assert.doesNotMatch(source, /payload\.codex_skills/);
 });
 
 test("create modal loads create-options for the selected directory", () => {
@@ -120,18 +120,26 @@ test("VM image select lives in the libvirt block; container image select in the 
   assert.match(createModal, /value=\{createForm\.containerImage\}/);
 });
 
-test("create modal omits policy and post-create editable controls", () => {
+test("create modal exposes structured initial policy controls without post-create-only fields", () => {
   const createModal = createModalSource();
   for (const label of [
-    "Model",
-    "TTL hours",
+    "Initial policy",
     "Labels",
     "Allowed tools",
     "Allowed scripts",
     "Discord channels or targets",
+    "Teams targets",
     "Email mailboxes",
     "Email folders",
     "Web search",
+  ]) {
+    assert.match(createModal, new RegExp(`>${label}<`));
+  }
+  assert.match(createModal, /StringMapEditor/);
+  assert.match(createModal, /StringListEditor/);
+  for (const label of [
+    "Model",
+    "TTL hours",
     "Codex skills",
   ]) {
     assert.doesNotMatch(createModal, new RegExp(`>${label}<`));
@@ -157,6 +165,7 @@ test("the create modal never reintroduces upsert semantics", () => {
 test("request and options types expose the new create fields", () => {
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?agent_provider\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?vm_image\?: string \| null;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateRequest = \{[\s\S]*?teams_channel_allowlist\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateProviderOption = \{[\s\S]*?execution_backends: AgentBackend\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateOptionsResponse = \{[\s\S]*?agent_providers: AgentCreateProviderOption\[\];[\s\S]*?libvirt: \{[\s\S]*?container_worker: \{[\s\S]*?\};/);
 });
