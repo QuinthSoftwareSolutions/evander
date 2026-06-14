@@ -9726,6 +9726,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "previous_failure_reason": current_entry.get("failure_reason"),
                 "previous_last_dispatch_id": current_entry.get("latest_dispatch_id"),
                 "previous_last_dispatch_status": current_entry.get("latest_dispatch_status"),
+                "previous_auto_dispatch_attempts": request.auto_dispatch_attempts,
+                "previous_auto_retry_started_at": request.auto_retry_started_at,
+                "previous_auto_retry_last_backoff_seconds": request.auto_retry_last_backoff_seconds,
+                "previous_auto_retry_exhausted_at": request.auto_retry_exhausted_at,
                 "requested_run_now": bool(run_now and resume_at is None),
                 "requested_resume_at": validated_resume_at,
             }
@@ -9740,6 +9744,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         request.status_updated_at = now
         request.last_error = None
         request.last_error_at = None
+        request.auto_dispatch_attempts = 0
+        request.auto_retry_started_at = None
+        request.auto_retry_last_backoff_seconds = None
+        request.auto_retry_exhausted_at = None
         request.updated_at = now
         self.runtime.wake_store.upsert_request(request)
         return self._wake_ledger_entry_for_request(request)

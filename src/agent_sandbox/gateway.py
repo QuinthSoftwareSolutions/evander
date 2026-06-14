@@ -6136,8 +6136,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         """Cancel an obsolete wake request owned by the caller session.
 
         Use this to retire pending future wakes that are no longer needed. The
-        caller cannot cancel wakes owned by another session, and one-time wakes
-        that have already been dispatched or completed remain immutable.
+        caller cannot cancel wakes owned by another session, and completed or
+        already-cancelled wakes remain immutable.
         """
 
         resolved_session_id = _resolve_session_id_from_context(
