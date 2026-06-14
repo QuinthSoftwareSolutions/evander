@@ -296,7 +296,7 @@ function approvalLabel(item: ToolVisibilityItem, detail = false): string {
   return detail ? "Not required" : "No";
 }
 
-function approvalBadge(item: ToolVisibilityItem, detail = false) {
+function approvalBadge(item: ToolVisibilityItem, detail = false, options: { focusable?: boolean } = {}) {
   const label = approvalLabel(item, detail);
   const badge = (
     <span className={`status-pill${item.approval_locked ? " approval-locked-pill" : item.requires_approval ? " state-idle" : " state-running"}`}>
@@ -307,7 +307,7 @@ function approvalBadge(item: ToolVisibilityItem, detail = false) {
     return badge;
   }
   return (
-    <Tooltip content={APPROVAL_LOCKED_TOOLTIP} focusable ariaLabel={label}>
+    <Tooltip content={APPROVAL_LOCKED_TOOLTIP} focusable={options.focusable ?? true} ariaLabel={label}>
       {badge}
     </Tooltip>
   );
@@ -909,7 +909,7 @@ export function ToolVisibilityPage() {
                       </div>
                       <div className="mobile-record-row">
                         <span>Approval</span>
-                        <span>{approvalBadge(item)}</span>
+                        <span>{approvalBadge(item, false, { focusable: false })}</span>
                       </div>
                       <div className="mobile-record-row">
                         <span>Last denied</span>

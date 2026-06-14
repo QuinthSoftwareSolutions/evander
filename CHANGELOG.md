@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Tool Visibility Approval Locks
+
+- Surfaced host-locked approval requirements in the Admin Web Tool Visibility
+  API and inspector so operators can distinguish policy-mandated approvals from
+  configurable per-session approval settings.
+- Kept locked approval badges valid in the mobile Tool Visibility cards by
+  avoiding nested focus targets inside selectable records.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using
