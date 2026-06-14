@@ -99,15 +99,6 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
-  model: string;
-  ttlHours: string;
-  labels: string;
-  webSearchEnabled: boolean;
-  allowedTools: string;
-  allowedScriptNames: string;
-  discordChannels: string;
-  emailMailboxes: string;
-  emailFolders: string;
   provider: string;
   vmUser: string;
   agentProvider: string;
@@ -118,7 +109,6 @@ type AgentCreateFormState = {
   mssql: boolean;
   mssqlInitRoot: string;
   playwright: boolean;
-  codexSkills: string[];
 };
 
 type AgentPolicyFormState = {
@@ -185,15 +175,6 @@ function emptyCreateForm(): AgentCreateFormState {
     vmName: "",
     targetName: "",
     sessionId: "",
-    model: "",
-    ttlHours: "",
-    labels: "",
-    webSearchEnabled: false,
-    allowedTools: "",
-    allowedScriptNames: "",
-    discordChannels: "",
-    emailMailboxes: "",
-    emailFolders: "",
     provider: "",
     vmUser: "agent",
     agentProvider: "",
@@ -204,7 +185,6 @@ function emptyCreateForm(): AgentCreateFormState {
     mssql: false,
     mssqlInitRoot: "",
     playwright: false,
-    codexSkills: [],
   };
 }
 
@@ -721,20 +701,10 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
 }
 
 function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {
-  const labels = parseLabels(form.labels);
   const payload: AgentCreateRequest = {
     backend: form.backend,
     session_id: optionalText(form.sessionId),
     directory_path: optionalText(directoryPath),
-    model: optionalText(form.model),
-    ttl_hours: optionalNumber(form.ttlHours),
-    labels,
-    web_search_enabled: form.webSearchEnabled,
-    allowed_tools: parseList(form.allowedTools),
-    allowed_script_names: parseList(form.allowedScriptNames),
-    discord_channels: parseList(form.discordChannels),
-    email_mailboxes: parseList(form.emailMailboxes),
-    email_folders: parseList(form.emailFolders),
   };
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
@@ -750,13 +720,9 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
     payload.mssql = form.mssql;
     payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
     payload.playwright = form.playwright;
-    payload.codex_skills = form.codexSkills;
   } else {
     payload.target_name = optionalText(form.targetName);
     payload.container_image = optionalText(form.containerImage);
-  }
-  if (form.backend === "container_worker_vm") {
-    payload.codex_skills = form.codexSkills;
   }
   return payload;
 }
@@ -1591,18 +1557,6 @@ export function AgentsPage() {
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
   }
 
-  function toggleCreateSkill(skillName: string, selected: boolean) {
-    setCreateForm((current) => {
-      const selectedSkills = new Set(current.codexSkills);
-      if (selected) {
-        selectedSkills.add(skillName);
-      } else {
-        selectedSkills.delete(skillName);
-      }
-      return { ...current, codexSkills: Array.from(selectedSkills) };
-    });
-  }
-
   function toggleInstallSkill(skillName: string, selected: boolean) {
     setSkillInstallForm((current) => {
       const selectedSkills = new Set(current.codexSkills);
@@ -1622,10 +1576,6 @@ export function AgentsPage() {
     }
     if (createForm.backend === "container_worker_vm" && !createForm.sessionId.trim()) {
       setInlineValidation("Session id is required for container workers.");
-      return;
-    }
-    if (ttlIsInvalid(createForm.ttlHours)) {
-      setInlineValidation("TTL hours must be a number.");
       return;
     }
     setBusyAction("create-agent");
@@ -2221,44 +2171,48 @@ export function AgentsPage() {
                 <div className="config-field-grid">
                   <label className="field-stack">
                     <span>Backend</span>
-                    <select
-                      value={createForm.backend}
-                      onChange={(event) => {
-                        const nextBackend = event.target.value as AgentBackend;
-                        setCreateForm((current) => {
-                          const stillValid = (createOptions?.agent_providers ?? []).some(
-                            (option) =>
-                              option.value === current.agentProvider &&
-                              option.execution_backends.includes(nextBackend),
-                          );
-                          return {
-                            ...current,
-                            backend: nextBackend,
-                            agentProvider:
-                              current.agentProvider && stillValid ? current.agentProvider : "",
-                          };
-                        });
-                      }}
-                    >
-                      <option value="libvirt_vm">VM agent</option>
-                      <option value="container_worker_vm">Container worker</option>
-                    </select>
+                    <span className="select-field-control">
+                      <select
+                        value={createForm.backend}
+                        onChange={(event) => {
+                          const nextBackend = event.target.value as AgentBackend;
+                          setCreateForm((current) => {
+                            const stillValid = (createOptions?.agent_providers ?? []).some(
+                              (option) =>
+                                option.value === current.agentProvider &&
+                                option.execution_backends.includes(nextBackend),
+                            );
+                            return {
+                              ...current,
+                              backend: nextBackend,
+                              agentProvider:
+                                current.agentProvider && stillValid ? current.agentProvider : "",
+                            };
+                          });
+                        }}
+                      >
+                        <option value="libvirt_vm">VM agent</option>
+                        <option value="container_worker_vm">Container worker</option>
+                      </select>
+                    </span>
                   </label>
                   <label className="field-stack">
                     <span>Agent provider</span>
-                    <select
-                      value={createForm.agentProvider}
-                      onChange={(event) =>
-                        setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
-                      }
-                    >
-                      <option value="">Directory default</option>
-                      {createProviderOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                    <span className="select-field-control">
+                      <select
+                        value={createForm.agentProvider}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
+                        }
+                      >
+                        <option value="">Directory default</option>
+                        {createProviderOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
                   </label>
                   <label className="field-stack">
                     <span>Session</span>
@@ -2266,23 +2220,6 @@ export function AgentsPage() {
                       value={createForm.sessionId}
                       onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
                       placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Model</span>
-                    <input
-                      value={createForm.model}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, model: event.target.value }))}
-                      placeholder="Optional"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>TTL hours</span>
-                    <input
-                      inputMode="numeric"
-                      value={createForm.ttlHours}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, ttlHours: event.target.value }))}
-                      placeholder="Default"
                     />
                   </label>
                   {createForm.backend === "libvirt_vm" ? (
@@ -2311,21 +2248,23 @@ export function AgentsPage() {
                       </label>
                       <label className="field-stack">
                         <span>VM image</span>
-                        <select
-                          value={createForm.vmImage}
-                          onChange={(event) =>
-                            setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
-                          }
-                        >
-                          <option value="">
-                            {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
-                          </option>
-                          {(createOptions?.libvirt.templates ?? []).map((template) => (
-                            <option key={template.alias} value={template.alias}>
-                              {template.alias}
+                        <span className="select-field-control">
+                          <select
+                            value={createForm.vmImage}
+                            onChange={(event) =>
+                              setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
+                            }
+                          >
+                            <option value="">
+                              {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
                             </option>
-                          ))}
-                        </select>
+                            {(createOptions?.libvirt.templates ?? []).map((template) => (
+                              <option key={template.alias} value={template.alias}>
+                                {template.alias}
+                              </option>
+                            ))}
+                          </select>
+                        </span>
                       </label>
                     </>
                   ) : (
@@ -2343,21 +2282,23 @@ export function AgentsPage() {
                       <label className="field-stack">
                         <span>Container image selector</span>
                         {createOptions ? (
-                          <select
-                            value={createForm.containerImage}
-                            onChange={(event) =>
-                              setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
-                            }
-                          >
-                            <option value="">
-                              {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
-                            </option>
-                            {createOptions.container_worker.images.map((image) => (
-                              <option key={image.alias} value={image.alias}>
-                                {image.alias}
+                          <span className="select-field-control">
+                            <select
+                              value={createForm.containerImage}
+                              onChange={(event) =>
+                                setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
+                              }
+                            >
+                              <option value="">
+                                {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
                               </option>
-                            ))}
-                          </select>
+                              {createOptions.container_worker.images.map((image) => (
+                                <option key={image.alias} value={image.alias}>
+                                  {image.alias}
+                                </option>
+                              ))}
+                            </select>
+                          </span>
                         ) : (
                           <input
                             value={createForm.containerImage}
@@ -2370,63 +2311,6 @@ export function AgentsPage() {
                       </label>
                     </>
                   )}
-                  <label className="field-stack">
-                    <span>Labels</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.labels}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, labels: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Allowed tools</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.allowedTools}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
-                    />
-                  </label>
-                  <label className="checkbox-row agent-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={createForm.webSearchEnabled}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
-                    />
-                    <span>Web search</span>
-                  </label>
-                  <label className="field-stack">
-                    <span>Allowed scripts</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.allowedScriptNames}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Discord channels or targets</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.discordChannels}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, discordChannels: event.target.value }))}
-                      placeholder="channel-id or communication-target-id"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Email mailboxes</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.emailMailboxes}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, emailMailboxes: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Email folders</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.emailFolders}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, emailFolders: event.target.value }))}
-                    />
-                  </label>
                   {createForm.backend === "libvirt_vm" ? (
                     <>
                       <label className="checkbox-row agent-checkbox-row">
@@ -2471,22 +2355,6 @@ export function AgentsPage() {
                       </label>
                     </>
                   ) : null}
-                  <div className="field-stack field-span-2">
-                    <span>Codex skills</span>
-                    <div className="checkbox-grid skill-checkbox-grid">
-                      {skillOptions.map((skill) => (
-                        <label key={skill.name} className="checkbox-row agent-checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={createForm.codexSkills.includes(skill.name)}
-                            onChange={(event) => toggleCreateSkill(skill.name, event.target.checked)}
-                          />
-                          <span>{skill.name}</span>
-                        </label>
-                      ))}
-                      {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
-                    </div>
-                  </div>
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>

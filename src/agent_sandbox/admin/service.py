@@ -7534,6 +7534,8 @@ class AdminService:
                 include_inactive=True,
                 reconcile_containers=False,
                 all_directories=True,
+                omit_vm_state=True,
+                summary_only=True,
             )
         except Exception:
             return {}
@@ -10592,7 +10594,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             return None
         effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
-        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(session)
+        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
+            session,
+            effective_policy=effective_policy,
+        )
         inherited_approval_required_tools: list[str] = []
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
@@ -10618,7 +10623,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         approval_tool_settings = {
             tool.value: self.runtime.policy.approval_grant_settings_for_tool(
-                session, tool
+                session,
+                tool,
+                effective_policy=effective_policy,
             ).model_dump(mode="json")
             for tool in ToolName
         }
