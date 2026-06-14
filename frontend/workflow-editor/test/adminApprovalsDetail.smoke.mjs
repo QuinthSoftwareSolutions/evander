@@ -153,6 +153,10 @@ test("admin shell approvals detail renders intended effect and payload digest", 
       ],
     },
   };
+  let resolveApprovalDetailResponse;
+  const approvalDetailResponseReady = new Promise((resolve) => {
+    resolveApprovalDetailResponse = resolve;
+  });
   const sessionResponse = {
     auth_mode: "none",
     auth_required: false,
@@ -265,6 +269,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     }
 
     if (pathname === "/api/admin/approvals/approval-1") {
+      await approvalDetailResponseReady;
       await route.fulfill(jsonResponse(approvalDetailResponse));
       return;
     }
@@ -293,6 +298,8 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Loading approval request...", { exact: true }).waitFor({ state: "visible" }));
+  resolveApprovalDetailResponse();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Summary" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByRole("heading", { name: "Queue health" }).count(), 0);

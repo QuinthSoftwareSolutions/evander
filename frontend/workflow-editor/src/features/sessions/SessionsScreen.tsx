@@ -160,9 +160,15 @@ type SessionDetailResponse = {
   summary_json: Record<string, unknown>;
 };
 
+type CatalogOption = {
+  value: string;
+  label: string;
+};
+
 type SessionCatalogResponse = {
-  tool_options: Array<{ value: string; label: string }>;
-  resume_mode_options: Array<{ value: string; label: string }>;
+  tool_options: CatalogOption[];
+  model_options?: CatalogOption[];
+  resume_mode_options: CatalogOption[];
   renew_extension_presets: string[];
 };
 
@@ -1061,6 +1067,7 @@ export function SessionsScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [toolsStatus, setToolsStatus] = useState<string | null>(null);
   const [policyStatus, setPolicyStatus] = useState<string | null>(null);
@@ -1188,15 +1195,21 @@ export function SessionsScreen() {
   useEffect(() => {
     if (!selectedSessionId) {
       setDetail(null);
+      setDetailLoading(false);
       setDetailError(null);
-      setEditingWakeRequestId("");
+      resetWakeEditor();
       return;
     }
     let cancelled = false;
+    setDetailLoading(true);
+    setDetail(null);
+    setDetailError(null);
+    resetWakeEditor();
     fetchJson<SessionDetailResponse>(`/api/admin/sessions/${encodeURIComponent(selectedSessionId)}`)
       .then((payload) => {
         if (cancelled) return;
         setDetail(payload);
+        setDetailLoading(false);
         setDetailError(null);
         const sessionId = payload.session.session_id;
         if (modelBoundSessionId !== sessionId) {
@@ -1240,6 +1253,7 @@ export function SessionsScreen() {
       })
       .catch((reason) => {
         if (cancelled) return;
+        setDetailLoading(false);
         setDetailError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => {
@@ -1277,7 +1291,9 @@ export function SessionsScreen() {
     [detail?.wake_schedules, showPastOneTimeWakeSchedules, wakeVisibilityNowMs],
   );
   const hiddenPastOneTimeWakeScheduleCount = (detail?.wake_schedules.length ?? 0) - visibleWakeScheduleItems.length;
-  const wakeScheduleCountLabel = hiddenPastOneTimeWakeScheduleCount > 0 && !showPastOneTimeWakeSchedules
+  const wakeScheduleCountLabel = detailLoading && selectedSessionId
+    ? "Loading..."
+    : hiddenPastOneTimeWakeScheduleCount > 0 && !showPastOneTimeWakeSchedules
     ? `${visibleWakeScheduleItems.length} shown, ${hiddenPastOneTimeWakeScheduleCount} hidden`
     : `${detail?.wake_schedules.length ?? 0} configured`;
 
@@ -2088,9 +2104,11 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                     <datalist id="session-model-suggestions">
-                      <option value="gpt-5.4" />
-                      <option value="gpt-5.4-mini" />
-                      <option value="gpt-5.4-nano" />
+                      {(catalog?.model_options ?? []).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </datalist>
                   </label>
                   {modelStatus ? <div className="success-box">{modelStatus}</div> : null}
@@ -2471,7 +2489,8 @@ export function SessionsScreen() {
                     ) : null}
                   </div>
                   <div className="feature-list compact-list">
-                    {visibleWakeScheduleItems.map((item) => (
+                    {detailLoading && selectedSessionId ? <div className="empty-state">Loading wake schedules...</div> : null}
+                    {!detailLoading && visibleWakeScheduleItems.map((item) => (
                       <button
                         key={item.request_id}
                         type="button"
@@ -2488,8 +2507,8 @@ export function SessionsScreen() {
                         <div className="feature-list-meta">{item.resume_mode}</div>
                       </button>
                     ))}
-                    {detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
-                    {(detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
+                    {!detailLoading && detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
+                    {!detailLoading && (detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
                   </div>
                   <div className="wake-ledger-section">
                     <div className="panel-header wake-ledger-header">

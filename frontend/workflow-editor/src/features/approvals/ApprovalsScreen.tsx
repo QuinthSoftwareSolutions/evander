@@ -759,7 +759,9 @@ export function ApprovalsScreen() {
             <h3>Review</h3>
             <span className="panel-meta">{detailLoading ? "Loading..." : detail ? detail.request.request_id : "Nothing selected"}</span>
           </div>
-          {detail ? (
+          {detailLoading && selectedId && !detail ? (
+            <div className="empty-state">Loading approval request...</div>
+          ) : detail ? (
             <div className="stack-layout">
               <dl className="property-grid">
                 <div><dt>Status</dt><dd>{detail.request.status}</dd></div>

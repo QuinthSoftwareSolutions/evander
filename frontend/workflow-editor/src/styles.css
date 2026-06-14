@@ -5933,6 +5933,12 @@ select {
   align-items: center;
   gap: 0.55rem;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.model-pricing-panel-toggle-meta .status-pill {
+  white-space: nowrap;
 }
 
 .model-pricing-section-actions {
@@ -7395,6 +7401,7 @@ select {
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   align-content: start;
+  gap: 1rem;
 }
 
 .dashboard-panel-grid {
@@ -7502,6 +7509,11 @@ select {
   gap: 0.85rem;
 }
 
+.dashboard-block-stack {
+  display: grid;
+  gap: 0.55rem;
+}
+
 .dashboard-block-capacity {
   order: 1;
 }
@@ -7561,6 +7573,8 @@ select {
 }
 
 .dashboard-block-copy p {
+  margin: 0.2rem 0 0;
+  color: inherit;
   overflow-wrap: anywhere;
 }
 
@@ -7633,13 +7647,34 @@ select {
 }
 
 .dashboard-disk-dial {
+  --dashboard-disk-dial-fill: #8a99a3;
+  --dashboard-disk-dial-track: rgba(32, 69, 78, 0.12);
+  --dashboard-disk-dial-face: #f5f8f7;
+  --dashboard-disk-dial-ink: #173241;
   position: relative;
   display: grid;
   place-items: center;
   width: 4.1rem;
   height: 4.1rem;
   border-radius: 50%;
-  color: #173241;
+  color: var(--dashboard-disk-dial-ink);
+  background: conic-gradient(var(--dashboard-disk-dial-fill) var(--dashboard-disk-dial-percent, 0%), var(--dashboard-disk-dial-track) 0);
+}
+
+.dashboard-disk-dial.state-pass {
+  --dashboard-disk-dial-fill: #28885d;
+}
+
+.dashboard-disk-dial.state-running {
+  --dashboard-disk-dial-fill: #c58a1a;
+}
+
+.dashboard-disk-dial.state-fail {
+  --dashboard-disk-dial-fill: #be3144;
+}
+
+.dashboard-disk-dial.state-idle {
+  --dashboard-disk-dial-fill: #8a99a3;
 }
 
 .dashboard-disk-dial::after {
@@ -7647,13 +7682,13 @@ select {
   position: absolute;
   inset: 0.48rem;
   border-radius: 50%;
-  background: #f5f8f7;
+  background: var(--dashboard-disk-dial-face);
 }
 
 .dashboard-disk-dial span {
   position: relative;
   z-index: 1;
-  color: #173241;
+  color: var(--dashboard-disk-dial-ink);
   font-size: 0.82rem;
   font-weight: 800;
   line-height: 1;
@@ -7677,6 +7712,21 @@ select {
   font-size: 0.8rem;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.dashboard-toolbar-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.dashboard-toolbar-copy strong {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-toolbar-summary {
+  color: inherit;
+  opacity: 0.8;
 }
 
 .dashboard-disk-empty {
@@ -7859,6 +7909,7 @@ select {
 }
 
 .dashboard-release-summary {
+  margin: 0;
   color: #51636b;
   font-size: 0.92rem;
   line-height: 1.45;
@@ -9456,6 +9507,29 @@ button.mobile-record-card:focus-visible,
   border-color: rgba(125, 170, 190, 0.16);
   background: rgba(18, 31, 39, 0.92);
   box-shadow: none;
+}
+
+:root[data-theme="dark"] .dashboard-disk-dial {
+  --dashboard-disk-dial-fill: #a7b4bf;
+  --dashboard-disk-dial-track: rgba(125, 170, 190, 0.16);
+  --dashboard-disk-dial-face: #182730;
+  --dashboard-disk-dial-ink: #d7e3ea;
+}
+
+:root[data-theme="dark"] .dashboard-disk-dial.state-pass {
+  --dashboard-disk-dial-fill: #5bbd8a;
+}
+
+:root[data-theme="dark"] .dashboard-disk-dial.state-running {
+  --dashboard-disk-dial-fill: #e0a94f;
+}
+
+:root[data-theme="dark"] .dashboard-disk-dial.state-fail {
+  --dashboard-disk-dial-fill: #e15f6b;
+}
+
+:root[data-theme="dark"] .dashboard-disk-dial.state-idle {
+  --dashboard-disk-dial-fill: #a7b4bf;
 }
 
 :root[data-theme="dark"] .dashboard-metric-list,

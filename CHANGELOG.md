@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Admin UI Polish
+
+- Switched session model suggestions to catalog-driven options so the Sessions
+  page keeps free entry without hardcoded model ids.
+- Moved dashboard spacing and disk-dial tone values into shared CSS and theme
+  tokens to reduce inline style duplication.
+- Added visible feedback for collapsed pricing edits, deep-linked approval
+  loading, and artifact upload success so state changes stay observable after
+  the related panel or modal closes.
+
 ## 2026-06-14 - Structured Policy Inputs
 
 - Added shared structured editors for list, map, JSON-object, and regex policy

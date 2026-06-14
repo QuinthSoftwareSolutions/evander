@@ -111,6 +111,16 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
         label: "Prompt agent",
       },
     ],
+    model_options: [
+      {
+        value: "claude-sonnet-4.5",
+        label: "Claude Sonnet 4.5",
+      },
+      {
+        value: "gemini-2.5-pro",
+        label: "Gemini 2.5 Pro",
+      },
+    ],
     resume_mode_options: [
       {
         value: "same_context",
@@ -370,7 +380,28 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await labelsRow.locator("input").first().inputValue(), "labels");
   const labelsValueInput = labelsRow.locator("textarea").first();
   const labelsValueText = await labelsValueInput.inputValue();
-  assert.match(await labelsValueInput.inputValue(), /"team": "ops"/);
+  assert.match(labelsValueText, /"team": "ops"/);
+  const modelInput = page.locator('input[list="session-model-suggestions"]');
+  assert.equal(await modelInput.inputValue(), "gpt-5.4");
+  assert.deepEqual(
+    await page.locator("#session-model-suggestions option").evaluateAll((options) =>
+      options.map((option) => ({
+        value: option.getAttribute("value"),
+        label: option.textContent?.trim() ?? "",
+      })),
+    ),
+    [
+      {
+        value: "claude-sonnet-4.5",
+        label: "Claude Sonnet 4.5",
+      },
+      {
+        value: "gemini-2.5-pro",
+        label: "Gemini 2.5 Pro",
+      },
+    ],
+  );
+  await assert.doesNotReject(() => page.getByText("No wake schedules configured.").waitFor({ state: "visible" }));
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
   const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
   const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
@@ -507,6 +538,236 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.deepEqual(sessionRecord.approval_required_tools, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1/allowed-tools"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page shows wake schedule loading while the selected session detail is pending", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  let resolveDetail;
+  const detailGate = new Promise((resolve) => {
+    resolveDetail = resolve;
+  });
+
+  const sessionRecord = {
+    session_id: "session-1",
+    vm_id: "vm-1",
+    model: "custom-model",
+    directory_path: "root/team",
+    allowed_tools: [],
+    approval_required_tools: [],
+    effective_tool_policy: {
+      allowed_tools: [],
+      inherited_approval_required_tools: [],
+      approval_required_tools: [],
+      approval_tool_settings: {},
+      mcp_tool_policies: {},
+      tool_argument_policies: {},
+    },
+    allowed_script_names: [],
+    discord_channel_allowlist: [],
+    teams_channel_allowlist: [],
+    communication_file_receive_enabled: false,
+    communication_file_send_enabled: false,
+    communication_file_max_bytes: null,
+    communication_file_allowed_mime_types: [],
+    communication_file_allowed_extensions: [],
+    communication_file_blocked_extensions: [],
+    communication_file_require_approval_for_send: false,
+    web_search_enabled: false,
+    expires_at: "2026-05-18T12:00:00Z",
+    created_at: "2026-05-17T12:00:00Z",
+    metadata: {},
+    issue_number: null,
+    is_expired: false,
+  };
+  const sessionListResponse = {
+    items: [sessionRecord],
+    active_items: [sessionRecord],
+    expired_items: [],
+    counts: {
+      total: 1,
+      active: 1,
+      expired: 0,
+    },
+  };
+  const sessionDetailResponse = {
+    session: sessionRecord,
+    wake_schedules: [],
+    summary_json: {},
+  };
+  const sessionCatalogResponse = {
+    tool_options: [],
+    model_options: [],
+    resume_mode_options: [
+      {
+        value: "same_context",
+        label: "Same context",
+      },
+    ],
+    renew_extension_presets: ["1d"],
+  };
+  const sessionResponse = {
+    auth_mode: "none",
+    auth_required: false,
+    authenticated: true,
+    username: "admin",
+    display_name: "Admin Operator",
+    role: "admin",
+    can_manage_users: true,
+    session_id: "session-123",
+    available_login_methods: [],
+    azure_sso_login_url: null,
+    privileged_operations: {
+      unlocked: true,
+    },
+  };
+  const adminStateResponse = {
+    selected_directory_path: "root",
+    directory_scoped_config_enabled: false,
+    execution_backend: "libvirt_vm",
+    role: "admin",
+    can_manage_users: true,
+    privileged_operations: {
+      unlocked: true,
+    },
+    assistant: {
+      enabled: false,
+      show_launcher_when_disabled: false,
+    },
+  };
+  const rootDirectoryNode = {
+    directory: {
+      id: "root",
+      name: "root",
+      parent_id: null,
+      created_at: "2026-05-16T00:00:00Z",
+      metadata: {},
+      path: "root",
+    },
+    config_domains: [],
+    children: [],
+  };
+  const configurationStateResponse = {
+    directory_scoped_config_enabled: false,
+    selected_directory_path: "root",
+    execution_backend: "libvirt_vm",
+    selected_directory: {
+      path: "root",
+      parent_path: null,
+      can_create: false,
+      can_delete: false,
+    },
+    tree: {
+      ok: true,
+      data: rootDirectoryNode,
+      errors: [],
+      validation_diagnostics: [],
+    },
+  };
+
+  await t.after(async () => {
+    if (resolveDetail) {
+      resolveDetail();
+    }
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(jsonResponse(sessionResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/state") {
+      await route.fulfill(jsonResponse(adminStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/configuration/state") {
+      await route.fulfill(jsonResponse(configurationStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/catalog") {
+      await route.fulfill(jsonResponse(sessionCatalogResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions") {
+      await route.fulfill(jsonResponse(sessionListResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions/session-1") {
+      await detailGate;
+      await route.fulfill(jsonResponse(sessionDetailResponse));
+      return;
+    }
+
+    await route.continue();
+  });
+
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Loading wake schedules...").waitFor({ state: "visible" }));
+
+  resolveDetail();
+
+  await assert.doesNotReject(() => page.getByText("No wake schedules configured.").waitFor({ state: "visible" }));
+
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

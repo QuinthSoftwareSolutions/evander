@@ -2698,6 +2698,9 @@ export function ConfigurationScreen() {
               </div>
               <div className="model-pricing-panel-toggle-meta">
                 <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
+                {modelPricingDirty && modelPricingPanelCollapsed ? (
+                  <span className="status-pill state-stale">Unsaved changes</span>
+                ) : null}
                 <span className="panel-toggle-indicator">{modelPricingPanelCollapsed ? "Show" : "Hide"}</span>
               </div>
             </button>
