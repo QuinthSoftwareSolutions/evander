@@ -46,14 +46,21 @@ class ScheduledWakeWorker:
         config: GatewayConfig,
         worker_config: ScheduledWakeWorkerGlobalConfig,
         runtime: RuntimeContext,
+        base_config: GatewayConfig | None = None,
+        config_reloader: ScheduledWakeWorkerGlobalConfigReloader | None = None,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._base_config = base_config or config
+        self._config_reloader = (
+            config_reloader
+            or FixedScheduledWakeWorkerGlobalConfigReloader(self.worker_config)
+        )
         self.runtime = runtime
         self.dispatcher = HostWakeDispatcher(
-            config=config,
+            config=self.config,
             runtime=runtime,
-            agent_control_store=AgentControlStore(config.host_agent_control_state_path),
+            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
         )
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
@@ -80,6 +87,7 @@ class ScheduledWakeWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> ScheduledWakeCycleResult:
+        self._refresh_config_from_reloader()
         now_utc = datetime.now(UTC)
         wake_store = getattr(self.runtime, "wake_store", None)
         if wake_store is not None:
@@ -174,6 +182,27 @@ class ScheduledWakeWorker:
 
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Scheduled wake worker cycle failed")
+
+    def _refresh_config_from_reloader(self) -> None:
+        latest_config, changed = self._config_reloader.get_latest()
+        if not changed:
+            return
+
+        self.worker_config = latest_config
+        self.config = _effective_gateway_config_for_scheduled_wake(
+            self._base_config,
+            self.worker_config,
+        )
+        self.dispatcher = HostWakeDispatcher(
+            config=self.config,
+            runtime=self.runtime,
+            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
+        )
+        logger.info(
+            "Scheduled wake worker config reloaded prefix_text=%r directories=%d",
+            self.worker_config.scheduled_wake_prefix_text,
+            len(self.worker_config.directories),
+        )
 
     def _dispatch_request(
         self, *, request: WakeScheduledRequest, session: Any, now_utc: datetime
@@ -509,8 +538,17 @@ def build_scheduled_wake_worker(
     )
     effective_config = _effective_gateway_config_for_scheduled_wake(config, worker_config)
     runtime = build_runtime(effective_config)
+    config_reloader = ScheduledWakeWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     return ScheduledWakeWorker(
-        config=effective_config, worker_config=worker_config, runtime=runtime
+        config=effective_config,
+        worker_config=worker_config,
+        runtime=runtime,
+        base_config=config,
+        config_reloader=config_reloader,
     )
 
 
