@@ -13,6 +13,10 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
+from agent_sandbox.contact_allowlists import (
+    require_allowed_contact_id,
+    validate_allowed_contact_ids_for_directory,
+)
 from agent_sandbox.directory_config import (
     ContactDirectoryConfig,
     DirectoryContactEntry,
@@ -920,6 +924,20 @@ class OpenAIRealtimePhoneCallService:
         normalized_contact = str(contact or "").strip()
         if not normalized_contact:
             raise ValueError("contact is required")
+        normalized_prompt = str(prompt or "").strip()
+        if not normalized_prompt:
+            raise ValueError("prompt is required")
+        validate_allowed_contact_ids_for_directory(
+            self.contacts_config,
+            session.allowed_contact_ids,
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        normalized_contact = require_allowed_contact_id(
+            normalized_contact,
+            session.allowed_contact_ids,
+            session_id=session.session_id,
+        )
         contact_entry, phone_number = self._resolve_contact(normalized_contact)
         tool_summary = None
         if self.tool_summary_provider is not None:
@@ -929,12 +947,12 @@ class OpenAIRealtimePhoneCallService:
                 tool_summary = None
         projection = self.projection_service.build_projection(
             session=session,
-            prompt=prompt,
+            prompt=normalized_prompt,
             channel="phone",
             metadata=metadata or {},
             tool_summary=tool_summary,
         )
-        prompt_metadata = _prompt_metadata(prompt)
+        prompt_metadata = _prompt_metadata(normalized_prompt)
         record, created = self.store.prepare_session(
             origin_session_id=session.session_id,
             directory_path=session.directory_path,

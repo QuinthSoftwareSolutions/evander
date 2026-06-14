@@ -12,11 +12,13 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.directory_config import ContactDirectoryConfig
 from agent_sandbox.gateway import create_app
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.retell_phone import (
     RetellPhoneCallStore,
     RetellPhoneClient,
+    RetellPhoneCallService,
     RetellWebhookSignatureError,
     verify_retell_webhook_signature,
 )
@@ -39,12 +41,39 @@ def _config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
     )
 
 
-def _session(session_id: str, *, directory_path: str = "root") -> SessionManifest:
+def _session(
+    session_id: str,
+    *,
+    directory_path: str = "root",
+    allowed_contact_ids: list[str] | None = None,
+) -> SessionManifest:
     return SessionManifest(
         session_id=session_id,
         directory_path=directory_path,
         allowed_tools=[ToolName.MAKE_PHONE_CALL],
+        allowed_contact_ids=allowed_contact_ids,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+
+def _contacts() -> ContactDirectoryConfig:
+    return ContactDirectoryConfig.model_validate(
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550000002", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550000003", "primary": True}
+                    ],
+                },
+            }
+        }
     )
 
 
@@ -180,6 +209,73 @@ def test_retell_store_rejects_request_id_reuse_with_different_inputs(tmp_path: P
             prompt_metadata={"sha256": "prompt-sha", "length": 8},
             request_id="phone-1",
         )
+
+
+def test_retell_phone_call_service_enforces_contact_allowlist_before_provider_request(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, json={"call_id": "call-1", "call_status": "registered"})
+
+    client = RetellPhoneClient(
+        api_base_url="https://retell.test",
+        api_key="secret-key",
+        timeout_seconds=12.5,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    service = RetellPhoneCallService(
+        config=_config(tmp_path),
+        contacts_config=_contacts(),
+        store=RetellPhoneCallStore(tmp_path / "retell-phone-calls-store.json"),
+        client=client,
+    )
+    allowed_session = _session("session-1", allowed_contact_ids=["ops"])
+
+    record = service.make_phone_call(
+        session=allowed_session,
+        contact="ops",
+        prompt="Ask whether the shipment arrived.",
+        request_id="phone-allowed",
+    )
+    assert record.call_id == "call-1"
+    assert len(requests) == 1
+    assert json.loads(requests[0].content.decode("utf-8"))["to_number"] == "+15550000002"
+
+    with pytest.raises(
+        ValueError,
+        match=r"Contact 'support' is not allowed for session 'session-1'",
+    ):
+        service.make_phone_call(
+            session=allowed_session,
+            contact="support",
+            prompt="Ask whether the shipment arrived.",
+            request_id="phone-blocked",
+        )
+
+    invalid_allowlist_session = _session(
+        "session-2",
+        allowed_contact_ids=["ops", "missing"],
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"contacts allowlist for session 'session-2' and directory 'root' "
+            r"references unknown contact ids: missing"
+        ),
+    ):
+        service.make_phone_call(
+            session=invalid_allowlist_session,
+            contact="ops",
+            prompt="Ask whether the shipment arrived.",
+            request_id="phone-invalid",
+        )
+
+    assert len(requests) == 1
+    assert service.store.get_by_request_id("phone-blocked") is None
+    assert service.store.get_by_request_id("phone-invalid") is None
 
 
 def test_retell_webhook_signature_validates_raw_body() -> None:
