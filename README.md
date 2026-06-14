@@ -891,6 +891,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   artifacts when outbound communication file send is enabled for the session.
 - Use `update_ado_backlog_text` to update the work item description or acceptance criteria and
   append staged artifact links/images to those fields.
+- Use `update_ado_backlog_title` to rename an Azure DevOps backlog item by numeric work-item id;
+  it is policy-gated with `update_ado_backlog_title`.
 - Use `update_ado_backlog_tags` to merge Azure DevOps backlog item tags, such as adding
   `auto-dev-approved` after an operator review.
 - Use `query_ado_backlog_items` to list/filter Azure DevOps backlog work items.
@@ -908,6 +910,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `artifact_ids`.
 - `update_ado_backlog_text` accepts `id`, optional `project`, `description`,
   `acceptance_criteria`, `description_artifact_ids`, and `acceptance_criteria_artifact_ids`.
+- `update_ado_backlog_title` accepts `id`, optional `project`, and required non-empty `title`;
+  blank or whitespace-only titles are rejected and the trimmed value updates `System.Title`.
 - `update_ado_backlog_tags` accepts `id`, optional `project`, `add_tags`, and `remove_tags`.
 - `get_ado_daily_status_report_data` accepts optional `project`, `team`, `area_path`, `states`,
   `types`, `tags_any`, `text_search`, report-label overrides, state-group overrides,

@@ -102,6 +102,7 @@ from agent_sandbox.models import (
     AdoBacklogQueryResponse,
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
+    AdoBacklogTitleUpdateRequest,
     ApprovalRequest,
     ApprovalStatus,
     AuditEvent,
@@ -4414,6 +4415,71 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def update_ado_backlog_title(
+        id: int | str,
+        title: str,
+        project: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogTitleUpdateRequest(
+            id=id,
+            project=project,
+            title=title,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE
+            )
+            result = IssueService(context.provider_config).update_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                state=None,
+                fields={"System.Title": request_model.title},
+            )
+            result_fields = result.get("fields")
+            updated_title = request_model.title
+            if isinstance(result_fields, dict) and "System.Title" in result_fields:
+                updated_title = result_fields["System.Title"]
+            response = {
+                **result,
+                "work_item_id": request_model.id,
+                "title": updated_title,
+            }
+            audit_success(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TITLE,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "updated": result.get("updated"),
+                    "title": updated_title,
+                },
+            )
+            return response
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TITLE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def update_ado_backlog_tags(
         id: int | str,
         project: str | None = None,
@@ -6161,8 +6227,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         """Cancel an obsolete wake request owned by the caller session.
 
         Use this to retire pending future wakes that are no longer needed. The
-        caller cannot cancel wakes owned by another session, and one-time wakes
-        that have already been dispatched or completed remain immutable.
+        caller cannot cancel wakes owned by another session, and completed or
+        already-cancelled wakes remain immutable.
         """
 
         resolved_session_id = _resolve_session_id_from_context(

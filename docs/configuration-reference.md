@@ -320,6 +320,26 @@ These flows are independent from the wake workers. Discord inbox waking and sche
 covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
 ADO worker.
 
+### Scheduled wake worker keys
+
+The scheduled wake worker reads `config/scheduled-wake/config.json`. The keys below shape the
+worker's polling and one-time completion-confirmation retry behavior.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `directories` | `config/scheduled-wake/config.json` | Directory scopes the worker may dispatch for. |
+| `poll_interval_seconds` | `config/scheduled-wake/config.json` | Cycle cadence for the scheduled wake worker. |
+| `jitter_seconds` | `config/scheduled-wake/config.json` | Random sleep jitter added to each poll cycle. |
+| `backoff_seconds` | `config/scheduled-wake/config.json` | Whole-cycle exception backoff for the worker loop. |
+| `cooldown_seconds` | `config/scheduled-wake/config.json` | Per-session cooldown after a handled wake dispatch. |
+| `completion_confirmation_timeout_seconds` | `config/scheduled-wake/config.json` | How long a one-time dispatched wake stays in the confirmation window before retry logic can requeue it. |
+| `completion_confirmation_retry_max_attempts` | `config/scheduled-wake/config.json` | Maximum automatic confirmation retries for a one-time wake batch. |
+| `completion_confirmation_retry_window_seconds` | `config/scheduled-wake/config.json` | Maximum age of a confirmation retry batch before it is exhausted. |
+| `completion_confirmation_retry_base_backoff_seconds` | `config/scheduled-wake/config.json` | Initial backoff used when a one-time wake is requeued for confirmation retry. |
+| `completion_confirmation_retry_max_backoff_seconds` | `config/scheduled-wake/config.json` | Ceiling for the confirmation retry backoff. |
+| `late_threshold_seconds` | `config/scheduled-wake/config.json` | Maximum lateness before the worker/API marks a wake `missed_or_late`. |
+| `scheduled_wake_prefix_text` | `config/scheduled-wake/config.json` | Shared prompt prefix prepended to scheduled wake resume text. |
+
 Example:
 
 ```json
@@ -1051,10 +1071,13 @@ prompt command resumes the last Codex context when no explicit thread id is avai
 created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
 container Codex exec session.
 
-Cancelled requests remain visible in admin history, but already dispatched or completed one-time
-wakes are immutable and other sessions cannot cancel them. The tool also returns clear terminal
-statuses for `already_cancelled`, `already_dispatched`, `already_completed`, `not_found`,
-`missing_request_id`, and `permission_denied`.
+Cancelled requests remain visible in admin history. A session can cancel its own one-time wake
+while it is pending, due, dispatching, queued, dispatched and awaiting confirmation, failed, or
+missed/late. Completed and already-cancelled one-time wakes remain immutable, and other sessions
+cannot cancel them. The tool also returns clear terminal statuses for `already_cancelled`,
+`already_completed`, `not_found`, `missing_request_id`, and `permission_denied`; older clients may
+still understand `already_dispatched`, but dispatched/awaiting-confirmation wakes now cancel
+successfully.
 
 - Recurring cron schedule (host CLI):
 

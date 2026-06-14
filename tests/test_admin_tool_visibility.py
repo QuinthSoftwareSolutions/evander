@@ -197,6 +197,31 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
     assert delete_row.requires_approval is True
 
 
+def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    payload = service.tool_visibility_payload(target="session-1")
+    rows = _tool_rows(payload)
+
+    visible = rows[ToolName.UPDATE_ADO_BACKLOG_TITLE.value]
+    assert visible.visibility_state is ToolVisibilityState.VISIBLE
+    assert visible.source == "session.allowed_tools"
+    assert visible.category == "Azure DevOps"
+    assert visible.provider == "azure_devops"
+    assert visible.label == "update ado backlog title"
+
+
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     tmp_path: Path,
 ) -> None:

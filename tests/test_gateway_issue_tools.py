@@ -720,6 +720,118 @@ def test_update_ado_backlog_tags_requires_permission(tmp_path: Path) -> None:
         )
 
 
+def test_update_ado_backlog_title_updates_system_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append({"provider_config": provider_config})
+
+        def update_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"update": kwargs})
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": "15446",
+                "updated": True,
+                "fields": {"System.Title": "Renamed backlog item"},
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "update_ado_backlog_title",
+        {
+            "session_id": "session-1",
+            "id": 15446,
+            "project": "Example Industry APP",
+            "title": "  Renamed backlog item  ",
+        },
+    )
+
+    assert calls[0]["provider_config"] == context.provider_config
+    assert calls[1]["update"] == {
+        "provider": "azure_devops",
+        "remote_issue_id": "15446",
+        "directory_path": "root/team-a",
+        "project": "Example Industry APP",
+        "state": None,
+        "fields": {"System.Title": "Renamed backlog item"},
+    }
+    assert result["work_item_id"] == "15446"
+    assert result["title"] == "Renamed backlog item"
+    assert result["fields"]["System.Title"] == "Renamed backlog item"
+
+
+def test_update_ado_backlog_title_rejects_blank_title_before_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[object] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append(provider_config)
+
+        def update_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {}
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="title cannot be empty"):
+        asyncio.run(
+            server.call_tool(
+                "update_ado_backlog_title",
+                {"session_id": "session-1", "id": 15446, "title": "   "},
+            )
+        )
+
+    assert calls == []
+
+
+def test_update_ado_backlog_title_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "update_ado_backlog_title",
+                {"session_id": "session-1", "id": 15446, "title": "Renamed backlog item"},
+            )
+        )
+
+
 def test_query_ado_backlog_items_maps_request_into_issue_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

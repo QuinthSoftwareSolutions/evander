@@ -71,6 +71,7 @@ class ToolName(str, Enum):
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
     DELETE_ADO_BACKLOG_ITEM = "delete_ado_backlog_item"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
+    UPDATE_ADO_BACKLOG_TITLE = "update_ado_backlog_title"
     UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
@@ -1947,6 +1948,43 @@ class AdoBacklogTextUpdateRequest(BaseModel):
             raise ValueError("description or acceptance_criteria update is required")
 
 
+class AdoBacklogTitleUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    title: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def trim_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_and_validate_title(cls, value: object) -> str:
+        if value is None:
+            normalized = ""
+        else:
+            normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("title cannot be empty")
+        return normalized
+
+
 class AdoBacklogTagsUpdateRequest(BaseModel):
     id: int | str
     project: str | None = None
@@ -2912,6 +2950,10 @@ class WakeScheduledRequest(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+    auto_dispatch_attempts: int = Field(default=0, ge=0)
+    auto_retry_started_at: datetime | None = None
+    auto_retry_last_backoff_seconds: float | None = Field(default=None, ge=0)
+    auto_retry_exhausted_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancelled_by_session_id: str | None = None
     cancel_reason: str | None = None

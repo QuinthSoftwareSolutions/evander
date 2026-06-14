@@ -8,6 +8,7 @@ from agent_sandbox.models import (
     AdoBacklogDeleteRequest,
     AdoBacklogDeleteResponse,
     AdoBacklogItemType,
+    AdoBacklogTitleUpdateRequest,
     ToolName,
     normalize_tool_names,
 )
@@ -159,3 +160,30 @@ def test_tool_name_delete_backlog_item_is_accepted_by_normalization() -> None:
         [ToolName.DELETE_ADO_BACKLOG_ITEM],
         field_name="tools",
     ) == [ToolName.DELETE_ADO_BACKLOG_ITEM]
+
+
+def test_backlog_title_update_request_normalizes_fields() -> None:
+    payload = AdoBacklogTitleUpdateRequest(
+        id=15984,
+        project="  My Project  ",
+        title="  New title  ",
+    )
+
+    assert payload.id == "15984"
+    assert payload.project == "My Project"
+    assert payload.title == "New title"
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+def test_backlog_title_update_request_rejects_blank_title(title: str) -> None:
+    with pytest.raises(ValidationError, match="title cannot be empty"):
+        AdoBacklogTitleUpdateRequest(id=15984, title=title)
+
+
+@pytest.mark.parametrize("raw_id", ["abc", "12x", True])
+def test_backlog_title_update_request_rejects_non_numeric_id(raw_id: object) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="id must be a numeric backlog item id|id must be an integer",
+    ):
+        AdoBacklogTitleUpdateRequest(id=raw_id, title="New title")
