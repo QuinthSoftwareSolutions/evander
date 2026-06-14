@@ -20,6 +20,36 @@ material. Newer entries are added incrementally as changes land.
 - Required title validation now rejects blank or whitespace-only values before
   the ADO update call and writes the trimmed value to `System.Title`.
 
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
+
+## 2026-06-13 - Admin Agents Status Performance
+
+- Reduced Admin Web all-directory agent status expansion work by using
+  lightweight agent summaries for capacity health and reusing resolved policy
+  config while building effective tool-policy payloads.
+
+## 2026-06-13 - Agents Create Dialog Cleanup
+
+- Removed edit-after-create policy fields from the Admin Web Create agent dialog
+  and centered the generated caret on wrapped create-dialog selects.
+
+## 2026-06-13 - Sessions Toolbar Icon Fix
+
+- Replaced the Sessions page cleanup action label with an icon-only toolbar
+  button so it no longer overflows adjacent status and VM controls.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from
@@ -226,7 +256,6 @@ material. Newer entries are added incrementally as changes land.
   other records have no timestamp.
 - Documented the derived-current-state boundary, timestamp-missing behavior,
   and the fact that the view is not a persisted audit log.
->>>>>>> main
 
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
@@ -253,7 +282,6 @@ material. Newer entries are added incrementally as changes land.
 - Added an operator-facing inbound route example with caller allow/block policy
   and clarified the failure handling for route misses, caller rejection, missing
   sessions, bridge setup failures, and hangup/reconciliation cases.
->>>>>>> main
 
 ## 2026-06-11 - Agents Page Detail Layout
 

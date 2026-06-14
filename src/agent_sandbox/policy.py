@@ -368,6 +368,8 @@ class PolicyEngine:
     ) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return True
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = set(session.approval_required_tools or [])
         required_tools.update(effective_policy.approval_required_tools)
@@ -498,7 +500,11 @@ class PolicyEngine:
                 )
 
         approval_settings = (
-            self.approval_grant_settings_for_tool(session, tool_name)
+            self.approval_grant_settings_for_tool(
+                session,
+                tool_name,
+                effective_policy=effective_policy,
+            )
             if requires_approval
             else None
         )
@@ -654,8 +660,9 @@ class PolicyEngine:
         *,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
+        effective_policy: EffectivePolicyConfig | None = None,
     ) -> dict[str, Any]:
-        effective_policy = self.effective_policy_for_session(session)
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
         available_tools: list[dict[str, Any]] = []
         approval_required_tools: list[str] = []
         unavailable_tools: list[dict[str, Any]] = []
@@ -701,16 +708,30 @@ class PolicyEngine:
         return self.effective_policy_for_session(session).mcp_tool_policies.get(tool_name.value)
 
     def approval_grant_settings_for_tool(
-        self, session: SessionManifest, tool_name: ToolName
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        *,
+        effective_policy: EffectivePolicyConfig | None = None,
     ) -> ApprovalGrantSettings:
-        rule = self.mcp_tool_policy_for_session(session, tool_name)
+        if effective_policy is not None:
+            rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        else:
+            rule = self.mcp_tool_policy_for_session(session, tool_name)
         settings = ApprovalGrantSettings()
         if rule is not None and rule.default_settings is not None:
             settings = rule.default_settings
         session_settings = session.approval_tool_settings.get(tool_name.value)
         if session_settings is not None:
             settings = session_settings
-        return self._apply_approval_grant_limits(settings, rule)
+        effective_settings = self._apply_approval_grant_limits(settings, rule)
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return ApprovalGrantSettings(
+                ttl_seconds=effective_settings.ttl_seconds,
+                max_uses=1,
+                payload_mode=ApprovalPayloadMode.EXACT,
+            )
+        return effective_settings
 
     def _apply_approval_grant_limits(
         self, settings: ApprovalGrantSettings, rule: McpToolPolicyRule | None

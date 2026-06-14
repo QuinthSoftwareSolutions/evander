@@ -939,6 +939,43 @@ def test_list_agents_summary_mode_skips_stale_session_effective_policy_for_missi
         )
 
 
+def test_capacity_session_statuses_use_summary_agent_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    list_agents_calls: list[dict[str, object]] = []
+
+    def list_agents(self: AdminService, **kwargs: object) -> list[AgentRecord]:
+        list_agents_calls.append(kwargs)
+        return [
+            AgentRecord(
+                agent_id="container-session",
+                backend="container_worker_vm",
+                target_name="container-target",
+                session_id="container-session",
+                directory_path="root",
+                status="running",
+                updated_at=datetime(2026, 6, 13, tzinfo=UTC),
+                host={"kind": "container_worker_session"},
+            )
+        ]
+
+    monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
+
+    statuses = service._capacity_session_statuses()
+
+    assert statuses == {"container-session": "running"}
+    assert list_agents_calls == [
+        {
+            "include_inactive": True,
+            "reconcile_containers": False,
+            "all_directories": True,
+            "omit_vm_state": True,
+            "summary_only": True,
+        }
+    ]
+
+
 def test_list_agents_ignores_execution_cleanup_success_for_session_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10471,6 +10508,48 @@ def test_effective_tool_policy_payload_combines_directory_and_session_rules(
         "directory-policy",
         "session-policy",
     ]
+
+
+def test_effective_tool_policy_payload_reuses_resolved_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-session",
+            vm_id="agent-session",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            approval_required_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    session = service.runtime.session_repository.get_session("agent-session")
+    assert session is not None
+    original_resolve = service.runtime.policy_config.resolve_for_session_manifest
+    resolve_calls: list[str] = []
+
+    def resolve_for_session_manifest(candidate: SessionManifest):
+        resolve_calls.append(candidate.session_id)
+        return original_resolve(candidate)
+
+    monkeypatch.setattr(
+        service.runtime.policy_config,
+        "resolve_for_session_manifest",
+        resolve_for_session_manifest,
+    )
+
+    effective = service.effective_tool_policy_payload(session)
+
+    assert effective is not None
+    assert effective["tool_summary"]["session_id"] == "agent-session"
+    run_script_summary = next(
+        item
+        for item in effective["tool_summary"]["available_tools"]
+        if item["tool_name"] == ToolName.RUN_SCRIPT.value
+    )
+    assert run_script_summary["requires_approval"] is True
+    assert "approval_settings" in run_script_summary
+    assert resolve_calls == ["agent-session"]
 
 
 def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
