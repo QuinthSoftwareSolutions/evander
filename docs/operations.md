@@ -734,6 +734,13 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Optional MCP arguments: `project`, `add_tags`, `remove_tags`.
   - The tool reads the current `System.Tags`, merges the requested changes, and writes the full
     tag field back to ADO.
+- Gateway tool name: `delete_ado_backlog_item`.
+  - Policy-gated with `delete_ado_backlog_item`, and the gateway also requires per-invocation
+    approval before the DELETE runs.
+  - Required MCP argument: `id`.
+  - Optional MCP arguments: `project`, `destroy`.
+  - `destroy` defaults to `false`, which sends the work item to the recycle bin for recovery. Set
+    `destroy=true` only for permanent deletion.
 - Artifact arguments use opaque IDs returned by `communication_stage_workspace_file` or inbound
   media download tools. When `communication_file_require_approval_for_send` is enabled, the call
   must include a matching approved `request_id`.

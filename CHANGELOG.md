@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from
