@@ -510,6 +510,7 @@ class SessionManifest(BaseModel):
     approval_required_tools: list[ToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
+    allowed_contact_ids: list[str] | None = None
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
@@ -579,6 +580,25 @@ class SessionManifest(BaseModel):
         return normalize_approval_notification_target_ids(
             value, field_name="approval_notification_target_ids"
         )
+
+    @field_validator("allowed_contact_ids", mode="before")
+    @classmethod
+    def normalize_allowed_contact_ids(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("allowed_contact_ids must be a JSON array of strings or null")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            contact_id = str(item or "").strip()
+            if not contact_id:
+                raise ValueError("allowed_contact_ids cannot contain empty values")
+            if contact_id in seen:
+                continue
+            seen.add(contact_id)
+            normalized.append(contact_id)
+        return normalized
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
