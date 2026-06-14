@@ -89,7 +89,13 @@ def _normalize_failure_text(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
-def _is_model_unavailable_failure(*, stdout: object = None, stderr: object = None, exception: object = None, reason: object = None) -> bool:
+def _is_model_unavailable_failure(
+    *,
+    stdout: object = None,
+    stderr: object = None,
+    exception: object = None,
+    reason: object = None,
+) -> bool:
     for value in (stdout, stderr, exception, reason):
         text = _normalize_failure_text(value)
         if not text:

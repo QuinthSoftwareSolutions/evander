@@ -26,13 +26,22 @@ material. Newer entries are added incrementally as changes land.
 - Added opt-in PR feedback suppression for comments authored by the configured
   agent identity while leaving agent-authored feedback publishable by default.
 
-## 2026-06-14 - Scheduled Wake Manual Retry Reset
+## 2026-06-14 - Scheduled Wake Retry And Cancellation Bounds
 
+- Added a bounded automatic retry policy for one-time scheduled wakes that fail
+  dispatch or remain unconfirmed, including persisted attempt state,
+  configurable retry window/backoff, and terminal failed/missed ledger reasons.
+- Allowed sessions to cancel their own one-time wakes while dispatching,
+  queued, dispatched/awaiting confirmation, failed, or missed/late; completed
+  and already-cancelled wakes remain immutable.
+- Recorded model-unavailable resume failures as specific wake ledger failure
+  reasons instead of generic transient dispatch errors.
 - Reset the automatic retry counters for one-time scheduled wakes when Admin
   Web or the API retries them, so an exhausted confirmation batch starts fresh
   while the previous retry state stays available in retry history metadata.
-- Documented the one-time wake confirmation retry policy keys and the manual
-  retry reset behavior in the operations and configuration references.
+- Documented the one-time wake confirmation retry policy keys, cancellation
+  behavior, and manual retry reset behavior in the operations and configuration
+  references.
 
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 

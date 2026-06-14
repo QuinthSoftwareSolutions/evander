@@ -1071,10 +1071,13 @@ prompt command resumes the last Codex context when no explicit thread id is avai
 created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
 container Codex exec session.
 
-Cancelled requests remain visible in admin history, but already dispatched or completed one-time
-wakes are immutable and other sessions cannot cancel them. The tool also returns clear terminal
-statuses for `already_cancelled`, `already_dispatched`, `already_completed`, `not_found`,
-`missing_request_id`, and `permission_denied`.
+Cancelled requests remain visible in admin history. A session can cancel its own one-time wake
+while it is pending, due, dispatching, queued, dispatched and awaiting confirmation, failed, or
+missed/late. Completed and already-cancelled one-time wakes remain immutable, and other sessions
+cannot cancel them. The tool also returns clear terminal statuses for `already_cancelled`,
+`already_completed`, `not_found`, `missing_request_id`, and `permission_denied`; older clients may
+still understand `already_dispatched`, but dispatched/awaiting-confirmation wakes now cancel
+successfully.
 
 - Recurring cron schedule (host CLI):
 

@@ -56,7 +56,6 @@ from agent_sandbox.models import (
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
-    WakeScheduleDefinition,
     VmActionResult,
     VmSummary,
 )

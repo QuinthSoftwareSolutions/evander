@@ -1354,10 +1354,15 @@ class WakeRequestStore:
         latest_dispatch: WakeDispatchRecord | None,
     ) -> str:
         if request.status == "failed":
+            dispatch_reason = (
+                WakeRequestStore._dispatch_failure_reason(latest_dispatch)
+                if latest_dispatch is not None
+                else None
+            )
             return (
                 request.last_error
                 or request.status_reason
-                or WakeRequestStore._dispatch_failure_reason(latest_dispatch)
+                or dispatch_reason
                 or "wake dispatch failed"
             )
         return (
