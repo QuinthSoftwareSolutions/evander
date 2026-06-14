@@ -173,7 +173,7 @@ This sequence minimizes payload volume when there is no new feedback and support
   attempts remain due/retryable and are retained in dispatch history without updating
   the request-level `last_dispatched_at` success timestamp.
 - Prompt composition for scheduled wakes is:
-  - `wake_scheduled_prefix_text + requested_prompt`.
+  - optional `scheduled_wake_prefix_text` + `requested_prompt`.
 - MCP-created schedules are restricted to `resume_mode=same_context`; admin-created schedules may also use `new_context`.
 
 ### Failure behavior

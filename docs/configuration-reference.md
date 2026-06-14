@@ -338,7 +338,7 @@ worker's polling and one-time completion-confirmation retry behavior.
 | `completion_confirmation_retry_base_backoff_seconds` | `config/scheduled-wake/config.json` | Initial backoff used when a one-time wake is requeued for confirmation retry. |
 | `completion_confirmation_retry_max_backoff_seconds` | `config/scheduled-wake/config.json` | Ceiling for the confirmation retry backoff. |
 | `late_threshold_seconds` | `config/scheduled-wake/config.json` | Maximum lateness before the worker/API marks a wake `missed_or_late`. |
-| `scheduled_wake_prefix_text` | `config/scheduled-wake/config.json` | Shared prompt prefix prepended to scheduled wake resume text. |
+| `scheduled_wake_prefix_text` | `config/scheduled-wake/config.json` | Optional operator-supplied prompt prefix prepended to scheduled wake resume text; defaults to empty. |
 
 Example:
 

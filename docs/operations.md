@@ -1853,7 +1853,7 @@ live provider APIs.
   retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
   after activity or busy-session checks, not the process-level exception retry delay.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
-- `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
+- `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config, defaults to empty, and lets operators prepend optional text to scheduled wake dispatch prompts.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
 - For `container_worker_vm` sessions, that same-context dispatch uses Codex resume-last behavior when a worker prompt does not already carry an explicit thread id.
 - Admin-created recurring wake schedules can still request `resume_mode=new_context`, which starts a fresh Codex exec session on container workers.
