@@ -746,10 +746,14 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     session = captured["session_update"]["session"]
     assert session["audio"]["input"]["format"] == {"type": "audio/pcma"}
     assert session["audio"]["output"]["format"] == {"type": "audio/pcma"}
+    assert session["audio"]["input"]["noise_reduction"] == {"type": "near_field"}
     turn_detection = session["audio"]["input"]["turn_detection"]
     assert turn_detection["type"] == "server_vad"
     assert turn_detection["create_response"] is False
     assert turn_detection["interrupt_response"] is False
+    assert turn_detection["threshold"] == 0.7
+    assert turn_detection["prefix_padding_ms"] == 300
+    assert turn_detection["silence_duration_ms"] == 800
     assert "idle_timeout_ms" not in turn_detection
 
 
@@ -833,6 +837,202 @@ def test_realtime_config_rejects_invalid_modes_and_ranges(tmp_path: Path) -> Non
 
     with pytest.raises(ValidationError):
         DidwwSipBridgeConfig(runtime_dir=tmp_path, openai_realtime_vad_silence_duration_ms=5001)
+
+
+def test_realtime_session_config_error_retries_once_for_unsupported_optional_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    captured: dict[str, Any] = {"session_updates": []}
+    stop_event = asyncio.Event()
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "code": "unsupported_value",
+                            "type": "invalid_request_error",
+                            "param": "session.audio.input.noise_reduction.type",
+                            "message": (
+                                "noise_reduction type far_field is not supported; "
+                                "semantic_vad is also not supported"
+                            ),
+                        },
+                    }
+                )
+            ]
+
+        async def send(self, text: str) -> None:
+            captured["session_updates"].append(json.loads(text))
+
+        async def recv(self) -> str:
+            if self.events:
+                return self.events.pop(0)
+            stop_event.set()
+            await asyncio.sleep(0)
+            return json.dumps({})
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def fake_connect(url: str, **kwargs: Any) -> FakeWebSocket:
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeWebSocket()
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    config = _config(tmp_path).model_copy(
+        update={
+            "openai_realtime_input_noise_reduction_type": "far_field",
+            "openai_realtime_turn_detection_type": "semantic_vad",
+        }
+    )
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    service = DidwwSipBridgeService(config, store=store, start_background_tasks=False)
+
+    class FakeController:
+        configured = False
+
+    class FakeRtp:
+        pass
+
+    async def run() -> None:
+        async with OpenAIRealtimeSession(
+            config=config,
+            projection={"prompt": "Call Jonathan."},
+            realtime={"model": "gpt-realtime-2"},
+        ) as realtime:
+            await asyncio.wait_for(
+                service._realtime_to_rtp(  # type: ignore[arg-type]
+                    record.voice_session_id,
+                    FakeRtp(),  # type: ignore[arg-type]
+                    realtime,
+                    FakeController(),  # type: ignore[arg-type]
+                    stop_event,
+                ),
+                timeout=1,
+            )
+
+    asyncio.run(run())
+
+    assert captured["url"] == "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
+    assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
+    assert len(captured["session_updates"]) == 2
+    initial_session = captured["session_updates"][0]["session"]
+    fallback_session = captured["session_updates"][1]["session"]
+    assert initial_session["audio"]["input"]["noise_reduction"] == {"type": "far_field"}
+    assert initial_session["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
+    assert "threshold" not in initial_session["audio"]["input"]["turn_detection"]
+    assert "noise_reduction" not in fallback_session["audio"]["input"]
+    fallback_turn_detection = fallback_session["audio"]["input"]["turn_detection"]
+    assert fallback_turn_detection["type"] == "server_vad"
+    assert fallback_turn_detection["create_response"] is False
+    assert fallback_turn_detection["interrupt_response"] is False
+    assert fallback_turn_detection["threshold"] == 0.7
+    assert fallback_turn_detection["prefix_padding_ms"] == 300
+    assert fallback_turn_detection["silence_duration_ms"] == 800
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "error" in event_types
+    assert "realtime.session_config_fallback" in event_types
+    fallback_event = next(
+        event for event in latest.debug_events if event.event_type == "realtime.session_config_fallback"
+    )
+    assert fallback_event.metadata["removed_features"] == [
+        "audio.input.noise_reduction",
+        "audio.input.turn_detection.type",
+    ]
+    assert fallback_event.metadata["fallback_turn_detection_type"] == "server_vad"
+    assert fallback_event.metadata["noise_reduction_omitted"] is True
+
+
+def test_realtime_generic_session_error_remains_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    captured: dict[str, Any] = {"session_updates": []}
+    stop_event = asyncio.Event()
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events = [
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "code": "server_error",
+                            "type": "server_error",
+                            "message": "internal failure",
+                        },
+                    }
+                )
+            ]
+
+        async def send(self, text: str) -> None:
+            captured["session_updates"].append(json.loads(text))
+
+        async def recv(self) -> str:
+            if self.events:
+                return self.events.pop(0)
+            stop_event.set()
+            await asyncio.sleep(0)
+            return json.dumps({})
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def fake_connect(url: str, **kwargs: Any) -> FakeWebSocket:
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeWebSocket()
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+
+    class FakeController:
+        configured = False
+
+    class FakeRtp:
+        pass
+
+    async def run() -> None:
+        async with OpenAIRealtimeSession(
+            config=_config(tmp_path),
+            projection={"prompt": "Call Jonathan."},
+            realtime={"model": "gpt-realtime-2"},
+        ) as realtime:
+            await asyncio.wait_for(
+                service._realtime_to_rtp(  # type: ignore[arg-type]
+                    record.voice_session_id,
+                    FakeRtp(),  # type: ignore[arg-type]
+                    realtime,
+                    FakeController(),  # type: ignore[arg-type]
+                    stop_event,
+                ),
+                timeout=1,
+            )
+
+    with pytest.raises(RuntimeError, match="internal failure"):
+        asyncio.run(run())
+
+    assert captured["url"] == "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
+    assert len(captured["session_updates"]) == 1
+    assert "realtime.session_config_fallback" not in {
+        event.event_type for event in store.get("voice-1").debug_events
+    }
 
 
 def test_realtime_g711_bridge_rejects_dynamic_rtp_media_format(tmp_path: Path) -> None:
