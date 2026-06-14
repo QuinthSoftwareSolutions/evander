@@ -731,7 +731,7 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Gateway tool name: `update_ado_backlog_title`.
   - Policy-gated with `update_ado_backlog_title`.
   - Required MCP arguments: `id`, `title`.
-  - Optional MCP arguments: `project`, `request_id`.
+  - Optional MCP argument: `project`.
   - The tool trims `title`, rejects blank or whitespace-only values, and writes the result to
     `System.Title`.
 - Gateway tool name: `update_ado_backlog_tags`.
