@@ -70,6 +70,7 @@ class ToolName(str, Enum):
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
+    UPDATE_ADO_BACKLOG_TITLE = "update_ado_backlog_title"
     UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
@@ -1944,6 +1945,43 @@ class AdoBacklogTextUpdateRequest(BaseModel):
             and not self.acceptance_criteria_artifact_ids
         ):
             raise ValueError("description or acceptance_criteria update is required")
+
+
+class AdoBacklogTitleUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    title: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def trim_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_and_validate_title(cls, value: object) -> str:
+        if value is None:
+            normalized = ""
+        else:
+            normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("title cannot be empty")
+        return normalized
 
 
 class AdoBacklogTagsUpdateRequest(BaseModel):

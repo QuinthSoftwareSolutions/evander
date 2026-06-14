@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Azure DevOps Backlog Title Updates
+
+- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
+  backlog items by numeric work-item id.
+- Required title validation now rejects blank or whitespace-only values before
+  the ADO update call and writes the trimmed value to `System.Title`.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from

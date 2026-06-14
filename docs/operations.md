@@ -728,6 +728,12 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
   - Optional MCP arguments: `project`, `description`, `acceptance_criteria`,
     `description_artifact_ids`, `acceptance_criteria_artifact_ids`, `request_id`.
+- Gateway tool name: `update_ado_backlog_title`.
+  - Policy-gated with `update_ado_backlog_title`.
+  - Required MCP arguments: `id`, `title`.
+  - Optional MCP argument: `project`.
+  - The tool trims `title`, rejects blank or whitespace-only values, and writes the result to
+    `System.Title`.
 - Gateway tool name: `update_ado_backlog_tags`.
   - Policy-gated with `update_ado_backlog_tags`.
   - Required MCP argument: `id`; at least one tag must be present in `add_tags` or `remove_tags`.
