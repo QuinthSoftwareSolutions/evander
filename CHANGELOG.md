@@ -26,6 +26,14 @@ material. Newer entries are added incrementally as changes land.
 - Added opt-in PR feedback suppression for comments authored by the configured
   agent identity while leaving agent-authored feedback publishable by default.
 
+## 2026-06-14 - Scheduled Wake Manual Retry Reset
+
+- Reset the automatic retry counters for one-time scheduled wakes when Admin
+  Web or the API retries them, so an exhausted confirmation batch starts fresh
+  while the previous retry state stays available in retry history metadata.
+- Documented the one-time wake confirmation retry policy keys and the manual
+  retry reset behavior in the operations and configuration references.
+
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 
 - Added a durable scheduled-wake ledger over the existing wake request store,

@@ -320,6 +320,26 @@ These flows are independent from the wake workers. Discord inbox waking and sche
 covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
 ADO worker.
 
+### Scheduled wake worker keys
+
+The scheduled wake worker reads `config/scheduled-wake/config.json`. The keys below shape the
+worker's polling and one-time completion-confirmation retry behavior.
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `directories` | `config/scheduled-wake/config.json` | Directory scopes the worker may dispatch for. |
+| `poll_interval_seconds` | `config/scheduled-wake/config.json` | Cycle cadence for the scheduled wake worker. |
+| `jitter_seconds` | `config/scheduled-wake/config.json` | Random sleep jitter added to each poll cycle. |
+| `backoff_seconds` | `config/scheduled-wake/config.json` | Whole-cycle exception backoff for the worker loop. |
+| `cooldown_seconds` | `config/scheduled-wake/config.json` | Per-session cooldown after a handled wake dispatch. |
+| `completion_confirmation_timeout_seconds` | `config/scheduled-wake/config.json` | How long a one-time dispatched wake stays in the confirmation window before retry logic can requeue it. |
+| `completion_confirmation_retry_max_attempts` | `config/scheduled-wake/config.json` | Maximum automatic confirmation retries for a one-time wake batch. |
+| `completion_confirmation_retry_window_seconds` | `config/scheduled-wake/config.json` | Maximum age of a confirmation retry batch before it is exhausted. |
+| `completion_confirmation_retry_base_backoff_seconds` | `config/scheduled-wake/config.json` | Initial backoff used when a one-time wake is requeued for confirmation retry. |
+| `completion_confirmation_retry_max_backoff_seconds` | `config/scheduled-wake/config.json` | Ceiling for the confirmation retry backoff. |
+| `late_threshold_seconds` | `config/scheduled-wake/config.json` | Maximum lateness before the worker/API marks a wake `missed_or_late`. |
+| `scheduled_wake_prefix_text` | `config/scheduled-wake/config.json` | Shared prompt prefix prepended to scheduled wake resume text. |
+
 Example:
 
 ```json

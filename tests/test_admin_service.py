@@ -13247,6 +13247,19 @@ def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
             error="stack trace\nsecret token",
         )
     )
+    request = service.runtime.wake_store.get_request(created.request_id)
+    assert request is not None
+    request.auto_dispatch_attempts = 2
+    request.auto_retry_started_at = datetime.now(UTC) - timedelta(hours=2)
+    request.auto_retry_last_backoff_seconds = 120.0
+    request.auto_retry_exhausted_at = datetime.now(UTC) - timedelta(minutes=5)
+    request.enabled = False
+    request.next_run_at = None
+    request.status = "failed"
+    request.status_reason = "One-time wake retry limit reached after 2/2 attempts."
+    request.last_error = request.status_reason
+    request.last_error_at = datetime.now(UTC) - timedelta(minutes=5)
+    service.runtime.wake_store.upsert_request(request)
 
     updated = service.retry_scheduled_wake(
         created.request_id,
@@ -13262,12 +13275,21 @@ def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
     assert updated["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
     assert updated["failure_reason"] is None
     assert updated["last_error"] is None
+    assert updated["status_reason"] is None
     assert updated["latest_dispatch"]["status"] == "failed"
     assert request is not None
     assert request.schedule.resume_at == retry_at
+    assert request.auto_dispatch_attempts == 0
+    assert request.auto_retry_started_at is None
+    assert request.auto_retry_last_backoff_seconds is None
+    assert request.auto_retry_exhausted_at is None
     retry_history = request.resume_prompt.metadata["retry_history"]
     assert retry_history[0]["previous_status"] == "failed"
     assert retry_history[0]["previous_failure_reason"] is not None
+    assert retry_history[0]["previous_auto_dispatch_attempts"] == 2
+    assert retry_history[0]["previous_auto_retry_started_at"] is not None
+    assert retry_history[0]["previous_auto_retry_last_backoff_seconds"] == 120.0
+    assert retry_history[0]["previous_auto_retry_exhausted_at"] is not None
     assert retry_history[0]["requested_resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
 
 
