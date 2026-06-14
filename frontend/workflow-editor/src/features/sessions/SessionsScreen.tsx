@@ -333,6 +333,14 @@ function normalizeApprovalSettings(value: ApprovalGrantSettings | null | undefin
   };
 }
 
+function approvalSettingsEqual(left: ApprovalGrantSettings, right: ApprovalGrantSettings): boolean {
+  return (
+    left.ttl_seconds === right.ttl_seconds &&
+    left.max_uses === right.max_uses &&
+    left.payload_mode === right.payload_mode
+  );
+}
+
 function normalizeApprovalToolSettings(
   value: Record<string, ApprovalGrantSettings> | null | undefined,
 ): Record<string, ApprovalGrantSettings> {
@@ -798,9 +806,10 @@ function ApprovalSettingsModal({
   hardRule,
   busy,
   locked,
-  onChange,
+  onApply,
   onReset,
   onClose,
+  hasExplicitOverride,
 }: {
   open: boolean;
   toolLabel: string;
@@ -810,32 +819,20 @@ function ApprovalSettingsModal({
   hardRule: McpToolPolicyRule | null;
   busy: boolean;
   locked: boolean;
-  onChange: (settings: ApprovalGrantSettings) => void;
+  onApply: (settings: ApprovalGrantSettings) => void;
   onReset: () => void;
   onClose: () => void;
+  hasExplicitOverride: boolean;
 }) {
   const [ttlDraft, setTtlDraft] = useState("");
   const [usesDraft, setUsesDraft] = useState("");
+  const [draftSettings, setDraftSettings] = useState<ApprovalGrantSettings>(normalizeApprovalSettings(settings));
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const normalized = normalizeApprovalSettings(settings);
-    setTtlDraft(String(normalized.ttl_seconds));
-    setUsesDraft(normalized.max_uses == null ? "" : String(normalized.max_uses));
-    setError(null);
-  }, [open, settings.max_uses, settings.payload_mode, settings.ttl_seconds]);
-
-  if (!open) return null;
-
-  const effectiveSettings = normalizeApprovalSettings(settings);
-  const inherited = normalizeApprovalSettings(inheritedSettings);
-
-  function commit(update: Partial<ApprovalGrantSettings>) {
-    const next = normalizeApprovalSettings({ ...effectiveSettings, ...update });
+  function clampSettings(next: ApprovalGrantSettings): ApprovalGrantSettings {
     const ttlLimit = hardRule?.max_ttl_seconds;
     const usesLimit = hardRule?.max_uses;
-    const limited = {
+    return {
       ...next,
       ttl_seconds: ttlLimit == null ? next.ttl_seconds : Math.min(next.ttl_seconds, ttlLimit),
       max_uses:
@@ -844,15 +841,36 @@ function ApprovalSettingsModal({
           : next.max_uses == null
             ? usesLimit
             : Math.min(next.max_uses, usesLimit),
-      payload_mode: hardRule?.require_exact_payload ? "exact" as ApprovalPayloadMode : next.payload_mode,
+      payload_mode: hardRule?.require_exact_payload ? "exact" : next.payload_mode,
     };
-    onChange(limited);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const normalized = clampSettings(normalizeApprovalSettings(settings));
+    setDraftSettings(normalized);
+    setTtlDraft(String(normalized.ttl_seconds));
+    setUsesDraft(normalized.max_uses == null ? "" : String(normalized.max_uses));
+    setError(null);
+  }, [hardRule?.max_ttl_seconds, hardRule?.max_uses, hardRule?.require_exact_payload, open, settings.max_uses, settings.payload_mode, settings.ttl_seconds]);
+
+  if (!open) return null;
+
+  const effectiveSettings = draftSettings;
+  const inherited = clampSettings(normalizeApprovalSettings(inheritedSettings));
+  const initialSettings = clampSettings(normalizeApprovalSettings(settings));
+
+  function updateDraft(update: Partial<ApprovalGrantSettings>) {
+    setDraftSettings((current) => clampSettings({ ...current, ...update }));
+    setError(null);
   }
 
   function commitTtl() {
     try {
       const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
-      commit({ ttl_seconds: ttlSeconds });
+      const next = clampSettings({ ...effectiveSettings, ttl_seconds: ttlSeconds });
+      setDraftSettings(next);
+      setTtlDraft(String(next.ttl_seconds));
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -862,8 +880,51 @@ function ApprovalSettingsModal({
   function commitUses() {
     try {
       const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
-      commit({ max_uses: maxUses });
+      const next = clampSettings({ ...effectiveSettings, max_uses: maxUses });
+      setDraftSettings(next);
+      setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
       setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function handleResetToInheritedDefaults() {
+    const next = inherited;
+    setDraftSettings(next);
+    setTtlDraft(String(next.ttl_seconds));
+    setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
+    setError(null);
+  }
+
+  function handleDone() {
+    try {
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
+      const next = clampSettings({
+        ...effectiveSettings,
+        ttl_seconds: ttlSeconds,
+        max_uses: maxUses,
+      });
+      setDraftSettings(next);
+      setTtlDraft(String(next.ttl_seconds));
+      setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
+
+      if (approvalSettingsEqual(next, initialSettings)) {
+        onClose();
+        return;
+      }
+
+      if (approvalSettingsEqual(next, inherited)) {
+        if (hasExplicitOverride && !approvalSettingsEqual(initialSettings, inherited)) {
+          onReset();
+        }
+        onClose();
+        return;
+      }
+
+      onApply(next);
+      onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -877,7 +938,7 @@ function ApprovalSettingsModal({
         aria-modal="true"
         aria-labelledby="session-approval-settings-title"
         onClick={(event) => event.stopPropagation()}
-      >
+        >
         <div className="modal-header">
           <div>
             <div className="eyebrow">MCP approval settings</div>
@@ -886,7 +947,7 @@ function ApprovalSettingsModal({
           </div>
           <div className="inline-actions">
             <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose}>
-              Done
+              Cancel
             </button>
           </div>
         </div>
@@ -931,7 +992,7 @@ function ApprovalSettingsModal({
               <span>Payload</span>
               <select
                 value={effectiveSettings.payload_mode}
-                onChange={(event) => commit({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
+                onChange={(event) => updateDraft({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
                 disabled={locked || busy || Boolean(hardRule?.require_exact_payload)}
               >
                 <option value="exact">Exact payload</option>
@@ -946,17 +1007,20 @@ function ApprovalSettingsModal({
               onChange={(event) => {
                 const maxUses = event.target.checked ? null : 1;
                 setUsesDraft(maxUses == null ? "" : String(maxUses));
-                commit({ max_uses: maxUses });
+                updateDraft({ max_uses: maxUses });
               }}
               disabled={locked || busy || hardRule?.max_uses != null}
             />
             <span>Unlimited uses</span>
           </label>
           <div className="feature-toolbar-actions session-approval-settings-actions">
-            <button type="button" onClick={onReset} disabled={locked || busy}>
+            <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose} disabled={locked || busy}>
+              Discard changes
+            </button>
+            <button type="button" onClick={handleResetToInheritedDefaults} disabled={locked || busy}>
               Reset to inherited defaults
             </button>
-            <button type="button" className="primary" onClick={onClose}>
+            <button type="button" className="primary" onClick={handleDone} disabled={locked || busy}>
               Done
             </button>
           </div>
@@ -1266,6 +1330,10 @@ export function SessionsScreen() {
 
   function approvalSettingsDraftForTool(toolValue: string): ApprovalGrantSettings {
     return normalizeApprovalSettings(policyDraft.approvalToolSettings[toolValue] ?? effectiveApprovalSettingsForTool(toolValue));
+  }
+
+  function hasExplicitApprovalSettingsDraft(toolValue: string): boolean {
+    return Object.prototype.hasOwnProperty.call(policyDraft.approvalToolSettings, toolValue);
   }
 
   function updateApprovalSettingsDraft(toolValue: string, settings: ApprovalGrantSettings) {
@@ -2473,9 +2541,10 @@ export function SessionsScreen() {
               hardRule={effectiveRuleForTool(approvalSettingsTool)}
               busy={busy === "settings"}
               locked={mutationLocked}
-              onChange={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
+              onApply={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
               onReset={() => resetApprovalSettingsDraft(approvalSettingsTool)}
               onClose={() => setApprovalSettingsTool("")}
+              hasExplicitOverride={hasExplicitApprovalSettingsDraft(approvalSettingsTool)}
             />
           </div>
         ) : (
