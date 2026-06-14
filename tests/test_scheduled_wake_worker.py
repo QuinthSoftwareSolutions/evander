@@ -268,6 +268,160 @@ def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
     assert latest.scheduled_wake_prefix_text == "Updated:"
 
 
+def test_scheduled_wake_worker_reloads_prefix_text_between_cycles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "cooldown_seconds": 0.0,
+            "jitter_seconds": 0.0,
+            "scheduled_wake_prefix_text": "Initial:",
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        lambda **kwargs: "idle",
+    )
+
+    dispatch_prompts: list[str] = []
+
+    def resume_binding(self, binding, **kwargs):
+        dispatch_prompts.append(kwargs["prompt"])
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-{len(dispatch_prompts)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={
+                "vm_id": binding.vm_id,
+                "source": binding.source,
+                **kwargs["wake_metadata"],
+            },
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        resume_binding,
+    )
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 0
+    assert first_cycle.wakes_dispatched == 0
+
+    worker_config_path = tmp_path / "project" / "config" / "scheduled-wake" / "config.json"
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "directories": ["root/team-a"],
+                "cooldown_seconds": 0.0,
+                "jitter_seconds": 0.0,
+                "scheduled_wake_prefix_text": "Updated:",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-reload",
+        session_id="session-a",
+        due_at=due_at,
+    )
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.requests_due == 1
+    assert second_cycle.wakes_dispatched == 1
+    assert dispatch_prompts == ["Updated: Resume work."]
+    assert worker.worker_config.scheduled_wake_prefix_text == "Updated:"
+    assert worker.config.scheduled_wake_prefix_text == "Updated:"
+    assert worker.dispatcher.config.scheduled_wake_prefix_text == "Updated:"
+
+
+def test_scheduled_wake_worker_keeps_last_known_good_prefix_when_reload_payload_is_invalid(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "cooldown_seconds": 0.0,
+            "jitter_seconds": 0.0,
+            "scheduled_wake_prefix_text": "Initial:",
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        lambda **kwargs: "idle",
+    )
+
+    dispatch_prompts: list[str] = []
+
+    def resume_binding(self, binding, **kwargs):
+        dispatch_prompts.append(kwargs["prompt"])
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-{len(dispatch_prompts)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={
+                "vm_id": binding.vm_id,
+                "source": binding.source,
+                **kwargs["wake_metadata"],
+            },
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        resume_binding,
+    )
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 0
+    assert first_cycle.wakes_dispatched == 0
+
+    worker_config_path = tmp_path / "project" / "config" / "scheduled-wake" / "config.json"
+    worker_config_path.write_text("{not-json", encoding="utf-8")
+
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-invalid",
+        session_id="session-a",
+        due_at=due_at,
+    )
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.requests_due == 1
+    assert second_cycle.wakes_dispatched == 1
+    assert dispatch_prompts == ["Initial: Resume work."]
+    assert worker.worker_config.scheduled_wake_prefix_text == "Initial:"
+    assert worker.config.scheduled_wake_prefix_text == "Initial:"
+    assert worker.dispatcher.config.scheduled_wake_prefix_text == "Initial:"
+
+
 def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
     tmp_path: Path,
 ) -> None:
