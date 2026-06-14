@@ -15,6 +15,25 @@ material. Newer entries are added incrementally as changes land.
   loading, and artifact upload success so state changes stay observable after
   the related panel or modal closes.
 
+## 2026-06-14 - Structured Policy Inputs
+
+- Added shared structured editors for list, map, JSON-object, and regex policy
+  fields, then wired them into the Sessions, Agents, configuration, workers,
+  and model-pricing admin screens.
+- Added an optional structured Initial policy section to the Admin Web Create
+  agent dialog so labels and list-style policy fields can be seeded without
+  typing raw newline/key-value text.
+- Preserved the existing backend payload shapes while adding inline validation
+  for metadata JSON, label maps, leading-dot extensions, and regex rows.
+- Expanded the focused Node and smoke coverage to assert structured hydration,
+  malformed-input blocking, and round-trip payload assertions.
+
+## 2026-06-14 - Admin Approval UX Updates
+
+- Clarified Admin Web approval labels and tooltips across visible approvals,
+  issue VM bootstrap controls, session approval settings, and approval
+  decision panel behavior.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using
