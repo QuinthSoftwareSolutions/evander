@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 import agent_sandbox.didww_sip_bridge as didww_sip_bridge
@@ -782,6 +783,56 @@ def test_barge_in_config_defaults_and_env_overrides(
     assert loaded.barge_in_delay_ms == 250
     assert loaded.backchannel_max_words == 2
     assert loaded.backchannel_phrases == ["yep", "right"]
+
+
+def test_realtime_config_defaults_and_env_overrides(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
+
+    assert config.openai_realtime_input_noise_reduction_type == "near_field"
+    assert config.openai_realtime_turn_detection_type == "server_vad"
+    assert config.openai_realtime_vad_threshold == 0.7
+    assert config.openai_realtime_vad_prefix_padding_ms == 300
+    assert config.openai_realtime_vad_silence_duration_ms == 800
+
+    monkeypatch.setenv("OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE", "far_field")
+    monkeypatch.setenv("OPENAI_REALTIME_TURN_DETECTION_TYPE", "semantic_vad")
+    monkeypatch.setenv("OPENAI_REALTIME_VAD_THRESHOLD", "0.82")
+    monkeypatch.setenv("OPENAI_REALTIME_VAD_PREFIX_PADDING_MS", "125")
+    monkeypatch.setenv("OPENAI_REALTIME_VAD_SILENCE_DURATION_MS", "950")
+
+    loaded = load_config(tmp_path)
+
+    assert loaded.openai_realtime_input_noise_reduction_type == "far_field"
+    assert loaded.openai_realtime_turn_detection_type == "semantic_vad"
+    assert loaded.openai_realtime_vad_threshold == 0.82
+    assert loaded.openai_realtime_vad_prefix_padding_ms == 125
+    assert loaded.openai_realtime_vad_silence_duration_ms == 950
+
+    monkeypatch.setenv("OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE", "disabled")
+    assert load_config(tmp_path).openai_realtime_input_noise_reduction_type == "disabled"
+
+
+def test_realtime_config_rejects_invalid_modes_and_ranges(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        DidwwSipBridgeConfig(
+            runtime_dir=tmp_path,
+            openai_realtime_input_noise_reduction_type="room_mode",
+        )
+
+    with pytest.raises(ValidationError):
+        DidwwSipBridgeConfig(runtime_dir=tmp_path, openai_realtime_turn_detection_type="vad")
+
+    with pytest.raises(ValidationError):
+        DidwwSipBridgeConfig(runtime_dir=tmp_path, openai_realtime_vad_threshold=1.1)
+
+    with pytest.raises(ValidationError):
+        DidwwSipBridgeConfig(runtime_dir=tmp_path, openai_realtime_vad_prefix_padding_ms=-1)
+
+    with pytest.raises(ValidationError):
+        DidwwSipBridgeConfig(runtime_dir=tmp_path, openai_realtime_vad_silence_duration_ms=5001)
 
 
 def test_realtime_g711_bridge_rejects_dynamic_rtp_media_format(tmp_path: Path) -> None:

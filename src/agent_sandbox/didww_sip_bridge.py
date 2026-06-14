@@ -160,6 +160,15 @@ class DidwwSipBridgeConfig(BaseModel):
     openai_realtime_voice: str = "marin"
     openai_realtime_idle_timeout_ms: int = Field(default=10000, ge=5000, le=30000)
     openai_realtime_transcription_model: str | None = "gpt-4o-transcribe"
+    openai_realtime_input_noise_reduction_type: Literal[
+        "near_field",
+        "far_field",
+        "disabled",
+    ] = "near_field"
+    openai_realtime_turn_detection_type: Literal["server_vad", "semantic_vad"] = "server_vad"
+    openai_realtime_vad_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    openai_realtime_vad_prefix_padding_ms: int = Field(default=300, ge=0, le=5000)
+    openai_realtime_vad_silence_duration_ms: int = Field(default=800, ge=0, le=5000)
     asterisk_ari_url: str = "http://127.0.0.1:8088/ari"
     asterisk_ari_user: str = "agent-sandbox"
     asterisk_ari_password_env: str = Field(default="ASTERISK_ARI_PASSWORD", min_length=1)
@@ -217,6 +226,21 @@ class DidwwSipBridgeConfig(BaseModel):
             if _normalize_backchannel_phrase(part)
         ]
         return normalized or list(_DEFAULT_BACKCHANNEL_PHRASES)
+
+    @field_validator(
+        "openai_realtime_input_noise_reduction_type",
+        "openai_realtime_turn_detection_type",
+        mode="before",
+    )
+    @classmethod
+    def normalize_openai_realtime_modes(cls, value: object, info: Any) -> object:
+        text = str(value or "").strip().lower()
+        if info.field_name == "openai_realtime_input_noise_reduction_type" and text in {
+            "none",
+            "disabled",
+        }:
+            return "disabled"
+        return text
 
     @field_validator("media_format")
     @classmethod
@@ -3563,6 +3587,19 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         openai_realtime_idle_timeout_ms=_env_int("OPENAI_REALTIME_IDLE_TIMEOUT_MS", 10000),
         openai_realtime_transcription_model=_env_optional(
             "OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"
+        ),
+        openai_realtime_input_noise_reduction_type=_env(
+            "OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE", "near_field"
+        ),
+        openai_realtime_turn_detection_type=_env(
+            "OPENAI_REALTIME_TURN_DETECTION_TYPE", "server_vad"
+        ),
+        openai_realtime_vad_threshold=_env_float("OPENAI_REALTIME_VAD_THRESHOLD", 0.70),
+        openai_realtime_vad_prefix_padding_ms=_env_int(
+            "OPENAI_REALTIME_VAD_PREFIX_PADDING_MS", 300
+        ),
+        openai_realtime_vad_silence_duration_ms=_env_int(
+            "OPENAI_REALTIME_VAD_SILENCE_DURATION_MS", 800
         ),
         asterisk_ari_url=_env("ASTERISK_ARI_URL", "http://127.0.0.1:8088/ari"),
         asterisk_ari_user=_env("ASTERISK_ARI_USER", "agent-sandbox"),
