@@ -77,6 +77,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
       labels: {
         team: "ops",
       },
+      nullable: null,
     },
     issue_number: null,
     is_expired: false,
@@ -287,7 +288,7 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   await allowedExtensionsSection.locator(".structured-input-error").waitFor({ state: "hidden" });
 
   await page.getByRole("button", { name: "Save changes" }).click();
-  await page.locator(".session-tools-panel .success-box").waitFor({ state: "visible" });
+  await page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" });
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(allowedToolBodies.length, 1);

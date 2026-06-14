@@ -73,10 +73,12 @@ test("json object rows preserve nested values and round-trip untouched rows", ()
   const source = {
     alpha: "text",
     beta: 2,
+    delta: null,
     gamma: { nested: [true, null] },
   };
   const rows = jsonObjectDraftRowsFromValue(source);
-  assert.deepEqual(rows.map((row) => row.key), ["alpha", "beta", "gamma"]);
+  assert.deepEqual(rows.map((row) => row.key), ["alpha", "beta", "delta", "gamma"]);
+  assert.equal(rows.find((row) => row.key === "delta")?.valueText, "null");
   assert.deepEqual(parseJsonObjectDraftRows(rows, "Metadata"), source);
   assert.throws(
     () =>

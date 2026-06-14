@@ -120,6 +120,22 @@ function renderEmptyState(emptyState: string | undefined, fallback: string): Rea
   return <div className="empty-state">{emptyState ?? fallback}</div>;
 }
 
+function shouldRehydrateRows(
+  snapshotRef: { current: string },
+  locallyEmittedSnapshotRef: { current: string | null },
+  snapshot: string,
+): boolean {
+  if (snapshotRef.current === snapshot) return false;
+  const locallyEmitted = locallyEmittedSnapshotRef.current === snapshot;
+  snapshotRef.current = snapshot;
+  if (locallyEmitted) {
+    locallyEmittedSnapshotRef.current = null;
+    return false;
+  }
+  locallyEmittedSnapshotRef.current = null;
+  return true;
+}
+
 export function StringListEditor({
   values,
   onChange,
@@ -139,10 +155,10 @@ export function StringListEditor({
   const snapshot = encodeStringListDraftValue(normalizedValues);
   const [rows, setRows] = useState<StringDraftRow[]>(() => normalizedValues.map((value) => createStringDraftRow(value)));
   const snapshotRef = useRef(snapshot);
+  const locallyEmittedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (snapshotRef.current === snapshot) return;
-    snapshotRef.current = snapshot;
+    if (!shouldRehydrateRows(snapshotRef, locallyEmittedSnapshotRef, snapshot)) return;
     setRows(normalizedValues.map((value) => createStringDraftRow(value)));
   }, [normalizedValues, snapshot]);
 
@@ -151,6 +167,7 @@ export function StringListEditor({
       nextRows.map((row) => row.value),
       normalizeItem,
     );
+    locallyEmittedSnapshotRef.current = encodeStringListDraftValue(nextValues);
     onChange(nextValues);
   }
 
@@ -350,10 +367,10 @@ export function StringMapEditor({
   const [rows, setRows] = useState<StringMapDraftRow[]>(() => stringMapDraftRowsFromValue(value));
   const [error, setError] = useState<string | null>(null);
   const snapshotRef = useRef(snapshot);
+  const locallyEmittedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (snapshotRef.current === snapshot) return;
-    snapshotRef.current = snapshot;
+    if (!shouldRehydrateRows(snapshotRef, locallyEmittedSnapshotRef, snapshot)) return;
     setRows(stringMapDraftRowsFromValue(value));
     setError(null);
   }, [snapshot, value]);
@@ -361,7 +378,9 @@ export function StringMapEditor({
   function emitChange(nextRows: readonly StringMapDraftRow[]) {
     try {
       const parsed = parseStringMapDraftRows(nextRows, fieldLabel, false);
-      onChange(parsed ?? {});
+      const nextValue = parsed ?? {};
+      locallyEmittedSnapshotRef.current = JSON.stringify(nextValue);
+      onChange(nextValue);
       setError(null);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -460,10 +479,10 @@ export function JsonObjectKeyValueEditor({
   const [rows, setRows] = useState<JsonObjectDraftRow[]>(() => jsonObjectDraftRowsFromValue(value));
   const [error, setError] = useState<string | null>(null);
   const snapshotRef = useRef(snapshot);
+  const locallyEmittedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (snapshotRef.current === snapshot) return;
-    snapshotRef.current = snapshot;
+    if (!shouldRehydrateRows(snapshotRef, locallyEmittedSnapshotRef, snapshot)) return;
     setRows(jsonObjectDraftRowsFromValue(value));
     setError(null);
   }, [snapshot, value]);
@@ -471,6 +490,7 @@ export function JsonObjectKeyValueEditor({
   function emitChange(nextRows: readonly JsonObjectDraftRow[]) {
     try {
       const parsed = parseJsonObjectDraftRows(nextRows, fieldLabel);
+      locallyEmittedSnapshotRef.current = JSON.stringify(parsed);
       onChange(parsed);
       setError(null);
     } catch (nextError) {
@@ -597,10 +617,10 @@ export function RegexListEditor({
   const [rows, setRows] = useState<RegexPatternDraftRow[]>(() => regexPatternDraftRowsFromValue(values));
   const [error, setError] = useState<string | null>(null);
   const snapshotRef = useRef(snapshot);
+  const locallyEmittedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (snapshotRef.current === snapshot) return;
-    snapshotRef.current = snapshot;
+    if (!shouldRehydrateRows(snapshotRef, locallyEmittedSnapshotRef, snapshot)) return;
     setRows(regexPatternDraftRowsFromValue(values));
     setError(null);
   }, [snapshot, values]);
@@ -608,7 +628,9 @@ export function RegexListEditor({
   function emitChange(nextRows: readonly RegexPatternDraftRow[]) {
     try {
       const parsed = parseRegexPatternDraftRows(nextRows, fieldLabel, false);
-      onChange(parsed ?? []);
+      const nextValues = parsed ?? [];
+      locallyEmittedSnapshotRef.current = encodeStringListDraftValue(nextValues);
+      onChange(nextValues);
       setError(null);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));

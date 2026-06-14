@@ -155,6 +155,7 @@ export function parseStringMapDraftRows(
 }
 
 function formatJsonSnippet(value: unknown): string {
+  if (value === null) return "null";
   return formatJsonTextDraftValue(value);
 }
 
