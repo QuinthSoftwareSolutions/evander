@@ -399,6 +399,44 @@ def _load_scheduled_wake_worker_global_config(
     return ScheduledWakeWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
+def _effective_gateway_config_for_scheduled_wake(
+    base_config: GatewayConfig,
+    worker_config: ScheduledWakeWorkerGlobalConfig,
+) -> GatewayConfig:
+    return GatewayConfig.model_validate(
+        {
+            **base_config.model_dump(mode="json"),
+            "runtime_dir": worker_config.runtime_dir,
+            "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
+            "wake_jitter_seconds": worker_config.jitter_seconds,
+            "wake_cooldown_seconds": worker_config.cooldown_seconds,
+            "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
+            "wake_completion_confirmation_timeout_seconds": (
+                worker_config.completion_confirmation_timeout_seconds
+            ),
+            "wake_completion_confirmation_retry_max_attempts": (
+                worker_config.completion_confirmation_retry_max_attempts
+            ),
+            "wake_completion_confirmation_retry_window_seconds": (
+                worker_config.completion_confirmation_retry_window_seconds
+            ),
+            "wake_completion_confirmation_retry_base_backoff_seconds": (
+                worker_config.completion_confirmation_retry_base_backoff_seconds
+            ),
+            "wake_completion_confirmation_retry_max_backoff_seconds": (
+                worker_config.completion_confirmation_retry_max_backoff_seconds
+            ),
+            "wake_session_cooldown_path": worker_config.session_cooldown_path,
+            "host_busy_check_script_path": worker_config.busy_check_script_path,
+            "host_resume_script_path": worker_config.resume_script_path,
+            "wake_dispatch_state_path": worker_config.wake_state_path,
+            "wake_vm_user": worker_config.vm_user,
+            "wake_resume_timeout_seconds": worker_config.resume_timeout_seconds,
+            "scheduled_wake_prefix_text": worker_config.scheduled_wake_prefix_text,
+        }
+    )
+
+
 class ScheduledWakeWorkerGlobalConfigReloader:
     def __init__(
         self,
@@ -469,38 +507,7 @@ def build_scheduled_wake_worker(
     worker_config = _load_scheduled_wake_worker_global_config(
         resolved_project_dir, base_config=config
     )
-    effective_config = GatewayConfig.model_validate(
-        {
-            **config.model_dump(mode="json"),
-            "runtime_dir": worker_config.runtime_dir,
-            "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
-            "wake_jitter_seconds": worker_config.jitter_seconds,
-            "wake_cooldown_seconds": worker_config.cooldown_seconds,
-            "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
-            "wake_completion_confirmation_timeout_seconds": (
-                worker_config.completion_confirmation_timeout_seconds
-            ),
-            "wake_completion_confirmation_retry_max_attempts": (
-                worker_config.completion_confirmation_retry_max_attempts
-            ),
-            "wake_completion_confirmation_retry_window_seconds": (
-                worker_config.completion_confirmation_retry_window_seconds
-            ),
-            "wake_completion_confirmation_retry_base_backoff_seconds": (
-                worker_config.completion_confirmation_retry_base_backoff_seconds
-            ),
-            "wake_completion_confirmation_retry_max_backoff_seconds": (
-                worker_config.completion_confirmation_retry_max_backoff_seconds
-            ),
-            "wake_session_cooldown_path": worker_config.session_cooldown_path,
-            "host_busy_check_script_path": worker_config.busy_check_script_path,
-            "host_resume_script_path": worker_config.resume_script_path,
-            "wake_dispatch_state_path": worker_config.wake_state_path,
-            "wake_vm_user": worker_config.vm_user,
-            "wake_resume_timeout_seconds": worker_config.resume_timeout_seconds,
-            "scheduled_wake_prefix_text": worker_config.scheduled_wake_prefix_text,
-        }
-    )
+    effective_config = _effective_gateway_config_for_scheduled_wake(config, worker_config)
     runtime = build_runtime(effective_config)
     return ScheduledWakeWorker(
         config=effective_config, worker_config=worker_config, runtime=runtime
