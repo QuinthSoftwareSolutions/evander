@@ -196,7 +196,11 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
-  assert.equal(await page.getByLabel("Direct directory only").isChecked(), false);
+  assert.equal(await page.getByLabel("Exclude sub-directories").isChecked(), false);
+  await page.getByText("Exclude sub-directories", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Checked means only the selected directory is searched and child directories are excluded.", { exact: true }).waitFor({ state: "visible" }),
+  );
   await assert.doesNotReject(() => page.getByText("No approval requests matched the current filters.").waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");

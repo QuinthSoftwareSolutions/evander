@@ -303,10 +303,17 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     page.locator(".approval-review-summary").getByText("Send the approved email payload to the recipient.", { exact: true }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
-    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Payload digest:" }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Arguments hash:" }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page
+      .getByRole("tooltip")
+      .filter({ hasText: "compact fingerprint of the submitted arguments" })
+      .waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() =>
@@ -320,8 +327,9 @@ test("admin shell approvals detail renders intended effect and payload digest", 
       .waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() => page.getByText("Mismatch", { exact: true }).first().waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Approved payload", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Attempted payload", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Approved arguments" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Submitted arguments" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Rejection reason", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.body", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.optional_field", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.trace_id", { exact: true }).waitFor({ state: "visible" }));
@@ -609,6 +617,10 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
   assert.equal(await page.getByRole("button", { name: "Deny", exact: true }).count(), 0);
   const revokeButton = page.getByRole("button", { name: "Revoke" });
   await assert.doesNotReject(() => revokeButton.waitFor({ state: "visible" }));
+  await revokeButton.hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Revoking invalidates this grant for all future use.", { exact: true }).waitFor({ state: "visible" }),
+  );
 
   await page.getByLabel("Reason").fill("No longer safe.");
   await revokeButton.click();

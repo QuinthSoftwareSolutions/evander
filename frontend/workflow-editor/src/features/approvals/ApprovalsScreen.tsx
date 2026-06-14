@@ -360,7 +360,11 @@ function ApprovalPayloadDiagnosticSection({
           <dd>{diagnostic.status ?? "n/a"}</dd>
         </div>
         <div>
-          <dt>Rejection kind</dt>
+          <dt>
+            <Tooltip content="The reason category reported by the approval diagnostics.">
+              <span>Rejection reason</span>
+            </Tooltip>
+          </dt>
           <dd>{diagnostic.rejectionKind ?? "n/a"}</dd>
         </div>
         <div>
@@ -368,11 +372,19 @@ function ApprovalPayloadDiagnosticSection({
           <dd>{diagnostic.reason ?? "n/a"}</dd>
         </div>
         <div>
-          <dt>Approved digest</dt>
+          <dt>
+            <Tooltip content="A digest is a compact fingerprint of the approved arguments, not the full secret payload.">
+              <span>Approved arguments</span>
+            </Tooltip>
+          </dt>
           <dd>{diagnostic.approvedPayloadDigest ?? "n/a"}</dd>
         </div>
         <div>
-          <dt>Attempted digest</dt>
+          <dt>
+            <Tooltip content="A digest is a compact fingerprint of the submitted arguments, not the full secret payload.">
+              <span>Submitted arguments</span>
+            </Tooltip>
+          </dt>
           <dd>{diagnostic.attemptedPayloadDigest ?? "n/a"}</dd>
         </div>
       </dl>
@@ -657,7 +669,7 @@ export function ApprovalsScreen() {
             <strong>Directory scope</strong>
             <span className="panel-meta">{selectedDirectoryPath}</span>
           </div>
-          <div className="feature-list-meta">{filters.directOnly ? "Direct matches only" : "Including descendants"}</div>
+          <div className="feature-list-meta">{filters.directOnly ? "Child directories excluded" : "Child directories included"}</div>
         </div>
         <label className="checkbox-row">
           <input
@@ -665,22 +677,32 @@ export function ApprovalsScreen() {
             checked={filters.directOnly}
             onChange={(event) => setFilters((current) => ({ ...current, directOnly: event.target.checked }))}
           />
-          <span>Direct directory only</span>
+          <Tooltip content="Checked means only the selected directory is searched and child directories are excluded.">
+            <span>Exclude sub-directories</span>
+          </Tooltip>
         </label>
         <label className="field-stack">
-          <span>Session</span>
+          <Tooltip content="Filter approvals by session ID.">
+            <span>Session</span>
+          </Tooltip>
           <input value={filters.sessionId} onChange={(event) => setFilters((current) => ({ ...current, sessionId: event.target.value }))} placeholder="issue-14084-session" />
         </label>
         <label className="field-stack">
-          <span>VM</span>
+          <Tooltip content="Filter approvals by VM ID.">
+            <span>VM</span>
+          </Tooltip>
           <input value={filters.vmId} onChange={(event) => setFilters((current) => ({ ...current, vmId: event.target.value }))} placeholder="vm-14084" />
         </label>
         <label className="field-stack">
-          <span>Tool</span>
+          <Tooltip content="Filter approvals by the requested tool name.">
+            <span>Tool</span>
+          </Tooltip>
           <input value={filters.toolName} onChange={(event) => setFilters((current) => ({ ...current, toolName: event.target.value }))} placeholder="email_send_approved" />
         </label>
         <label className="field-stack">
-          <span>Min age minutes</span>
+          <Tooltip content="Show requests older than the entered number of minutes.">
+            <span>Older than (minutes)</span>
+          </Tooltip>
           <input value={filters.minAgeMinutes} onChange={(event) => setFilters((current) => ({ ...current, minAgeMinutes: event.target.value }))} placeholder="5" />
         </label>
         <div className="feature-list">
@@ -770,7 +792,12 @@ export function ApprovalsScreen() {
                     </p>
                   ) : null}
                   <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
-                  <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
+                  <p className="muted-copy">
+                    Arguments hash:{" "}
+                    <Tooltip content={`Arguments hash: ${detail.request.payload_digest}. A digest is a compact fingerprint of the submitted arguments, not the full secret payload.`}>
+                      <span>{detail.request.payload_digest}</span>
+                    </Tooltip>
+                  </p>
                 </div>
               </section>
 
@@ -781,56 +808,58 @@ export function ApprovalsScreen() {
                     <span className="panel-meta">{usesAnonymousApprover ? "Required approver and reason" : "Signed-in user and reason"}</span>
                   </div>
                   <div className="panel-body">
-                {usesAnonymousApprover ? (
-                  <label className="field-stack">
-                    <span>Approver</span>
-                    <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
-                  </label>
-                ) : (
-                  <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
-                )}
-                <label className="field-stack">
-                  <span>Reason</span>
-                  <textarea value={reason} rows={4} onChange={(event) => setReason(event.target.value)} disabled={mutationLocked} />
-                </label>
-                <div className="action-row">
-                  {detail.request.status === "pending" ? (
-                    <>
-                      <button
-                        type="button"
-                        className="primary"
-                        ref={approveButtonRef}
-                        disabled={acting !== null || mutationLocked}
-                        onClick={() => void submitDecision(true)}
-                      >
-                        {acting === "approve" ? "Approving..." : "Approve"}
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        ref={denyButtonRef}
-                        disabled={acting !== null || mutationLocked}
-                        onClick={() => void submitDecision(false)}
-                      >
-                        {acting === "deny" ? "Denying..." : "Deny"}
-                      </button>
-                    </>
-                  ) : selectedApprovalIsValid ? (
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={acting !== null || mutationLocked}
-                      onClick={() => void submitRevoke()}
-                    >
-                      {acting === "revoke" ? "Revoking..." : "Revoke"}
-                    </button>
-                  ) : null}
-                </div>
-                {detail.request.status !== "pending" ? (
-                  <p className="muted-copy">
-                    Decision recorded by {detail.request.approver ?? "unknown"} at {formatTimestamp(detail.request.decision_at)}.
-                  </p>
-                ) : null}
+                    {usesAnonymousApprover ? (
+                      <label className="field-stack">
+                        <span>Approver</span>
+                        <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
+                      </label>
+                    ) : (
+                      <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
+                    )}
+                    <label className="field-stack">
+                      <span>Reason</span>
+                      <textarea value={reason} rows={4} onChange={(event) => setReason(event.target.value)} disabled={mutationLocked} />
+                    </label>
+                    <div className="action-row">
+                      {detail.request.status === "pending" ? (
+                        <>
+                          <button
+                            type="button"
+                            className="primary"
+                            ref={approveButtonRef}
+                            disabled={acting !== null || mutationLocked}
+                            onClick={() => void submitDecision(true)}
+                          >
+                            {acting === "approve" ? "Approving..." : "Approve"}
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            ref={denyButtonRef}
+                            disabled={acting !== null || mutationLocked}
+                            onClick={() => void submitDecision(false)}
+                          >
+                            {acting === "deny" ? "Denying..." : "Deny"}
+                          </button>
+                        </>
+                      ) : selectedApprovalIsValid ? (
+                        <Tooltip content="Revoking invalidates this grant for all future use.">
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={acting !== null || mutationLocked}
+                            onClick={() => void submitRevoke()}
+                          >
+                            {acting === "revoke" ? "Revoking..." : "Revoke"}
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                    </div>
+                    {detail.request.status !== "pending" ? (
+                      <p className="muted-copy">
+                        Decision recorded by {detail.request.approver ?? "unknown"} at {formatTimestamp(detail.request.decision_at)}.
+                      </p>
+                    ) : null}
                   </div>
                 </article>
 
@@ -845,12 +874,12 @@ export function ApprovalsScreen() {
               {approvalDiagnostic ? (
                 <ApprovalPayloadDiagnosticSection
                   diagnostic={approvalDiagnostic}
-                  summaryLabel="Approved payload"
+                  summaryLabel="Approved arguments"
                   summary={approvalDiagnostics?.approved_payload ?? detail.redacted_payload}
                   attemptedSummaryLabel={
                     approvalDiagnostics?.blocked_tool_call_diagnostics?.length
-                      ? "Attempted payload"
-                      : "Requested payload"
+                      ? "Submitted arguments"
+                      : "Requested arguments"
                   }
                   attemptedSummary={
                     approvalDiagnostic.attemptedPayloadSummary ??
