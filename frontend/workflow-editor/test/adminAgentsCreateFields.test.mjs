@@ -35,6 +35,13 @@ function buildCreatePayloadSource() {
   );
 }
 
+function zIndexForSelector(selector) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = styles.match(new RegExp(`${escapedSelector}\\s*\\{[\\s\\S]*?z-index:\\s*(\\d+);`));
+  assert.ok(match, `missing z-index rule for ${selector}`);
+  return Number(match[1]);
+}
+
 test("create form state carries backend-aware provider and image selections", () => {
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?agentProvider: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
@@ -170,6 +177,17 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
   }
   assert.match(createModal, /<CreateFieldLabel[\s\S]*?Agent provider[\s\S]*?<\/CreateFieldLabel>/);
   assert.match(createModal, /<CreateFieldLabel[\s\S]*?Provider[\s\S]*?<\/CreateFieldLabel>/);
+});
+
+test("admin tooltips render above modal layers", () => {
+  const tooltipZIndex = zIndexForSelector(".admin-tooltip-bubble");
+  for (const selector of [
+    ".modal-backdrop",
+    ".nested-modal-backdrop",
+    ".compact-workflow-sheet-backdrop",
+  ]) {
+    assert.ok(tooltipZIndex > zIndexForSelector(selector), `${selector} must stay below tooltips`);
+  }
 });
 
 test("the create modal never reintroduces upsert semantics", () => {
