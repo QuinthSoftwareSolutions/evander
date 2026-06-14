@@ -11,6 +11,13 @@ material. Newer entries are added incrementally as changes land.
   between cycles so edits such as `scheduled_wake_prefix_text` take effect
   without restarting the service.
 
+## 2026-06-14 - Approval Grant Clamp Generalization
+
+- Generalized the exact-payload, single-use approval grant clamp to every tool
+  in `ALWAYS_APPROVAL_REQUIRED_TOOLS`, including `semantic_delete_points`.
+- Preserved the existing `delete_ado_backlog_item` approval behavior and TTL
+  handling while keeping the policy clamp limited to mandatory-approval tools.
+
 ## 2026-06-14 - Scheduled Wake Prefix Cleanup
 
 - Removed the false PR-comments default from the scheduled-wake example
