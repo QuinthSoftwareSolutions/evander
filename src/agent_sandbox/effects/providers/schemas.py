@@ -115,6 +115,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     allowed_tools: list[str] | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
+    allowed_contact_ids: list[str] | None = None
     discord_channels: list[str] | None = None
     email_mailboxes: list[str] | None = None
     email_folders: list[str] | None = None
@@ -204,6 +205,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     allowed_tools: list[str] | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
+    allowed_contact_ids: list[str] | None = None
     communication_target_ids: list[str] | None = None
     discord_channels: list[str] | None = None
     teams_channel_allowlist: list[str] | None = None

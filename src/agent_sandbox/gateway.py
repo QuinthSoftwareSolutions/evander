@@ -7338,8 +7338,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 resolved_session_id,
                 ToolName.LIST_CONTACTS,
             )
-            contacts_config = context.provider_config.resolve_contacts_for_directory(
-                session.directory_path
+            contacts_config = context.provider_config.resolve_effective_contacts_for_session_id(
+                resolved_session_id
             )
             contacts = []
             for contact_id, contact in sorted(contacts_config.contacts.items()):

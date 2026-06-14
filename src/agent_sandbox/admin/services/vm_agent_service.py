@@ -1948,6 +1948,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         model: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
+        allowed_contact_ids: list[str] | None = None,
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
@@ -2003,6 +2004,12 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 action="create_issue_vm",
                 message="MSSQL_SA_PASSWORD must be set when --mssql is used.",
             )
+        resolved_allowed_contact_ids = _admin_service._validate_allowed_contact_ids_for_directory(
+            self._deps.runtime,
+            session_id=resolved_session_id,
+            directory_path=normalized_directory_path,
+            allowed_contact_ids=allowed_contact_ids,
+        )
 
         manifest = _admin_service._build_issue_session_manifest(
             policy=policy,
@@ -2011,6 +2018,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             issue_number=issue_number,
             directory_path=normalized_directory_path,
             ttl_hours=ttl_hours,
+            allowed_contact_ids=resolved_allowed_contact_ids,
             discord_channels=discord_channels or [],
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],

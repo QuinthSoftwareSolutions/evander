@@ -13,6 +13,80 @@ material. Newer entries are added incrementally as changes land.
 - Kept locked approval badges valid in the mobile Tool Visibility cards by
   avoiding nested focus targets inside selectable records.
 
+## 2026-06-14 - Session Contact Allowlist Plumbing
+
+- Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
+  `effect:agent:create`, admin session policy payload/update surfaces, and the
+  admin session policy field catalog.
+- Preserved existing container-worker session contact restrictions when
+  `effect:agent:create` upserts omit `allowed_contact_ids`.
+- Preserved contact allowlist resolution for provider-session fallback records
+  used by directory-scoped provider config resolution.
+- Documented that omitted or `null` allowlists keep the full directory contact
+  set, while explicit lists narrow the contacts visible to phone tools.
+
+## 2026-06-14 - Azure DevOps Backlog Title Updates
+
+- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
+  backlog items by numeric work-item id.
+- Required title validation now rejects blank or whitespace-only values before
+  the ADO update call and writes the trimmed value to `System.Title`.
+
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
+
+## 2026-06-14 - Sessions Save Feedback Cleanup
+
+- Consolidated the Sessions page save feedback into the existing top-level
+  success and error callouts so model, tools, and policy saves show one visible
+  status message with section context.
+- Made the approval-settings modal support a real discard flow so operators can
+  close it without applying local edits to the session policy draft.
+- Made `Reset to inherited defaults` clear explicit per-session approval
+  setting overrides instead of restoring stale effective values.
+- Added an explanatory tooltip for the disabled `Add notification target`
+  control when all notify-capable targets are already selected.
+
+## 2026-06-14 - Admin UI Polish
+
+- Switched session model suggestions to catalog-driven options so the Sessions
+  page keeps free entry without hardcoded model ids.
+- Moved dashboard spacing and disk-dial tone values into shared CSS and theme
+  tokens to reduce inline style duplication.
+- Added visible feedback for collapsed pricing edits, deep-linked approval
+  loading, and artifact upload success so state changes stay observable after
+  the related panel or modal closes.
+
+## 2026-06-14 - Structured Policy Inputs
+
+- Added shared structured editors for list, map, JSON-object, and regex policy
+  fields, then wired them into the Sessions, Agents, configuration, workers,
+  and model-pricing admin screens.
+- Added an optional structured Initial policy section to the Admin Web Create
+  agent dialog so labels and list-style policy fields can be seeded without
+  typing raw newline/key-value text.
+- Preserved the existing backend payload shapes while adding inline validation
+  for metadata JSON, label maps, leading-dot extensions, and regex rows.
+- Expanded the focused Node and smoke coverage to assert structured hydration,
+  malformed-input blocking, and round-trip payload assertions.
+
+## 2026-06-14 - Admin Approval UX Updates
+
+- Clarified Admin Web approval labels and tooltips across visible approvals,
+  issue VM bootstrap controls, session approval settings, and approval
+  decision panel behavior.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using
@@ -49,7 +123,6 @@ material. Newer entries are added incrementally as changes land.
   backlog items by numeric work-item id.
 - Required title validation now rejects blank or whitespace-only values before
   the ADO update call and writes the trimmed value to `System.Title`.
->>>>>>> main
 
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 

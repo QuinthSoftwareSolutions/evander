@@ -54,6 +54,7 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /modelPricingPanelCollapsed/);
   assert.match(configuration, /className="panel-header panel-toggle model-pricing-panel-toggle"/);
   assert.match(configuration, /aria-controls=\{modelPricingPanelBodyId\}/);
+  assert.match(configuration, /status-pill state-stale">Unsaved changes<\/span>/);
   assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
   assert.match(configuration, /duplicateModelPricingRule/);
   assert.match(configuration, /deleteModelPricingRule/);

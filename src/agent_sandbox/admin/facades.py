@@ -640,7 +640,16 @@ class SessionAdminFacade:
         session_id, manifest = admin_service_module._resolve_session_target(
             target, self._sessions_by_id()
         )
-        update = admin_service_module._session_policy_update_from_payload(manifest, payload)
+        contacts_config = None
+        if "allowed_contact_ids" in payload:
+            contacts_config = self._deps.runtime.provider_config.resolve_contacts_for_session_id(
+                manifest.session_id
+            )
+        update = admin_service_module._session_policy_update_from_payload(
+            manifest,
+            payload,
+            contacts_config=contacts_config,
+        )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (
                 admin_service_module._resolve_session_approval_notification_target_ids(
