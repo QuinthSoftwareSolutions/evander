@@ -5,15 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
-## 2026-06-14 - Session Policy Structured Inputs
+## 2026-06-14 - Structured Policy Inputs
 
-- Replaced the Sessions page policy textareas for allowed scripts, Discord and
-  Teams allowlists, MIME types, extensions, and metadata with structured
-  editors.
-- Preserved the existing session PATCH payload shapes while adding inline
-  validation for metadata JSON and leading-dot extensions.
-- Expanded the Sessions smoke coverage to assert structured hydration, blocked
-  invalid saves, and preserved allowed-tool gating.
+- Added shared structured editors for list, map, JSON-object, and regex policy
+  fields, then wired them into the Sessions, Agents, configuration, workers,
+  and model-pricing admin screens.
+- Preserved the existing backend payload shapes while adding inline validation
+  for metadata JSON, label maps, leading-dot extensions, and regex rows.
+- Expanded the focused Node and smoke coverage to assert structured hydration,
+  malformed-input blocking, and round-trip payload assertions.
 
 ## 2026-06-13 - Admin Agents Status Performance
 
@@ -51,7 +51,6 @@ material. Newer entries are added incrementally as changes land.
   backlog items by numeric work-item id.
 - Required title validation now rejects blank or whitespace-only values before
   the ADO update call and writes the trimmed value to `System.Title`.
->>>>>>> main
 
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
