@@ -5845,6 +5845,7 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
     assert (
         read_result.config["backoff_seconds"] == ScheduledWakeWorkerGlobalConfig().backoff_seconds
     )
+    assert read_result.config["scheduled_wake_prefix_text"] == ""
 
     write_result = service.write_worker_global_config(
         "scheduled-wake",
@@ -5877,6 +5878,38 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
     reread = service.read_worker_global_config("scheduled-wake")
     assert reread.config["directories"] == ["root/team-a"]
     assert reread.config["backoff_seconds"] == 90.0
+
+    legacy_service = AdminService(write_config(tmp_path / "legacy"))
+    legacy_write_result = legacy_service.write_worker_global_config(
+        "scheduled-wake",
+        {
+            "runtime_dir": str(tmp_path / "legacy" / "runtime"),
+            "directories": ["root/team-b"],
+            "poll_interval_seconds": 25.0,
+            "jitter_seconds": 3.0,
+            "backoff_seconds": 95.0,
+            "cooldown_seconds": 95.0,
+            "lock_path": None,
+            "session_cooldown_path": None,
+            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "resume_script_path": "scripts/resume_issue_agent.sh",
+            "wake_state_path": None,
+            "vm_user": "worker",
+            "resume_timeout_seconds": 600.0,
+            "wake_scheduled_prefix_text": "Legacy scheduled wake prefix.",
+        },
+    )
+    assert legacy_write_result.config["scheduled_wake_prefix_text"] == (
+        "Legacy scheduled wake prefix."
+    )
+
+    legacy_payload = json.loads(
+        (tmp_path / "legacy" / "config" / "scheduled-wake" / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert legacy_payload["scheduled_wake_prefix_text"] == "Legacy scheduled wake prefix."
+    assert "wake_scheduled_prefix_text" not in legacy_payload
 
 
 def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:
