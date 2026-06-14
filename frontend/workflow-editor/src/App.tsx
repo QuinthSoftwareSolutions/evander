@@ -1234,6 +1234,7 @@ function groupToolOption(option: WorkflowFieldOption): string {
     "create_ado_backlog_item",
     "post_ado_backlog_comment",
     "update_ado_backlog_text",
+    "update_ado_backlog_title",
     "update_ado_backlog_tags",
     "query_ado_backlog_items",
     "list_ado_current_iteration_backlog_items",
