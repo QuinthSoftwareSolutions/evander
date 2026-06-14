@@ -338,6 +338,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ui.text.count('name="lead_session_id"') == 1
     assert 'name="review_profile_id"' in ui.text
     assert 'id="create-review-profile-form"' in ui.text
+    assert 'name="bare_repo"' in ui.text
+    assert 'data-options="git-providers"' in ui.text
+    assert "data-agent-source-picker" in ui.text
+    assert 'id="edit-modal"' in ui.text
+    assert 'id="edit-record-form"' in ui.text
 
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
@@ -355,6 +360,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "renderReviewDeliveryWorkspace" in script.text
     assert "submitReviewDecision" in script.text
     assert "bindWorkspaceReviewDecisionForms" in script.text
+    assert "bindGeneratedIds" in script.text
+    assert "bindExistingAgentPickers" in script.text
+    assert "submitEditForm" in script.text
+    assert "gitToBareRepo" in script.text
+    assert "fieldTooltips" in script.text
+    assert "decorateFieldTooltips" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -364,6 +375,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".delivery-filter" in stylesheet.text
     assert ".state-pill.rejected" in stylesheet.text
     assert ".state-pill.blocked" in stylesheet.text
+    assert ".edit-modal" in stylesheet.text
+    assert ".record-actions" in stylesheet.text
+    assert ".field-tooltip" in stylesheet.text
+    assert ".field-tooltip-bubble" in stylesheet.text
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
@@ -645,6 +660,113 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
         "lead",
         "manager",
     }
+
+
+def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "expected_revision": 1,
+        },
+    )
+    assert response.status_code == 201
+    response = client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+            "expected_revision": 2,
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={
+            "name": "Renamed Team",
+            "operator_communication_target_id": None,
+            "archived": True,
+            "expected_revision": 3,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["revision"] == 4
+    assert body["teams"]["team"]["name"] == "Renamed Team"
+    assert body["teams"]["team"]["operator_communication_target_id"] is None
+    assert body["teams"]["team"]["archived"] is True
+
+    response = client.patch(
+        "/api/addons/team-addon/projects/project",
+        json={
+            "name": "Renamed Project",
+            "status": "blocked",
+            "goals": [{"id": "goal", "description": "Updated goal"}],
+            "git": {
+                "host_repo_path": "/srv/repo",
+                "bare_repo": "/srv/git/repo.git",
+                "provider": "github",
+            },
+            "expected_revision": 4,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    project = body["projects"]["project"]
+    assert body["revision"] == 5
+    assert project["name"] == "Renamed Project"
+    assert project["status"] == "blocked"
+    assert project["goals"][0]["id"] == "goal"
+    assert project["git"]["bare_repo_path"] == "/srv/git/repo.git"
+    assert project["git"]["provider"] == "github"
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "project_id": "project",
+            "role": "implementer",
+            "session_id": "session-backend-2",
+            "reports_to_agent_id": "manager",
+            "display_name": None,
+            "ephemeral_policy": {"max_concurrent": 4},
+            "status": "paused",
+            "expected_revision": 5,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    backend = body["agents"]["backend"]
+    assert body["revision"] == 6
+    assert backend["role"] == "implementer"
+    assert backend["session_id"] == "session-backend-2"
+    assert backend["reports_to_agent_id"] == "manager"
+    assert backend["display_name"] is None
+    assert backend["ephemeral_policy"]["max_concurrent"] == 4
+    assert backend["status"] == "paused"
+    assert body["agents"]["lead"]["subordinate_agent_ids"] == []
+    assert body["agents"]["manager"]["subordinate_agent_ids"] == ["lead", "backend"]
 
 
 def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> None:
@@ -1214,6 +1336,16 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     profile = response.json()
     assert profile["name"] == "Security review v2"
     assert profile["archived"] is True
+
+    # Empty strings are meaningful on edit: they clear the optional description.
+    response = client.patch(
+        "/api/addons/team-addon/review-profiles/profile",
+        json={"description": ""},
+    )
+    assert response.status_code == 200
+    response = client.get("/api/addons/team-addon/review-profiles/profile")
+    profile = response.json()
+    assert profile["description"] == ""
 
     # Archived profiles cannot be assigned through the Admin API.
     response = client.post(

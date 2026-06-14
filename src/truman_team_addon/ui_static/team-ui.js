@@ -10,6 +10,12 @@ const taskStates = [
   "rejected",
 ];
 const recordStates = ["pending", "in_progress", "accepted", "rejected", "blocked"];
+const agentStatuses = ["active", "paused", "archived"];
+const projectStatuses = ["active", "blocked", "completed", "archived"];
+const gitProviders = [
+  ["github", "GitHub"],
+  ["azure_devops", "Azure DevOps"],
+];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
@@ -67,6 +73,10 @@ const elements = {
   timelineStatusFilter: document.querySelector("#timeline-status-filter"),
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
   refreshButton: document.querySelector("#refresh-button"),
+  editModal: document.querySelector("#edit-modal"),
+  editModalTitle: document.querySelector("#edit-modal-title"),
+  editForm: document.querySelector("#edit-record-form"),
+  editFormBody: document.querySelector("#edit-form-body"),
 };
 
 const deliveryStatusOrder = [
@@ -87,9 +97,147 @@ const deliveryStatusLabels = {
 };
 
 let selectedDeliveryFilter = "all";
+let tooltipCounter = 0;
+
+const fieldTooltips = {
+  "setup-template-form:template_id": "Template blueprint used to create the team, project, roles, starter tasks, and review profile.",
+  "setup-template-form:team_id": "Immutable identifier for the new team. The UI suggests one from the team name, but you can edit it before creation.",
+  "setup-template-form:team_name": "Human-readable name shown in hierarchy, filters, and timeline rows.",
+  "setup-template-form:manager_existing_agent_id": "Copy session defaults from an existing agent while keeping this new manager's ID editable.",
+  "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
+  "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
+  "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
+  "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
+  "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
+  "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
+  "setup-template-form:project_lead_agent_id": "Persistent project lead agent ID. This agent owns project planning and release handoff tasks.",
+  "setup-template-form:project_lead_session_id": "Session ID used when the project lead agent is woken or resumed.",
+  "setup-template-form:implementer_existing_agent_id": "Copy defaults from an existing implementer while keeping the new implementer ID editable.",
+  "setup-template-form:implementer_agent_id": "Persistent agent ID for the implementation role created by the template.",
+  "setup-template-form:implementer_session_id": "Session ID used when the implementer agent is woken or resumed.",
+  "setup-template-form:reviewer_existing_agent_id": "Copy defaults from an existing reviewer while keeping the new reviewer ID editable.",
+  "setup-template-form:reviewer_agent_id": "Persistent agent ID for the reviewer role created by the template.",
+  "setup-template-form:reviewer_session_id": "Session ID used when the reviewer agent is woken or resumed.",
+  "setup-template-form:release_operator_existing_agent_id": "Copy defaults from an existing release operator while keeping the new release-operator ID editable.",
+  "setup-template-form:release_operator_agent_id": "Persistent agent ID for the release handoff and publication role.",
+  "setup-template-form:release_operator_session_id": "Session ID used when the release operator agent is woken or resumed.",
+
+  "create-team-form:id": "Immutable team identifier. The UI suggests one from the name, but you can edit it before creation.",
+  "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
+  "create-team-form:manager_existing_agent_id": "Copy session, display, and ID defaults from an existing agent without reusing that agent ID directly.",
+  "create-team-form:manager_agent_id": "Persistent ID for the manager agent created with this team.",
+  "create-team-form:manager_session_id": "Session ID used to resume or wake the manager agent.",
+  "create-team-form:manager_display_name": "Optional display name. If blank, the agent ID is shown.",
+  "create-team-form:manager_role": "Role label for the manager. Keep this as manager unless you have a specific routing convention.",
+  "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
+
+  "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
+  "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
+  "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
+  "create-project-form:lead_existing_agent_id": "Copy session and display defaults from an existing agent while creating a distinct new lead agent.",
+  "create-project-form:lead_agent_id": "Persistent project lead agent ID. The lead reports to the team's manager.",
+  "create-project-form:lead_session_id": "Session ID used to resume or wake the project lead agent.",
+  "create-project-form:lead_display_name": "Optional display name. If blank, the lead agent ID is shown.",
+  "create-project-form:lead_role": "Role label for the lead. Keep this as project_lead unless you have a specific routing convention.",
+  "create-project-form:goal_id": "Optional goal identifier. If blank, the UI derives one from the project ID.",
+  "create-project-form:goal_description": "Optional initial goal for the project backlog.",
+
+  "register-agent-form:existing_agent_id": "Copy defaults from an existing agent. This helps reuse session conventions while keeping the new ID editable.",
+  "register-agent-form:id": "Immutable agent identifier. The UI suggests one from project and role, but you can edit it before creation.",
+  "register-agent-form:team_id": "Team this persistent agent belongs to.",
+  "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
+  "register-agent-form:role": "Routing and responsibility label for this agent.",
+  "register-agent-form:session_id": "Session ID used when this agent is woken or resumed.",
+  "register-agent-form:display_name": "Optional display name. If blank, the agent ID is shown.",
+  "register-agent-form:reports_to_agent_id": "Supervisor for routing, permissions, status requests, and hierarchy display.",
+  "register-agent-form:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at the same time.",
+
+  "create-task-form:id": "Immutable task identifier. The UI suggests one from project and title.",
+  "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
+  "create-task-form:project_id": "Project that owns this task and constrains parent and dependency links.",
+  "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
+  "create-task-form:title": "Short task title shown in project and agent task lists.",
+  "create-task-form:description": "Work instructions for the owning agent.",
+  "create-task-form:created_by_agent_id": "Agent credited as the creator for routing and timeline context.",
+  "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
+  "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
+
+  "update-task-form:task_id": "Task to update. Selecting a task loads its current editable fields.",
+  "update-task-form:state": "New task state. Leave blank to keep the current state.",
+  "update-task-form:priority": "New priority. Lower numbers sort earlier.",
+  "update-task-form:title": "New title. Leave blank to keep the current title.",
+  "update-task-form:description": "New description. Leave blank to keep the current description.",
+  "update-task-form:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
+  "update-task-form:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+
+  "create-review-profile-form:id": "Immutable review profile identifier.",
+  "create-review-profile-form:team_id": "Team that owns this review profile.",
+  "create-review-profile-form:project_id": "Optional project scope. Blank makes the profile team-wide.",
+  "create-review-profile-form:name": "Human-readable profile name shown when requesting reviews.",
+  "create-review-profile-form:description": "Optional summary of when this profile should be used.",
+  "create-review-profile-form:applicable_roles": "Optional reviewer roles, one per line or comma-separated. Blank allows all reviewer roles.",
+  "create-review-profile-form:criteria": "Criteria rows in id | label | description | required format.",
+
+  "record-deliverable-form:id": "Immutable deliverable identifier.",
+  "record-deliverable-form:task_id": "Task this deliverable completes or advances.",
+  "record-deliverable-form:producer_agent_id": "Agent that produced the deliverable.",
+  "record-deliverable-form:summary": "Short summary of the delivered work.",
+  "record-deliverable-form:artifact_refs": "Optional artifact references, one per line or comma-separated.",
+  "record-deliverable-form:state": "Initial deliverable state. Blank records it as pending.",
+
+  "record-review-form:id": "Immutable review request identifier.",
+  "record-review-form:deliverable_id": "Deliverable that needs review.",
+  "record-review-form:reviewer_agent_id": "Agent assigned to review the deliverable.",
+  "record-review-form:review_profile_id": "Optional checklist profile applied to this review.",
+  "record-review-form:instructions": "Optional reviewer-specific instructions.",
+  "record-review-form:findings": "Optional initial findings, one per line or comma-separated.",
+  "record-review-form:state": "Initial review state. Blank records it as pending.",
+
+  "decide-review-form:review_request_id": "Review request to decide.",
+  "decide-review-form:state": "Decision to apply to the review, deliverable, and related task state.",
+  "decide-review-form:findings": "Decision findings, one per line or comma-separated.",
+  "decide-review-form:criteria": "Criterion result rows in criterion_id | state | finding format.",
+
+  "edit:team:name": "Rename the team without changing its immutable ID.",
+  "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
+  "edit:team:archived": "Archived teams stay in state but are hidden from active hierarchy views.",
+  "edit:project:name": "Rename the project without changing its immutable ID.",
+  "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
+  "edit:project:goals": "Replace project goals using id | description | state rows.",
+  "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
+  "edit:agent:role": "Routing and responsibility label for this persistent agent.",
+  "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
+  "edit:agent:display_name": "Optional display name. Clear it to fall back to the agent ID.",
+  "edit:agent:reports_to_agent_id": "Supervisor in the same team. The backend rejects reporting cycles.",
+  "edit:agent:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at once.",
+  "edit:agent:status": "Active agents can receive work; paused or archived agents remain in state for audit context.",
+  "edit:task:state": "Task state to save.",
+  "edit:task:priority": "Lower numbers sort earlier in each agent's task queue.",
+  "edit:task:title": "Rename the task without changing its immutable ID.",
+  "edit:task:description": "Update the instructions for the owning agent.",
+  "edit:task:parent_task_id": "Parent task in the same project. Clear the value to remove the parent link.",
+  "edit:task:dependency_task_ids": "Replacement dependency list, one per line or comma-separated.",
+  "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
+  "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
+  "edit:review-profile:description": "Optional summary of when this profile should be used.",
+  "edit:review-profile:applicable_roles": "Optional reviewer roles, one per line or comma-separated. Blank allows all reviewer roles.",
+  "edit:review-profile:criteria": "Replace criteria using id | label | description | required rows.",
+  "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
+
+  host_repo_path: "Host-local working repository path. The canonical remote URL alone is not enough; the host needs a local repository path.",
+  bare_repo: "Bare mirror name or absolute bare mirror path. Values starting with / are saved as paths; other values are saved as names.",
+  base_branch: "Canonical base branch used for agent branches, reviews, and promotions.",
+  canonical_origin_url: "Trusted upstream Git URL used when opening or promoting work outside the sandbox mirror.",
+  provider: "Git hosting provider used by host-side PR and promotion helpers.",
+  canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   bindForms();
+  bindRecordEditing();
+  bindGeneratedIds();
+  bindExistingAgentPickers();
   bindRuntimeFilters();
   bindDeliveryFilters();
   elements.templateSelect?.addEventListener("change", () => {
@@ -99,6 +247,7 @@ document.addEventListener("DOMContentLoaded", () => {
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
+  decorateFieldTooltips(document);
   void loadState();
 });
 
@@ -183,6 +332,293 @@ function bindForms() {
   });
 }
 
+function bindRecordEditing() {
+  document.addEventListener("click", (event) => {
+    const closeTarget = event.target.closest("[data-edit-close]");
+    if (closeTarget) {
+      closeEditDialog();
+      return;
+    }
+
+    const editButton = event.target.closest("[data-edit-type][data-edit-id]");
+    if (!editButton) {
+      return;
+    }
+    openEditDialog(editButton.dataset.editType, editButton.dataset.editId);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && elements.editModal && !elements.editModal.hidden) {
+      closeEditDialog();
+    }
+  });
+
+  elements.editForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitEditForm(elements.editForm);
+  });
+}
+
+function bindGeneratedIds() {
+  const rules = [
+    {
+      form: "#setup-template-form",
+      target: "team_id",
+      sources: ["team_name"],
+      build: (form) => joinIdParts(["team", fieldText(form, "team_name")]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "manager_agent_id",
+      sources: ["team_name", "team_id"],
+      build: (form) => joinIdParts([fieldText(form, "team_id") || fieldText(form, "team_name"), "manager"]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "project_id",
+      sources: ["project_name"],
+      build: (form) => joinIdParts(["project", fieldText(form, "project_name")]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "project_lead_agent_id",
+      sources: ["project_name", "project_id"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "project-lead"]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "implementer_agent_id",
+      sources: ["project_name", "project_id"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "implementer"]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "reviewer_agent_id",
+      sources: ["project_name", "project_id"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "reviewer"]),
+    },
+    {
+      form: "#setup-template-form",
+      target: "release_operator_agent_id",
+      sources: ["project_name", "project_id"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "project_name"), "release-operator"]),
+    },
+    {
+      form: "#create-team-form",
+      target: "id",
+      sources: ["name"],
+      build: (form) => joinIdParts(["team", fieldText(form, "name")]),
+    },
+    {
+      form: "#create-team-form",
+      target: "manager_agent_id",
+      sources: ["name", "id"],
+      build: (form) => joinIdParts([fieldText(form, "id") || fieldText(form, "name"), "manager"]),
+    },
+    {
+      form: "#create-project-form",
+      target: "id",
+      sources: ["name"],
+      build: (form) => joinIdParts(["project", fieldText(form, "name")]),
+    },
+    {
+      form: "#create-project-form",
+      target: "lead_agent_id",
+      sources: ["name", "id"],
+      build: (form) => joinIdParts([fieldText(form, "id") || fieldText(form, "name"), "project-lead"]),
+    },
+    {
+      form: "#register-agent-form",
+      target: "id",
+      sources: ["project_id", "role"],
+      build: (form) => joinIdParts([fieldText(form, "project_id"), fieldText(form, "role") || "agent"]),
+    },
+    {
+      form: "#create-task-form",
+      target: "id",
+      sources: ["project_id", "title"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || "task", fieldText(form, "title")]),
+    },
+    {
+      form: "#create-review-profile-form",
+      target: "id",
+      sources: ["project_id", "team_id", "name"],
+      build: (form) =>
+        joinIdParts([fieldText(form, "project_id") || fieldText(form, "team_id") || "profile", fieldText(form, "name")]),
+    },
+  ];
+
+  rules.forEach((rule) => bindGeneratedIdRule(rule));
+}
+
+function bindGeneratedIdRule(rule) {
+  const form = document.querySelector(rule.form);
+  const target = form?.elements?.[rule.target];
+  if (!form || !target) {
+    return;
+  }
+  target.dataset.autogenerated = target.value ? "false" : "true";
+  target.addEventListener("input", () => {
+    if (!target.value) {
+      target.dataset.autogenerated = "true";
+      target.dataset.lastGenerated = "";
+      return;
+    }
+    if (target.value !== target.dataset.lastGenerated) {
+      target.dataset.autogenerated = "false";
+    }
+  });
+  (rule.sources || []).forEach((sourceName) => {
+    const source = form.elements[sourceName];
+    if (!source) {
+      return;
+    }
+    ["input", "change"].forEach((eventName) => {
+      source.addEventListener(eventName, () => fillGeneratedId(rule, form, target));
+    });
+  });
+  fillGeneratedId(rule, form, target);
+}
+
+function fillGeneratedId(rule, form, target) {
+  if (target.value && target.dataset.autogenerated !== "true") {
+    return;
+  }
+  const generated = text(rule.build(form));
+  if (!generated) {
+    return;
+  }
+  setAutogeneratedValue(target, generated);
+}
+
+function bindExistingAgentPickers() {
+  document.querySelectorAll("[data-agent-source-picker]").forEach((select) => {
+    select.addEventListener("change", () => applyExistingAgentDefaults(select));
+  });
+}
+
+function applyExistingAgentDefaults(select) {
+  const sourceAgent = state.agents[text(select.value)];
+  const form = select.form;
+  if (!sourceAgent || !form) {
+    return;
+  }
+
+  setFieldValue(form, select.dataset.sessionField, sourceAgent.session_id);
+  setFieldValue(form, select.dataset.displayField, sourceAgent.display_name || agentLabel(sourceAgent));
+  setFieldValue(form, select.dataset.roleField, sourceAgent.role);
+  setFieldValue(form, select.dataset.projectField, sourceAgent.project_id || "");
+  setFieldValue(form, select.dataset.reportsToField, sourceAgent.reports_to_agent_id || "");
+  if (select.dataset.maxConcurrentField) {
+    setFieldValue(form, select.dataset.maxConcurrentField, String(ephemeralCapacity(sourceAgent)));
+  }
+
+  const idField = select.dataset.idField ? form.elements[select.dataset.idField] : null;
+  if (idField && (!idField.value || idField.dataset.autogenerated === "true")) {
+    const role =
+      fieldText(form, select.dataset.roleField) ||
+      text(select.dataset.suggestedRole) ||
+      sourceAgent.role ||
+      "agent";
+    const scope =
+      fieldText(form, select.dataset.projectField) ||
+      fieldText(form, "project_id") ||
+      fieldText(form, "id") ||
+      fieldText(form, "team_id") ||
+      fieldText(form, "team_name");
+    setAutogeneratedValue(idField, joinIdParts([scope, role]));
+  }
+}
+
+function decorateFieldTooltips(root = document) {
+  root.querySelectorAll("form label").forEach((label) => {
+    if (label.dataset.tooltipBound === "true") {
+      return;
+    }
+    const field = label.querySelector("input[name], select[name], textarea[name]");
+    if (!field) {
+      return;
+    }
+    const tooltip = tooltipForField(label, field);
+    if (!tooltip) {
+      return;
+    }
+    label.dataset.tooltipBound = "true";
+    label.classList.add("has-tooltip");
+    insertTooltip(label, field, tooltip);
+  });
+}
+
+function tooltipForField(label, field) {
+  const form = field.form;
+  const formId = formIdentifier(form);
+  const fieldName = text(field.name);
+  const editType = text(form?.dataset?.editType);
+  const keys = [];
+  if (editType) {
+    keys.push(`edit:${editType}:${fieldName}`);
+  }
+  if (formId) {
+    keys.push(`${formId}:${fieldName}`);
+  }
+  keys.push(fieldName);
+  const labelText = text(label.textContent);
+  if (labelText) {
+    keys.push(labelText.toLowerCase());
+  }
+  for (const key of keys) {
+    if (fieldTooltips[key]) {
+      return fieldTooltips[key];
+    }
+  }
+  return "";
+}
+
+function insertTooltip(label, field, tooltip) {
+  const tooltipNode = createTooltipNode(tooltip);
+  if (field.type === "checkbox" || label.classList.contains("checkbox-label")) {
+    label.append(" ");
+    label.appendChild(tooltipNode);
+    return;
+  }
+
+  const labelRow = document.createElement("span");
+  labelRow.className = "field-label-row";
+  const labelText = document.createElement("span");
+  labelText.className = "field-label-text";
+  while (label.firstChild && label.firstChild !== field) {
+    labelText.appendChild(label.firstChild);
+  }
+  labelText.textContent = text(labelText.textContent);
+  labelRow.appendChild(labelText);
+  labelRow.appendChild(tooltipNode);
+  label.insertBefore(labelRow, field);
+}
+
+function createTooltipNode(tooltip) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "field-tooltip";
+  wrapper.tabIndex = 0;
+  wrapper.setAttribute("role", "button");
+  wrapper.setAttribute("aria-label", `Help: ${tooltip}`);
+
+  const icon = document.createElement("span");
+  icon.className = "field-tooltip-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "i";
+
+  const bubble = document.createElement("span");
+  bubble.className = "field-tooltip-bubble";
+  bubble.setAttribute("role", "tooltip");
+  bubble.id = `team-field-tooltip-${++tooltipCounter}`;
+  bubble.textContent = tooltip;
+  wrapper.setAttribute("aria-describedby", bubble.id);
+
+  wrapper.appendChild(icon);
+  wrapper.appendChild(bubble);
+  return wrapper;
+}
+
 function bindWorkspaceReviewDecisionForms() {
   document.querySelectorAll("form[data-review-decision-form]").forEach((form) => {
     if (form.dataset.boundReviewDecision === "true") {
@@ -261,6 +697,7 @@ function render() {
   renderTemplateSetup();
   refreshSelects();
   renderTimeline();
+  decorateFieldTooltips(document);
 }
 
 function setDeliveryFilter(filter) {
@@ -642,13 +1079,16 @@ function renderHierarchy() {
       const hierarchy = teamHierarchyGraph(team);
       return `
         <article class="hierarchy-team">
-          <div class="hierarchy-team-header">
-            <div>
-              <p class="section-label">${escapeHtml(team.id)}</p>
-              <h3>${escapeHtml(team.name)}</h3>
+            <div class="hierarchy-team-header">
+              <div>
+                <p class="section-label">${escapeHtml(team.id)}</p>
+                <h3>${escapeHtml(team.name)}</h3>
+              </div>
+              <div class="record-actions">
+                ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+                ${editButton("team", team.id)}
+              </div>
             </div>
-            ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
-          </div>
           <div class="hierarchy-chart">
             ${renderHierarchyForest(hierarchy.roots)}
             ${
@@ -755,11 +1195,14 @@ function renderAgents() {
         .map((agent) => {
           const details = agentCardData(agent);
           return `
-            <li class="agent-item">
-              <div class="agent-line">
-                <strong>${escapeHtml(details.label)}</strong>
-                <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
-              </div>
+              <li class="agent-item">
+                <div class="agent-line">
+                  <strong>${escapeHtml(details.label)}</strong>
+                  <div class="record-actions">
+                    <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+                    ${editButton("agent", details.id)}
+                  </div>
+                </div>
               <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
               <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - ${details.taskStats.openCount} open task(s) - max ephemeral ${details.ephemeralCapacity}</div>
               ${renderAgentOpenTasks(details.taskStats.openTasks)}
@@ -1125,14 +1568,17 @@ function renderProjects() {
       });
       return `
         <article class="project-block">
-          <div class="project-header">
-            <div>
-              <strong>${escapeHtml(project.name)}</strong>
-              <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
-              ${renderProjectGit(project.git)}
+            <div class="project-header">
+              <div>
+                <strong>${escapeHtml(project.name)}</strong>
+                <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+                ${renderProjectGit(project.git)}
+              </div>
+              <div class="record-actions">
+                <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+                ${editButton("project", project.id)}
+              </div>
             </div>
-            <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
-          </div>
           <div class="project-columns">
             <div>
               <p class="subheading">Goals</p>
@@ -1195,11 +1641,14 @@ function renderTasks(tasks) {
       ${tasks
         .map((task) => {
           return `
-            <li class="task-item">
-              <div class="task-line">
-                <strong>${escapeHtml(task.title)}</strong>
-                <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
-              </div>
+              <li class="task-item">
+                <div class="task-line">
+                  <strong>${escapeHtml(task.title)}</strong>
+                  <div class="record-actions">
+                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                    ${editButton("task", task.id)}
+                  </div>
+                </div>
               <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
               ${renderTaskGraph(task)}
               <div class="meta-line">${escapeHtml(task.description)}</div>
@@ -1442,11 +1891,14 @@ function renderReviewProfiles() {
             ? `roles ${profile.applicable_roles.join(", ")}`
             : "all reviewer roles";
           return `
-            <li class="record-item">
-              <div class="record-line">
-                <strong>${escapeHtml(profile.name)}</strong>
-                <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
-              </div>
+              <li class="record-item">
+                <div class="record-line">
+                  <strong>${escapeHtml(profile.name)}</strong>
+                  <div class="record-actions">
+                    <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
+                    ${editButton("review-profile", profile.id)}
+                  </div>
+                </div>
               <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
               ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
               ${renderProfileCriteria(profile.criteria || [])}
@@ -1673,12 +2125,12 @@ function renderTemplatePreview() {
       </ul>
     </section>
 
-    <section class="template-preview-section">
-      <h3>Git config</h3>
-      <div class="meta-line">Git is optional. If used, provide a host repo path and exactly one bare repo field.</div>
-      <div class="meta-line">Optional fields: host repo path, bare repo name, bare repo path, base branch, canonical origin URL, provider, canonical release branch prefix.</div>
-    </section>
-  `;
+      <section class="template-preview-section">
+        <h3>Git config</h3>
+        <div class="meta-line">Git is optional. If used, provide a host repo path and a bare repo value.</div>
+        <div class="meta-line">Bare repo values that start with / are treated as paths; other values are treated as names.</div>
+      </section>
+    `;
 }
 
 function renderTemplateCriteria(criteria) {
@@ -2256,6 +2708,19 @@ function readTimelineFilters() {
 }
 
 function refreshSelects() {
+  const options = buildSelectOptionSets();
+  document.querySelectorAll("select[data-options]").forEach((select) => {
+    const key = select.dataset.options;
+    fillSelect(select, options[key] || []);
+  });
+
+  const updateTaskForm = document.querySelector("#update-task-form");
+  if (updateTaskForm) {
+    syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
+  }
+}
+
+function buildSelectOptionSets() {
   const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
   const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
   const agents = values(state.agents).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
@@ -2272,7 +2737,7 @@ function refreshSelects() {
     .sort(byId)
     .map((release) => [release.id, `${release.id} - ${release.state}`]);
   const timelineOptions = buildTimelineSelectOptions();
-  const options = {
+  return {
     teams,
     projects,
     agents,
@@ -2283,7 +2748,10 @@ function refreshSelects() {
     "release-packages": releasePackages,
     "task-states": taskStates.map((item) => [item, item]),
     "record-states": recordStates.map((item) => [item, item]),
+    "agent-statuses": agentStatuses.map((item) => [item, item]),
+    "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
+    "git-providers": gitProviders,
     "timeline-teams": timelineOptions.teams,
     "timeline-projects": timelineOptions.projects,
     "timeline-agents": timelineOptions.agents,
@@ -2294,27 +2762,28 @@ function refreshSelects() {
       ["false", "No"],
     ],
   };
-
-  document.querySelectorAll("select[data-options]").forEach((select) => {
-    const key = select.dataset.options;
-    fillSelect(select, options[key] || []);
-  });
-
-  const updateTaskForm = document.querySelector("#update-task-form");
-  if (updateTaskForm) {
-    syncTaskUpdateForm(updateTaskForm, { keepEditedValues: true });
-  }
 }
 
 function fillSelect(select, options) {
-  const currentValue = select.value;
+  const currentValue = select.dataset.currentValue ?? select.value;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `<option value="">${placeholder}</option>${options
     .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
     .join("")}`;
   if (options.some(([value]) => value === currentValue)) {
     select.value = currentValue;
+  } else if (!currentValue) {
+    select.value = "";
   }
+  delete select.dataset.currentValue;
+}
+
+function fillSelectsIn(root) {
+  const options = buildSelectOptionSets();
+  root.querySelectorAll("select[data-options]").forEach((select) => {
+    const key = select.dataset.options;
+    fillSelect(select, options[key] || []);
+  });
 }
 
 async function submitCreateForm(form) {
@@ -2367,14 +2836,14 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
       body: JSON.stringify(body),
     });
 
-    if (response.status === 409) {
-      const conflict = await response.json().catch(() => ({}));
-      await loadState();
-      restoreFormDrafts(drafts);
-      const current = conflict.current_revision ?? state.revision;
-      setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
-      return;
-    }
+      if (response.status === 409) {
+        const conflict = await response.json().catch(() => ({}));
+        await loadState();
+        restoreFormDrafts(drafts);
+        const current = conflict.current_revision ?? state.revision;
+        setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
+        return false;
+      }
 
     if (!response.ok) {
       throw new Error(await responseText(response));
@@ -2384,14 +2853,16 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     if (resetOnSuccess) {
       form.reset();
     }
-    render();
-    void loadTimeline();
-    setStatus(`Saved revision ${state.revision}.`, "ok");
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Save failed.", "error");
-  } finally {
-    setFormBusy(form, false);
-  }
+      render();
+      void loadTimeline();
+      setStatus(`Saved revision ${state.revision}.`, "ok");
+      return true;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Save failed.", "error");
+      return false;
+    } finally {
+      setFormBusy(form, false);
+    }
 }
 
 function endpointForForm(form, data) {
@@ -2587,6 +3058,14 @@ function gitConfigForForm(data) {
     return null;
   }
   const git = { host_repo_path: hostRepoPath };
+  const bareRepo = text(data.bare_repo);
+  if (bareRepo) {
+    if (bareRepo.startsWith("/")) {
+      git.bare_repo_path = bareRepo;
+    } else {
+      git.bare_repo_name = bareRepo;
+    }
+  }
   const optionalFields = [
     "bare_repo_name",
     "bare_repo_path",
@@ -2602,6 +3081,13 @@ function gitConfigForForm(data) {
     }
   });
   return git;
+}
+
+function gitToBareRepo(git) {
+  if (!git) {
+    return "";
+  }
+  return text(git.bare_repo_path || git.bare_repo_name);
 }
 
 async function submitReviewDecision(form) {
@@ -2627,7 +3113,229 @@ async function submitReviewDecision(form) {
     "POST",
     payload,
     { resetOnSuccess: false },
-  );
+    );
+}
+
+function openEditDialog(type, id) {
+  const record = recordForEdit(type, id);
+  if (!record || !elements.editModal || !elements.editForm || !elements.editFormBody) {
+    setStatus("Record is no longer available.", "error");
+    return;
+  }
+
+  elements.editForm.dataset.editType = type;
+  elements.editForm.dataset.editId = id;
+  elements.editModalTitle.textContent = editDialogTitle(type, record);
+  elements.editFormBody.innerHTML = renderEditFields(type, record);
+  fillSelectsIn(elements.editFormBody);
+  decorateFieldTooltips(elements.editFormBody);
+  elements.editModal.hidden = false;
+  elements.editModal.querySelector("input:not([readonly]), select, textarea, button")?.focus();
+}
+
+function closeEditDialog() {
+  if (!elements.editModal || !elements.editForm || !elements.editFormBody) {
+    return;
+  }
+  elements.editModal.hidden = true;
+  elements.editForm.dataset.editType = "";
+  elements.editForm.dataset.editId = "";
+  elements.editFormBody.innerHTML = "";
+}
+
+async function submitEditForm(form) {
+  const type = text(form.dataset.editType);
+  const id = text(form.dataset.editId);
+  if (!type || !id) {
+    setStatus("No edit record selected.", "error");
+    return;
+  }
+  const endpoint = editEndpoint(type, id);
+  const payload = editPayloadForForm(type, form);
+  const saved = await submitMutation(form, endpoint, "PATCH", payload, {
+    resetOnSuccess: false,
+  });
+  if (saved) {
+    closeEditDialog();
+  }
+}
+
+function recordForEdit(type, id) {
+  if (type === "team") return state.teams[id] || null;
+  if (type === "project") return state.projects[id] || null;
+  if (type === "agent") return state.agents[id] || null;
+  if (type === "task") return state.tasks[id] || null;
+  if (type === "review-profile") return state.review_profiles[id] || null;
+  return null;
+}
+
+function editEndpoint(type, id) {
+  if (type === "team") return `/teams/${encodeURIComponent(id)}`;
+  if (type === "project") return `/projects/${encodeURIComponent(id)}`;
+  if (type === "agent") return `/agents/${encodeURIComponent(id)}`;
+  if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
+  if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
+  throw new Error(`Unknown edit type ${type}`);
+}
+
+function editDialogTitle(type, record) {
+  const labels = {
+    team: "team",
+    project: "project",
+    agent: "agent",
+    task: "task",
+    "review-profile": "review profile",
+  };
+  return `Edit ${labels[type] || "record"} ${record.id || ""}`.trim();
+}
+
+function renderEditFields(type, record) {
+  if (type === "team") {
+    return `
+      ${readonlyField("Team ID", record.id)}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
+    `;
+  }
+  if (type === "project") {
+    return `
+      ${readonlyField("Project ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${selectField("Status", "status", "project-statuses", record.status || "active", { required: true })}
+      ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
+        rows: 4,
+        placeholder: "id | description | state",
+      })}
+      <p class="subheading">Git config</p>
+      ${textField("Host repo path", "host_repo_path", record.git?.host_repo_path || "")}
+      ${textField("Bare repo", "bare_repo", gitToBareRepo(record.git), {
+        placeholder: "repo.git or /srv/git/repo.git",
+      })}
+      ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
+      ${textField("Canonical origin URL", "canonical_origin_url", record.git?.canonical_origin_url || "")}
+      ${selectField("Provider", "provider", "git-providers", record.git?.provider || "", { placeholder: "Default" })}
+      ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+    `;
+  }
+  if (type === "agent") {
+    return `
+      ${readonlyField("Agent ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "No project" })}
+      ${textField("Role", "role", record.role, { required: true })}
+      ${textField("Session ID", "session_id", record.session_id, { required: true })}
+      ${textField("Display name", "display_name", record.display_name || "")}
+      ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
+      ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
+      ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
+    `;
+  }
+  if (type === "task") {
+    return `
+      ${readonlyField("Task ID", record.id)}
+      ${readonlyField("Project", record.project_id)}
+      ${readonlyField("Owner", record.owner_agent_id)}
+      ${selectField("State", "state", "task-states", record.state || "pending", { required: true })}
+      ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
+      ${textField("Title", "title", record.title, { required: true })}
+      ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
+      ${selectField("Parent task", "parent_task_id", "tasks", record.parent_task_id || "", { placeholder: "No parent" })}
+      ${textareaField("Dependency tasks", "dependency_task_ids", (record.dependency_task_ids || []).join("\n"), { rows: 2 })}
+    `;
+  }
+  if (type === "review-profile") {
+    return `
+      ${readonlyField("Profile ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${textareaField("Applicable roles", "applicable_roles", (record.applicable_roles || []).join("\n"), { rows: 2 })}
+      ${textareaField("Criteria", "criteria", criteriaToText(record.criteria || []), {
+        rows: 4,
+        placeholder: "id | label | description | required",
+      })}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
+    `;
+  }
+  return "";
+}
+
+function editPayloadForForm(type, form) {
+  const data = formData(form);
+  if (type === "team") {
+    return {
+      name: text(data.name),
+      operator_communication_target_id: text(data.operator_communication_target_id) || null,
+      archived: Boolean(form.elements.archived?.checked),
+    };
+  }
+  if (type === "project") {
+    return {
+      name: text(data.name),
+      status: text(data.status),
+      goals: parseGoals(data.goals),
+      git: gitConfigForForm(data),
+    };
+  }
+  if (type === "agent") {
+    return {
+      project_id: text(data.project_id) || null,
+      role: text(data.role),
+      session_id: text(data.session_id),
+      reports_to_agent_id: text(data.reports_to_agent_id) || null,
+      display_name: text(data.display_name) || null,
+      ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
+      status: text(data.status),
+    };
+  }
+  if (type === "task") {
+    return {
+      state: text(data.state),
+      priority: numberOrZero(data.priority),
+      title: text(data.title),
+      description: text(data.description),
+      parent_task_id: text(data.parent_task_id) || null,
+      dependency_task_ids: splitList(data.dependency_task_ids),
+    };
+  }
+  if (type === "review-profile") {
+    return {
+      project_id: text(data.project_id) || null,
+      name: text(data.name),
+      description: text(data.description),
+      applicable_roles: splitList(data.applicable_roles),
+      criteria: parseCriteria(data.criteria),
+      archived: Boolean(form.elements.archived?.checked),
+    };
+  }
+  return {};
+}
+
+function readonlyField(label, value) {
+  return `<label>${escapeHtml(label)}<input value="${escapeAttr(value)}" readonly /></label>`;
+}
+
+function textField(label, name, value, { required = false, placeholder = "" } = {}) {
+  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" value="${escapeAttr(value)}"${required ? " required" : ""}${placeholder ? ` placeholder="${escapeAttr(placeholder)}"` : ""} /></label>`;
+}
+
+function numberField(label, name, value, { min = null, required = false } = {}) {
+  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${required ? " required" : ""} /></label>`;
+}
+
+function textareaField(label, name, value, { rows = 3, required = false, placeholder = "" } = {}) {
+  return `<label>${escapeHtml(label)}<textarea name="${escapeAttr(name)}" rows="${escapeAttr(rows)}"${required ? " required" : ""}${placeholder ? ` placeholder="${escapeAttr(placeholder)}"` : ""}>${escapeHtml(value)}</textarea></label>`;
+}
+
+function selectField(label, name, optionsKey, value, { required = false, placeholder = "Default" } = {}) {
+  return `<label>${escapeHtml(label)}<select name="${escapeAttr(name)}" data-options="${escapeAttr(optionsKey)}" data-current-value="${escapeAttr(value)}" data-placeholder="${escapeAttr(placeholder)}"${required ? " required" : ""}></select></label>`;
+}
+
+function checkboxField(label, name, checked) {
+  return `<label class="checkbox-label"><input name="${escapeAttr(name)}" type="checkbox"${checked ? " checked" : ""} /> ${escapeHtml(label)}</label>`;
 }
 
 function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
@@ -2873,6 +3581,42 @@ function splitList(value) {
     .filter(Boolean);
 }
 
+function parseGoals(value) {
+  return text(value)
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [id, description = "", stateValue = "pending"] = line
+        .split("|")
+        .map((part) => part.trim());
+      return {
+        id,
+        description: description || id,
+        state: stateValue || "pending",
+      };
+    });
+}
+
+function goalsToText(goals) {
+  return (goals || [])
+    .map((goal) => [goal.id, goal.description, goal.state || "pending"].join(" | "))
+    .join("\n");
+}
+
+function criteriaToText(criteria) {
+  return (criteria || [])
+    .map((criterion) =>
+      [
+        criterion.id,
+        criterion.label || criterion.id,
+        criterion.description || "",
+        criterion.required === false ? "false" : "true",
+      ].join(" | "),
+    )
+    .join("\n");
+}
+
 function parseCriteria(value) {
   return text(value)
     .split(/\n/)
@@ -2922,4 +3666,71 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
+}
+
+function editButton(type, id, label = "Edit") {
+  return `<button type="button" class="record-action" data-edit-type="${escapeAttr(type)}" data-edit-id="${escapeAttr(id)}">${escapeHtml(label)}</button>`;
+}
+
+function fieldText(form, name) {
+  if (!form || !name) {
+    return "";
+  }
+  return text(form.elements?.[name]?.value);
+}
+
+function setFieldValue(form, name, value) {
+  if (!form || !name) {
+    return;
+  }
+  const field = form.elements?.[name];
+  if (!field) {
+    return;
+  }
+  field.value = text(value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function setAutogeneratedValue(field, value) {
+  const generated = uniqueSuggestedId(value);
+  field.value = generated;
+  field.dataset.autogenerated = "true";
+  field.dataset.lastGenerated = generated;
+}
+
+function joinIdParts(parts) {
+  return (parts || [])
+    .map((part) => slugify(part))
+    .filter(Boolean)
+    .join("-");
+}
+
+function slugify(value) {
+  return text(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function uniqueSuggestedId(value) {
+  const base = slugify(value);
+  if (!base) {
+    return "";
+  }
+  const existing = new Set([
+    ...Object.keys(state.teams || {}),
+    ...Object.keys(state.projects || {}),
+    ...Object.keys(state.agents || {}),
+    ...Object.keys(state.tasks || {}),
+    ...Object.keys(state.review_profiles || {}),
+  ]);
+  if (!existing.has(base)) {
+    return base;
+  }
+  let index = 2;
+  while (existing.has(`${base}-${index}`)) {
+    index += 1;
+  }
+  return `${base}-${index}`;
 }
