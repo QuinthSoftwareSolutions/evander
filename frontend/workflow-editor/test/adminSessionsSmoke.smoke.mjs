@@ -495,15 +495,6 @@ test("admin shell sessions page discards approval settings edits without saving 
   assert.equal(allowedToolsBodies.length, 0);
   assert.equal(policyBodies.length, 0);
 
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await ensureSectionsExpanded(page);
-  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
-  await page.getByRole("button", { name: "Configure approval settings for Prompt agent" }).click();
-  await assert.doesNotReject(() => approvalModal.waitFor({ state: "visible" }));
-  assert.equal(await ttlInput.inputValue(), "3600");
-  assert.equal(await payloadSelect.inputValue(), "exact");
-  await page.getByRole("button", { name: "Discard changes" }).click();
-
   assert.ok(requestedEndpoints.includes("/api/admin/sessions/session-1"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

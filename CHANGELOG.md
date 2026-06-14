@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Sessions Save Feedback Cleanup
+
+- Consolidated the Sessions page save feedback into the existing top-level
+  success and error callouts so model, tools, and policy saves show one visible
+  status message with section context.
+- Made the approval-settings modal support a real discard flow so operators can
+  close it without applying local edits to the session policy draft.
+- Added an explanatory tooltip for the disabled `Add notification target`
+  control when all notify-capable targets are already selected.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using
