@@ -8419,14 +8419,6 @@ button.mobile-record-card:focus-visible,
   overflow-wrap: anywhere;
 }
 
-.success-box {
-  padding: 0.95rem 1rem;
-  border-radius: 16px;
-  border: 1px solid #bfe0cc;
-  background: #e9f6ee;
-  color: #1d6a43;
-}
-
 .state-approved {
   background: #dff5e7;
   color: #1f6a3f;
@@ -8830,7 +8822,6 @@ button.mobile-record-card:focus-visible,
 }
 
 :root[data-theme="dark"] .success-callout,
-:root[data-theme="dark"] .success-box,
 :root[data-theme="dark"] .state-approved {
   background: #142920;
   border-color: rgba(82, 146, 117, 0.34);

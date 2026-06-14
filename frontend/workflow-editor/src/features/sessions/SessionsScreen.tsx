@@ -1017,9 +1017,6 @@ export function SessionsScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [modelStatus, setModelStatus] = useState<string | null>(null);
-  const [toolsStatus, setToolsStatus] = useState<string | null>(null);
-  const [policyStatus, setPolicyStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [approvalSettingsTool, setApprovalSettingsTool] = useState("");
 
@@ -1158,7 +1155,6 @@ export function SessionsScreen() {
         if (modelBoundSessionId !== sessionId) {
           setModelDraft(payload.session.model ?? "");
           setModelDirty(false);
-          setModelStatus(null);
           setModelBoundSessionId(sessionId);
         } else if (!modelDirty) {
           setModelDraft(payload.session.model ?? "");
@@ -1166,7 +1162,6 @@ export function SessionsScreen() {
         if (toolsBoundSessionId !== sessionId) {
           setToolsDraft(sortTools(payload.session.allowed_tools));
           setToolsDirty(false);
-          setToolsStatus(null);
           setToolsBoundSessionId(sessionId);
         } else if (!toolsDirty) {
           setToolsDraft(sortTools(payload.session.allowed_tools));
@@ -1174,7 +1169,6 @@ export function SessionsScreen() {
         if (policyBoundSessionId !== sessionId) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
-          setPolicyStatus(null);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
@@ -1283,7 +1277,7 @@ export function SessionsScreen() {
       },
     }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function resetApprovalSettingsDraft(toolValue: string) {
@@ -1294,7 +1288,7 @@ export function SessionsScreen() {
       ),
     }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function openApprovalSettings(toolValue: string) {
@@ -1403,40 +1397,10 @@ export function SessionsScreen() {
     }
   }
 
-  async function saveModel() {
-    if (!selectedSession) return;
-    if (!modelDraft.trim()) {
-      setModelStatus("Model is required.");
-      return;
-    }
-    setBusy("model");
-    try {
-      const payload = await fetchJson<SessionMutationResponse>(
-        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ model: modelDraft.trim() }),
-        },
-      );
-      setStatus(payload.message);
-      setModelStatus("Saved.");
-      setModelDirty(false);
-      setModelBoundSessionId(selectedSession.session_id);
-      setError(null);
-      await refreshSessions();
-      await refreshSelectedSessionDetail(selectedSession.session_id);
-    } catch (reason) {
-      setModelStatus(null);
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
-  }
-
   function toggleTool(toolValue: string) {
     const wasEnabled = toolsDraft.includes(toolValue);
     setToolsDirty(true);
-    setToolsStatus(null);
+    setStatus(null);
     setToolsDraft((current) => {
       const next = current.includes(toolValue) ? current.filter((value) => value !== toolValue) : [...current, toolValue];
       return sortTools(next);
@@ -1453,7 +1417,7 @@ export function SessionsScreen() {
           ),
         }));
         setPolicyDirty(true);
-        setPolicyStatus(null);
+        setStatus(null);
       }
     }
   }
@@ -1461,7 +1425,7 @@ export function SessionsScreen() {
   function updatePolicyDraft(update: Partial<SessionPolicyDraft>) {
     setPolicyDraft((current) => ({ ...current, ...update }));
     setPolicyDirty(true);
-    setPolicyStatus(null);
+    setStatus(null);
   }
 
   function updateApprovalNotificationTargets(nextTargets: string[]) {
@@ -1581,33 +1545,7 @@ export function SessionsScreen() {
       };
     });
     setPolicyDirty(true);
-    setPolicyStatus(null);
-  }
-
-  async function saveTools() {
-    if (!selectedSession) return;
-    setBusy("tools");
-    try {
-      const payload = await fetchJson<SessionMutationResponse>(
-        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/allowed-tools`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ allowed_tools: toolsDraft }),
-        },
-      );
-      setStatus(payload.message);
-      setToolsStatus("Saved.");
-      setToolsDirty(false);
-      setToolsBoundSessionId(selectedSession.session_id);
-      setError(null);
-      await refreshSessions();
-      await refreshSelectedSessionDetail(selectedSession.session_id);
-    } catch (reason) {
-      setToolsStatus(null);
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
+    setStatus(null);
   }
 
   function policyApprovalToolSettingsPayload(): Record<string, ApprovalGrantSettings> {
@@ -1623,42 +1561,43 @@ export function SessionsScreen() {
   async function saveSessionSettings() {
     if (!selectedSession || (!modelDirty && !toolsDirty && !policyDirty)) return;
     if (modelDirty && !modelDraft.trim()) {
-      setModelStatus("Model is required.");
+      setError("Model is required.");
+      setStatus(null);
       return;
     }
 
     setBusy("settings");
     try {
+      const savedSections: Array<"model" | "tools" | "policy"> = [];
+
       if (modelDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
           {
             method: "PUT",
             body: JSON.stringify({ model: modelDraft.trim() }),
           },
         );
-        setStatus(payload.message);
-        setModelStatus("Saved.");
         setModelDirty(false);
         setModelBoundSessionId(selectedSession.session_id);
+        savedSections.push("model");
       }
 
       if (toolsDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/allowed-tools`,
           {
             method: "PUT",
             body: JSON.stringify({ allowed_tools: toolsDraft }),
           },
         );
-        setStatus(payload.message);
-        setToolsStatus("Saved.");
         setToolsDirty(false);
         setToolsBoundSessionId(selectedSession.session_id);
+        savedSections.push("tools");
       }
 
       if (policyDirty) {
-        const payload = await fetchJson<SessionMutationResponse>(
+        await fetchJson<SessionMutationResponse>(
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}`,
           {
             method: "PATCH",
@@ -1684,19 +1623,26 @@ export function SessionsScreen() {
             }),
           },
         );
-        setStatus(payload.message);
-        setPolicyStatus("Saved.");
         setPolicyDirty(false);
         setPolicyBoundSessionId(selectedSession.session_id);
+        savedSections.push("policy");
+      }
+
+      if (savedSections.length > 0) {
+        const [firstSection, ...restSections] = savedSections;
+        const firstLabel = `${firstSection.charAt(0).toUpperCase()}${firstSection.slice(1)}`;
+        const statusMessage = restSections.length === 0
+          ? `${firstLabel} saved.`
+          : restSections.length === 1
+            ? `${firstLabel} and ${restSections[0]} saved.`
+            : `${firstLabel}, ${restSections.slice(0, -1).join(", ")}, and ${restSections[restSections.length - 1]} saved.`;
+        setStatus(statusMessage);
       }
 
       setError(null);
       await refreshSessions();
       await refreshSelectedSessionDetail(selectedSession.session_id);
     } catch (reason) {
-      if (modelDirty) setModelStatus(null);
-      if (toolsDirty) setToolsStatus(null);
-      if (policyDirty) setPolicyStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
@@ -2021,7 +1967,7 @@ export function SessionsScreen() {
                       onChange={(event) => {
                         setModelDraft(event.target.value);
                         setModelDirty(true);
-                        setModelStatus(null);
+                        setStatus(null);
                       }}
                       placeholder="Required to start or resume the agent"
                       disabled={mutationLocked}
@@ -2032,7 +1978,6 @@ export function SessionsScreen() {
                       <option value="gpt-5.4-nano" />
                     </datalist>
                   </label>
-                  {modelStatus ? <div className="success-box">{modelStatus}</div> : null}
                   <div className="field-stack">
                     <span>Allowed tools</span>
                     <div className="session-tool-groups">
@@ -2123,7 +2068,6 @@ export function SessionsScreen() {
                       })}
                     </div>
                   </div>
-                  {toolsStatus ? <div className="success-box">{toolsStatus}</div> : null}
                   <label className="field-stack">
                     <span>Allowed scripts</span>
                     <p className="field-description">
@@ -2277,7 +2221,6 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                   </label>
-                  {policyStatus ? <div className="success-box">{policyStatus}</div> : null}
                   <div className="feature-toolbar-actions session-panel-actions">
                     <button
                       type="button"
