@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent_sandbox.policy as policy_module
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.approval_diagnostics import build_payload_diagnostic
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
@@ -518,6 +519,34 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     assert not any(
         item["tool_name"] == ToolName.RUN_SCRIPT.value for item in summary["unavailable_tools"]
     )
+
+
+def test_tool_visibility_treats_locked_approval_as_required_before_operator_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RUN_SCRIPT, ToolName.APPROVAL_SUBMIT],
+        approval_required_tools=[ToolName.EMAIL_LIST_UNREAD],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    monkeypatch.setattr(
+        policy_module,
+        "_tool_approval_locked",
+        lambda tool_name: tool_name == ToolName.RUN_SCRIPT,
+    )
+
+    run_script_visibility = engine.tool_visibility_for_session(session, ToolName.RUN_SCRIPT)
+
+    assert engine.approval_required_for_tool(session, ToolName.RUN_SCRIPT) is True
+    assert run_script_visibility.available is True
+    assert run_script_visibility.visible is True
+    assert run_script_visibility.requires_approval is True
+    assert run_script_visibility.approval_settings is not None
+    assert engine.approval_required_for_tool(session, ToolName.APPROVAL_SUBMIT) is False
 
 
 def test_tool_visibility_reports_directory_denials_as_unavailable(

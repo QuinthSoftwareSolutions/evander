@@ -91,6 +91,12 @@ class ToolVisibility:
     approval_settings: ApprovalGrantSettings | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolApprovalStatus:
+    requires_approval: bool
+    approval_locked: bool = False
+
+
 _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
     "agent_sandbox_tool_approval_context",
     default=None,
@@ -254,6 +260,12 @@ def _tool_argument_policy_error(
     )
 
 
+def _tool_approval_locked(tool_name: ToolName) -> bool:
+    # No policy-locked tools exist in this branch yet; keep the hook separate so a
+    # future locked tool cannot be conflated with operator-configured approval.
+    return False
+
+
 def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:
     if request.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
         return False
@@ -359,6 +371,28 @@ class PolicyEngine:
             raise PolicyError(f"Expired session: {session_id}")
         return session
 
+    def _tool_approval_status_for_session(
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        *,
+        effective_policy: EffectivePolicyConfig | None = None,
+    ) -> ToolApprovalStatus:
+        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+            return ToolApprovalStatus(requires_approval=False, approval_locked=False)
+        if _tool_approval_locked(tool_name):
+            return ToolApprovalStatus(requires_approval=True, approval_locked=True)
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
+        required_tools = set(session.approval_required_tools or [])
+        required_tools.update(effective_policy.approval_required_tools)
+        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        if rule is not None and rule.require_approval:
+            return ToolApprovalStatus(requires_approval=True, approval_locked=False)
+        return ToolApprovalStatus(
+            requires_approval=tool_name in required_tools,
+            approval_locked=False,
+        )
+
     def _tool_requires_approval_for_session(
         self,
         session: SessionManifest,
@@ -366,15 +400,11 @@ class PolicyEngine:
         *,
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> bool:
-        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
-            return False
-        effective_policy = effective_policy or self.effective_policy_for_session(session)
-        required_tools = set(session.approval_required_tools or [])
-        required_tools.update(effective_policy.approval_required_tools)
-        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
-        if rule is not None and rule.require_approval:
-            return True
-        return tool_name in required_tools
+        return self._tool_approval_status_for_session(
+            session,
+            tool_name,
+            effective_policy=effective_policy,
+        ).requires_approval
 
     def _tool_visibility_blocked(
         self,
@@ -403,11 +433,12 @@ class PolicyEngine:
         effective_policy: EffectivePolicyConfig | None = None,
     ) -> ToolVisibility:
         effective_policy = effective_policy or self.effective_policy_for_session(session)
-        requires_approval = self._tool_requires_approval_for_session(
+        approval_status = self._tool_approval_status_for_session(
             session,
             tool_name,
             effective_policy=effective_policy,
         )
+        requires_approval = approval_status.requires_approval
 
         if tool_name.value.startswith("assistant_"):
             profile = str(session.metadata.get("capability_profile") or "").strip().lower()
