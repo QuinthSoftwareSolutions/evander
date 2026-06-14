@@ -494,6 +494,36 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
     assert config.anthropic_api_version == "2023-06-01"
 
 
+def test_gateway_config_scheduled_wake_prefix_defaults_to_empty_and_uses_canonical_key() -> None:
+    config = GatewayConfig.model_validate({})
+    dumped = config.model_dump(mode="json")
+
+    assert config.scheduled_wake_prefix_text == ""
+    assert config.wake_scheduled_prefix_text == ""
+    assert dumped["scheduled_wake_prefix_text"] == ""
+    assert "wake_scheduled_prefix_text" not in dumped
+
+    legacy_config = GatewayConfig.model_validate(
+        {"wake_scheduled_prefix_text": "Legacy scheduled wake prefix."}
+    )
+    legacy_dumped = legacy_config.model_dump(mode="json")
+
+    assert legacy_config.scheduled_wake_prefix_text == "Legacy scheduled wake prefix."
+    assert legacy_config.wake_scheduled_prefix_text == "Legacy scheduled wake prefix."
+    assert legacy_dumped["scheduled_wake_prefix_text"] == "Legacy scheduled wake prefix."
+    assert "wake_scheduled_prefix_text" not in legacy_dumped
+
+    canonical_config = GatewayConfig.model_validate(
+        {"scheduled_wake_prefix_text": "Canonical scheduled wake prefix."}
+    )
+    canonical_dumped = canonical_config.model_dump(mode="json")
+
+    assert canonical_config.scheduled_wake_prefix_text == "Canonical scheduled wake prefix."
+    assert canonical_config.wake_scheduled_prefix_text == "Canonical scheduled wake prefix."
+    assert canonical_dumped["scheduled_wake_prefix_text"] == "Canonical scheduled wake prefix."
+    assert "wake_scheduled_prefix_text" not in canonical_dumped
+
+
 def test_model_provider_mode_accepts_legacy_openai_provider_mode_alias() -> None:
     config = GatewayConfig.model_validate({"openai_provider_mode": " anthropic "})
     dumped = config.model_dump(mode="json")
@@ -905,6 +935,38 @@ def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> No
     assert config.completion_confirmation_retry_window_seconds == 24 * 60 * 60
     assert config.completion_confirmation_retry_base_backoff_seconds == 60.0
     assert config.completion_confirmation_retry_max_backoff_seconds == 600.0
+    assert config.scheduled_wake_prefix_text == ""
+    assert config.wake_scheduled_prefix_text == ""
+
+
+def test_scheduled_wake_worker_global_config_scheduled_wake_prefix_uses_canonical_key() -> None:
+    config = ScheduledWakeWorkerGlobalConfig.model_validate({})
+    dumped = config.model_dump(mode="json")
+
+    assert config.scheduled_wake_prefix_text == ""
+    assert config.wake_scheduled_prefix_text == ""
+    assert dumped["scheduled_wake_prefix_text"] == ""
+    assert "wake_scheduled_prefix_text" not in dumped
+
+    legacy_config = ScheduledWakeWorkerGlobalConfig.model_validate(
+        {"wake_scheduled_prefix_text": "Legacy scheduled wake prefix."}
+    )
+    legacy_dumped = legacy_config.model_dump(mode="json")
+
+    assert legacy_config.scheduled_wake_prefix_text == "Legacy scheduled wake prefix."
+    assert legacy_config.wake_scheduled_prefix_text == "Legacy scheduled wake prefix."
+    assert legacy_dumped["scheduled_wake_prefix_text"] == "Legacy scheduled wake prefix."
+    assert "wake_scheduled_prefix_text" not in legacy_dumped
+
+    canonical_config = ScheduledWakeWorkerGlobalConfig.model_validate(
+        {"scheduled_wake_prefix_text": "Canonical scheduled wake prefix."}
+    )
+    canonical_dumped = canonical_config.model_dump(mode="json")
+
+    assert canonical_config.scheduled_wake_prefix_text == "Canonical scheduled wake prefix."
+    assert canonical_config.wake_scheduled_prefix_text == "Canonical scheduled wake prefix."
+    assert canonical_dumped["scheduled_wake_prefix_text"] == "Canonical scheduled wake prefix."
+    assert "wake_scheduled_prefix_text" not in canonical_dumped
 
 
 def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() -> None:
