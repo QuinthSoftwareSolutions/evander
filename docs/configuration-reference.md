@@ -1494,6 +1494,9 @@ Approval-required tool policy:
   id.
 - `approval_submit` and `approval_check` are excluded from generic invocation gating so agents can
   request and inspect approvals.
+- `delete_ado_backlog_item` follows the same gate: an allowed session still gets a pending
+  `mcp_tool_invocation` approval for each delete call, and approved retries must use the exact same
+  payload.
 
 MCP tool approval policy:
 

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-import agent_sandbox.policy as policy_module
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
@@ -152,6 +151,10 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert rows["create_ado_backlog_item"]["approval_locked"] is False
     assert rows["create_ado_backlog_item"]["execution_state"] == "denied_at_execution"
     assert rows["create_ado_backlog_item"]["error_summary"] == "blocked by execution policy"
+    assert rows["delete_ado_backlog_item"]["provider"] == "azure_devops"
+    assert rows["delete_ado_backlog_item"]["category"] == "Azure DevOps"
+    assert rows["delete_ado_backlog_item"]["requires_approval"] is True
+    assert rows["delete_ado_backlog_item"]["visibility_state"] == "hidden_by_policy"
     assert rows["run_script"]["visibility_state"] == "hidden_by_policy"
     assert rows["run_script"]["source"] == "directory.mcp_tool_policies"
     assert rows["assistant_create_workflow"]["visibility_state"] == "hidden_by_policy"
@@ -178,7 +181,6 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
 
 def test_admin_web_tool_visibility_marks_locked_approval_rows(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
     session = SessionManifest(
@@ -186,16 +188,11 @@ def test_admin_web_tool_visibility_marks_locked_approval_rows(
         vm_id="vm-1",
         vm_provider="libvirt",
         allowed_tools=[
-            ToolName.GET_AGENT_STATUS,
+            ToolName.DELETE_ADO_BACKLOG_ITEM,
             ToolName.CREATE_ADO_BACKLOG_ITEM,
         ],
         approval_required_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
-    )
-    monkeypatch.setattr(
-        policy_module,
-        "_tool_approval_locked",
-        lambda tool_name: tool_name == ToolName.GET_AGENT_STATUS,
     )
     service.runtime.session_repository.upsert_session(session)
     client = TestClient(create_app(service))
@@ -209,8 +206,9 @@ def test_admin_web_tool_visibility_marks_locked_approval_rows(
     rows = {row["tool_name"]: row for row in payload["tools"]}
 
     assert response.status_code == 200
-    assert rows["get_agent_status"]["requires_approval"] is True
-    assert rows["get_agent_status"]["approval_locked"] is True
+    assert rows["delete_ado_backlog_item"]["visibility_state"] == "visible"
+    assert rows["delete_ado_backlog_item"]["requires_approval"] is True
+    assert rows["delete_ado_backlog_item"]["approval_locked"] is True
     assert rows["create_ado_backlog_item"]["requires_approval"] is True
     assert rows["create_ado_backlog_item"]["approval_locked"] is False
 

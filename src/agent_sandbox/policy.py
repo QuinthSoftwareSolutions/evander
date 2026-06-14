@@ -262,9 +262,9 @@ def _tool_argument_policy_error(
 
 
 def _tool_approval_locked(tool_name: ToolName) -> bool:
-    # No policy-locked tools exist in this branch yet; keep the hook separate so a
-    # future locked tool cannot be conflated with operator-configured approval.
-    return False
+    # DELETE_ADO_BACKLOG_ITEM is locked by host policy and cannot be downgraded
+    # to an operator-configured approval requirement.
+    return tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM
 
 
 def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:
@@ -753,7 +753,14 @@ class PolicyEngine:
         session_settings = session.approval_tool_settings.get(tool_name.value)
         if session_settings is not None:
             settings = session_settings
-        return self._apply_approval_grant_limits(settings, rule)
+        effective_settings = self._apply_approval_grant_limits(settings, rule)
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return ApprovalGrantSettings(
+                ttl_seconds=effective_settings.ttl_seconds,
+                max_uses=1,
+                payload_mode=ApprovalPayloadMode.EXACT,
+            )
+        return effective_settings
 
     def _apply_approval_grant_limits(
         self, settings: ApprovalGrantSettings, rule: McpToolPolicyRule | None

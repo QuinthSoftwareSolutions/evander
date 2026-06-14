@@ -353,9 +353,10 @@ remains generic.
   holds Discord credentials, calls Discord HTTPS APIs, and enforces channel/user allowlists before
   commands reach guest automation.
 - Azure DevOps backlog creation follows the same boundary: guests call the policy-gated
-  `create_ado_backlog_item` MCP tool, while host-side provider config (`azure_devops_organization_url`,
-  project defaults, and PAT env indirection) is resolved by directory scope and the PAT remains
-  host-only.
+  `create_ado_backlog_item` and `delete_ado_backlog_item` MCP tools, while host-side provider
+  config (`azure_devops_organization_url`, project defaults, and PAT env indirection) is resolved
+  by directory scope and the PAT remains host-only. Delete requests stay approval-gated per
+  invocation, and `destroy=true` is required for permanent removal.
 - Approval request notifications follow the host-side operator boundary. Directory policy can set
   `approval_notification_target_ids` to named communication targets with the `notify` capability,
   and session policy or a live workflow-run approval lease can add more notify-capable targets for
