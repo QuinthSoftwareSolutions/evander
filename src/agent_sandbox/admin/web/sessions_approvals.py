@@ -41,9 +41,13 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),
+    ToolName.DELETE_ADO_BACKLOG_ITEM: (
+        "Delete Azure DevOps backlog items; soft delete by default and permanent only with destroy=true."
+    ),
     ToolName.UPDATE_ADO_BACKLOG_TEXT: (
         "Update Azure DevOps backlog description or acceptance criteria text."
     ),
+    ToolName.UPDATE_ADO_BACKLOG_TITLE: "Update the title of an Azure DevOps backlog item.",
     ToolName.UPDATE_ADO_BACKLOG_TAGS: "Add or remove Azure DevOps backlog item tags.",
     ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
         "Build the daily status report JSON from Azure DevOps current-iteration data."
@@ -72,6 +76,7 @@ _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
     "communication_file_allowed_extensions": "string_list",
     "communication_file_blocked_extensions": "string_list",
     "communication_file_require_approval_for_send": "bool",
+    "allowed_contact_ids": "string_list",
     "tool_argument_policies": "json",
 }
 
@@ -92,16 +97,22 @@ def _session_policy_field_catalog() -> list[dict[str, str]]:
             "section": "Hosted tools",
         },
     ]
+    catalog.append(
+        {
+            "field_name": "allowed_contact_ids",
+            "label": "allowed contact ids",
+            "kind": _SESSION_POLICY_FIELD_KINDS["allowed_contact_ids"],
+            "section": "Contacts",
+        }
+    )
     catalog.extend(
-        [
-            {
-                "field_name": field_name,
-                "label": _SESSION_POLICY_FIELD_LABELS[field_name],
-                "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
-                "section": "Communication files",
-            }
-            for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
-        ]
+        {
+            "field_name": field_name,
+            "label": _SESSION_POLICY_FIELD_LABELS[field_name],
+            "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
+            "section": "Communication files",
+        }
+        for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
     )
     catalog.append(
         {
@@ -224,6 +235,38 @@ def _tool_option(tool: ToolName) -> dict[str, Any]:
         "label": tool.value.replace("_", " "),
         "description": _TOOL_DESCRIPTIONS.get(tool, ""),
     }
+
+
+def _model_option(model: str) -> dict[str, str]:
+    return {"value": model, "label": model}
+
+
+def _model_options_from_pricing_catalog(service: AdminService) -> list[dict[str, str]]:
+    status = service.read_model_pricing_catalog_status()
+    if status.get("status") != "ok":
+        return []
+    catalog = status.get("catalog")
+    if not isinstance(catalog, dict):
+        return []
+    rules = catalog.get("rules")
+    if not isinstance(rules, list):
+        return []
+
+    options: list[dict[str, str]] = []
+    seen_models: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        models = rule.get("models")
+        if not isinstance(models, list):
+            continue
+        for raw_model in models:
+            model = str(raw_model).strip()
+            if not model or model in seen_models:
+                continue
+            seen_models.add(model)
+            options.append(_model_option(model))
+    return options
 
 
 def _approval_actor_from_request(
@@ -415,6 +458,7 @@ def session_approval_routes(
                     _tool_option(tool)
                     for tool in ToolName
                 ],
+                "model_options": _model_options_from_pricing_catalog(service),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
                     {"value": "new_context", "label": "new_context"},

@@ -507,17 +507,74 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     assert visibility.available is True
     assert visibility.visible is True
     assert visibility.requires_approval is True
+    assert visibility.approval_locked is False
     assert visibility.approval_settings is not None
     assert visibility.source == "session.allowed_tools"
     assert any(
         item["tool_name"] == ToolName.RUN_SCRIPT.value
         and item["requires_approval"] is True
+        and item["approval_locked"] is False
         for item in summary["available_tools"]
     )
     assert ToolName.RUN_SCRIPT.value in summary["approval_required_tools"]
     assert not any(
         item["tool_name"] == ToolName.RUN_SCRIPT.value for item in summary["unavailable_tools"]
     )
+
+
+def test_delete_ado_backlog_item_always_requires_approval_when_allowed(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.DELETE_ADO_BACKLOG_ITEM)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert visibility.approval_locked is True
+    assert visibility.approval_settings is not None
+    assert engine.approval_required_for_tool(session, ToolName.DELETE_ADO_BACKLOG_ITEM) is True
+    assert ToolName.DELETE_ADO_BACKLOG_ITEM.value in summary["approval_required_tools"]
+    assert any(
+        item["tool_name"] == ToolName.DELETE_ADO_BACKLOG_ITEM.value
+        and item["requires_approval"] is True
+        for item in summary["available_tools"]
+    )
+
+
+def test_delete_ado_backlog_item_approval_settings_force_exact_single_use(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+        approval_tool_settings={
+            ToolName.DELETE_ADO_BACKLOG_ITEM.value: ApprovalGrantSettings(
+                ttl_seconds=900,
+                max_uses=None,
+                payload_mode=ApprovalPayloadMode.ANY,
+            )
+        },
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    settings = engine.approval_grant_settings_for_tool(
+        session, ToolName.DELETE_ADO_BACKLOG_ITEM
+    )
+
+    assert settings.ttl_seconds == 900
+    assert settings.max_uses == 1
+    assert settings.payload_mode is ApprovalPayloadMode.EXACT
 
 
 def test_tool_visibility_reports_directory_denials_as_unavailable(

@@ -69,7 +69,9 @@ class ToolName(str, Enum):
     GET_ADO_DAILY_STATUS_REPORT_DATA = "get_ado_daily_status_report_data"
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
+    DELETE_ADO_BACKLOG_ITEM = "delete_ado_backlog_item"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
+    UPDATE_ADO_BACKLOG_TITLE = "update_ado_backlog_title"
     UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
@@ -510,6 +512,7 @@ class SessionManifest(BaseModel):
     approval_required_tools: list[ToolName] = Field(default_factory=list)
     approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     approval_notification_target_ids: list[str] = Field(default_factory=list)
+    allowed_contact_ids: list[str] | None = None
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
@@ -579,6 +582,25 @@ class SessionManifest(BaseModel):
         return normalize_approval_notification_target_ids(
             value, field_name="approval_notification_target_ids"
         )
+
+    @field_validator("allowed_contact_ids", mode="before")
+    @classmethod
+    def normalize_allowed_contact_ids(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("allowed_contact_ids must be a JSON array of strings or null")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            contact_id = str(item or "").strip()
+            if not contact_id:
+                raise ValueError("allowed_contact_ids cannot contain empty values")
+            if contact_id in seen:
+                continue
+            seen.add(contact_id)
+            normalized.append(contact_id)
+        return normalized
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
@@ -1946,6 +1968,43 @@ class AdoBacklogTextUpdateRequest(BaseModel):
             raise ValueError("description or acceptance_criteria update is required")
 
 
+class AdoBacklogTitleUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    title: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def trim_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_and_validate_title(cls, value: object) -> str:
+        if value is None:
+            normalized = ""
+        else:
+            normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("title cannot be empty")
+        return normalized
+
+
 class AdoBacklogTagsUpdateRequest(BaseModel):
     id: int | str
     project: str | None = None
@@ -2343,6 +2402,44 @@ class AdoBacklogGetResponse(BaseModel):
     updates: list[dict[str, Any]] = Field(default_factory=list)
     inline_media: list[InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoBacklogDeleteRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    destroy: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        if isinstance(value, int):
+            normalized = str(value)
+        else:
+            normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class AdoBacklogDeleteResponse(BaseModel):
+    provider: str
+    work_item_id: str
+    project: str | None = None
+    deleted: bool
+    destroy: bool
+    delete_kind: Literal["soft_delete", "permanent_destroy"]
 
 
 class RequestPrReviewRequest(BaseModel):
@@ -2873,6 +2970,10 @@ class WakeScheduledRequest(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     last_dispatched_at: datetime | None = None
     next_run_at: datetime | None = None
+    auto_dispatch_attempts: int = Field(default=0, ge=0)
+    auto_retry_started_at: datetime | None = None
+    auto_retry_last_backoff_seconds: float | None = Field(default=None, ge=0)
+    auto_retry_exhausted_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancelled_by_session_id: str | None = None
     cancel_reason: str | None = None

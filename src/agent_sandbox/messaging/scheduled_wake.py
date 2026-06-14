@@ -82,6 +82,15 @@ class ScheduledWakeWorker:
         now_utc = datetime.now(UTC)
         wake_store = getattr(self.runtime, "wake_store", None)
         if wake_store is not None:
+            refresh_retry_state = getattr(wake_store, "refresh_one_time_retry_state", None)
+            if callable(refresh_retry_state):
+                refresh_retry_state(
+                    now_utc=now_utc,
+                    retry_max_attempts=self.config.wake_completion_confirmation_retry_max_attempts,
+                    retry_window_seconds=self.config.wake_completion_confirmation_retry_window_seconds,
+                    retry_base_backoff_seconds=self.config.wake_completion_confirmation_retry_base_backoff_seconds,
+                    retry_max_backoff_seconds=self.config.wake_completion_confirmation_retry_max_backoff_seconds,
+                )
             wake_store.mark_request_due_or_missed(
                 now_utc=now_utc,
                 late_after=timedelta(
@@ -272,6 +281,17 @@ class ScheduledWakeWorker:
                 wake_metadata=wake_metadata,
             )
         dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
+        dispatch_completed_at = datetime.now(UTC)
+        if request.schedule.resume_at is not None and not dispatch_handled:
+            refresh_retry_state = getattr(wake_store, "refresh_one_time_retry_state", None)
+            if callable(refresh_retry_state):
+                refresh_retry_state(
+                    now_utc=dispatch_completed_at,
+                    retry_max_attempts=self.config.wake_completion_confirmation_retry_max_attempts,
+                    retry_window_seconds=self.config.wake_completion_confirmation_retry_window_seconds,
+                    retry_base_backoff_seconds=self.config.wake_completion_confirmation_retry_base_backoff_seconds,
+                    retry_max_backoff_seconds=self.config.wake_completion_confirmation_retry_max_backoff_seconds,
+                )
         if dispatch_handled:
             set_session_cooldown(
                 path=scoped_config.wake_session_cooldown_path,
@@ -290,7 +310,7 @@ class ScheduledWakeWorker:
             _defer_one_time_wake_confirmation(
                 wake_store=wake_store,
                 request=request,
-                now_utc=now_utc,
+                now_utc=getattr(dispatch, "dispatched_at", None) or dispatch_completed_at,
                 confirmation_timeout_seconds=(
                     scoped_config.wake_completion_confirmation_timeout_seconds
                 ),
@@ -347,6 +367,18 @@ def _load_scheduled_wake_worker_global_config(
             "jitter_seconds": source.wake_jitter_seconds,
             "cooldown_seconds": source.wake_cooldown_seconds,
             "late_threshold_seconds": source.wake_schedule_late_threshold_seconds,
+            "completion_confirmation_retry_max_attempts": (
+                source.wake_completion_confirmation_retry_max_attempts
+            ),
+            "completion_confirmation_retry_window_seconds": (
+                source.wake_completion_confirmation_retry_window_seconds
+            ),
+            "completion_confirmation_retry_base_backoff_seconds": (
+                source.wake_completion_confirmation_retry_base_backoff_seconds
+            ),
+            "completion_confirmation_retry_max_backoff_seconds": (
+                source.wake_completion_confirmation_retry_max_backoff_seconds
+            ),
             "lock_path": source.runtime_dir / "scheduled-wake.lock",
             "session_cooldown_path": source.wake_session_cooldown_path,
             "busy_check_script_path": source.host_busy_check_script_path,
@@ -385,6 +417,18 @@ def build_scheduled_wake_worker(
             "wake_schedule_late_threshold_seconds": worker_config.late_threshold_seconds,
             "wake_completion_confirmation_timeout_seconds": (
                 worker_config.completion_confirmation_timeout_seconds
+            ),
+            "wake_completion_confirmation_retry_max_attempts": (
+                worker_config.completion_confirmation_retry_max_attempts
+            ),
+            "wake_completion_confirmation_retry_window_seconds": (
+                worker_config.completion_confirmation_retry_window_seconds
+            ),
+            "wake_completion_confirmation_retry_base_backoff_seconds": (
+                worker_config.completion_confirmation_retry_base_backoff_seconds
+            ),
+            "wake_completion_confirmation_retry_max_backoff_seconds": (
+                worker_config.completion_confirmation_retry_max_backoff_seconds
             ),
             "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,
@@ -490,8 +534,12 @@ def _defer_one_time_wake_confirmation(
     if request.last_dispatched_at is None:
         request.last_dispatched_at = now_utc
     request.enabled = True
+    request.auto_dispatch_attempts = max(0, request.auto_dispatch_attempts) + 1
+    if request.auto_retry_started_at is None:
+        request.auto_retry_started_at = request.last_dispatched_at or now_utc
     request.updated_at = now_utc
     request.next_run_at = now_utc + timedelta(
         seconds=max(0.0, float(confirmation_timeout_seconds))
     )
+    request.auto_retry_exhausted_at = None
     wake_store.upsert_request(request)

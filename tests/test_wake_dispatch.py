@@ -377,6 +377,83 @@ def test_resume_binding_sanitizes_failure_stdout_stderr_and_exit_code(
     assert "\n" not in latest.metadata["stderr"]
 
 
+def test_resume_binding_classifies_model_unavailable_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            model="gpt-5.4-mini",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"agent_provider": "codex"},
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(update={"host_resume_script_path": resume_script})
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=datetime.now(UTC) + timedelta(minutes=5)),
+        request_id="wake-model-unavailable",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object):
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout="model_not_found: unknown model token=secret",
+            stderr="does not have access to model gpt-5.4-mini",
+        )
+
+    monkeypatch.setattr("agent_sandbox.messaging.wake_dispatch.subprocess.run", fake_run)
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(session_id="session-1", vm_id="vm-a", source="test"),
+        worker_config=worker_config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-model-unavailable",
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.startswith(
+        "model unavailable: configured codex model 'gpt-5.4-mini' is unavailable or not permitted"
+    )
+    assert "\n" not in result.error
+
+    latest = wake_store.latest_dispatch_by_request_id()["wake-model-unavailable"]
+    assert latest.status == "failed"
+    assert latest.error == result.error
+    assert latest.metadata["failure_kind"] == "model_unavailable"
+    assert latest.metadata["agent_provider"] == "codex"
+    assert latest.metadata["agent_model"] == "gpt-5.4-mini"
+    assert "token=[redacted]" in (latest.metadata["stdout"] or "")
+    assert "\n" not in (latest.metadata["stdout"] or "")
+    assert "\n" not in (latest.metadata["stderr"] or "")
+
+    ledger_entry = wake_store.list_ledger_entries(session_id="session-1")[0]
+    assert ledger_entry["failure_reason"] is not None
+    assert ledger_entry["failure_reason"].startswith(
+        "model unavailable: configured codex model 'gpt-5.4-mini' is unavailable or not permitted"
+    )
+    assert "codex" in ledger_entry["failure_reason"]
+    assert "gpt-5.4-mini" in ledger_entry["failure_reason"]
+    assert ledger_entry["latest_dispatch"]["status"] == "failed"
+    assert ledger_entry["retry_available"] is True
+
+
 def test_resume_binding_timeout_error_does_not_include_prompt_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -891,3 +968,70 @@ def test_resume_container_binding_records_failed_dispatch_when_backend_start_rai
     assert latest.metadata["backend"] == "container_worker_vm"
     assert latest.metadata["target_name"].startswith("agent-session-1-")
     assert latest.metadata["source"] == "scheduled_once"
+
+
+def test_resume_container_binding_classifies_model_unavailable_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository,
+        session_id="session-1",
+        model="gpt-5.4-mini",
+        metadata={"agent_provider": "claude"},
+        vm_provider_id="provider-target",
+    )
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=datetime.now(UTC) + timedelta(minutes=5)),
+        request_id="wake-container-model-unavailable",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("invalid_model: model gpt-5.4-mini does not exist")
+        ),
+    )
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        resume_mode="same_context",
+        dispatch_source="scheduled_once",
+        request_id="wake-container-model-unavailable",
+        scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        wake_metadata={"schedule_cron": ""},
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.startswith(
+        "model unavailable: configured claude model 'gpt-5.4-mini' is unavailable or not permitted"
+    )
+    assert "\n" not in result.error
+
+    latest = wake_store.latest_dispatch_by_request_id()["wake-container-model-unavailable"]
+    assert latest.status == "failed"
+    assert latest.error == result.error
+    assert latest.metadata["failure_kind"] == "model_unavailable"
+    assert latest.metadata["agent_provider"] == "claude"
+    assert latest.metadata["agent_model"] == "gpt-5.4-mini"
+
+    ledger_entry = wake_store.list_ledger_entries(session_id="session-1")[0]
+    assert ledger_entry["failure_reason"] is not None
+    assert ledger_entry["failure_reason"].startswith(
+        "model unavailable: configured claude model 'gpt-5.4-mini' is unavailable or not permitted"
+    )
+    assert "claude" in ledger_entry["failure_reason"]
+    assert "gpt-5.4-mini" in ledger_entry["failure_reason"]
+    assert ledger_entry["latest_dispatch"]["status"] == "failed"
+    assert ledger_entry["retry_available"] is True

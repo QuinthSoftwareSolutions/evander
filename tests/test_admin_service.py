@@ -56,7 +56,6 @@ from agent_sandbox.models import (
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
-    WakeScheduleDefinition,
     VmActionResult,
     VmSummary,
 )
@@ -940,6 +939,43 @@ def test_list_agents_summary_mode_skips_stale_session_effective_policy_for_missi
         )
 
 
+def test_capacity_session_statuses_use_summary_agent_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    list_agents_calls: list[dict[str, object]] = []
+
+    def list_agents(self: AdminService, **kwargs: object) -> list[AgentRecord]:
+        list_agents_calls.append(kwargs)
+        return [
+            AgentRecord(
+                agent_id="container-session",
+                backend="container_worker_vm",
+                target_name="container-target",
+                session_id="container-session",
+                directory_path="root",
+                status="running",
+                updated_at=datetime(2026, 6, 13, tzinfo=UTC),
+                host={"kind": "container_worker_session"},
+            )
+        ]
+
+    monkeypatch.setattr(service, "list_agents", MethodType(list_agents, service))
+
+    statuses = service._capacity_session_statuses()
+
+    assert statuses == {"container-session": "running"}
+    assert list_agents_calls == [
+        {
+            "include_inactive": True,
+            "reconcile_containers": False,
+            "all_directories": True,
+            "omit_vm_state": True,
+            "summary_only": True,
+        }
+    ]
+
+
 def test_list_agents_ignores_execution_cleanup_success_for_session_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1059,6 +1095,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             vm_provider="libvirt",
             directory_path="root",
             allowed_tools=[],
+            allowed_contact_ids=["ops"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"labels": {"system": "chat_assistant"}},
         )
@@ -1088,6 +1125,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_status"] == "missing"
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
+    assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
 
 
 def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
@@ -10197,13 +10235,34 @@ def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> No
 def test_update_session_policy_updates_allowlists_and_metadata(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13302-session",
             vm_id="vm-13302",
             allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
             allowed_script_names=["old-script"],
+            allowed_contact_ids=["ops"],
             approval_required_tools=[ToolName.COMPLETE_ISSUE],
             tool_argument_policies={
                 "create_ado_backlog_item": [
@@ -10251,6 +10310,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
                 ]
             },
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
+            "allowed_contact_ids": [" ops ", "support", "ops"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
             "teams_chat_allowlist": [" chat:chat-2 ", "chat:chat-2", "chat:chat-3 "],
@@ -10276,6 +10336,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     ]
     assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "session-policy"
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
+    assert updated.allowed_contact_ids == ["ops", "support"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
     assert updated.teams_chat_allowlist == ["chat:chat-2", "chat:chat-3"]
@@ -10288,6 +10349,20 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_require_approval_for_send is True
     assert updated.web_search_enabled is True
     assert updated.metadata == {"keep": "new-value"}
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"contacts allowlist for session 'issue-13302-session' and directory 'root' "
+            r"references unknown contact ids: missing"
+        ),
+    ):
+        service.update_session_policy(
+            "13302",
+            {
+                "allowed_contact_ids": ["missing"],
+            },
+        )
 
 
 def test_update_session_policy_and_agent_validate_approval_notification_targets(
@@ -10433,6 +10508,48 @@ def test_effective_tool_policy_payload_combines_directory_and_session_rules(
         "directory-policy",
         "session-policy",
     ]
+
+
+def test_effective_tool_policy_payload_reuses_resolved_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-session",
+            vm_id="agent-session",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            approval_required_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    session = service.runtime.session_repository.get_session("agent-session")
+    assert session is not None
+    original_resolve = service.runtime.policy_config.resolve_for_session_manifest
+    resolve_calls: list[str] = []
+
+    def resolve_for_session_manifest(candidate: SessionManifest):
+        resolve_calls.append(candidate.session_id)
+        return original_resolve(candidate)
+
+    monkeypatch.setattr(
+        service.runtime.policy_config,
+        "resolve_for_session_manifest",
+        resolve_for_session_manifest,
+    )
+
+    effective = service.effective_tool_policy_payload(session)
+
+    assert effective is not None
+    assert effective["tool_summary"]["session_id"] == "agent-session"
+    run_script_summary = next(
+        item
+        for item in effective["tool_summary"]["available_tools"]
+        if item["tool_name"] == ToolName.RUN_SCRIPT.value
+    )
+    assert run_script_summary["requires_approval"] is True
+    assert "approval_settings" in run_script_summary
+    assert resolve_calls == ["agent-session"]
 
 
 def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
@@ -12243,7 +12360,27 @@ def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
 def test_create_vm_sets_allowed_script_names_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
 
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
@@ -12262,12 +12399,14 @@ def test_create_vm_sets_allowed_script_names_on_session_manifest(
         vm_name="lab-vm",
         session_id="lab-session",
         allowed_script_names=["deploy-review", " collect-logs ", "deploy-review"],
+        allowed_contact_ids=[" ops ", "support", "ops"],
     )
 
     assert result.success is True
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.allowed_script_names == ["deploy-review", "collect-logs"]
+    assert manifest.allowed_contact_ids == ["ops", "support"]
 
 
 def test_bootstrap_frontend_in_vm_bootstraps_frontend_runtime(
@@ -13247,6 +13386,19 @@ def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
             error="stack trace\nsecret token",
         )
     )
+    request = service.runtime.wake_store.get_request(created.request_id)
+    assert request is not None
+    request.auto_dispatch_attempts = 2
+    request.auto_retry_started_at = datetime.now(UTC) - timedelta(hours=2)
+    request.auto_retry_last_backoff_seconds = 120.0
+    request.auto_retry_exhausted_at = datetime.now(UTC) - timedelta(minutes=5)
+    request.enabled = False
+    request.next_run_at = None
+    request.status = "failed"
+    request.status_reason = "One-time wake retry limit reached after 2/2 attempts."
+    request.last_error = request.status_reason
+    request.last_error_at = datetime.now(UTC) - timedelta(minutes=5)
+    service.runtime.wake_store.upsert_request(request)
 
     updated = service.retry_scheduled_wake(
         created.request_id,
@@ -13262,12 +13414,21 @@ def test_retry_scheduled_wake_reschedules_failed_request_and_preserves_history(
     assert updated["resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
     assert updated["failure_reason"] is None
     assert updated["last_error"] is None
+    assert updated["status_reason"] is None
     assert updated["latest_dispatch"]["status"] == "failed"
     assert request is not None
     assert request.schedule.resume_at == retry_at
+    assert request.auto_dispatch_attempts == 0
+    assert request.auto_retry_started_at is None
+    assert request.auto_retry_last_backoff_seconds is None
+    assert request.auto_retry_exhausted_at is None
     retry_history = request.resume_prompt.metadata["retry_history"]
     assert retry_history[0]["previous_status"] == "failed"
     assert retry_history[0]["previous_failure_reason"] is not None
+    assert retry_history[0]["previous_auto_dispatch_attempts"] == 2
+    assert retry_history[0]["previous_auto_retry_started_at"] is not None
+    assert retry_history[0]["previous_auto_retry_last_backoff_seconds"] == 120.0
+    assert retry_history[0]["previous_auto_retry_exhausted_at"] is not None
     assert retry_history[0]["requested_resume_at"] == retry_at.isoformat().replace("+00:00", "Z")
 
 

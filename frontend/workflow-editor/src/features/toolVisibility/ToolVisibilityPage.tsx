@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { adminHash } from "../../adminRouting";
 
@@ -74,6 +75,7 @@ type ToolVisibilityItem = {
   source?: string | null;
   reason?: string | null;
   requires_approval: boolean;
+  approval_locked: boolean;
   approval_settings?: ToolVisibilityApprovalSettings | null;
   provider?: string | null;
   category?: string | null;
@@ -119,6 +121,8 @@ type ToolVisibilityHashState = {
 const REFRESH_INTERVAL_MS = 10_000;
 const EMPTY_SESSIONS: SessionRecord[] = [];
 const EMPTY_TOOLS: ToolVisibilityItem[] = [];
+const APPROVAL_LOCKED_TOOLTIP =
+  "This tool always requires approval by host policy. Operators cannot disable this approval requirement.";
 
 function normalizeText(value: string | null | undefined): string {
   return value?.trim() ?? "";
@@ -280,6 +284,33 @@ function summarizeApprovalSettings(settings: ToolVisibilityApprovalSettings | nu
   }
   const maxUses = settings.max_uses == null ? "unlimited" : String(settings.max_uses);
   return `TTL ${settings.ttl_seconds}s • ${maxUses} use${settings.max_uses === 1 ? "" : "s"} • ${settings.payload_mode}`;
+}
+
+function approvalLabel(item: ToolVisibilityItem, detail = false): string {
+  if (item.approval_locked) {
+    return detail ? "Always requires approval" : "Locked approval";
+  }
+  if (item.requires_approval) {
+    return "Required";
+  }
+  return detail ? "Not required" : "No";
+}
+
+function approvalBadge(item: ToolVisibilityItem, detail = false, options: { focusable?: boolean } = {}) {
+  const label = approvalLabel(item, detail);
+  const badge = (
+    <span className={`status-pill${item.approval_locked ? " approval-locked-pill" : item.requires_approval ? " state-idle" : " state-running"}`}>
+      {label}
+    </span>
+  );
+  if (!item.approval_locked) {
+    return badge;
+  }
+  return (
+    <Tooltip content={APPROVAL_LOCKED_TOOLTIP} focusable={options.focusable ?? true} ariaLabel={label}>
+      {badge}
+    </Tooltip>
+  );
 }
 
 function visibilityFilterLabel(value: VisibilityFilter): string {
@@ -830,7 +861,7 @@ export function ToolVisibilityPage() {
                           <td>{item.source ?? "None"}</td>
                           <td>
                             <div className="status-pills">
-                              <span className={`status-pill ${item.requires_approval ? "state-idle" : "state-running"}`}>{item.requires_approval ? "Required" : "No"}</span>
+                              {approvalBadge(item)}
                             </div>
                           </td>
                           <td>{lastDeniedLabel(item)}</td>
@@ -875,6 +906,10 @@ export function ToolVisibilityPage() {
                       <div className="mobile-record-row">
                         <span>Source</span>
                         <span>{item.source ?? "None"}</span>
+                      </div>
+                      <div className="mobile-record-row">
+                        <span>Approval</span>
+                        <span>{approvalBadge(item, false, { focusable: false })}</span>
                       </div>
                       <div className="mobile-record-row">
                         <span>Last denied</span>
@@ -930,7 +965,9 @@ export function ToolVisibilityPage() {
                       </div>
                       <div>
                         <dt>Approval</dt>
-                        <dd>{selectedTool.requires_approval ? "Required" : "Not required"}</dd>
+                        <dd>
+                          <div className="status-pills">{approvalBadge(selectedTool, true)}</div>
+                        </dd>
                       </div>
                     </dl>
 

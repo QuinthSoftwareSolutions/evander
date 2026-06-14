@@ -208,6 +208,7 @@ export function ArtifactsPage() {
     setUploading(true);
     setUploadError(null);
     setUploadMessage(null);
+    let successMessage: string | null = null;
     try {
       const response = await fetch(`${API_BASE}/api/admin/artifacts/uploads`, {
         method: "POST",
@@ -215,7 +216,7 @@ export function ArtifactsPage() {
       });
       const payload = (await response.json()) as PublishedArtifact & { error?: string };
       if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
-      setUploadMessage(`Uploaded ${payload.key}.`);
+      successMessage = `Uploaded ${payload.key}.`;
       setUploadKey("");
       setUploadFile(null);
       setUploadDialogOpen(false);
@@ -225,6 +226,9 @@ export function ArtifactsPage() {
     } catch (reason) {
       setUploadError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      if (successMessage) {
+        setUploadMessage(successMessage);
+      }
       setUploading(false);
     }
   }

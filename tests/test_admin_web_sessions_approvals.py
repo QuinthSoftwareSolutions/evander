@@ -40,7 +40,7 @@ from agent_sandbox.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def write_config(tmp_path: Path) -> Path:
+def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
     config_path.write_text(
@@ -53,6 +53,7 @@ def write_config(tmp_path: Path) -> Path:
                 f'draft_store_path: "{runtime_dir / "drafts.json"}"',
                 f'email_store_path: "{runtime_dir / "emails.json"}"',
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
             ]
         ),
         encoding="utf-8",
@@ -473,6 +474,12 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         and item["section"] == "Tool argument policy"
         for item in catalog_payload["session_policy_fields"]
     )
+    assert any(
+        item["field_name"] == "allowed_contact_ids"
+        and item["kind"] == "string_list"
+        and item["section"] == "Contacts"
+        for item in catalog_payload["session_policy_fields"]
+    )
     session_policy_fields = {
         item["field_name"]: item for item in catalog_payload["session_policy_fields"]
     }
@@ -500,6 +507,9 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert "List directory-configured contact ids" in tool_options["list_contacts"]["description"]
     assert "Start host-side phone calls" in tool_options["make_phone_call"]["description"]
     assert "Read phone call status" in tool_options["get_phone_call_result"]["description"]
+    assert "Delete Azure DevOps backlog items" in tool_options[
+        "delete_ado_backlog_item"
+    ]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert (
@@ -567,6 +577,106 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert renew_response.json()["action"] == "renew_session"
     assert revoke_response.status_code == 200
     assert revoke_response.json()["action"] == "revoke_session"
+
+
+def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "runtime" / "pricing.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "version": "test-pricing",
+                "currency": "usd",
+                "description": "Test pricing catalog.",
+                "sources": ["https://platform.openai.com/docs/pricing"],
+                "rules": [
+                    {
+                        "id": "provider-a:alpha",
+                        "provider": "provider-a",
+                        "models": ["alpha-model", "shared-model"],
+                        "model_patterns": ["alpha-*"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.00",
+                            "cached_input": "0.10",
+                            "output": "2.00",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                    {
+                        "id": "provider-b:shared",
+                        "provider": "provider-b",
+                        "models": ["shared-model", "beta-model"],
+                        "model_patterns": [],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.25",
+                            "cached_input": "0.12",
+                            "output": "2.50",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                    {
+                        "id": "provider-c:wildcard",
+                        "provider": "provider-c",
+                        "models": [],
+                        "model_patterns": ["wildcard-only-*"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "effective_to": None,
+                        "rates_per_1m_tokens": {
+                            "input": "1.50",
+                            "cached_input": "0.15",
+                            "output": "3.00",
+                        },
+                        "batch_multiplier": "0.5",
+                        "service_tier": None,
+                        "long_context": None,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/catalog")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_options"] == [
+        {"value": "alpha-model", "label": "alpha-model"},
+        {"value": "shared-model", "label": "shared-model"},
+        {"value": "beta-model", "label": "beta-model"},
+    ]
+    assert any(item["value"] == "approval_check" for item in payload["tool_options"])
+
+
+def test_admin_web_sessions_catalog_returns_empty_model_options_when_pricing_catalog_errors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_MODEL_PRICING_PATH",
+        str(tmp_path / "runtime" / "missing-pricing.json"),
+    )
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/catalog")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_options"] == []
+    assert any(item["value"] == "approval_check" for item in payload["tool_options"])
 
 
 def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
@@ -984,7 +1094,27 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
 
 
 def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
     communication_targets = SqliteCommunicationTargetsRepository(
         communication_targets_db_path(service.config.runtime_dir)
     )
@@ -1020,6 +1150,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "/api/admin/sessions/issue-14085-session",
         json={
             "allowed_script_names": ["seed-demo", " seed-demo ", "collect-logs"],
+            "allowed_contact_ids": ["ops", " support ", "ops"],
             "discord_channel_allowlist": ["chan-a", "chan-b"],
             "teams_channel_allowlist": ["team-b/channel-2", "chat:chat-1"],
             "tool_argument_policies": {
@@ -1068,6 +1199,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "seed-demo",
         "collect-logs",
     ]
+    assert response.json()["session"]["allowed_contact_ids"] == ["ops", "support"]
     assert response.json()["session"]["discord_channel_allowlist"] == ["chan-a", "chan-b"]
     assert response.json()["session"]["teams_channel_allowlist"] == [
         "team-b/channel-2",

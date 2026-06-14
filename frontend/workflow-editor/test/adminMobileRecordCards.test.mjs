@@ -15,6 +15,10 @@ const toolCallsPage = readFileSync(
   new URL("../src/features/toolCalls/ToolCallsPage.tsx", import.meta.url),
   "utf8",
 );
+const toolVisibilityPage = readFileSync(
+  new URL("../src/features/toolVisibility/ToolVisibilityPage.tsx", import.meta.url),
+  "utf8",
+);
 const usersPage = readFileSync(
   new URL("../src/features/users/UsersPage.tsx", import.meta.url),
   "utf8",
@@ -94,6 +98,20 @@ test("tool calls keep the desktop table and add keyed mobile cards", () => {
   ]) {
     assert.ok(mobileList.includes(snippet), `missing tool calls mobile snippet: ${snippet}`);
   }
+});
+
+test("tool visibility mobile cards keep locked approval tooltip non-focusable", () => {
+  assertPairedTableAndMobileList(
+    toolVisibilityPage,
+    "admin-table tool-visibility-table",
+    "tool-visibility-mobile-record-list",
+  );
+
+  const mobileList = toolVisibilityPage.slice(toolVisibilityPage.indexOf("tool-visibility-mobile-record-list"));
+  assert.ok(
+    mobileList.includes("approvalBadge(item, false, { focusable: false })"),
+    "locked approval badge tooltip inside the mobile record button must not add a focusable descendant",
+  );
 });
 
 test("reports keep both desktop tables and add mobile cards for both views", () => {

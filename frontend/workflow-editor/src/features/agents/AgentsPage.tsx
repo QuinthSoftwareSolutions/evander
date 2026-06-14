@@ -5,6 +5,7 @@ import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -99,15 +100,6 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
-  model: string;
-  ttlHours: string;
-  labels: string;
-  webSearchEnabled: boolean;
-  allowedTools: string;
-  allowedScriptNames: string;
-  discordChannels: string;
-  emailMailboxes: string;
-  emailFolders: string;
   provider: string;
   vmUser: string;
   agentProvider: string;
@@ -118,13 +110,24 @@ type AgentCreateFormState = {
   mssql: boolean;
   mssqlInitRoot: string;
   playwright: boolean;
-  codexSkills: string[];
+  initialPolicy: AgentInitialPolicyFormState;
+};
+
+type AgentInitialPolicyFormState = {
+  labels: Record<string, string>;
+  webSearchEnabled: boolean;
+  allowedTools: string[];
+  allowedScriptNames: string[];
+  discordChannels: string[];
+  teamsChannels: string[];
+  emailMailboxes: string[];
+  emailFolders: string[];
 };
 
 type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
-  labels: string;
+  labels: Record<string, string>;
   webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
@@ -185,15 +188,6 @@ function emptyCreateForm(): AgentCreateFormState {
     vmName: "",
     targetName: "",
     sessionId: "",
-    model: "",
-    ttlHours: "",
-    labels: "",
-    webSearchEnabled: false,
-    allowedTools: "",
-    allowedScriptNames: "",
-    discordChannels: "",
-    emailMailboxes: "",
-    emailFolders: "",
     provider: "",
     vmUser: "agent",
     agentProvider: "",
@@ -204,7 +198,20 @@ function emptyCreateForm(): AgentCreateFormState {
     mssql: false,
     mssqlInitRoot: "",
     playwright: false,
-    codexSkills: [],
+    initialPolicy: emptyInitialPolicyForm(),
+  };
+}
+
+function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
+  return {
+    labels: {},
+    webSearchEnabled: false,
+    allowedTools: [],
+    allowedScriptNames: [],
+    discordChannels: [],
+    teamsChannels: [],
+    emailMailboxes: [],
+    emailFolders: [],
   };
 }
 
@@ -212,7 +219,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
   return {
     model: "",
     ttlHours: "",
-    labels: "",
+    labels: {},
     webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
@@ -266,28 +273,6 @@ function formatNotificationTargetOptionLabel(option: { value: string; label: str
     return value;
   }
   return `${label} (${value})`;
-}
-
-function parseLabels(value: string): Record<string, string> {
-  const labels: Record<string, string> = {};
-  for (const line of value.split(/\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.includes("=") ? "=" : ":";
-    const [rawKey, ...rest] = trimmed.split(separator);
-    const key = rawKey.trim();
-    const labelValue = rest.join(separator).trim();
-    if (key && labelValue) labels[key] = labelValue;
-  }
-  return labels;
-}
-
-function formatLabels(value: Record<string, unknown> | null | undefined): string {
-  if (!value) return "";
-  return Object.entries(value)
-    .filter(([, item]) => item != null && typeof item !== "object")
-    .map(([key, item]) => `${key}=${String(item)}`)
-    .join("\n");
 }
 
 function optionalText(value: string): string | null {
@@ -708,7 +693,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   return {
     model: policy?.model ?? "",
     ttlHours: "",
-    labels: formatLabels(labels),
+    labels,
     webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
@@ -721,20 +706,10 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
 }
 
 function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {
-  const labels = parseLabels(form.labels);
   const payload: AgentCreateRequest = {
     backend: form.backend,
     session_id: optionalText(form.sessionId),
     directory_path: optionalText(directoryPath),
-    model: optionalText(form.model),
-    ttl_hours: optionalNumber(form.ttlHours),
-    labels,
-    web_search_enabled: form.webSearchEnabled,
-    allowed_tools: parseList(form.allowedTools),
-    allowed_script_names: parseList(form.allowedScriptNames),
-    discord_channels: parseList(form.discordChannels),
-    email_mailboxes: parseList(form.emailMailboxes),
-    email_folders: parseList(form.emailFolders),
   };
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
@@ -750,21 +725,36 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
     payload.mssql = form.mssql;
     payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
     payload.playwright = form.playwright;
-    payload.codex_skills = form.codexSkills;
   } else {
     payload.target_name = optionalText(form.targetName);
     payload.container_image = optionalText(form.containerImage);
   }
-  if (form.backend === "container_worker_vm") {
-    payload.codex_skills = form.codexSkills;
+  const initialPolicy = form.initialPolicy;
+  if (Object.keys(initialPolicy.labels).length > 0) {
+    payload.labels = initialPolicy.labels;
   }
+  if (initialPolicy.webSearchEnabled) {
+    payload.web_search_enabled = true;
+  }
+  const allowedTools = dedupeStrings(initialPolicy.allowedTools);
+  if (allowedTools.length > 0) payload.allowed_tools = allowedTools;
+  const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
+  if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
+  const discordChannels = dedupeStrings(initialPolicy.discordChannels);
+  if (discordChannels.length > 0) payload.discord_channels = discordChannels;
+  const teamsChannels = dedupeStrings(initialPolicy.teamsChannels);
+  if (teamsChannels.length > 0) payload.teams_channel_allowlist = teamsChannels;
+  const emailMailboxes = dedupeStrings(initialPolicy.emailMailboxes);
+  if (emailMailboxes.length > 0) payload.email_mailboxes = emailMailboxes;
+  const emailFolders = dedupeStrings(initialPolicy.emailFolders);
+  if (emailFolders.length > 0) payload.email_folders = emailFolders;
   return payload;
 }
 
 function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
-    labels: parseLabels(form.labels),
+    labels: form.labels,
     web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
@@ -981,6 +971,8 @@ export function AgentsPage() {
     emptySkillInstallForm(),
   );
   const [inlineValidation, setInlineValidation] = useState("");
+  const [createLabelsValidationError, setCreateLabelsValidationError] = useState<string | null>(null);
+  const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1049,6 +1041,7 @@ export function AgentsPage() {
   useEffect(() => {
     if (!showCreateForm) {
       setCreateForm(emptyCreateForm());
+      setCreateLabelsValidationError(null);
     }
   }, [showCreateForm]);
 
@@ -1591,18 +1584,6 @@ export function AgentsPage() {
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
   }
 
-  function toggleCreateSkill(skillName: string, selected: boolean) {
-    setCreateForm((current) => {
-      const selectedSkills = new Set(current.codexSkills);
-      if (selected) {
-        selectedSkills.add(skillName);
-      } else {
-        selectedSkills.delete(skillName);
-      }
-      return { ...current, codexSkills: Array.from(selectedSkills) };
-    });
-  }
-
   function toggleInstallSkill(skillName: string, selected: boolean) {
     setSkillInstallForm((current) => {
       const selectedSkills = new Set(current.codexSkills);
@@ -1624,8 +1605,8 @@ export function AgentsPage() {
       setInlineValidation("Session id is required for container workers.");
       return;
     }
-    if (ttlIsInvalid(createForm.ttlHours)) {
-      setInlineValidation("TTL hours must be a number.");
+    if (createLabelsValidationError) {
+      setInlineValidation(createLabelsValidationError);
       return;
     }
     setBusyAction("create-agent");
@@ -1666,6 +1647,7 @@ export function AgentsPage() {
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
+    setLabelsValidationError(null);
   }
 
   function openSkillInstallForm() {
@@ -1731,6 +1713,10 @@ export function AgentsPage() {
     if (!selectedAgent) return;
     if (ttlIsInvalid(editForm.ttlHours)) {
       setInlineValidation("TTL hours must be a number.");
+      return;
+    }
+    if (labelsValidationError) {
+      setInlineValidation(labelsValidationError);
       return;
     }
     setBusyAction("edit-agent");
@@ -2221,44 +2207,48 @@ export function AgentsPage() {
                 <div className="config-field-grid">
                   <label className="field-stack">
                     <span>Backend</span>
-                    <select
-                      value={createForm.backend}
-                      onChange={(event) => {
-                        const nextBackend = event.target.value as AgentBackend;
-                        setCreateForm((current) => {
-                          const stillValid = (createOptions?.agent_providers ?? []).some(
-                            (option) =>
-                              option.value === current.agentProvider &&
-                              option.execution_backends.includes(nextBackend),
-                          );
-                          return {
-                            ...current,
-                            backend: nextBackend,
-                            agentProvider:
-                              current.agentProvider && stillValid ? current.agentProvider : "",
-                          };
-                        });
-                      }}
-                    >
-                      <option value="libvirt_vm">VM agent</option>
-                      <option value="container_worker_vm">Container worker</option>
-                    </select>
+                    <span className="select-field-control">
+                      <select
+                        value={createForm.backend}
+                        onChange={(event) => {
+                          const nextBackend = event.target.value as AgentBackend;
+                          setCreateForm((current) => {
+                            const stillValid = (createOptions?.agent_providers ?? []).some(
+                              (option) =>
+                                option.value === current.agentProvider &&
+                                option.execution_backends.includes(nextBackend),
+                            );
+                            return {
+                              ...current,
+                              backend: nextBackend,
+                              agentProvider:
+                                current.agentProvider && stillValid ? current.agentProvider : "",
+                            };
+                          });
+                        }}
+                      >
+                        <option value="libvirt_vm">VM agent</option>
+                        <option value="container_worker_vm">Container worker</option>
+                      </select>
+                    </span>
                   </label>
                   <label className="field-stack">
                     <span>Agent provider</span>
-                    <select
-                      value={createForm.agentProvider}
-                      onChange={(event) =>
-                        setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
-                      }
-                    >
-                      <option value="">Directory default</option>
-                      {createProviderOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                    <span className="select-field-control">
+                      <select
+                        value={createForm.agentProvider}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({ ...current, agentProvider: event.target.value }))
+                        }
+                      >
+                        <option value="">Directory default</option>
+                        {createProviderOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
                   </label>
                   <label className="field-stack">
                     <span>Session</span>
@@ -2266,23 +2256,6 @@ export function AgentsPage() {
                       value={createForm.sessionId}
                       onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
                       placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Model</span>
-                    <input
-                      value={createForm.model}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, model: event.target.value }))}
-                      placeholder="Optional"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>TTL hours</span>
-                    <input
-                      inputMode="numeric"
-                      value={createForm.ttlHours}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, ttlHours: event.target.value }))}
-                      placeholder="Default"
                     />
                   </label>
                   {createForm.backend === "libvirt_vm" ? (
@@ -2311,21 +2284,23 @@ export function AgentsPage() {
                       </label>
                       <label className="field-stack">
                         <span>VM image</span>
-                        <select
-                          value={createForm.vmImage}
-                          onChange={(event) =>
-                            setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
-                          }
-                        >
-                          <option value="">
-                            {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
-                          </option>
-                          {(createOptions?.libvirt.templates ?? []).map((template) => (
-                            <option key={template.alias} value={template.alias}>
-                              {template.alias}
+                        <span className="select-field-control">
+                          <select
+                            value={createForm.vmImage}
+                            onChange={(event) =>
+                              setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
+                            }
+                          >
+                            <option value="">
+                              {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
                             </option>
-                          ))}
-                        </select>
+                            {(createOptions?.libvirt.templates ?? []).map((template) => (
+                              <option key={template.alias} value={template.alias}>
+                                {template.alias}
+                              </option>
+                            ))}
+                          </select>
+                        </span>
                       </label>
                     </>
                   ) : (
@@ -2343,21 +2318,23 @@ export function AgentsPage() {
                       <label className="field-stack">
                         <span>Container image selector</span>
                         {createOptions ? (
-                          <select
-                            value={createForm.containerImage}
-                            onChange={(event) =>
-                              setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
-                            }
-                          >
-                            <option value="">
-                              {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
-                            </option>
-                            {createOptions.container_worker.images.map((image) => (
-                              <option key={image.alias} value={image.alias}>
-                                {image.alias}
+                          <span className="select-field-control">
+                            <select
+                              value={createForm.containerImage}
+                              onChange={(event) =>
+                                setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
+                              }
+                            >
+                              <option value="">
+                                {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
                               </option>
-                            ))}
-                          </select>
+                              {createOptions.container_worker.images.map((image) => (
+                                <option key={image.alias} value={image.alias}>
+                                  {image.alias}
+                                </option>
+                              ))}
+                            </select>
+                          </span>
                         ) : (
                           <input
                             value={createForm.containerImage}
@@ -2370,63 +2347,6 @@ export function AgentsPage() {
                       </label>
                     </>
                   )}
-                  <label className="field-stack">
-                    <span>Labels</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.labels}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, labels: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Allowed tools</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.allowedTools}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
-                    />
-                  </label>
-                  <label className="checkbox-row agent-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={createForm.webSearchEnabled}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, webSearchEnabled: event.target.checked }))}
-                    />
-                    <span>Web search</span>
-                  </label>
-                  <label className="field-stack">
-                    <span>Allowed scripts</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.allowedScriptNames}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Discord channels or targets</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.discordChannels}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, discordChannels: event.target.value }))}
-                      placeholder="channel-id or communication-target-id"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Email mailboxes</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.emailMailboxes}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, emailMailboxes: event.target.value }))}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Email folders</span>
-                    <textarea
-                      rows={4}
-                      value={createForm.emailFolders}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, emailFolders: event.target.value }))}
-                    />
-                  </label>
                   {createForm.backend === "libvirt_vm" ? (
                     <>
                       <label className="checkbox-row agent-checkbox-row">
@@ -2471,21 +2391,139 @@ export function AgentsPage() {
                       </label>
                     </>
                   ) : null}
-                  <div className="field-stack field-span-2">
-                    <span>Codex skills</span>
-                    <div className="checkbox-grid skill-checkbox-grid">
-                      {skillOptions.map((skill) => (
-                        <label key={skill.name} className="checkbox-row agent-checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={createForm.codexSkills.includes(skill.name)}
-                            onChange={(event) => toggleCreateSkill(skill.name, event.target.checked)}
-                          />
-                          <span>{skill.name}</span>
-                        </label>
-                      ))}
-                      {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
-                    </div>
+                  <div className="field-stack wide-field">
+                    <span>Initial policy</span>
+                    <p className="field-description">
+                      Optional session policy values to apply when the agent is created. Blank rows are not sent.
+                    </p>
+                  </div>
+                  <div className="field-stack">
+                    <span>Labels</span>
+                    <StringMapEditor
+                      value={createForm.initialPolicy.labels}
+                      onChange={(nextValue) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, labels: nextValue },
+                        }))
+                      }
+                      onValidationChange={setCreateLabelsValidationError}
+                      fieldLabel="Labels"
+                      description="Key/value rows for agent labels."
+                      emptyState="No labels are configured."
+                      addLabel="Add label"
+                      keyLabel="Key"
+                      valueLabel="Value"
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Allowed tools</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.allowedTools}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, allowedTools: nextValues },
+                        }))
+                      }
+                      addLabel="Add tool"
+                      itemLabel="Tool"
+                      placeholder="run_script"
+                      emptyState="No tools are allowed explicitly."
+                    />
+                  </div>
+                  <label className="checkbox-row agent-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={createForm.initialPolicy.webSearchEnabled}
+                      onChange={(event) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, webSearchEnabled: event.target.checked },
+                        }))
+                      }
+                    />
+                    <span>Web search</span>
+                  </label>
+                  <div className="field-stack">
+                    <span>Allowed scripts</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.allowedScriptNames}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, allowedScriptNames: nextValues },
+                        }))
+                      }
+                      addLabel="Add script"
+                      itemLabel="Script"
+                      placeholder="collect-logs"
+                      emptyState="No scripts are allowed explicitly."
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Discord channels or targets</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.discordChannels}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, discordChannels: nextValues },
+                        }))
+                      }
+                      addLabel="Add Discord target"
+                      itemLabel="Discord target"
+                      placeholder="channel-id or communication-target-id"
+                      emptyState="No Discord targets are allowlisted."
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Teams targets</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.teamsChannels}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, teamsChannels: nextValues },
+                        }))
+                      }
+                      addLabel="Add Teams target"
+                      itemLabel="Teams target"
+                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
+                      emptyState="No Teams targets are allowlisted."
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Email mailboxes</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.emailMailboxes}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, emailMailboxes: nextValues },
+                        }))
+                      }
+                      addLabel="Add mailbox"
+                      itemLabel="Mailbox"
+                      placeholder="ops"
+                      emptyState="No email mailboxes are allowlisted."
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Email folders</span>
+                    <StringListEditor
+                      values={createForm.initialPolicy.emailFolders}
+                      onChange={(nextValues) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          initialPolicy: { ...current.initialPolicy, emailFolders: nextValues },
+                        }))
+                      }
+                      addLabel="Add folder"
+                      itemLabel="Folder"
+                      placeholder="Inbox"
+                      emptyState="No email folders are allowlisted."
+                    />
                   </div>
                 </div>
                 <div className="inline-actions compact-actions">
@@ -2529,22 +2567,31 @@ export function AgentsPage() {
                       placeholder="Leave blank"
                     />
                   </label>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Labels</span>
-                    <textarea
-                      rows={4}
+                    <StringMapEditor
                       value={editForm.labels}
-                      onChange={(event) => setEditForm((current) => ({ ...current, labels: event.target.value }))}
+                      onChange={(nextValue) => setEditForm((current) => ({ ...current, labels: nextValue }))}
+                      onValidationChange={setLabelsValidationError}
+                      fieldLabel="Labels"
+                      description="Key/value rows for agent labels. Blank rows are ignored and duplicate keys are blocked."
+                      emptyState="No labels are configured."
+                      addLabel="Add label"
+                      keyLabel="Key"
+                      valueLabel="Value"
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Allowed tools</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.allowedTools}
-                      onChange={(event) => setEditForm((current) => ({ ...current, allowedTools: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.allowedTools)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, allowedTools: formatList(nextValues) }))}
+                      addLabel="Add tool"
+                      itemLabel="Tool"
+                      placeholder="run_script"
+                      emptyState="No tools are allowed explicitly."
                     />
-                  </label>
+                  </div>
                   <label className="checkbox-row agent-checkbox-row">
                     <input
                       type="checkbox"
@@ -2553,14 +2600,17 @@ export function AgentsPage() {
                     />
                     <span>Web search</span>
                   </label>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Allowed scripts</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.allowedScriptNames}
-                      onChange={(event) => setEditForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.allowedScriptNames)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, allowedScriptNames: formatList(nextValues) }))}
+                      addLabel="Add script"
+                      itemLabel="Script"
+                      placeholder="collect-logs"
+                      emptyState="No scripts are allowed explicitly."
                     />
-                  </label>
+                  </div>
                   <div className="field-stack">
                     <span>Approval notifications</span>
                     <p className="field-description">
@@ -2672,40 +2722,50 @@ export function AgentsPage() {
                       })}
                     </div>
                   </div>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Discord channels or targets</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.discordChannels}
-                      onChange={(event) => setEditForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.discordChannels)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, discordChannels: formatList(nextValues) }))}
+                      addLabel="Add Discord target"
+                      itemLabel="Discord target"
                       placeholder="channel-id or communication-target-id"
+                      emptyState="No Discord targets are allowlisted."
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Teams targets</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.teamsChannels}
-                      onChange={(event) => setEditForm((current) => ({ ...current, teamsChannels: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.teamsChannels)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, teamsChannels: formatList(nextValues) }))}
+                      addLabel="Add Teams target"
+                      itemLabel="Teams target"
                       placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
+                      emptyState="No Teams targets are allowlisted."
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Email mailboxes</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.emailMailboxes}
-                      onChange={(event) => setEditForm((current) => ({ ...current, emailMailboxes: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.emailMailboxes)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, emailMailboxes: formatList(nextValues) }))}
+                      addLabel="Add mailbox"
+                      itemLabel="Mailbox"
+                      placeholder="ops"
+                      emptyState="No email mailboxes are allowlisted."
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Email folders</span>
-                    <textarea
-                      rows={4}
-                      value={editForm.emailFolders}
-                      onChange={(event) => setEditForm((current) => ({ ...current, emailFolders: event.target.value }))}
+                    <StringListEditor
+                      values={parseList(editForm.emailFolders)}
+                      onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))}
+                      addLabel="Add folder"
+                      itemLabel="Folder"
+                      placeholder="Inbox"
+                      emptyState="No email folders are allowlisted."
                     />
-                  </label>
+                  </div>
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>

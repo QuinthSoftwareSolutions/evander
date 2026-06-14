@@ -701,6 +701,9 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Use the `State` filter to compare `Visible`, `Hidden by policy`, `Unavailable to session`,
   `Denied at execution`, and `Unknown` rows. The detail panel shows the policy reason and safe
   denial summary only.
+- Approval badges distinguish operator-configured approval requirements from locked host-policy
+  requirements. A locked approval badge means the tool always requires approval and operators
+  cannot disable that requirement through session or directory policy.
 - The transport banner can report `Bound`, `Mismatch`, `Unknown`, or `Stale manifest possible`.
   `Denied at execution` is historical audit evidence, not a live policy grant.
 - If the manifest is stale, reconnect or refresh the MCP client so it fetches the current server
@@ -728,12 +731,25 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
   - Optional MCP arguments: `project`, `description`, `acceptance_criteria`,
     `description_artifact_ids`, `acceptance_criteria_artifact_ids`, `request_id`.
+- Gateway tool name: `update_ado_backlog_title`.
+  - Policy-gated with `update_ado_backlog_title`.
+  - Required MCP arguments: `id`, `title`.
+  - Optional MCP argument: `project`.
+  - The tool trims `title`, rejects blank or whitespace-only values, and writes the result to
+    `System.Title`.
 - Gateway tool name: `update_ado_backlog_tags`.
   - Policy-gated with `update_ado_backlog_tags`.
   - Required MCP argument: `id`; at least one tag must be present in `add_tags` or `remove_tags`.
   - Optional MCP arguments: `project`, `add_tags`, `remove_tags`.
   - The tool reads the current `System.Tags`, merges the requested changes, and writes the full
     tag field back to ADO.
+- Gateway tool name: `delete_ado_backlog_item`.
+  - Policy-gated with `delete_ado_backlog_item`, and the gateway also requires per-invocation
+    approval before the DELETE runs.
+  - Required MCP argument: `id`.
+  - Optional MCP arguments: `project`, `destroy`.
+  - `destroy` defaults to `false`, which sends the work item to the recycle bin for recovery. Set
+    `destroy=true` only for permanent deletion.
 - Artifact arguments use opaque IDs returned by `communication_stage_workspace_file` or inbound
   media download tools. When `communication_file_require_approval_for_send` is enabled, the call
   must include a matching approved `request_id`.
@@ -916,6 +932,9 @@ raw phone numbers or phone-provider credentials.
 - Required contact config:
   - `contacts.json`, with callable contact ids under `contacts`
   - Each callable contact needs one phone number marked `"primary": true`
+- Session manifests may set `allowed_contact_ids` to narrow the contact set further. Leave it
+  omitted or `null` to inherit all directory contacts; use `[]` to make no contacts callable for
+  that session. Unknown ids are rejected against the session directory's effective contacts.
 - Required host secret:
   - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
     repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.
@@ -1813,11 +1832,20 @@ live provider APIs.
   `completion_confirmation_timeout_seconds` in
   `config/scheduled-wake/config.json` controls how long the scheduled-wake
   worker waits before an unconfirmed one-time dispatch becomes recoverable
-  again.
+  again. If an operator retries a one-time wake from Admin Web or the API, the
+  retry starts a fresh automatic confirmation batch instead of inheriting the
+  exhausted attempt counters from the previous batch.
 - Failed, due, and missed/late scheduled wakes can be retried immediately or
   rescheduled with `POST /api/admin/scheduled-wakes/{request_id}/retry`. Send
   `{ "run_now": true }` for immediate retry or `{ "resume_at": "<ISO-8601>" }`
   to reschedule the existing request while preserving retry history.
+- `completion_confirmation_retry_max_attempts`,
+  `completion_confirmation_retry_window_seconds`,
+  `completion_confirmation_retry_base_backoff_seconds`, and
+  `completion_confirmation_retry_max_backoff_seconds` in
+  `config/scheduled-wake/config.json` bound the automatic retry batch for
+  one-time wakes that are waiting on completion confirmation. Those settings do
+  not change cron wake handling.
 - `late_threshold_seconds` in `config/scheduled-wake/config.json` controls how
   overdue a scheduled wake can be before the worker/API marks it
   `missed_or_late`.

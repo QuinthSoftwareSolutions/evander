@@ -52,6 +52,7 @@ from agent_sandbox.capacity_health import (
     collect_recursive_directory_size,
     top_session_storage,
 )
+from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
     AssistantSettingsConfig,
@@ -6626,6 +6627,7 @@ def _build_issue_session_manifest(
     extra_allowed_tools: list[str | ToolName] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
+    allowed_contact_ids: list[str] | None = None,
     discord_channels: list[str],
     teams_channel_allowlist: list[str] | None = None,
     teams_chat_allowlist: list[str] | None = None,
@@ -6694,6 +6696,7 @@ def _build_issue_session_manifest(
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
+        allowed_contact_ids=allowed_contact_ids,
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
             teams_channel_allowlist or [], field_name="teams_channel_allowlist"
@@ -6826,6 +6829,28 @@ def _normalize_teams_user_allowlist(value: object, *, field_name: str) -> list[s
     )
 
 
+def _validate_allowed_contact_ids_for_directory(
+    runtime: Any,
+    *,
+    session_id: str,
+    directory_path: str,
+    allowed_contact_ids: object,
+) -> list[str] | None:
+    if allowed_contact_ids is None:
+        return None
+    provider_config = getattr(runtime, "provider_config", None)
+    resolve_contacts_for_directory = getattr(provider_config, "resolve_contacts_for_directory", None)
+    if not callable(resolve_contacts_for_directory):
+        raise RuntimeError("contacts config resolver is not available")
+    contacts_config = resolve_contacts_for_directory(directory_path)
+    return validate_allowed_contact_ids_for_directory(
+        contacts_config,
+        allowed_contact_ids,
+        session_id=session_id,
+        directory_path=directory_path,
+    )
+
+
 COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
     "communication_file_receive_enabled",
     "communication_file_send_enabled",
@@ -6886,7 +6911,10 @@ def _communication_file_session_policy_update(payload: Mapping[str, Any]) -> dic
 
 
 def _session_policy_update_from_payload(
-    session: SessionManifest, payload: Mapping[str, Any]
+    session: SessionManifest,
+    payload: Mapping[str, Any],
+    *,
+    contacts_config: Any | None = None,
 ) -> dict[str, Any]:
     allowed_fields = {
         "approval_required_tools",
@@ -6894,6 +6922,7 @@ def _session_policy_update_from_payload(
         "approval_notification_target_ids",
         "tool_argument_policies",
         "allowed_script_names",
+        "allowed_contact_ids",
         "discord_channel_allowlist",
         "discord_channels",
         "teams_channel_allowlist",
@@ -6914,6 +6943,15 @@ def _session_policy_update_from_payload(
             _normalize_plain_string_list(
                 payload.get("allowed_script_names"), field_name="allowed_script_names"
             )
+        )
+    if "allowed_contact_ids" in payload:
+        if contacts_config is None:
+            raise ValueError("allowed_contact_ids requires contacts_config")
+        update["allowed_contact_ids"] = validate_allowed_contact_ids_for_directory(
+            contacts_config,
+            payload.get("allowed_contact_ids"),
+            session_id=session.session_id,
+            directory_path=session.directory_path,
         )
     if "approval_required_tools" in payload:
         update["approval_required_tools"] = _normalize_allowed_tools(
@@ -7534,6 +7572,8 @@ class AdminService:
                 include_inactive=True,
                 reconcile_containers=False,
                 all_directories=True,
+                omit_vm_state=True,
+                summary_only=True,
             )
         except Exception:
             return {}
@@ -9726,6 +9766,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "previous_failure_reason": current_entry.get("failure_reason"),
                 "previous_last_dispatch_id": current_entry.get("latest_dispatch_id"),
                 "previous_last_dispatch_status": current_entry.get("latest_dispatch_status"),
+                "previous_auto_dispatch_attempts": request.auto_dispatch_attempts,
+                "previous_auto_retry_started_at": request.auto_retry_started_at,
+                "previous_auto_retry_last_backoff_seconds": request.auto_retry_last_backoff_seconds,
+                "previous_auto_retry_exhausted_at": request.auto_retry_exhausted_at,
                 "requested_run_now": bool(run_now and resume_at is None),
                 "requested_resume_at": validated_resume_at,
             }
@@ -9740,6 +9784,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         request.status_updated_at = now
         request.last_error = None
         request.last_error_at = None
+        request.auto_dispatch_attempts = 0
+        request.auto_retry_started_at = None
+        request.auto_retry_last_backoff_seconds = None
+        request.auto_retry_exhausted_at = None
         request.updated_at = now
         self.runtime.wake_store.upsert_request(request)
         return self._wake_ledger_entry_for_request(request)
@@ -10541,6 +10589,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 for tool_name, rules in session.tool_argument_policies.items()
             },
             "allowed_script_names": list(session.allowed_script_names),
+            "allowed_contact_ids": (
+                None
+                if session.allowed_contact_ids is None
+                else list(session.allowed_contact_ids)
+            ),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
             "teams_channel_allowlist": list(session.teams_channel_allowlist),
@@ -10584,7 +10637,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             return None
         effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
-        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(session)
+        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
+            session,
+            effective_policy=effective_policy,
+        )
         inherited_approval_required_tools: list[str] = []
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
@@ -10610,7 +10666,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         approval_tool_settings = {
             tool.value: self.runtime.policy.approval_grant_settings_for_tool(
-                session, tool
+                session,
+                tool,
+                effective_policy=effective_policy,
             ).model_dump(mode="json")
             for tool in ToolName
         }
@@ -11379,6 +11437,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
             if agent_provider:
                 create_metadata["agent_provider"] = agent_provider
+            resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
+                self.runtime,
+                session_id=self._agent_optional_string(payload, "session_id") or vm_name,
+                directory_path=directory_path,
+                allowed_contact_ids=payload.get("allowed_contact_ids"),
+            )
             result = self.create_vm(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -11394,6 +11458,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     else {}
                 ),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
+                allowed_contact_ids=resolved_allowed_contact_ids,
                 discord_channels=self._agent_string_list(payload, "discord_channels"),
                 teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist"),
                 **(
@@ -11524,6 +11589,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
+        resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
+            self.runtime,
+            session_id=session_id,
+            directory_path=directory_path,
+            allowed_contact_ids=payload.get("allowed_contact_ids"),
+        )
         manifest = _build_issue_session_manifest(
             policy=policy,
             session_id=session_id,
@@ -11538,6 +11609,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 else {}
             ),
             allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
+            allowed_contact_ids=resolved_allowed_contact_ids,
             discord_channels=self._agent_string_list(payload, "discord_channels") or [],
             teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
             or [],
@@ -11944,6 +12016,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "approval_notification_target_ids",
             "tool_argument_policies",
             "allowed_script_names",
+            "allowed_contact_ids",
             "discord_channels",
             "discord_channel_allowlist",
             "teams_channels",
@@ -11989,6 +12062,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "approval_notification_target_ids",
                 "tool_argument_policies",
                 "allowed_script_names",
+                "allowed_contact_ids",
                 "discord_channels",
                 "discord_channel_allowlist",
                 "teams_channels",
@@ -12002,7 +12076,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if key in body
         }
         if session_policy_fields:
-            update.update(_session_policy_update_from_payload(session, session_policy_fields))
+            contacts_config = None
+            if "allowed_contact_ids" in session_policy_fields:
+                contacts_config = self.runtime.provider_config.resolve_contacts_for_session_id(
+                    session.session_id
+                )
+            update.update(
+                _session_policy_update_from_payload(
+                    session,
+                    session_policy_fields,
+                    contacts_config=contacts_config,
+                )
+            )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (
                 _resolve_session_approval_notification_target_ids(
@@ -21143,6 +21228,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         model: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
+        allowed_contact_ids: list[str] | None = None,
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
@@ -21160,6 +21246,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             model=model,
             vm_user=vm_user,
             ttl_hours=ttl_hours,
+            allowed_contact_ids=allowed_contact_ids,
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,
@@ -21210,6 +21297,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         allowed_tools: list[str | ToolName] | None = None,
         tool_argument_policies: dict[str, list[Any]] | None = None,
         allowed_script_names: list[str] | None = None,
+        allowed_contact_ids: list[str] | None = None,
         discord_channels: list[str] | None = None,
         teams_channel_allowlist: list[str] | None = None,
         teams_chat_allowlist: list[str] | None = None,
@@ -21254,6 +21342,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["web_search_enabled"] = web_search_enabled
         if metadata is not None:
             payload["metadata"] = metadata
+        resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
+            self.runtime,
+            session_id=session_id or vm_name,
+            directory_path=directory_path,
+            allowed_contact_ids=allowed_contact_ids,
+        )
         return self.vm_agent_admin.create_vm(
             vm_name=vm_name,
             session_id=session_id,
@@ -21264,6 +21358,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             allowed_tools=allowed_tools,
             tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
+            allowed_contact_ids=resolved_allowed_contact_ids,
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,

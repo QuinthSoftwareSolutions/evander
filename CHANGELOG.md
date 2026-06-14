@@ -10,6 +10,104 @@ material. Newer entries are added incrementally as changes land.
 - Locked `semantic_delete_points` behind the policy engine's mandatory approval
   gate so session and directory approval config cannot disable it.
 
+## 2026-06-14 - Tool Visibility Approval Locks
+
+- Surfaced host-locked approval requirements in the Admin Web Tool Visibility
+  API and inspector so operators can distinguish policy-mandated approvals from
+  configurable per-session approval settings.
+- Kept locked approval badges valid in the mobile Tool Visibility cards by
+  avoiding nested focus targets inside selectable records.
+
+## 2026-06-14 - Session Contact Allowlist Plumbing
+
+- Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
+  `effect:agent:create`, admin session policy payload/update surfaces, and the
+  admin session policy field catalog.
+- Preserved existing container-worker session contact restrictions when
+  `effect:agent:create` upserts omit `allowed_contact_ids`.
+- Preserved contact allowlist resolution for provider-session fallback records
+  used by directory-scoped provider config resolution.
+- Documented that omitted or `null` allowlists keep the full directory contact
+  set, while explicit lists narrow the contacts visible to phone tools.
+
+## 2026-06-14 - Azure DevOps Backlog Title Updates
+
+- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
+  backlog items by numeric work-item id.
+- Required title validation now rejects blank or whitespace-only values before
+  the ADO update call and writes the trimmed value to `System.Title`.
+
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
+
+## 2026-06-14 - Sessions Save Feedback Cleanup
+
+- Consolidated the Sessions page save feedback into the existing top-level
+  success and error callouts so model, tools, and policy saves show one visible
+  status message with section context.
+- Made the approval-settings modal support a real discard flow so operators can
+  close it without applying local edits to the session policy draft.
+- Made `Reset to inherited defaults` clear explicit per-session approval
+  setting overrides instead of restoring stale effective values.
+- Added an explanatory tooltip for the disabled `Add notification target`
+  control when all notify-capable targets are already selected.
+
+## 2026-06-14 - Admin UI Polish
+
+- Switched session model suggestions to catalog-driven options so the Sessions
+  page keeps free entry without hardcoded model ids.
+- Moved dashboard spacing and disk-dial tone values into shared CSS and theme
+  tokens to reduce inline style duplication.
+- Added visible feedback for collapsed pricing edits, deep-linked approval
+  loading, and artifact upload success so state changes stay observable after
+  the related panel or modal closes.
+
+## 2026-06-14 - Structured Policy Inputs
+
+- Added shared structured editors for list, map, JSON-object, and regex policy
+  fields, then wired them into the Sessions, Agents, configuration, workers,
+  and model-pricing admin screens.
+- Added an optional structured Initial policy section to the Admin Web Create
+  agent dialog so labels and list-style policy fields can be seeded without
+  typing raw newline/key-value text.
+- Preserved the existing backend payload shapes while adding inline validation
+  for metadata JSON, label maps, leading-dot extensions, and regex rows.
+- Expanded the focused Node and smoke coverage to assert structured hydration,
+  malformed-input blocking, and round-trip payload assertions.
+
+## 2026-06-14 - Admin Approval UX Updates
+
+- Clarified Admin Web approval labels and tooltips across visible approvals,
+  issue VM bootstrap controls, session approval settings, and approval
+  decision panel behavior.
+
+## 2026-06-13 - Admin Agents Status Performance
+
+- Reduced Admin Web all-directory agent status expansion work by using
+  lightweight agent summaries for capacity health and reusing resolved policy
+  config while building effective tool-policy payloads.
+
+## 2026-06-13 - Agents Create Dialog Cleanup
+
+- Removed edit-after-create policy fields from the Admin Web Create agent dialog
+  and centered the generated caret on wrapped create-dialog selects.
+
+## 2026-06-13 - Sessions Toolbar Icon Fix
+
+- Replaced the Sessions page cleanup action label with an icon-only toolbar
+  button so it no longer overflows adjacent status and VM controls.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from
@@ -30,6 +128,26 @@ material. Newer entries are added incrementally as changes land.
   loop execution so in-progress loops resume cleanly after upgrade.
 - Added opt-in PR feedback suppression for comments authored by the configured
   agent identity while leaving agent-authored feedback publishable by default.
+
+## 2026-06-14 - Scheduled Wake Retry And Cancellation Bounds
+
+- Added a bounded automatic retry policy for one-time scheduled wakes that fail
+  dispatch or remain unconfirmed, including persisted attempt state,
+  configurable retry window/backoff, and terminal failed/missed ledger reasons.
+- Allowed sessions to cancel their own one-time wakes while dispatching,
+  queued, dispatched/awaiting confirmation, failed, or missed/late; completed
+  and already-cancelled wakes remain immutable.
+- Recorded model-unavailable resume failures as specific wake ledger failure
+  reasons instead of generic transient dispatch errors.
+- Reset the automatic retry counters for one-time scheduled wakes when Admin
+  Web or the API retries them, so an exhausted confirmation batch starts fresh
+  while the previous retry state stays available in retry history metadata.
+- Fixed stale `scheduled-wake:*` prompt queue entries so cancelled or exhausted
+  one-time wakes are not delivered later, and retry backoff now starts from the
+  actual dispatch completion time.
+- Documented the one-time wake confirmation retry policy keys, cancellation
+  behavior, and manual retry reset behavior in the operations and configuration
+  references.
 
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 
@@ -196,7 +314,6 @@ material. Newer entries are added incrementally as changes land.
   other records have no timestamp.
 - Documented the derived-current-state boundary, timestamp-missing behavior,
   and the fact that the view is not a persisted audit log.
->>>>>>> main
 
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
@@ -223,7 +340,6 @@ material. Newer entries are added incrementally as changes land.
 - Added an operator-facing inbound route example with caller allow/block policy
   and clarified the failure handling for route misses, caller rejection, missing
   sessions, bridge setup failures, and hangup/reconciliation cases.
->>>>>>> main
 
 ## 2026-06-11 - Agents Page Detail Layout
 

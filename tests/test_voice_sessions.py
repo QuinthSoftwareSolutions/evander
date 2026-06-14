@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import ContactDirectoryConfig
@@ -51,12 +52,17 @@ class FakeVoiceBridge(VoiceMediaBridgeClient):
         }
 
 
-def _session(session_id: str = "session-1") -> SessionManifest:
+def _session(
+    session_id: str = "session-1",
+    *,
+    allowed_contact_ids: list[str] | None = None,
+) -> SessionManifest:
     return SessionManifest(
         session_id=session_id,
         directory_path="root/team-a",
         model="gpt-5.4",
         allowed_tools=[ToolName.MAKE_PHONE_CALL, ToolName.GET_PHONE_CALL_RESULT],
+        allowed_contact_ids=allowed_contact_ids,
         metadata={"agent_thread_id": "thread-1", "task": "Review approvals"},
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
@@ -70,6 +76,12 @@ def _contacts() -> ContactDirectoryConfig:
                     "name": "Jonathan",
                     "phone_numbers": [
                         {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550000003", "primary": True}
                     ],
                 }
             }
@@ -420,6 +432,70 @@ def test_openai_realtime_phone_backend_starts_bridge_without_auto_reconciliation
         "Unavailable MCP tools: run_script (Tool run_script is not allowed for session session-1)"
         in bridge.start_calls[0]["projection"]["context"]
     )
+
+
+def test_openai_realtime_phone_backend_enforces_contact_allowlist_before_bridge_request(
+    tmp_path: Path,
+) -> None:
+    store = VoiceSessionStore(tmp_path / "voice-sessions.json")
+    wake_store = WakeRequestStore(tmp_path / "wake-requests.json")
+    bridge = FakeVoiceBridge()
+    service = OpenAIRealtimePhoneCallService(
+        config=GatewayConfig(
+            runtime_dir=tmp_path,
+            phone_call_backend="openai_realtime_didww",
+            didww_from_number="+15550000001",
+            didww_sip_bridge_url="https://bridge.example",
+        ),
+        contacts_config=_contacts(),
+        store=store,
+        bridge_client=bridge,
+        reconciler=VoiceSessionReconciler(store=store, wake_store=wake_store),
+        tool_summary_provider=lambda session: _projected_tool_summary(session.session_id),
+    )
+    allowed_session = _session(allowed_contact_ids=["jonathan"])
+
+    started = service.make_phone_call(
+        session=allowed_session,
+        contact="jonathan",
+        prompt="Ask whether to approve item 123.",
+        request_id="approval-call-1",
+    )
+    assert started["call_id"] == "bridge-call-1"
+    assert bridge.start_calls[0]["to_number"] == "+15550000002"
+
+    with pytest.raises(
+        ValueError,
+        match=r"Contact 'support' is not allowed for session 'session-1'",
+    ):
+        service.make_phone_call(
+            session=allowed_session,
+            contact="support",
+            prompt="Ask whether to approve item 123.",
+            request_id="approval-call-2",
+        )
+
+    invalid_allowlist_session = _session(
+        "session-2",
+        allowed_contact_ids=["jonathan", "missing"],
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"contacts allowlist for session 'session-2' and directory 'root/team-a' "
+            r"references unknown contact ids: missing"
+        ),
+    ):
+        service.make_phone_call(
+            session=invalid_allowlist_session,
+            contact="jonathan",
+            prompt="Ask whether to approve item 123.",
+            request_id="approval-call-3",
+        )
+
+    assert len(bridge.start_calls) == 1
+    assert store.get_by_request_id("approval-call-2") is None
+    assert store.get_by_request_id("approval-call-3") is None
 
 
 def test_runtime_phone_call_service_wires_tool_summary_provider(tmp_path: Path) -> None:

@@ -91,6 +91,8 @@ from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
     AdoBacklogCommentRequest,
+    AdoBacklogDeleteRequest,
+    AdoBacklogDeleteResponse,
     AdoCurrentIterationBacklogRequest,
     AdoCurrentIterationBacklogResponse,
     AdoDailyStatusReportRequest,
@@ -100,6 +102,7 @@ from agent_sandbox.models import (
     AdoBacklogQueryResponse,
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
+    AdoBacklogTitleUpdateRequest,
     ApprovalRequest,
     ApprovalStatus,
     AuditEvent,
@@ -4231,6 +4234,95 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def delete_ado_backlog_item(
+        id: int | str,
+        project: str | None = None,
+        destroy: bool = False,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogDeleteRequest(
+            id=id,
+            project=project,
+            destroy=destroy,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.DELETE_ADO_BACKLOG_ITEM)
+            remote_payload = IssueService(context.provider_config).delete_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                destroy=request_model.destroy,
+            )
+            payload_source = remote_payload if isinstance(remote_payload, dict) else {}
+            normalized_destroy = bool(
+                payload_source.get("destroy", request_model.destroy)
+            )
+            response_model = AdoBacklogDeleteResponse.model_validate(
+                {
+                    "provider": str(
+                        payload_source.get("provider") or "azure_devops"
+                    ).strip()
+                    or "azure_devops",
+                    "work_item_id": str(
+                        payload_source.get("work_item_id")
+                        or payload_source.get("remote_issue_id")
+                        or payload_source.get("id")
+                        or request_model.id
+                    ).strip()
+                    or request_model.id,
+                    "project": str(
+                        payload_source.get("project") or request_model.project or ""
+                    ).strip()
+                    or request_model.project,
+                    "deleted": bool(payload_source.get("deleted", True)),
+                    "destroy": normalized_destroy,
+                    "delete_kind": str(
+                        payload_source.get("delete_kind")
+                        or (
+                            "permanent_destroy"
+                            if normalized_destroy
+                            else "soft_delete"
+                        )
+                    ).strip(),
+                }
+            )
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.DELETE_ADO_BACKLOG_ITEM,
+                args,
+                {
+                    "work_item_id": payload.get("work_item_id"),
+                    "project": payload.get("project"),
+                    "deleted": payload.get("deleted"),
+                    "destroy": payload.get("destroy"),
+                    "delete_kind": payload.get("delete_kind"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.DELETE_ADO_BACKLOG_ITEM, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DELETE_ADO_BACKLOG_ITEM,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def update_ado_backlog_text(
         id: int | str,
         project: str | None = None,
@@ -4315,6 +4407,71 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.UPDATE_ADO_BACKLOG_TEXT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def update_ado_backlog_title(
+        id: int | str,
+        title: str,
+        project: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogTitleUpdateRequest(
+            id=id,
+            project=project,
+            title=title,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE
+            )
+            result = IssueService(context.provider_config).update_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                state=None,
+                fields={"System.Title": request_model.title},
+            )
+            result_fields = result.get("fields")
+            updated_title = request_model.title
+            if isinstance(result_fields, dict) and "System.Title" in result_fields:
+                updated_title = result_fields["System.Title"]
+            response = {
+                **result,
+                "work_item_id": request_model.id,
+                "title": updated_title,
+            }
+            audit_success(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TITLE,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "updated": result.get("updated"),
+                    "title": updated_title,
+                },
+            )
+            return response
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TITLE,
                 args,
                 str(exc),
                 decision="error",
@@ -6070,8 +6227,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         """Cancel an obsolete wake request owned by the caller session.
 
         Use this to retire pending future wakes that are no longer needed. The
-        caller cannot cancel wakes owned by another session, and one-time wakes
-        that have already been dispatched or completed remain immutable.
+        caller cannot cancel wakes owned by another session, and completed or
+        already-cancelled wakes remain immutable.
         """
 
         resolved_session_id = _resolve_session_id_from_context(
@@ -7181,8 +7338,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 resolved_session_id,
                 ToolName.LIST_CONTACTS,
             )
-            contacts_config = context.provider_config.resolve_contacts_for_directory(
-                session.directory_path
+            contacts_config = context.provider_config.resolve_effective_contacts_for_session_id(
+                resolved_session_id
             )
             contacts = []
             for contact_id, contact in sorted(contacts_config.contacts.items()):

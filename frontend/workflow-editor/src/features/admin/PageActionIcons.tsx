@@ -115,6 +115,18 @@ export function RevokeIcon() {
   );
 }
 
+export function CleanupIcon() {
+  return (
+    <ActionIcon>
+      <path d="M14.5 4.5l5 5" />
+      <path d="M12.2 6.8l5 5" />
+      <path d="M5.5 18.5l6.7-6.7" />
+      <path d="M10.2 8.8l5 5" />
+      <path d="M4.5 20.2c2.3.4 4.7-.3 6.3-1.9l4.4-4.4-5.1-5.1-4.4 4.4c-1.6 1.6-2.2 3.9-1.2 7z" />
+    </ActionIcon>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <ActionIcon>

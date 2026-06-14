@@ -75,6 +75,7 @@ class ToolVisibilityToolPayload(BaseModel):
     source: str | None = None
     reason: str | None = None
     requires_approval: bool = False
+    approval_locked: bool = False
     approval_settings: ApprovalGrantSettings | None = None
     provider: str | None = None
     category: str = "Other"
@@ -131,7 +132,9 @@ _AZURE_DEVOPS_TOOLS = {
     ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA,
     ToolName.GET_ADO_BACKLOG_ITEM,
     ToolName.POST_ADO_BACKLOG_COMMENT,
+    ToolName.DELETE_ADO_BACKLOG_ITEM,
     ToolName.UPDATE_ADO_BACKLOG_TEXT,
+    ToolName.UPDATE_ADO_BACKLOG_TITLE,
     ToolName.UPDATE_ADO_BACKLOG_TAGS,
 }
 
@@ -366,6 +369,7 @@ def _tool_payload_for_visibility(
         source=visibility.source if policy_error is None else "unknown",
         reason=str(policy_error) if policy_error is not None else visibility.reason,
         requires_approval=bool(visibility.requires_approval) and policy_error is None,
+        approval_locked=bool(visibility.approval_locked) and policy_error is None,
         approval_settings=(
             visibility.approval_settings.model_dump(mode="json")
             if visibility.approval_settings is not None and policy_error is None
@@ -387,6 +391,7 @@ def _unknown_tool_payload(tool_name: ToolName, reason: str) -> ToolVisibilityToo
         source="unknown",
         reason=reason,
         requires_approval=False,
+        approval_locked=False,
         approval_settings=None,
         provider=_tool_provider(tool_name, category),
         category=category,

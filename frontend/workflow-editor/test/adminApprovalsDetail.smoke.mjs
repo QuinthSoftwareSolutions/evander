@@ -153,6 +153,10 @@ test("admin shell approvals detail renders intended effect and payload digest", 
       ],
     },
   };
+  let resolveApprovalDetailResponse;
+  const approvalDetailResponseReady = new Promise((resolve) => {
+    resolveApprovalDetailResponse = resolve;
+  });
   const sessionResponse = {
     auth_mode: "none",
     auth_required: false,
@@ -265,6 +269,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     }
 
     if (pathname === "/api/admin/approvals/approval-1") {
+      await approvalDetailResponseReady;
       await route.fulfill(jsonResponse(approvalDetailResponse));
       return;
     }
@@ -293,6 +298,8 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Loading approval request...", { exact: true }).waitFor({ state: "visible" }));
+  resolveApprovalDetailResponse();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Summary" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByRole("heading", { name: "Queue health" }).count(), 0);
@@ -303,10 +310,17 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     page.locator(".approval-review-summary").getByText("Send the approved email payload to the recipient.", { exact: true }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
-    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Payload digest:" }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Arguments hash:" }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page
+      .getByRole("tooltip")
+      .filter({ hasText: "compact fingerprint of the submitted arguments" })
+      .waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() =>
@@ -320,8 +334,9 @@ test("admin shell approvals detail renders intended effect and payload digest", 
       .waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() => page.getByText("Mismatch", { exact: true }).first().waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Approved payload", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Attempted payload", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Approved arguments" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Submitted arguments" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Rejection reason", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.body", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.optional_field", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.trace_id", { exact: true }).waitFor({ state: "visible" }));
@@ -602,19 +617,34 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
   await assert.doesNotReject(() =>
-    page.getByText("Decision will be recorded as Taylor Operator.", { exact: true }).waitFor({ state: "visible" }),
+    page.getByText("Decision recorded by Ops Lead", { exact: false }).waitFor({ state: "visible" }),
   );
   assert.equal(await page.getByRole("button", { name: "Approve", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Deny", exact: true }).count(), 0);
   const revokeButton = page.getByRole("button", { name: "Revoke" });
   await assert.doesNotReject(() => revokeButton.waitFor({ state: "visible" }));
+  await revokeButton.hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Revoking invalidates this grant for all future use.", { exact: true }).waitFor({ state: "visible" }),
+  );
+  const revokeReason = page.getByLabel("Revocation reason");
+  await assert.doesNotReject(() => revokeReason.waitFor({ state: "visible" }));
+  assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
 
-  await page.getByLabel("Reason").fill("No longer safe.");
+  await revokeReason.fill("No longer safe.");
   await revokeButton.click();
   await assert.doesNotReject(() => page.getByText("Revoked approval-1.", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.getByText("Decision recorded by Taylor Operator", { exact: false }).waitFor({ state: "visible" }),
+  );
 
   assert.deepEqual(revokePayload, { reason: "No longer safe." });
+  assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Revocation reason").count(), 0);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "POST /api/admin/approvals/approval-1/revoke"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

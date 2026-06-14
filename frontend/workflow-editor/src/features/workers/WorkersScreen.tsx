@@ -4,6 +4,13 @@ import { ApiError, fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
+import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
+import {
+  encodeStringListDraftValue,
+  formatJsonTextDraftValue,
+  parseJsonTextDraftValue,
+  parseStringListDraftValue,
+} from "../admin/structuredPolicyInputs";
 
 type WorkerSummary = {
   worker_id: string;
@@ -101,7 +108,7 @@ function normalizeFieldValue(field: WorkerConfigField, value: unknown): DraftVal
     }
     return String(value);
   }
-  return value == null ? "" : JSON.stringify(value, null, 2);
+  return formatJsonTextDraftValue(value);
 }
 
 function buildDraft(detail: WorkerDetail | null): WorkerDraft {
@@ -146,19 +153,12 @@ function parseDraftValue(field: WorkerConfigField, rawValue: DraftValue): unknow
     return String(rawValue).trim();
   }
   if (field.kind === "string_list") {
-    return String(rawValue)
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+    return parseStringListDraftValue(rawValue);
   }
   if (field.kind === "literal") {
     return String(rawValue);
   }
-  const text = String(rawValue).trim();
-  if (!text) {
-    throw new Error(`${field.label} must be valid JSON.`);
-  }
-  return JSON.parse(text);
+  return parseJsonTextDraftValue(rawValue, field.label);
 }
 
 function draftToPayload(detail: WorkerDetail | null, draft: WorkerDraft): Record<string, unknown> {
@@ -395,7 +395,29 @@ export function WorkersScreen() {
         </select>
       );
     }
-    if (field.kind === "multiline_text" || field.kind === "string_list" || field.kind === "json") {
+    if (field.kind === "string_list") {
+      return (
+        <StringListEditor
+          values={parseStringListDraftValue(value)}
+          onChange={(nextValues) => updateField(field.field_name, encodeStringListDraftValue(nextValues))}
+          disabled={commonProps.disabled}
+          itemLabel="Value"
+          suggestions={field.options}
+          placeholder="Enter a value"
+        />
+      );
+    }
+    if (field.kind === "json") {
+      return (
+        <JsonTextEditor
+          value={String(value)}
+          onChange={(nextValue) => updateField(field.field_name, nextValue)}
+          fieldLabel={field.label}
+          disabled={commonProps.disabled}
+        />
+      );
+    }
+    if (field.kind === "multiline_text") {
       return (
         <textarea
           {...commonProps}
