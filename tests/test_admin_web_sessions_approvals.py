@@ -39,7 +39,7 @@ from agent_sandbox.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def write_config(tmp_path: Path) -> Path:
+def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
     config_path.write_text(
@@ -52,6 +52,7 @@ def write_config(tmp_path: Path) -> Path:
                 f'draft_store_path: "{runtime_dir / "drafts.json"}"',
                 f'email_store_path: "{runtime_dir / "emails.json"}"',
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
             ]
         ),
         encoding="utf-8",
@@ -469,6 +470,12 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         item["field_name"] == "tool_argument_policies"
         and item["kind"] == "json"
         and item["section"] == "Tool argument policy"
+        for item in catalog_payload["session_policy_fields"]
+    )
+    assert any(
+        item["field_name"] == "allowed_contact_ids"
+        and item["kind"] == "string_list"
+        and item["section"] == "Contacts"
         for item in catalog_payload["session_policy_fields"]
     )
     session_policy_fields = {
@@ -952,7 +959,27 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
 
 
 def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
     communication_targets = SqliteCommunicationTargetsRepository(
         communication_targets_db_path(service.config.runtime_dir)
     )
@@ -988,6 +1015,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "/api/admin/sessions/issue-14085-session",
         json={
             "allowed_script_names": ["seed-demo", " seed-demo ", "collect-logs"],
+            "allowed_contact_ids": ["ops", " support ", "ops"],
             "discord_channel_allowlist": ["chan-a", "chan-b"],
             "teams_channel_allowlist": ["team-b/channel-2", "chat:chat-1"],
             "tool_argument_policies": {
@@ -1036,6 +1064,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "seed-demo",
         "collect-logs",
     ]
+    assert response.json()["session"]["allowed_contact_ids"] == ["ops", "support"]
     assert response.json()["session"]["discord_channel_allowlist"] == ["chan-a", "chan-b"]
     assert response.json()["session"]["teams_channel_allowlist"] == [
         "team-b/channel-2",

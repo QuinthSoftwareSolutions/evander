@@ -1462,6 +1462,10 @@ Resolution behavior:
   `directory_path`. If that path is stale, mistyped, or deleted, the session-specific call is
   rejected with the session id and missing directory path in the error. Active-session policy and
   Discord allowlist aggregation skip stale sessions and log the same limited identifiers.
+- Session manifests may also set `allowed_contact_ids` to narrow the effective directory contact
+  list for phone tools. `null` or omission keeps all directory contacts, `[]` keeps none, and the
+  runtime rejects ids that are not present in the session directory's effective `contacts.json`
+  overlay.
 
 Approval notification policy:
 

@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import ContactDirectoryConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.services import (
     normalize_teams_chat_or_target_refs,
@@ -187,6 +188,24 @@ def effective_config_for_directory(
     if callable(resolve_for_directory):
         return resolve_for_directory(directory_path)
     return GatewayConfig.model_validate(dict(context.provider_config))
+
+
+def contacts_config_for_directory(
+    context: EffectRuntimeContext,
+    directory_path: str | None,
+) -> ContactDirectoryConfig:
+    runtime = getattr(context.admin_service, "runtime", None)
+    resolver = getattr(runtime, "provider_config", None)
+    resolve_contacts_for_directory = getattr(resolver, "resolve_contacts_for_directory", None)
+    if callable(resolve_contacts_for_directory):
+        return resolve_contacts_for_directory(directory_path)
+    provider_config_resolver = getattr(context, "provider_config_resolver", None)
+    resolve_contacts_for_directory = getattr(
+        provider_config_resolver, "resolve_contacts_for_directory", None
+    )
+    if callable(resolve_contacts_for_directory):
+        return resolve_contacts_for_directory(directory_path)
+    raise RuntimeError("contacts_config_for_directory is not available")
 
 
 def effective_config_for_session(
@@ -418,6 +437,7 @@ def build_container_session_manifest(
     allowed_tools: list[str] | None,
     tool_argument_policies: dict[str, list[Any]] | None,
     allowed_script_names: list[str] | None,
+    allowed_contact_ids: list[str] | None,
     discord_channels: list[str] | None,
     teams_channel_allowlist: list[str] | None = None,
     teams_chat_allowlist: list[str] | None = None,
@@ -489,6 +509,7 @@ def build_container_session_manifest(
         approval_required_tools=list(config.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),
+        allowed_contact_ids=allowed_contact_ids,
         discord_channel_allowlist=discord_channels or [],
         teams_channel_allowlist=resolved_teams_channel_allowlist,
         teams_chat_allowlist=resolved_teams_chat_allowlist,

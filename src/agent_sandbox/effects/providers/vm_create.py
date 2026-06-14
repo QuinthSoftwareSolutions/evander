@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
 from agent_sandbox.events.provider_models import VmCreateEffectDefinition
+
+from .agent_session import contacts_config_for_directory
 
 from .base import EffectProviderBase
 
@@ -26,6 +29,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "allowed_tools": effect.allowed_tools,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
+            "allowed_contact_ids": effect.allowed_contact_ids,
             "discord_channels": effect.discord_channels,
             "email_mailboxes": effect.email_mailboxes,
             "email_folders": effect.email_folders,
@@ -50,6 +54,14 @@ class VmCreateEffectProvider(EffectProviderBase):
         directory_path = self._normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
         )
+        resolved_contact_ids = None
+        if payload.get("allowed_contact_ids") is not None:
+            resolved_contact_ids = validate_allowed_contact_ids_for_directory(
+                contacts_config_for_directory(context, directory_path),
+                payload.get("allowed_contact_ids"),
+                session_id=session_id or f"session-{vm_name}",
+                directory_path=directory_path,
+            )
         codex_skills = self._as_string_list(payload.get("codex_skills"))
         skill_validator = getattr(context.admin_service, "validate_managed_codex_skills", None)
         if callable(skill_validator):
@@ -66,6 +78,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             allowed_tools=self._as_string_list(payload.get("allowed_tools")),
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=self._as_string_list(payload.get("allowed_script_names")),
+            allowed_contact_ids=resolved_contact_ids,
             discord_channels=self._as_string_list(payload.get("discord_channels")),
             email_mailboxes=self._as_string_list(payload.get("email_mailboxes")),
             email_folders=self._as_string_list(payload.get("email_folders")),

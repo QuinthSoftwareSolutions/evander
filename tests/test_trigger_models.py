@@ -1092,6 +1092,22 @@ def test_vm_create_effect_accepts_allowed_script_names_list() -> None:
     assert effect.allowed_script_names == ["deploy-review", "collect-logs"]
 
 
+def test_vm_create_effect_accepts_allowed_contact_ids_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-vm-contacts",
+            "display_name": "Create VM",
+            "type": "effect:vm:create",
+            "vm_name": "vm-1",
+            "allowed_contact_ids": ["ops", "support"],
+        }
+    )
+
+    assert effect.type == "effect:vm:create"
+    assert effect.allowed_contact_ids == ["ops", "support"]
+
+
 def test_vm_create_effect_accepts_codex_skills_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = adapter.validate_python(
@@ -1106,6 +1122,22 @@ def test_vm_create_effect_accepts_codex_skills_list() -> None:
 
     assert effect.type == "effect:vm:create"
     assert effect.codex_skills == ["playwright", "playwright-interactive"]
+
+
+def test_agent_create_effect_accepts_allowed_contact_ids_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-agent-contacts",
+            "display_name": "Create agent",
+            "type": "effect:agent:create",
+            "vm_name": "vm-1",
+            "allowed_contact_ids": ["ops", "support"],
+        }
+    )
+
+    assert effect.type == "effect:agent:create"
+    assert effect.allowed_contact_ids == ["ops", "support"]
 
 
 def test_vm_start_effect_accepts_session_target() -> None:

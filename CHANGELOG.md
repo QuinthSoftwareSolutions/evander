@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Session Contact Allowlist Plumbing
+
+- Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
+  `effect:agent:create`, admin session policy payload/update surfaces, and the
+  admin session policy field catalog.
+- Documented that omitted or `null` allowlists keep the full directory contact
+  set, while explicit lists narrow the contacts visible to phone tools.
+
 ## 2026-06-14 - Azure DevOps Backlog Title Updates
 
 - Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps

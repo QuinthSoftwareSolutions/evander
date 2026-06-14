@@ -834,6 +834,7 @@ def _libvirt_create_vm(
     allowed_tools: list[str | Any] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
+    allowed_contact_ids: list[str] | None = None,
     discord_channels: list[str] | None = None,
     teams_channel_allowlist: list[str] | None = None,
     teams_chat_allowlist: list[str] | None = None,
@@ -908,6 +909,8 @@ def _libvirt_create_vm(
             )
         if web_search_enabled is not None:
             policy_update["web_search_enabled"] = web_search_enabled
+        if allowed_contact_ids is not None:
+            policy_update["allowed_contact_ids"] = allowed_contact_ids
         manifest = existing_session.model_copy(
             update={
                 "vm_id": resolved_vm_name,
@@ -928,6 +931,7 @@ def _libvirt_create_vm(
             extra_allowed_tools=allowed_tools,
             tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
+            allowed_contact_ids=allowed_contact_ids,
             discord_channels=discord_channels or [],
             teams_channel_allowlist=teams_channel_allowlist or [],
             teams_chat_allowlist=teams_chat_allowlist or [],
