@@ -438,16 +438,26 @@ def test_semantic_delete_uses_explicit_point_ids_only(
     install_semantic_fakes(monkeypatch)
     context = build_gateway_context(tmp_path, allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS])
     server = create_server(context)
+    arguments = {
+        "session_id": "session-1",
+        "collection_name": "memory",
+        "point_ids": [POINT_ID_1, POINT_ID_2],
+        "wait": True,
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        call_tool(server, "semantic_delete_points", arguments)
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
 
     result = call_tool(
         server,
         "semantic_delete_points",
-        {
-            "session_id": "session-1",
-            "collection_name": "memory",
-            "point_ids": [POINT_ID_1, POINT_ID_2],
-            "wait": True,
-        },
+        {**arguments, "approval_request_id": approval.request_id},
     )
 
     qdrant = FakeQdrantClient.instances[0]
