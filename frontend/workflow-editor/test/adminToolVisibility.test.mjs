@@ -231,6 +231,7 @@ async function createAdminPage(t) {
               source: "session.allowed_tools",
               reason: "Visible to the session by policy.",
               requires_approval: true,
+              approval_locked: false,
               approval_settings: {
                 ttl_seconds: 3600,
                 max_uses: 1,
@@ -249,6 +250,25 @@ async function createAdminPage(t) {
               ],
             },
             {
+              tool_name: "delete_ado_backlog_item",
+              label: "Delete backlog item",
+              category: "Azure DevOps",
+              provider: "azure_devops",
+              visibility_state: "visible",
+              available: true,
+              visible: true,
+              source: "session.allowed_tools",
+              reason: "Visible to the session by policy.",
+              requires_approval: true,
+              approval_locked: true,
+              approval_settings: {
+                ttl_seconds: 3600,
+                max_uses: 1,
+                payload_mode: "exact",
+              },
+              related_links: [],
+            },
+            {
               tool_name: "run_script",
               label: "Run script",
               category: "Agent control",
@@ -259,6 +279,7 @@ async function createAdminPage(t) {
               source: "directory.mcp_tool_policies",
               reason: "Denied by directory policy.",
               requires_approval: false,
+              approval_locked: false,
               related_links: [],
             },
             {
@@ -272,6 +293,7 @@ async function createAdminPage(t) {
               source: "session.metadata.capability_profile",
               reason: "Assistant tools are hidden when capability_profile is missing.",
               requires_approval: false,
+              approval_locked: false,
               related_links: [],
             },
             {
@@ -285,17 +307,18 @@ async function createAdminPage(t) {
               source: "session.metadata.pr_feedback_streams",
               reason: "Feedback streams are unavailable to this session.",
               requires_approval: false,
+              approval_locked: false,
               related_links: [],
             },
           ],
           counts: {
-            total: 4,
-            visible: 1,
+            total: 5,
+            visible: 2,
             hidden_by_policy: 2,
             unavailable_to_session: 1,
             denied_at_execution: 1,
             unknown: 0,
-            requires_approval: 1,
+            requires_approval: 2,
           },
           notices: [
             {
@@ -337,6 +360,23 @@ test("admin tool visibility renders the effective policy inspector", async (t) =
   await assert.doesNotReject(() => page.getByText("Stale manifest possible").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("blocked by execution policy").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("MCP clients can cache a tool manifest on the client side").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Required").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Locked approval").first().waitFor({ state: "visible" }));
+
+  const lockedBadge = page.getByText("Locked approval").first();
+  await lockedBadge.hover();
+  await assert.doesNotReject(() =>
+    page
+      .locator(".admin-tooltip-bubble.visible")
+      .filter({
+        hasText: "This tool always requires approval by host policy. Operators cannot disable this approval requirement.",
+      })
+      .first()
+      .waitFor({ state: "visible" }),
+  );
+
+  await page.getByText("Delete backlog item").first().click();
+  await assert.doesNotReject(() => page.getByText("Always requires approval").first().waitFor({ state: "visible" }));
 
   const bodyText = await page.locator("body").innerText();
   assert.ok(!bodyText.includes("visible-secret"));

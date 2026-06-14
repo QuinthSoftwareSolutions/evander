@@ -5167,6 +5167,12 @@ select {
   letter-spacing: 0.06em;
 }
 
+.tool-visibility-page .approval-locked-pill {
+  background: linear-gradient(180deg, #f7dfaf 0%, #efd08a 100%);
+  color: #7a4f00;
+  box-shadow: inset 0 0 0 1px rgba(122, 79, 0, 0.08);
+}
+
 .state-failed {
   background: #fae0dc;
   color: #9d392e;
@@ -9899,6 +9905,12 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .state-running {
   background: #162c46;
   color: #95c7ff;
+}
+
+:root[data-theme="dark"] .tool-visibility-page .approval-locked-pill {
+  background: linear-gradient(180deg, #5b4314 0%, #3d2e12 100%);
+  color: #f7d58d;
+  box-shadow: inset 0 0 0 1px rgba(247, 213, 141, 0.16);
 }
 
 :root[data-theme="dark"] .status-waiting,
