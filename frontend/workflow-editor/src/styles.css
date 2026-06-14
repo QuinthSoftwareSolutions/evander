@@ -5442,6 +5442,10 @@ select {
   background: rgba(255, 250, 241, 0.76);
 }
 
+.wide-field {
+  grid-column: 1 / -1;
+}
+
 .contacts-field-card {
   grid-column: 1 / -1;
 }

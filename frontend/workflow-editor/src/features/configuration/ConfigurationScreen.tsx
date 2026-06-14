@@ -5,8 +5,21 @@ import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
-import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
-import { formatJsonTextDraftValue, parseJsonTextDraftValue } from "../admin/structuredPolicyInputs";
+import { JsonTextEditor, RegexListEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
+import {
+  formatJsonTextDraftValue,
+  parseJsonTextDraftValue,
+  parseStringListDraftValue as parseStringListDraftValueText,
+} from "../admin/structuredPolicyInputs";
+import {
+  emptyModelPricingRuleDraft,
+  modelPricingDraftFromCatalog,
+  modelPricingPayloadFromDraft,
+  type ModelPricingCatalogDraft,
+  type ModelPricingCatalogPayload,
+  type ModelPricingRuleDraft,
+  type ModelPricingRuleSummary,
+} from "./modelPricingDraft";
 
 type Diagnostic = { code: string; message: string; field?: string | null };
 
@@ -79,28 +92,6 @@ type ConfigurationState = {
   directory_overrides: DirectoryOverridesSnapshot;
 };
 
-type ModelPricingRuleSummary = {
-  id: string;
-  provider: string;
-  models: string[];
-  model_patterns: string[];
-  effective_from: string | null;
-  effective_to: string | null;
-  currency: string;
-  rates_per_1m_tokens: {
-    input: string | null;
-    cached_input: string | null;
-    output: string | null;
-  };
-  batch_multiplier: string | null;
-  service_tier: string | null;
-  long_context: {
-    input_tokens_over: number;
-    input_multiplier: string | null;
-    output_multiplier: string | null;
-  } | null;
-};
-
 type ModelPricingCatalogStatus = {
   status: "ok" | "error";
   path: string | null;
@@ -118,39 +109,6 @@ type ModelPricingCatalogStatus = {
   write_requires_privileged_unlock: boolean;
   error: string | null;
   error_class: string | null;
-};
-
-type ModelPricingCatalogPayload = {
-  version: string;
-  currency: string;
-  description: string | null;
-  sources: string[];
-  rules: ModelPricingRuleSummary[];
-};
-
-type ModelPricingRuleDraft = {
-  id: string;
-  provider: string;
-  modelsText: string;
-  modelPatternsText: string;
-  effectiveFrom: string;
-  effectiveTo: string;
-  inputRate: string;
-  cachedInputRate: string;
-  outputRate: string;
-  batchMultiplier: string;
-  serviceTier: string;
-  longContextInputTokensOver: string;
-  longContextInputMultiplier: string;
-  longContextOutputMultiplier: string;
-};
-
-type ModelPricingCatalogDraft = {
-  version: string;
-  currency: string;
-  description: string;
-  sources: string[];
-  rules: ModelPricingRuleDraft[];
 };
 
 type DraftFieldState = {
@@ -648,177 +606,6 @@ function pricingPathSourceLabel(value: string): string {
   return value || "Unknown";
 }
 
-function stringListText(values: string[]): string {
-  return values.join("\n");
-}
-
-function stringListFromText(value: string): string[] {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function optionalString(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function decimalString(value: string, label: string, required = false): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    if (required) {
-      throw new Error(`${label} is required.`);
-    }
-    return null;
-  }
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`${label} must be a non-negative number.`);
-  }
-  return trimmed;
-}
-
-function optionalNonNegativeInteger(value: string, label: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number.parseInt(trimmed, 10);
-  if (!Number.isFinite(parsed) || parsed < 0 || String(parsed) !== trimmed) {
-    throw new Error(`${label} must be a non-negative integer.`);
-  }
-  return parsed;
-}
-
-function modelPricingRuleDraftFromPayload(rule: ModelPricingRuleSummary): ModelPricingRuleDraft {
-  return {
-    id: rule.id,
-    provider: rule.provider || "openai",
-    modelsText: stringListText(rule.models),
-    modelPatternsText: stringListText(rule.model_patterns),
-    effectiveFrom: rule.effective_from ?? "",
-    effectiveTo: rule.effective_to ?? "",
-    inputRate: rule.rates_per_1m_tokens.input ?? "",
-    cachedInputRate: rule.rates_per_1m_tokens.cached_input ?? "",
-    outputRate: rule.rates_per_1m_tokens.output ?? "",
-    batchMultiplier: rule.batch_multiplier ?? "",
-    serviceTier: rule.service_tier ?? "",
-    longContextInputTokensOver: rule.long_context?.input_tokens_over == null
-      ? ""
-      : String(rule.long_context.input_tokens_over),
-    longContextInputMultiplier: rule.long_context?.input_multiplier ?? "",
-    longContextOutputMultiplier: rule.long_context?.output_multiplier ?? "",
-  };
-}
-
-function modelPricingDraftFromStatus(
-  status: ModelPricingCatalogStatus | null,
-): ModelPricingCatalogDraft {
-  const catalog = status?.catalog ?? MODEL_PRICING_FALLBACK_ERROR.catalog;
-  return {
-    version: catalog.version ?? "",
-    currency: catalog.currency || "usd",
-    description: catalog.description ?? "",
-    sources: [...(catalog.sources ?? [])],
-    rules: (catalog.rules ?? []).map(modelPricingRuleDraftFromPayload),
-  };
-}
-
-function emptyModelPricingRuleDraft(index: number): ModelPricingRuleDraft {
-  return {
-    id: `openai:new-rule-${index}`,
-    provider: "openai",
-    modelsText: "",
-    modelPatternsText: "",
-    effectiveFrom: "",
-    effectiveTo: "",
-    inputRate: "",
-    cachedInputRate: "",
-    outputRate: "",
-    batchMultiplier: "",
-    serviceTier: "",
-    longContextInputTokensOver: "",
-    longContextInputMultiplier: "",
-    longContextOutputMultiplier: "",
-  };
-}
-
-function modelPricingPayloadFromDraft(
-  draft: ModelPricingCatalogDraft,
-): ModelPricingCatalogPayload {
-  const version = draft.version.trim();
-  if (!version) {
-    throw new Error("Pricing catalog version is required.");
-  }
-  const currency = draft.currency.trim().toLowerCase();
-  if (currency !== "usd") {
-    throw new Error("Pricing catalog currency must be usd.");
-  }
-  const rules = draft.rules.map((rule, index) => {
-    const id = rule.id.trim();
-    if (!id) {
-      throw new Error(`Pricing rule ${index + 1} requires an id.`);
-    }
-    const models = stringListFromText(rule.modelsText);
-    const modelPatterns = stringListFromText(rule.modelPatternsText);
-    if (!models.length && !modelPatterns.length) {
-      throw new Error(`Pricing rule ${id} requires at least one model or pattern.`);
-    }
-    const longContextInputTokensOver = optionalNonNegativeInteger(
-      rule.longContextInputTokensOver,
-      `Pricing rule ${id} long-context threshold`,
-    );
-    const longContext =
-      longContextInputTokensOver !== null ||
-      rule.longContextInputMultiplier.trim() ||
-      rule.longContextOutputMultiplier.trim()
-        ? {
-            input_tokens_over: longContextInputTokensOver ?? 0,
-            input_multiplier: decimalString(
-              rule.longContextInputMultiplier,
-              `Pricing rule ${id} long-context input multiplier`,
-            ),
-            output_multiplier: decimalString(
-              rule.longContextOutputMultiplier,
-              `Pricing rule ${id} long-context output multiplier`,
-            ),
-          }
-        : null;
-    return {
-      id,
-      provider: rule.provider.trim() || "openai",
-      models,
-      model_patterns: modelPatterns,
-      effective_from: optionalString(rule.effectiveFrom),
-      effective_to: optionalString(rule.effectiveTo),
-      currency,
-      rates_per_1m_tokens: {
-        input: decimalString(rule.inputRate, `Pricing rule ${id} input rate`, true),
-        cached_input: decimalString(
-          rule.cachedInputRate,
-          `Pricing rule ${id} cached input rate`,
-        ),
-        output: decimalString(rule.outputRate, `Pricing rule ${id} output rate`, true),
-      },
-      batch_multiplier: decimalString(
-        rule.batchMultiplier,
-        `Pricing rule ${id} batch multiplier`,
-      ),
-      service_tier: optionalString(rule.serviceTier),
-      long_context: longContext,
-    };
-  });
-  if (!rules.length) {
-    throw new Error("Pricing catalog requires at least one rule.");
-  }
-  return {
-    version,
-    currency,
-    description: optionalString(draft.description),
-    sources: draft.sources.map((source) => source.trim()).filter(Boolean),
-    rules,
-  };
-}
-
 function normalizeFieldValue(field: ConfigurationField, value: unknown): string | boolean {
   if (field.kind === "bool") {
     return Boolean(value);
@@ -1152,7 +939,7 @@ export function ConfigurationScreen() {
       const payload = await fetchJson<ModelPricingCatalogStatus>("/api/configuration/model-pricing");
       setModelPricingCatalog(payload);
       setModelPricingDraft((current) =>
-        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(payload),
+        preserveDirtyDraft && current ? current : modelPricingDraftFromCatalog(payload.catalog),
       );
       setModelPricingDraftBaseRevision((current) =>
         preserveDirtyDraft ? current : payload.revision,
@@ -1168,7 +955,7 @@ export function ConfigurationScreen() {
       };
       setModelPricingCatalog(fallback);
       setModelPricingDraft((current) =>
-        preserveDirtyDraft && current ? current : modelPricingDraftFromStatus(fallback),
+        preserveDirtyDraft && current ? current : modelPricingDraftFromCatalog(fallback.catalog),
       );
       setModelPricingDraftBaseRevision((current) =>
         preserveDirtyDraft ? current : fallback.revision,
@@ -1217,7 +1004,7 @@ export function ConfigurationScreen() {
     updater: (draft: ModelPricingCatalogDraft) => ModelPricingCatalogDraft,
   ) {
     setModelPricingDraft((current) =>
-      updater(current ?? modelPricingDraftFromStatus(modelPricingCatalog)),
+      updater(current ?? modelPricingDraftFromCatalog(modelPricingCatalog?.catalog ?? null)),
     );
     setModelPricingDraftBaseRevision((current) => current ?? modelPricingCatalog?.revision ?? null);
     modelPricingDirtyRef.current = true;
@@ -1288,7 +1075,7 @@ export function ConfigurationScreen() {
   }
 
   function discardModelPricingChanges() {
-    setModelPricingDraft(modelPricingDraftFromStatus(modelPricingCatalog));
+    setModelPricingDraft(modelPricingDraftFromCatalog(modelPricingCatalog?.catalog ?? null));
     setModelPricingDraftBaseRevision(modelPricingCatalog?.revision ?? null);
     modelPricingDirtyRef.current = false;
     setModelPricingDirty(false);
@@ -1331,7 +1118,7 @@ export function ConfigurationScreen() {
         },
       );
       setModelPricingCatalog(payload);
-      setModelPricingDraft(modelPricingDraftFromStatus(payload));
+      setModelPricingDraft(modelPricingDraftFromCatalog(payload.catalog));
       setModelPricingDraftBaseRevision(payload.revision);
       modelPricingDirtyRef.current = false;
       setModelPricingDirty(false);
@@ -1397,7 +1184,7 @@ export function ConfigurationScreen() {
   const saveBlockedByConfigMode = !state?.directory_scoped_config_enabled && !selectedTabHasGlobalFields;
   const teamsAuthBusy = teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut;
   const teamsAuthDirectoryPath = normalizeDirectoryPath(selectedDirectoryPath);
-  const activeModelPricingDraft = modelPricingDraft ?? modelPricingDraftFromStatus(modelPricingCatalog);
+  const activeModelPricingDraft = modelPricingDraft ?? modelPricingDraftFromCatalog(modelPricingCatalog?.catalog ?? null);
   const modelPricingPanelBodyId = "model-pricing-catalog-panel-body";
   const modelPricingSaveDisabled =
     loading ||
@@ -3043,7 +2830,7 @@ export function ConfigurationScreen() {
                     <div>
                       <h4>Pricing rules</h4>
                       <p className="muted-text">
-                        Rates are expressed per 1M tokens. Models are newline-separated.
+                        Rates are expressed per 1M tokens. Exact models are structured tags and patterns are validated regular expressions.
                       </p>
                     </div>
                     <div className="feature-toolbar-actions model-pricing-section-actions">
@@ -3115,24 +2902,34 @@ export function ConfigurationScreen() {
                               placeholder="optional"
                             />
                           </label>
-                          <label className="field-stack wide-field">
+                          <div className="field-stack wide-field">
                             <span>Models</span>
-                            <textarea
-                              rows={3}
-                              value={rule.modelsText}
-                              onChange={(event) => updateModelPricingRule(index, { modelsText: event.target.value })}
+                            <StringListEditor
+                              values={parseStringListDraftValueText(rule.modelsText)}
+                              onChange={(values) =>
+                                updateModelPricingRule(index, { modelsText: values.join("\n") })
+                              }
+                              itemLabel="Exact model"
+                              addLabel="Add model"
+                              emptyState="No exact models are configured."
+                              placeholder="Enter an exact model"
                               disabled={modelPricingSaving}
                             />
-                          </label>
-                          <label className="field-stack wide-field">
+                          </div>
+                          <div className="field-stack wide-field">
                             <span>Model patterns</span>
-                            <textarea
-                              rows={3}
-                              value={rule.modelPatternsText}
-                              onChange={(event) => updateModelPricingRule(index, { modelPatternsText: event.target.value })}
+                            <RegexListEditor
+                              values={parseStringListDraftValueText(rule.modelPatternsText)}
+                              onChange={(values) =>
+                                updateModelPricingRule(index, { modelPatternsText: values.join("\n") })
+                              }
+                              fieldLabel="Model patterns"
+                              addLabel="Add pattern"
+                              emptyState="No model patterns are configured."
+                              placeholder="Enter a regular expression"
                               disabled={modelPricingSaving}
                             />
-                          </label>
+                          </div>
                           <label className="field-stack">
                             <span>Input rate</span>
                             <input
