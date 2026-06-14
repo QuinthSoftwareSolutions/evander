@@ -701,6 +701,9 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Use the `State` filter to compare `Visible`, `Hidden by policy`, `Unavailable to session`,
   `Denied at execution`, and `Unknown` rows. The detail panel shows the policy reason and safe
   denial summary only.
+- Approval badges distinguish operator-configured approval requirements from locked host-policy
+  requirements. A locked approval badge means the tool always requires approval and operators
+  cannot disable that requirement through session or directory policy.
 - The transport banner can report `Bound`, `Mismatch`, `Unknown`, or `Stale manifest possible`.
   `Denied at execution` is historical audit evidence, not a live policy grant.
 - If the manifest is stale, reconnect or refresh the MCP client so it fetches the current server
