@@ -160,6 +160,15 @@ class DidwwSipBridgeConfig(BaseModel):
     openai_realtime_voice: str = "marin"
     openai_realtime_idle_timeout_ms: int = Field(default=10000, ge=5000, le=30000)
     openai_realtime_transcription_model: str | None = "gpt-4o-transcribe"
+    openai_realtime_input_noise_reduction_type: Literal[
+        "near_field",
+        "far_field",
+        "disabled",
+    ] = "near_field"
+    openai_realtime_turn_detection_type: Literal["server_vad", "semantic_vad"] = "server_vad"
+    openai_realtime_vad_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    openai_realtime_vad_prefix_padding_ms: int = Field(default=300, ge=0, le=5000)
+    openai_realtime_vad_silence_duration_ms: int = Field(default=800, ge=0, le=5000)
     asterisk_ari_url: str = "http://127.0.0.1:8088/ari"
     asterisk_ari_user: str = "agent-sandbox"
     asterisk_ari_password_env: str = Field(default="ASTERISK_ARI_PASSWORD", min_length=1)
@@ -217,6 +226,21 @@ class DidwwSipBridgeConfig(BaseModel):
             if _normalize_backchannel_phrase(part)
         ]
         return normalized or list(_DEFAULT_BACKCHANNEL_PHRASES)
+
+    @field_validator(
+        "openai_realtime_input_noise_reduction_type",
+        "openai_realtime_turn_detection_type",
+        mode="before",
+    )
+    @classmethod
+    def normalize_openai_realtime_modes(cls, value: object, info: Any) -> object:
+        text = str(value or "").strip().lower()
+        if info.field_name == "openai_realtime_input_noise_reduction_type" and text in {
+            "none",
+            "disabled",
+        }:
+            return "disabled"
+        return text
 
     @field_validator("media_format")
     @classmethod
@@ -981,6 +1005,7 @@ class OpenAIRealtimeSession:
         self.projection = projection
         self.realtime = realtime
         self.websocket: Any | None = None
+        self._session_config_fallback_applied = False
 
     async def __aenter__(self) -> OpenAIRealtimeSession:
         try:
@@ -1134,6 +1159,26 @@ class OpenAIRealtimeSession:
     def _session_payload(self, model: str) -> dict[str, Any]:
         instructions = projection_to_instructions(self.projection)
         openai_audio_format = _openai_audio_format(self.config.media_format)
+        noise_reduction_type = str(
+            self.config.openai_realtime_input_noise_reduction_type
+        ).strip().lower()
+        turn_detection_type = str(self.config.openai_realtime_turn_detection_type).strip().lower()
+        turn_detection: dict[str, Any]
+        if turn_detection_type == "semantic_vad":
+            turn_detection = {
+                "type": "semantic_vad",
+                "create_response": False,
+                "interrupt_response": False,
+            }
+        else:
+            turn_detection = {
+                "type": "server_vad",
+                "create_response": False,
+                "interrupt_response": False,
+                "threshold": self.config.openai_realtime_vad_threshold,
+                "prefix_padding_ms": self.config.openai_realtime_vad_prefix_padding_ms,
+                "silence_duration_ms": self.config.openai_realtime_vad_silence_duration_ms,
+            }
         payload: dict[str, Any] = {
             "type": "realtime",
             "model": model,
@@ -1142,11 +1187,7 @@ class OpenAIRealtimeSession:
             "audio": {
                 "input": {
                     "format": dict(openai_audio_format),
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "create_response": False,
-                        "interrupt_response": False,
-                    },
+                    "turn_detection": turn_detection,
                 },
                 "output": {
                     "format": dict(openai_audio_format),
@@ -1154,6 +1195,8 @@ class OpenAIRealtimeSession:
                 },
             },
         }
+        if noise_reduction_type and noise_reduction_type != "disabled":
+            payload["audio"]["input"]["noise_reduction"] = {"type": noise_reduction_type}
         if self.config.openai_realtime_transcription_model:
             payload["audio"]["input"]["transcription"] = {
                 "model": self.config.openai_realtime_transcription_model
@@ -1191,6 +1234,83 @@ class OpenAIRealtimeSession:
             ]
             payload["tool_choice"] = "auto"
         return payload
+
+    async def apply_session_config_fallback(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        if self._session_config_fallback_applied:
+            return None
+        error = event.get("error") if isinstance(event.get("error"), dict) else event
+        if not isinstance(error, dict):
+            return None
+        message_bits = [
+            str(error.get("code") or ""),
+            str(error.get("type") or ""),
+            str(error.get("param") or ""),
+            str(error.get("message") or ""),
+        ]
+        text = " ".join(bit.lower() for bit in message_bits if bit)
+        unsupported_markers = (
+            "unsupported",
+            "not supported",
+            "invalid",
+            "unknown field",
+            "unrecognized",
+        )
+        if not any(marker in text for marker in unsupported_markers):
+            return None
+        removed_features: list[str] = []
+        include_noise_reduction = True
+        turn_detection_type = str(self.config.openai_realtime_turn_detection_type).strip().lower()
+        if any(
+            marker in text
+            for marker in (
+                "noise_reduction",
+                "noise reduction",
+                "input_audio_noise_reduction",
+            )
+        ) and str(self.config.openai_realtime_input_noise_reduction_type).strip().lower() != "disabled":
+            include_noise_reduction = False
+            removed_features.append("audio.input.noise_reduction")
+        if (
+            turn_detection_type == "semantic_vad"
+            and any(
+                marker in text
+                for marker in (
+                    "turn_detection",
+                    "turn detection",
+                    "semantic_vad",
+                    "semantic vad",
+                    "vad",
+                )
+            )
+        ):
+            turn_detection_type = "server_vad"
+            removed_features.append("audio.input.turn_detection.type")
+        if not removed_features:
+            return None
+        self._session_config_fallback_applied = True
+        model = str(self.realtime.get("model") or self.config.openai_realtime_model).strip()
+        payload = self._session_payload(model)
+        if not include_noise_reduction:
+            payload["audio"]["input"].pop("noise_reduction", None)
+        if turn_detection_type == "server_vad":
+            payload["audio"]["input"]["turn_detection"] = {
+                "type": "server_vad",
+                "create_response": False,
+                "interrupt_response": False,
+                "threshold": self.config.openai_realtime_vad_threshold,
+                "prefix_padding_ms": self.config.openai_realtime_vad_prefix_padding_ms,
+                "silence_duration_ms": self.config.openai_realtime_vad_silence_duration_ms,
+            }
+        await self.send_json({"type": "session.update", "session": payload})
+        fallback_metadata = {
+            "removed_features": removed_features,
+            **_realtime_error_metadata(event),
+        }
+        if turn_detection_type == "server_vad":
+            fallback_metadata["fallback_turn_detection_type"] = "server_vad"
+        if not include_noise_reduction:
+            fallback_metadata["noise_reduction_omitted"] = True
+        return fallback_metadata
 
 
 @dataclass(frozen=True)
@@ -2831,6 +2951,17 @@ class DidwwSipBridgeService:
                         "error",
                         metadata=_realtime_error_metadata(event),
                     )
+                    fallback_handler = getattr(realtime, "apply_session_config_fallback", None)
+                    fallback_metadata = (
+                        await fallback_handler(event) if callable(fallback_handler) else None
+                    )
+                    if fallback_metadata is not None:
+                        self._append_debug_event(
+                            voice_session_id,
+                            "realtime.session_config_fallback",
+                            metadata=fallback_metadata,
+                        )
+                        continue
                     if (
                         isinstance(error, dict)
                         and error.get("code") == "conversation_already_has_active_response"
@@ -3563,6 +3694,19 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         openai_realtime_idle_timeout_ms=_env_int("OPENAI_REALTIME_IDLE_TIMEOUT_MS", 10000),
         openai_realtime_transcription_model=_env_optional(
             "OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"
+        ),
+        openai_realtime_input_noise_reduction_type=_env(
+            "OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE", "near_field"
+        ),
+        openai_realtime_turn_detection_type=_env(
+            "OPENAI_REALTIME_TURN_DETECTION_TYPE", "server_vad"
+        ),
+        openai_realtime_vad_threshold=_env_float("OPENAI_REALTIME_VAD_THRESHOLD", 0.70),
+        openai_realtime_vad_prefix_padding_ms=_env_int(
+            "OPENAI_REALTIME_VAD_PREFIX_PADDING_MS", 300
+        ),
+        openai_realtime_vad_silence_duration_ms=_env_int(
+            "OPENAI_REALTIME_VAD_SILENCE_DURATION_MS", 800
         ),
         asterisk_ari_url=_env("ASTERISK_ARI_URL", "http://127.0.0.1:8088/ari"),
         asterisk_ari_user=_env("ASTERISK_ARI_USER", "agent-sandbox"),
