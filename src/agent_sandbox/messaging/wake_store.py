@@ -372,40 +372,18 @@ class WakeRequestStore:
                 )
 
             latest_dispatch = self._latest_dispatch_for_request(connection, normalized_request_id)
-            if request.status == "cancelled":
-                return WakeRequestCancellationResult(
-                    status="already_cancelled",
-                    request_id=normalized_request_id,
-                    request=request,
-                )
-
             if request.schedule.resume_at is not None:
-                if latest_dispatch is not None:
-                    if latest_dispatch.status == "completed":
-                        return WakeRequestCancellationResult(
-                            status="already_completed",
-                            request_id=normalized_request_id,
-                            request=request,
-                        )
-                    if latest_dispatch.status in {"dispatched", "queued"}:
-                        return WakeRequestCancellationResult(
-                            status="already_dispatched",
-                            request_id=normalized_request_id,
-                            request=request,
-                        )
-                if request.last_dispatched_at is not None:
+                if request.completed_at is not None or (
+                    latest_dispatch is not None and latest_dispatch.status == "completed"
+                ):
                     return WakeRequestCancellationResult(
-                        status="already_dispatched",
+                        status="already_completed",
                         request_id=normalized_request_id,
                         request=request,
                     )
-                if not request.enabled:
-                    return WakeRequestCancellationResult(
-                        status="already_cancelled",
-                        request_id=normalized_request_id,
-                        request=request,
-                    )
-            elif not request.enabled:
+            if request.status == "cancelled" or (
+                request.cancelled_at is not None and request.enabled is False
+            ):
                 return WakeRequestCancellationResult(
                     status="already_cancelled",
                     request_id=normalized_request_id,

@@ -3010,16 +3010,15 @@ def test_cancel_scheduled_wake_denies_cross_session_and_redacts_reason(
 
 
 @pytest.mark.parametrize(
-    ("dispatch_status", "expected_status"),
+    "dispatch_status",
     [
-        ("dispatched", "already_dispatched"),
-        ("completed", "already_completed"),
+        "dispatched",
+        "queued",
     ],
 )
-def test_cancel_scheduled_wake_preserves_terminal_one_time_requests(
+def test_cancel_scheduled_wake_allows_nonterminal_one_time_requests(
     tmp_path: Path,
     dispatch_status: str,
-    expected_status: str,
 ) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
@@ -3066,8 +3065,63 @@ def test_cancel_scheduled_wake_preserves_terminal_one_time_requests(
         },
     )
 
-    assert result["status"] == expected_status
-    assert context.wake_store.read_raw()["requests"][f"wake-{dispatch_status}"] == before
+    assert result["status"] == "cancelled"
+    assert result["request"]["status"] == "cancelled"
+    assert result["request"]["enabled"] is False
+    assert result["request"]["next_run_at"] is None
+    assert context.wake_store.read_raw()["requests"][f"wake-{dispatch_status}"] != before
+
+
+def test_cancel_scheduled_wake_preserves_completed_one_time_requests(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.CANCEL_SCHEDULED_WAKE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Continue working through unread feedback.",
+        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+        request_id="wake-completed",
+        source="wake-worker",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={"trace_id": "trace-1"},
+    )
+    context.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-completed",
+            request_id="wake-completed",
+            session_id="session-1",
+            status="completed",
+            resume_prompt=WakeResumePromptPayload(
+                prompt="Continue working through unread feedback.",
+                metadata={"trace_id": "trace-1"},
+            ),
+            scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+            source="wake-worker",
+        )
+    )
+    before = context.wake_store.read_raw()["requests"]["wake-completed"]
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "cancel_scheduled_wake",
+        {
+            "session_id": "session-1",
+            "request_id": "wake-completed",
+            "reason": "obsolete",
+        },
+    )
+
+    assert result["status"] == "already_completed"
+    assert context.wake_store.read_raw()["requests"]["wake-completed"] == before
 
 
 def test_cancel_scheduled_wake_reports_missing_and_unknown_request_ids(
