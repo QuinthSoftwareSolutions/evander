@@ -148,6 +148,7 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert rows["create_ado_backlog_item"]["provider"] == "azure_devops"
     assert rows["create_ado_backlog_item"]["category"] == "Azure DevOps"
     assert rows["create_ado_backlog_item"]["requires_approval"] is True
+    assert rows["create_ado_backlog_item"]["approval_locked"] is False
     assert rows["create_ado_backlog_item"]["execution_state"] == "denied_at_execution"
     assert rows["create_ado_backlog_item"]["error_summary"] == "blocked by execution policy"
     assert rows["delete_ado_backlog_item"]["provider"] == "azure_devops"
@@ -176,6 +177,40 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert payload["counts"]["requires_approval"] == 1
     assert "visible-secret" not in json.dumps(payload)
     assert "visible-result-secret" not in json.dumps(payload)
+
+
+def test_admin_web_tool_visibility_marks_locked_approval_rows(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-locked",
+        vm_id="vm-1",
+        vm_provider="libvirt",
+        allowed_tools=[
+            ToolName.DELETE_ADO_BACKLOG_ITEM,
+            ToolName.CREATE_ADO_BACKLOG_ITEM,
+        ],
+        approval_required_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.session_repository.upsert_session(session)
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/tool-visibility",
+        params={"session_id": "session-locked"},
+    )
+
+    payload = response.json()
+    rows = {row["tool_name"]: row for row in payload["tools"]}
+
+    assert response.status_code == 200
+    assert rows["delete_ado_backlog_item"]["visibility_state"] == "visible"
+    assert rows["delete_ado_backlog_item"]["requires_approval"] is True
+    assert rows["delete_ado_backlog_item"]["approval_locked"] is True
+    assert rows["create_ado_backlog_item"]["requires_approval"] is True
+    assert rows["create_ado_backlog_item"]["approval_locked"] is False
 
 
 def test_admin_web_tool_visibility_classifies_update_title_tool(

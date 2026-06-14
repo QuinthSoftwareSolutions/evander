@@ -107,6 +107,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert visible.provider == "azure_devops"
     assert visible.label == "create ado backlog item"
     assert visible.requires_approval is True
+    assert visible.approval_locked is False
     assert visible.approval_settings is not None
 
     hidden = rows[ToolName.RUN_SCRIPT.value]
@@ -148,6 +149,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert denied_unknown.execution_state is ToolVisibilityExecutionState.DENIED_AT_EXECUTION
     assert denied_unknown.category == "Unknown"
     assert denied_unknown.provider is None
+    assert denied_unknown.approval_locked is False
     assert denied_unknown.last_denied_at == datetime(2026, 5, 18, 10, 7, tzinfo=UTC)
     assert denied_unknown.error_summary == "blocked by execution policy"
 
@@ -158,6 +160,7 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert payload.counts.denied_at_execution == 2
     assert payload.counts.unknown == 1
     assert payload.counts.requires_approval == 1
+    assert rows[ToolName.CREATE_ADO_BACKLOG_ITEM.value].approval_locked is False
 
     assert payload.notices
     assert payload.notices[0].kind == "missing_capability_profile"
@@ -195,6 +198,7 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
     assert delete_row.category == "Azure DevOps"
     assert delete_row.label == "delete ado backlog item"
     assert delete_row.requires_approval is True
+    assert delete_row.approval_locked is True
 
 
 def test_admin_service_tool_visibility_payload_classifies_update_title_tool(

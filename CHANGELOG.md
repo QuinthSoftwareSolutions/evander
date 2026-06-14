@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Tool Visibility Approval Locks
+
+- Surfaced host-locked approval requirements in the Admin Web Tool Visibility
+  API and inspector so operators can distinguish policy-mandated approvals from
+  configurable per-session approval settings.
+- Kept locked approval badges valid in the mobile Tool Visibility cards by
+  avoiding nested focus targets inside selectable records.
+
 ## 2026-06-14 - Session Contact Allowlist Plumbing
 
 - Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
@@ -78,7 +86,6 @@ material. Newer entries are added incrementally as changes land.
 - Clarified Admin Web approval labels and tooltips across visible approvals,
   issue VM bootstrap controls, session approval settings, and approval
   decision panel behavior.
->>>>>>> main
 
 ## 2026-06-13 - Admin Agents Status Performance
 
@@ -96,8 +103,6 @@ material. Newer entries are added incrementally as changes land.
 - Replaced the Sessions page cleanup action label with an icon-only toolbar
   button so it no longer overflows adjacent status and VM controls.
 
-<<<<<<< HEAD
-=======
 ## 2026-06-14 - Azure DevOps Backlog Deletion
 
 - Added the approval-gated `delete_ado_backlog_item` contract to the operator
@@ -119,7 +124,6 @@ material. Newer entries are added incrementally as changes land.
 - Required title validation now rejects blank or whitespace-only values before
   the ADO update call and writes the trimmed value to `System.Title`.
 
->>>>>>> main
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from

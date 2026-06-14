@@ -507,11 +507,13 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     assert visibility.available is True
     assert visibility.visible is True
     assert visibility.requires_approval is True
+    assert visibility.approval_locked is False
     assert visibility.approval_settings is not None
     assert visibility.source == "session.allowed_tools"
     assert any(
         item["tool_name"] == ToolName.RUN_SCRIPT.value
         and item["requires_approval"] is True
+        and item["approval_locked"] is False
         for item in summary["available_tools"]
     )
     assert ToolName.RUN_SCRIPT.value in summary["approval_required_tools"]
@@ -537,6 +539,7 @@ def test_delete_ado_backlog_item_always_requires_approval_when_allowed(
     assert visibility.available is True
     assert visibility.visible is True
     assert visibility.requires_approval is True
+    assert visibility.approval_locked is True
     assert visibility.approval_settings is not None
     assert engine.approval_required_for_tool(session, ToolName.DELETE_ADO_BACKLOG_ITEM) is True
     assert ToolName.DELETE_ADO_BACKLOG_ITEM.value in summary["approval_required_tools"]
