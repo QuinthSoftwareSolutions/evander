@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_sandbox.container_worker_images import resolve_container_worker_image_selector
+from agent_sandbox.contact_allowlists import validate_allowed_contact_ids_for_directory
 from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
 from agent_sandbox.messaging.targets import load_communication_targets_config
@@ -20,6 +21,7 @@ from .agent_session import (
     build_container_session_files,
     build_container_session_manifest,
     container_backend,
+    contacts_config_for_directory,
     default_agent_provider_for_config,
     effective_config_for_directory,
     normalize_existing_agent_behavior,
@@ -38,6 +40,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
+        allowed_contact_ids_provided = "allowed_contact_ids" in getattr(
+            effect, "model_fields_set", set()
+        )
         payload = {
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
@@ -54,6 +59,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "allowed_tools": effect.allowed_tools,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
+            "allowed_contact_ids": effect.allowed_contact_ids,
             "communication_target_ids": effect.communication_target_ids,
             "discord_channels": effect.discord_channels,
             "teams_channel_allowlist": effect.teams_channel_allowlist,
@@ -80,7 +86,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "metadata": effect.metadata,
         }
         if resolved_config:
-            payload.update(dict(resolved_config))
+            resolved_payload = dict(resolved_config)
+            if "allowed_contact_ids" in resolved_payload:
+                allowed_contact_ids_provided = True
+            payload.update(resolved_payload)
+        payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -130,6 +140,14 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             vm_name=vm_name,
         )
+        resolved_contact_ids = None
+        if payload.get("allowed_contact_ids") is not None:
+            resolved_contact_ids = validate_allowed_contact_ids_for_directory(
+                contacts_config_for_directory(context, directory_path),
+                payload.get("allowed_contact_ids"),
+                session_id=session_id or f"session-{vm_name}",
+                directory_path=directory_path,
+            )
 
         vm_image_selector = normalize_optional_string(payload.get("vm_image"))
         if existing_agent_behavior == "noop" and existing_session is not None:
@@ -192,6 +210,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=as_string_list(payload.get("allowed_tools")),
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
+            allowed_contact_ids=resolved_contact_ids,
             discord_channels=communication_allowlists["discord_channels"],
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
@@ -257,6 +276,18 @@ class AgentCreateEffectProvider(EffectProviderBase):
             payload.get("existing_agent_behavior")
         )
         existing_session = session_repository.get_session(session_id)
+        resolved_contact_ids = None
+        if bool(payload.get("_allowed_contact_ids_provided")):
+            resolved_contact_ids = validate_allowed_contact_ids_for_directory(
+                contacts_config_for_directory(context, directory_path),
+                payload.get("allowed_contact_ids"),
+                session_id=session_id,
+                directory_path=directory_path,
+            )
+        else:
+            existing_contact_ids = getattr(existing_session, "allowed_contact_ids", None)
+            if existing_contact_ids is not None:
+                resolved_contact_ids = list(existing_contact_ids)
         if existing_agent_behavior == "noop" and existing_session is not None:
             return _existing_agent_noop_result(
                 session_id=session_id,
@@ -346,6 +377,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=resolved_allowed_tools,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
+            allowed_contact_ids=resolved_contact_ids,
             discord_channels=communication_allowlists["discord_channels"],
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],

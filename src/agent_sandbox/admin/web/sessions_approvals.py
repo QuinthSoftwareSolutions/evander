@@ -75,6 +75,7 @@ _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
     "communication_file_allowed_extensions": "string_list",
     "communication_file_blocked_extensions": "string_list",
     "communication_file_require_approval_for_send": "bool",
+    "allowed_contact_ids": "string_list",
     "tool_argument_policies": "json",
 }
 
@@ -95,16 +96,22 @@ def _session_policy_field_catalog() -> list[dict[str, str]]:
             "section": "Hosted tools",
         },
     ]
+    catalog.append(
+        {
+            "field_name": "allowed_contact_ids",
+            "label": "allowed contact ids",
+            "kind": _SESSION_POLICY_FIELD_KINDS["allowed_contact_ids"],
+            "section": "Contacts",
+        }
+    )
     catalog.extend(
-        [
-            {
-                "field_name": field_name,
-                "label": _SESSION_POLICY_FIELD_LABELS[field_name],
-                "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
-                "section": "Communication files",
-            }
-            for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
-        ]
+        {
+            "field_name": field_name,
+            "label": _SESSION_POLICY_FIELD_LABELS[field_name],
+            "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
+            "section": "Communication files",
+        }
+        for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
     )
     catalog.append(
         {

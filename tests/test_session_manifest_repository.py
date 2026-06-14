@@ -86,6 +86,17 @@ def test_read_all_populates_missing_notification_target_ids_as_empty_list(tmp_pa
     assert session.approval_notification_target_ids == []
 
 
+def test_read_all_populates_missing_allowed_contact_ids_as_none(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({"session-1": _session_payload()}), encoding="utf-8")
+    repository = JsonSessionManifestRepository(path)
+
+    session = repository.get_session("session-1")
+
+    assert session is not None
+    assert session.allowed_contact_ids is None
+
+
 def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     path.write_text(
@@ -217,6 +228,54 @@ def test_session_repository_round_trips_notification_target_ids(tmp_path) -> Non
 
     assert loaded is not None
     assert loaded.approval_notification_target_ids == ["ops-primary", "ops-backup"]
+
+
+def test_session_manifest_normalizes_allowed_contact_ids() -> None:
+    manifest = SessionManifest.model_validate(
+        {
+            **_session_payload(session_id="session-1"),
+            "allowed_contact_ids": [" ops-main ", "ops-main", "support", " support "],
+        }
+    )
+
+    assert manifest.allowed_contact_ids == ["ops-main", "support"]
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("ops-main", "allowed_contact_ids must be a JSON array of strings or null"),
+        (("ops-main",), "allowed_contact_ids must be a JSON array of strings or null"),
+        (["ops-main", ""], "allowed_contact_ids cannot contain empty values"),
+        (["ops-main", "  "], "allowed_contact_ids cannot contain empty values"),
+    ],
+)
+def test_session_manifest_rejects_invalid_allowed_contact_ids(value, message) -> None:
+    with pytest.raises(ValidationError, match=message):
+        SessionManifest.model_validate(
+            {
+                **_session_payload(session_id="session-1"),
+                "allowed_contact_ids": value,
+            }
+        )
+
+
+def test_session_repository_round_trips_allowed_contact_ids(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    repository = JsonSessionManifestRepository(path)
+    manifest = SessionManifest.model_validate(
+        {
+            **_session_payload(session_id="session-1"),
+            "allowed_contact_ids": [" ops-main ", "ops-backup", "ops-backup"],
+        }
+    )
+
+    repository.upsert_session(manifest)
+
+    loaded = repository.get_session("session-1")
+
+    assert loaded is not None
+    assert loaded.allowed_contact_ids == ["ops-main", "ops-backup"]
 
 
 def test_session_repository_preserves_concurrent_independent_upserts(tmp_path) -> None:

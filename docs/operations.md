@@ -929,6 +929,9 @@ raw phone numbers or phone-provider credentials.
 - Required contact config:
   - `contacts.json`, with callable contact ids under `contacts`
   - Each callable contact needs one phone number marked `"primary": true`
+- Session manifests may set `allowed_contact_ids` to narrow the contact set further. Leave it
+  omitted or `null` to inherit all directory contacts; use `[]` to make no contacts callable for
+  that session. Unknown ids are rejected against the session directory's effective contacts.
 - Required host secret:
   - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
     repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.

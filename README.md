@@ -1018,6 +1018,9 @@ Response:
   `retell_from_number`, and `retell_default_agent_id`.
 - Configure callable contacts under directory-scoped `contacts.json`. Retell uses the contact's
   explicitly marked primary phone number; contacts without one cannot be called.
+- To narrow a session to a subset of directory contacts, set `allowed_contact_ids` on the session
+  manifest. Omit it or set it to `null` to keep the full directory contact set; an explicit empty
+  list means no contacts are callable.
 - The Retell agent/LLM used by `retell_default_agent_id` must reference `{{agent_question}}` in
   its Retell prompt or begin message. The gateway sends
   the tool `prompt` as `retell_llm_dynamic_variables.agent_question`; Retell does not treat it as

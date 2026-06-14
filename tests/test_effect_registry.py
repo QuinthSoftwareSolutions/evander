@@ -58,6 +58,7 @@ from agent_sandbox.effects.registry import (
 )
 from pydantic import BaseModel, Field, ValidationError
 
+from agent_sandbox.directory_config import ContactDirectoryConfig
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
@@ -98,8 +99,13 @@ class _ResolverStub:
 
 
 class _ContainerResolverStub:
-    def __init__(self, config: GatewayConfig) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        contacts_config: ContactDirectoryConfig | None = None,
+    ) -> None:
         self.config = config
+        self.contacts_config = contacts_config or ContactDirectoryConfig()
 
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
         del directory_path
@@ -108,6 +114,12 @@ class _ContainerResolverStub:
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
         del session_id
         return self.config
+
+    def resolve_contacts_for_directory(
+        self, directory_path: str | None
+    ) -> ContactDirectoryConfig:
+        del directory_path
+        return self.contacts_config
 
     def resolve_effect_provider_config(self, directory_path: str | None):
         from agent_sandbox.provider_config import EffectProviderConfig
@@ -4319,6 +4331,107 @@ def test_agent_create_container_upserts_when_session_exists(
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
         "content"
     ]
+
+
+def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    contacts_config = ContactDirectoryConfig.model_validate(
+        {
+            "contacts": {
+                "ops": {"name": "Ops"},
+                "support": {"name": "Support"},
+            }
+        }
+    )
+    resolver = _ContainerResolverStub(config, contacts_config)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            model="gpt-5.4",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            allowed_contact_ids=["ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "container_worker": {
+                    "image": "runner-special:2026-06-05",
+                    "image_alias": "special",
+                }
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=resolver,
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            labels={"changed": "true"},
+        )
+    ).execute()
+
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.allowed_contact_ids == ["ops"]
+    assert backend.prepared_sessions[-1]["metadata"]["labels"] == {"changed": "true"}
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            allowed_contact_ids=[],
+        )
+    ).execute()
+
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.allowed_contact_ids == []
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            allowed_contact_ids=["support"],
+        )
+    ).execute()
+
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.allowed_contact_ids == ["support"]
 
 
 def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(

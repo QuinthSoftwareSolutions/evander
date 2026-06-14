@@ -5,6 +5,39 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Session Contact Allowlist Plumbing
+
+- Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
+  `effect:agent:create`, admin session policy payload/update surfaces, and the
+  admin session policy field catalog.
+- Preserved existing container-worker session contact restrictions when
+  `effect:agent:create` upserts omit `allowed_contact_ids`.
+- Preserved contact allowlist resolution for provider-session fallback records
+  used by directory-scoped provider config resolution.
+- Documented that omitted or `null` allowlists keep the full directory contact
+  set, while explicit lists narrow the contacts visible to phone tools.
+
+## 2026-06-14 - Azure DevOps Backlog Title Updates
+
+- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
+  backlog items by numeric work-item id.
+- Required title validation now rejects blank or whitespace-only values before
+  the ADO update call and writes the trimmed value to `System.Title`.
+
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
+
 ## 2026-06-14 - Sessions Save Feedback Cleanup
 
 - Consolidated the Sessions page save feedback into the existing top-level
@@ -45,6 +78,7 @@ material. Newer entries are added incrementally as changes land.
 - Clarified Admin Web approval labels and tooltips across visible approvals,
   issue VM bootstrap controls, session approval settings, and approval
   decision panel behavior.
+>>>>>>> main
 
 ## 2026-06-13 - Admin Agents Status Performance
 
@@ -62,6 +96,8 @@ material. Newer entries are added incrementally as changes land.
 - Replaced the Sessions page cleanup action label with an icon-only toolbar
   button so it no longer overflows adjacent status and VM controls.
 
+<<<<<<< HEAD
+=======
 ## 2026-06-14 - Azure DevOps Backlog Deletion
 
 - Added the approval-gated `delete_ado_backlog_item` contract to the operator
@@ -83,6 +119,7 @@ material. Newer entries are added incrementally as changes land.
 - Required title validation now rejects blank or whitespace-only values before
   the ADO update call and writes the trimmed value to `System.Title`.
 
+>>>>>>> main
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from

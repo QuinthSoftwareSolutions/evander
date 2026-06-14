@@ -1095,6 +1095,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             vm_provider="libvirt",
             directory_path="root",
             allowed_tools=[],
+            allowed_contact_ids=["ops"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"labels": {"system": "chat_assistant"}},
         )
@@ -1124,6 +1125,7 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_status"] == "missing"
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
+    assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
 
 
 def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
@@ -10233,13 +10235,34 @@ def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> No
 def test_update_session_policy_updates_allowlists_and_metadata(
     tmp_path: Path,
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13302-session",
             vm_id="vm-13302",
             allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
             allowed_script_names=["old-script"],
+            allowed_contact_ids=["ops"],
             approval_required_tools=[ToolName.COMPLETE_ISSUE],
             tool_argument_policies={
                 "create_ado_backlog_item": [
@@ -10287,6 +10310,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
                 ]
             },
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
+            "allowed_contact_ids": [" ops ", "support", "ops"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
             "teams_chat_allowlist": [" chat:chat-2 ", "chat:chat-2", "chat:chat-3 "],
@@ -10312,6 +10336,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     ]
     assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "session-policy"
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
+    assert updated.allowed_contact_ids == ["ops", "support"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
     assert updated.teams_chat_allowlist == ["chat:chat-2", "chat:chat-3"]
@@ -10324,6 +10349,20 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_require_approval_for_send is True
     assert updated.web_search_enabled is True
     assert updated.metadata == {"keep": "new-value"}
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"contacts allowlist for session 'issue-13302-session' and directory 'root' "
+            r"references unknown contact ids: missing"
+        ),
+    ):
+        service.update_session_policy(
+            "13302",
+            {
+                "allowed_contact_ids": ["missing"],
+            },
+        )
 
 
 def test_update_session_policy_and_agent_validate_approval_notification_targets(
@@ -12321,7 +12360,27 @@ def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
 def test_create_vm_sets_allowed_script_names_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550001", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "phone_numbers": [
+                        {"label": "main", "number": "+15550002", "primary": True}
+                    ],
+                },
+            }
+        },
+    )
 
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
@@ -12340,12 +12399,14 @@ def test_create_vm_sets_allowed_script_names_on_session_manifest(
         vm_name="lab-vm",
         session_id="lab-session",
         allowed_script_names=["deploy-review", " collect-logs ", "deploy-review"],
+        allowed_contact_ids=[" ops ", "support", "ops"],
     )
 
     assert result.success is True
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.allowed_script_names == ["deploy-review", "collect-logs"]
+    assert manifest.allowed_contact_ids == ["ops", "support"]
 
 
 def test_bootstrap_frontend_in_vm_bootstraps_frontend_runtime(
