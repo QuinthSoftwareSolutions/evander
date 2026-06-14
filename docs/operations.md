@@ -1337,6 +1337,11 @@ approval before selected MCP tools execute. This is an additional gate on top of
 tool must still be allowed for the session, and `approval_submit` / `approval_check` are excluded so
 agents can create and inspect approvals.
 
+Some tools are code-level mandatory approval tools and do not depend on operator configuration.
+`semantic_delete_points` always uses this approval gate when the session is otherwise allowed to
+call it; removing it from `approval_required_tools` or setting a directory rule with
+`require_approval: false` does not make it approval-free.
+
 When a gated tool is called without `approval_request_id`, the gateway does not run the tool. It
 creates a pending approval with action type `mcp_tool_invocation`, records the tool name, intended
 effect, canonical payload digest, and an audited `pending_approval` tool-call event, then returns an
