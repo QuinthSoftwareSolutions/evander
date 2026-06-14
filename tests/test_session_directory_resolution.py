@@ -290,6 +290,47 @@ def test_provider_config_resolver_resolves_effective_contacts_for_session_id(
     assert effective.user_contact_links == {"agent": "ops"}
 
 
+def test_provider_config_resolver_resolves_effective_contacts_for_provider_session_store(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directories = DirectoryService(directory_store)
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    team = directories.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {"name": "Ops"},
+                "support": {"name": "Support"},
+            }
+        },
+    )
+    provider_session_store = JsonStore(
+        config.session_store_path,
+        ProviderSessionManifest,
+    )
+    provider_session_store.put(
+        "session-fallback",
+        ProviderSessionManifest(
+            session_id="session-fallback",
+            directory_path=team.path,
+            allowed_contact_ids=["ops"],
+        ),
+    )
+    resolver = ProviderConfigResolver(
+        config,
+        directory_store=directory_store,
+        provider_session_store=provider_session_store,
+    )
+
+    effective = resolver.resolve_effective_contacts_for_session_id("session-fallback")
+
+    assert list(effective.contacts) == ["ops"]
+
+
 def test_policy_config_resolver_resolves_root_for_none_empty_and_rejects_missing_paths(
     tmp_path: Path,
 ) -> None:

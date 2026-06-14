@@ -2060,6 +2060,13 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
                     "phone_numbers": [
                         {"label": "mobile", "number": "+15550000002", "primary": True}
                     ],
+                },
+                "support": {
+                    "name": "Support",
+                    "description": "Support escalation contact",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000005", "primary": True}
+                    ],
                 }
             }
         },
@@ -2101,6 +2108,29 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
                 "prompt": "Ask whether the shipment arrived.",
             },
         )
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-allowlisted",
+            allowed_tools=[ToolName.MAKE_PHONE_CALL],
+            allowed_contact_ids=["ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    with pytest.raises(
+        ToolError,
+        match=r"Contact 'support' is not allowed for session 'session-allowlisted'",
+    ):
+        _call_tool(
+            server,
+            "make_phone_call",
+            {
+                "session_id": "session-allowlisted",
+                "contact": "support",
+                "prompt": "Ask whether the shipment arrived.",
+            },
+        )
+    assert requests == []
 
     registered = _call_tool(
         server,

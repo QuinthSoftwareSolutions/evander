@@ -118,6 +118,7 @@ class GateProviderConfig(BaseModel):
 class ProviderSessionManifest(BaseModel):
     session_id: str
     directory_path: str = "root"
+    allowed_contact_ids: list[str] | None = None
     web_search_enabled: bool = False
     expires_at: datetime | None = None
 
