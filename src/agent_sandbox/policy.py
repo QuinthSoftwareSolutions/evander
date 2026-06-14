@@ -368,6 +368,8 @@ class PolicyEngine:
     ) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return True
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = set(session.approval_required_tools or [])
         required_tools.update(effective_policy.approval_required_tools)
@@ -710,7 +712,14 @@ class PolicyEngine:
         session_settings = session.approval_tool_settings.get(tool_name.value)
         if session_settings is not None:
             settings = session_settings
-        return self._apply_approval_grant_limits(settings, rule)
+        effective_settings = self._apply_approval_grant_limits(settings, rule)
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return ApprovalGrantSettings(
+                ttl_seconds=effective_settings.ttl_seconds,
+                max_uses=1,
+                payload_mode=ApprovalPayloadMode.EXACT,
+            )
+        return effective_settings
 
     def _apply_approval_grant_limits(
         self, settings: ApprovalGrantSettings, rule: McpToolPolicyRule | None

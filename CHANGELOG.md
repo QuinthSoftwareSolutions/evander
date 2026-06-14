@@ -5,6 +5,20 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Azure DevOps Backlog Deletion
+
+- Added the approval-gated `delete_ado_backlog_item` contract to the operator
+  docs so Azure DevOps backlog deletion is documented alongside the existing
+  backlog write and query tools.
+- Documented the soft-delete default and explicit `destroy=true` permanent
+  delete path, plus the fact that allowed sessions still receive a per-call
+  approval request before deletion runs.
+- Recorded the focused model, issue-service, gateway, policy, and admin
+  visibility tests that cover numeric-id validation, soft delete, explicit
+  destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
+
 ## 2026-06-14 - Azure DevOps Backlog Title Updates
 
 - Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
@@ -218,7 +232,6 @@ material. Newer entries are added incrementally as changes land.
   other records have no timestamp.
 - Documented the derived-current-state boundary, timestamp-missing behavior,
   and the fact that the view is not a persisted audit log.
->>>>>>> main
 
 ## 2026-06-11 - DIDWW SIP Bridge Inbound Calls
 
@@ -245,7 +258,6 @@ material. Newer entries are added incrementally as changes land.
 - Added an operator-facing inbound route example with caller allow/block policy
   and clarified the failure handling for route misses, caller rejection, missing
   sessions, bridge setup failures, and hangup/reconciliation cases.
->>>>>>> main
 
 ## 2026-06-11 - Agents Page Detail Layout
 
