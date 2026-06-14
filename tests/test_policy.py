@@ -508,11 +508,13 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     assert visibility.available is True
     assert visibility.visible is True
     assert visibility.requires_approval is True
+    assert visibility.approval_locked is False
     assert visibility.approval_settings is not None
     assert visibility.source == "session.allowed_tools"
     assert any(
         item["tool_name"] == ToolName.RUN_SCRIPT.value
         and item["requires_approval"] is True
+        and item["approval_locked"] is False
         for item in summary["available_tools"]
     )
     assert ToolName.RUN_SCRIPT.value in summary["approval_required_tools"]
@@ -545,7 +547,14 @@ def test_tool_visibility_treats_locked_approval_as_required_before_operator_rule
     assert run_script_visibility.available is True
     assert run_script_visibility.visible is True
     assert run_script_visibility.requires_approval is True
+    assert run_script_visibility.approval_locked is True
     assert run_script_visibility.approval_settings is not None
+    assert any(
+        item["tool_name"] == ToolName.RUN_SCRIPT.value
+        and item["requires_approval"] is True
+        and item["approval_locked"] is True
+        for item in engine.allowed_tool_summary_for_session(session)["available_tools"]
+    )
     assert engine.approval_required_for_tool(session, ToolName.APPROVAL_SUBMIT) is False
 
 

@@ -148,6 +148,7 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert rows["create_ado_backlog_item"]["provider"] == "azure_devops"
     assert rows["create_ado_backlog_item"]["category"] == "Azure DevOps"
     assert rows["create_ado_backlog_item"]["requires_approval"] is True
+    assert rows["create_ado_backlog_item"]["approval_locked"] is False
     assert rows["create_ado_backlog_item"]["execution_state"] == "denied_at_execution"
     assert rows["create_ado_backlog_item"]["error_summary"] == "blocked by execution policy"
     assert rows["run_script"]["visibility_state"] == "hidden_by_policy"

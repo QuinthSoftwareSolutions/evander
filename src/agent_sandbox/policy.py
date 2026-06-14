@@ -88,6 +88,7 @@ class ToolVisibility:
     source: str
     reason: str | None = None
     requires_approval: bool = False
+    approval_locked: bool = False
     approval_settings: ApprovalGrantSettings | None = None
 
 
@@ -413,6 +414,7 @@ class PolicyEngine:
         source: str,
         reason: str,
         requires_approval: bool = False,
+        approval_locked: bool = False,
     ) -> ToolVisibility:
         return ToolVisibility(
             tool=tool_name,
@@ -421,6 +423,7 @@ class PolicyEngine:
             source=source,
             reason=reason,
             requires_approval=requires_approval,
+            approval_locked=approval_locked,
         )
 
     def _tool_visibility_for_session(
@@ -439,6 +442,7 @@ class PolicyEngine:
             effective_policy=effective_policy,
         )
         requires_approval = approval_status.requires_approval
+        approval_locked = approval_status.approval_locked
 
         if tool_name.value.startswith("assistant_"):
             profile = str(session.metadata.get("capability_profile") or "").strip().lower()
@@ -451,6 +455,7 @@ class PolicyEngine:
                         "assistant tool access is denied by default"
                     ),
                     requires_approval=requires_approval,
+                    approval_locked=approval_locked,
                 )
             if tool_name in {
                 ToolName.ASSISTANT_UPSERT_CONFIG,
@@ -465,6 +470,7 @@ class PolicyEngine:
                         source="session.metadata.assistant_mutation_policy",
                         reason=str(exc),
                         requires_approval=requires_approval,
+                        approval_locked=approval_locked,
                     )
 
         rule = effective_policy.mcp_tool_policies.get(tool_name.value)
@@ -477,6 +483,7 @@ class PolicyEngine:
                     f"{session.session_id}"
                 ),
                 requires_approval=requires_approval,
+                approval_locked=approval_locked,
             )
 
         has_tool_permission = tool_name in session.allowed_tools
@@ -501,6 +508,7 @@ class PolicyEngine:
                 source="session.allowed_tools",
                 reason=f"Tool {tool_name.value} is not allowed for session {session.session_id}",
                 requires_approval=requires_approval,
+                approval_locked=approval_locked,
             )
 
         if tool_name == ToolName.SCHEDULE_RESUME and not (
@@ -511,6 +519,7 @@ class PolicyEngine:
                 source="session.vm_binding",
                 reason=f"Tool {tool_name.value} requires a session with a VM binding",
                 requires_approval=requires_approval,
+                approval_locked=approval_locked,
             )
 
         if tool_name in {
@@ -526,6 +535,7 @@ class PolicyEngine:
                     source="session.metadata.pr_feedback_streams",
                     reason=str(exc),
                     requires_approval=requires_approval,
+                    approval_locked=approval_locked,
                 )
 
         approval_settings = (
@@ -539,6 +549,7 @@ class PolicyEngine:
             visible=True,
             source=source,
             requires_approval=requires_approval,
+            approval_locked=approval_locked,
             approval_settings=approval_settings,
         )
 
@@ -704,6 +715,7 @@ class PolicyEngine:
                     "tool_name": visibility.tool.value,
                     "source": visibility.source,
                     "requires_approval": visibility.requires_approval,
+                    "approval_locked": visibility.approval_locked,
                 }
                 if visibility.approval_settings is not None:
                     entry["approval_settings"] = visibility.approval_settings.model_dump(mode="json")
