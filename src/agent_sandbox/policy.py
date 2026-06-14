@@ -91,6 +91,13 @@ class ToolVisibility:
     approval_settings: ApprovalGrantSettings | None = None
 
 
+ALWAYS_APPROVAL_REQUIRED_TOOLS: frozenset[ToolName] = frozenset(
+    {
+        ToolName.SEMANTIC_DELETE_POINTS,
+    }
+)
+
+
 _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
     "agent_sandbox_tool_approval_context",
     default=None,
@@ -368,6 +375,8 @@ class PolicyEngine:
     ) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
+        if tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS:
+            return True
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = set(session.approval_required_tools or [])
         required_tools.update(effective_policy.approval_required_tools)
