@@ -1488,6 +1488,9 @@ Approval-required tool policy:
 
 - `approval_required_tools` is a list of MCP tool names that require approval before execution.
   Values can come from inherited directory `policy.json` overlays or from the session manifest.
+- `semantic_delete_points` is always approval-required by code-level policy when the session is
+  otherwise allowed to call it. Session or directory config can still deny the tool, but cannot make
+  semantic point deletion approval-free.
 - This list does not grant access. A tool must also be present in `allowed_tools`, and normal policy
   checks run before approval gating.
 - Session-scoped MCP `tools/list` responses and policy summaries still show approval-required tools

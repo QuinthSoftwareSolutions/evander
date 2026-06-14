@@ -92,6 +92,14 @@ class ToolVisibility:
     approval_settings: ApprovalGrantSettings | None = None
 
 
+ALWAYS_APPROVAL_REQUIRED_TOOLS: frozenset[ToolName] = frozenset(
+    {
+        ToolName.DELETE_ADO_BACKLOG_ITEM,
+        ToolName.SEMANTIC_DELETE_POINTS,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ToolApprovalStatus:
     requires_approval: bool
@@ -102,6 +110,12 @@ _TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
     "agent_sandbox_tool_approval_context",
     default=None,
 )
+
+
+def mandatory_approval_required_for_tool(tool_name: ToolName) -> bool:
+    if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+        return False
+    return tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS
 
 
 def set_tool_approval_context(
@@ -262,9 +276,7 @@ def _tool_argument_policy_error(
 
 
 def _tool_approval_locked(tool_name: ToolName) -> bool:
-    # DELETE_ADO_BACKLOG_ITEM is locked by host policy and cannot be downgraded
-    # to an operator-configured approval requirement.
-    return tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM
+    return mandatory_approval_required_for_tool(tool_name)
 
 
 def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:

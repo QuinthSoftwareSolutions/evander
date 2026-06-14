@@ -616,6 +616,83 @@ def test_tool_visibility_reports_directory_denials_as_unavailable(
     )
 
 
+def test_semantic_delete_points_always_requires_approval_without_config(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.SEMANTIC_DELETE_POINTS)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert engine.approval_required_for_tool(session, ToolName.SEMANTIC_DELETE_POINTS) is True
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert visibility.approval_settings is not None
+    assert visibility.source == "session.allowed_tools"
+    assert any(
+        item["tool_name"] == ToolName.SEMANTIC_DELETE_POINTS.value
+        and item["requires_approval"] is True
+        for item in summary["available_tools"]
+    )
+    assert ToolName.SEMANTIC_DELETE_POINTS.value in summary["approval_required_tools"]
+    assert not any(
+        item["tool_name"] == ToolName.SEMANTIC_DELETE_POINTS.value
+        for item in summary["unavailable_tools"]
+    )
+
+
+def test_semantic_delete_points_cannot_be_disabled_by_policy_config(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(
+        config,
+        {
+            "approval_required_tools": [],
+            "mcp_tool_policies": {
+                ToolName.SEMANTIC_DELETE_POINTS.value: {"require_approval": False}
+            },
+        },
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.SEMANTIC_DELETE_POINTS)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert engine.approval_required_for_tool(session, ToolName.SEMANTIC_DELETE_POINTS) is True
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert visibility.approval_settings is not None
+    assert any(
+        item["tool_name"] == ToolName.SEMANTIC_DELETE_POINTS.value
+        and item["requires_approval"] is True
+        for item in summary["available_tools"]
+    )
+    assert ToolName.SEMANTIC_DELETE_POINTS.value in summary["approval_required_tools"]
+
+
 def test_tool_visibility_reports_session_disallowed_tools_with_reason(
     tmp_path: Path,
 ) -> None:

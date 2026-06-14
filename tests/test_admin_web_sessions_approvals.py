@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.admin.web.shared import AdminWebAuth, AdminWebConfig
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
@@ -66,6 +67,7 @@ def _admin_json_request(
     path: str,
     path_params: dict[str, str] | None = None,
     payload: dict[str, object] | None = None,
+    query_string: bytes = b"",
 ) -> Request:
     body = json.dumps(payload or {}).encode()
     sent = False
@@ -83,7 +85,7 @@ def _admin_json_request(
             "method": method,
             "path": path,
             "headers": [(b"content-type", b"application/json")],
-            "query_string": b"",
+            "query_string": query_string,
             "path_params": path_params or {},
             "server": ("testserver", 80),
             "client": ("testclient", 50000),
@@ -816,11 +818,32 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
     with config_path.open("a", encoding="utf-8") as handle:
         handle.write("\nenable_directory_scoped_config: true\n")
     service = AdminService(config_path)
-    client = TestClient(create_app(service))
+    auth = AdminWebAuth(AdminWebConfig.from_env())
+    routes = session_approval_routes(service, auth)
+    get_mcp_tools = next(
+        route.endpoint
+        for route in routes
+        if getattr(route, "path", "") == "/api/admin/mcp-tools" and "GET" in route.methods
+    )
+    update_mcp_tools = next(
+        route.endpoint
+        for route in routes
+        if getattr(route, "path", "") == "/api/admin/mcp-tools" and "PUT" in route.methods
+    )
 
-    initial_response = client.get("/api/admin/mcp-tools?directory_path=root")
+    initial_response = asyncio.run(
+        get_mcp_tools(
+            _admin_json_request(
+                method="GET",
+                path="/api/admin/mcp-tools",
+                query_string=b"directory_path=root",
+            )
+        )
+    )
     assert initial_response.status_code == 200
-    initial_payload = initial_response.json()
+    initial_payload = json.loads(initial_response.body)
+    initial_by_tool = {item["value"]: item for item in initial_payload["items"]}
+    assert initial_by_tool["semantic_delete_points"]["approval_required"] is True
     run_script = next(
         item for item in initial_payload["items"] if item["value"] == "run_script"
     )
@@ -830,20 +853,27 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
         "payload_mode": "exact",
     }
 
-    locked_response = client.put(
-        "/api/admin/mcp-tools?directory_path=root",
-        json={
-            "expected_revision": initial_payload["revision"],
-            "mcp_tool_policies": {},
-        },
+    locked_response = asyncio.run(
+        update_mcp_tools(
+            _admin_json_request(
+                method="PUT",
+                path="/api/admin/mcp-tools",
+                query_string=b"directory_path=root",
+                payload={
+                    "expected_revision": initial_payload["revision"],
+                    "mcp_tool_policies": {},
+                },
+            )
+        )
     )
     assert locked_response.status_code == 403
 
-    unlock_response = client.post("/api/admin/privileged/unlock")
-    assert unlock_response.status_code == 200
-    update_response = client.put(
-        "/api/admin/mcp-tools?directory_path=root",
-        json={
+    service.unlock_privileged_operations()
+    update_request = _admin_json_request(
+        method="PUT",
+        path="/api/admin/mcp-tools",
+        query_string=b"directory_path=root",
+        payload={
             "expected_revision": initial_payload["revision"],
             "mcp_tool_policies": {
                 "run_script": {
@@ -861,9 +891,11 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
             },
         },
     )
+    auth.mark_privileged_for_request(update_request)
+    update_response = asyncio.run(update_mcp_tools(update_request))
 
     assert update_response.status_code == 200
-    payload = update_response.json()
+    payload = json.loads(update_response.body)
     by_tool = {item["value"]: item for item in payload["items"]}
     assert by_tool["run_script"]["approval_required"] is True
     assert by_tool["run_script"]["effective_settings"] == {

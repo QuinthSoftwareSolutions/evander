@@ -163,6 +163,32 @@ def test_approve_mcp_tools_for_run_rejects_directory_denied_tool(
         provider.execute(execution_context={"workflow_run_id": "run-1"})
 
 
+def test_approve_mcp_tools_for_run_rejects_mandatory_approval_tool(
+    tmp_path: Path,
+) -> None:
+    provider, sessions, _leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["semantic_delete_points"],
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="requires per-invocation approval"):
+        provider.execute(execution_context={"workflow_run_id": "run-1"})
+
+
 def test_approve_mcp_tools_for_run_clamps_lease_with_directory_hard_limits(
     tmp_path: Path,
 ) -> None:

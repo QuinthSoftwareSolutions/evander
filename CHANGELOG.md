@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Semantic Delete Approval Lock
+
+- Locked `semantic_delete_points` behind the policy engine's mandatory approval
+  gate so session and directory approval config cannot disable it.
+
 ## 2026-06-14 - Tool Visibility Approval Locks
 
 - Surfaced host-locked approval requirements in the Admin Web Tool Visibility
@@ -102,27 +107,6 @@ material. Newer entries are added incrementally as changes land.
 
 - Replaced the Sessions page cleanup action label with an icon-only toolbar
   button so it no longer overflows adjacent status and VM controls.
-
-## 2026-06-14 - Azure DevOps Backlog Deletion
-
-- Added the approval-gated `delete_ado_backlog_item` contract to the operator
-  docs so Azure DevOps backlog deletion is documented alongside the existing
-  backlog write and query tools.
-- Documented the soft-delete default and explicit `destroy=true` permanent
-  delete path, plus the fact that allowed sessions still receive a per-call
-  approval request before deletion runs.
-- Recorded the focused model, issue-service, gateway, policy, and admin
-  visibility tests that cover numeric-id validation, soft delete, explicit
-  destroy, approval gating, and audit behavior.
-- Forced delete approvals to remain exact-payload and single-use even when a
-  session or directory config grants looser approval settings.
-
-## 2026-06-14 - Azure DevOps Backlog Title Updates
-
-- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
-  backlog items by numeric work-item id.
-- Required title validation now rejects blank or whitespace-only values before
-  the ADO update call and writes the trimmed value to `System.Title`.
 
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
