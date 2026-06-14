@@ -440,8 +440,12 @@ class GatewayConfig(BaseModel):
     )
     wake_vm_user: str = "agent"
     wake_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
-    wake_scheduled_prefix_text: str = (
-        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    scheduled_wake_prefix_text: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "scheduled_wake_prefix_text",
+            "wake_scheduled_prefix_text",
+        ),
     )
     wake_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
     wake_schedule_max_active_total: int | None = Field(default=None, ge=1)
@@ -877,6 +881,10 @@ class GatewayConfig(BaseModel):
         return self
 
     @property
+    def wake_scheduled_prefix_text(self) -> str:
+        return self.scheduled_wake_prefix_text
+
+    @property
     def openai_provider_mode(self) -> Literal["openai_public", "azure_openai", "anthropic"]:
         return self.model_provider_mode
 
@@ -1030,8 +1038,12 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
         default=600.0,
         gt=0,
     )
-    scheduled_wake_prefix_text: str = (
-        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    scheduled_wake_prefix_text: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "scheduled_wake_prefix_text",
+            "wake_scheduled_prefix_text",
+        ),
     )
 
     @field_validator("directories", mode="before")
@@ -1060,6 +1072,10 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
         if self.wake_state_path is None:
             self.wake_state_path = self.runtime_dir / "scheduled-wake-state.json"
         return self
+
+    @property
+    def wake_scheduled_prefix_text(self) -> str:
+        return self.scheduled_wake_prefix_text
 
 
 class TeamsIngestWorkerGlobalConfig(BaseModel):

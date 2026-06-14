@@ -12,6 +12,14 @@ material. Newer entries are added incrementally as changes land.
 - Preserved the existing `delete_ado_backlog_item` approval behavior and TTL
   handling while keeping the policy clamp limited to mandatory-approval tools.
 
+## 2026-06-14 - Scheduled Wake Prefix Cleanup
+
+- Removed the false PR-comments default from the scheduled-wake example
+  config and operator docs so fresh installs start with an empty optional
+  prefix.
+- Kept the legacy `wake_scheduled_prefix_text` input normalized through the
+  canonical `scheduled_wake_prefix_text` field for backcompat.
+
 ## 2026-06-14 - Semantic Delete Approval Lock
 
 - Locked `semantic_delete_points` behind the policy engine's mandatory approval
