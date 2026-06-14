@@ -4393,7 +4393,7 @@ select {
   position: fixed;
   left: 0;
   top: 0;
-  z-index: 12;
+  z-index: 100;
   width: 0;
   max-width: 0;
   padding: 0;

@@ -25,6 +25,8 @@ material. Newer entries are added incrementally as changes land.
 - Added inline tooltip help to the Admin Web Create agent dialog for backend,
   provider, image selector, bootstrap, and initial-policy fields so operators
   can distinguish VM provider, agent provider, and model routing choices.
+- Raised shared Admin Web tooltip overlays above modal layers so create-dialog
+  field help is visible while the dialog is open.
 
 ## 2026-06-14 - Scheduled Wake Config Hot Reload
 
