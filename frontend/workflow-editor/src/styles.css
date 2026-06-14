@@ -5838,6 +5838,12 @@ select {
   align-items: center;
   gap: 0.55rem;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.model-pricing-panel-toggle-meta .status-pill {
+  white-space: nowrap;
 }
 
 .model-pricing-section-actions {
