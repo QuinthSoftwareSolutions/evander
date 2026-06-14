@@ -40,6 +40,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),
+    ToolName.DELETE_ADO_BACKLOG_ITEM: (
+        "Delete Azure DevOps backlog items; soft delete by default and permanent only with destroy=true."
+    ),
     ToolName.UPDATE_ADO_BACKLOG_TEXT: (
         "Update Azure DevOps backlog description or acceptance criteria text."
     ),

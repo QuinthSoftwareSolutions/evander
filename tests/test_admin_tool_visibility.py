@@ -171,6 +171,32 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert "unknown-result-secret" not in serialized_text
 
 
+def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    payload = service.tool_visibility_payload(target="session-1")
+    rows = _tool_rows(payload)
+    delete_row = rows[ToolName.DELETE_ADO_BACKLOG_ITEM.value]
+
+    assert delete_row.visibility_state is ToolVisibilityState.VISIBLE
+    assert delete_row.source == "session.allowed_tools"
+    assert delete_row.provider == "azure_devops"
+    assert delete_row.category == "Azure DevOps"
+    assert delete_row.label == "delete ado backlog item"
+    assert delete_row.requires_approval is True
+
+
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     tmp_path: Path,
 ) -> None:

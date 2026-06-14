@@ -520,6 +520,33 @@ def test_tool_visibility_reports_approval_required_tools_as_available(
     )
 
 
+def test_delete_ado_backlog_item_always_requires_approval_when_allowed(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    visibility = engine.tool_visibility_for_session(session, ToolName.DELETE_ADO_BACKLOG_ITEM)
+    summary = engine.allowed_tool_summary_for_session(session)
+
+    assert visibility.available is True
+    assert visibility.visible is True
+    assert visibility.requires_approval is True
+    assert visibility.approval_settings is not None
+    assert engine.approval_required_for_tool(session, ToolName.DELETE_ADO_BACKLOG_ITEM) is True
+    assert ToolName.DELETE_ADO_BACKLOG_ITEM.value in summary["approval_required_tools"]
+    assert any(
+        item["tool_name"] == ToolName.DELETE_ADO_BACKLOG_ITEM.value
+        and item["requires_approval"] is True
+        for item in summary["available_tools"]
+    )
+
+
 def test_tool_visibility_reports_directory_denials_as_unavailable(
     tmp_path: Path,
 ) -> None:

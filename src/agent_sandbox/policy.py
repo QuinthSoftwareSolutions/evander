@@ -368,6 +368,8 @@ class PolicyEngine:
     ) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
+        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+            return True
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = set(session.approval_required_tools or [])
         required_tools.update(effective_policy.approval_required_tools)

@@ -13,7 +13,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
 from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import ApprovalStatus, SessionManifest, ToolName
 from agent_sandbox.runtime import build_runtime
 
 
@@ -1272,3 +1272,245 @@ def test_get_ado_backlog_item_validation_failures(
 
     with pytest.raises(ToolError, match=error_match):
         asyncio.run(server.call_tool("get_ado_backlog_item", arguments))
+
+
+def test_delete_ado_backlog_item_creates_pending_approval_without_instantiating_issue_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            raise AssertionError("IssueService must not be instantiated before approval")
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(
+            server.call_tool(
+                "delete_ado_backlog_item",
+                {
+                    "session_id": "session-1",
+                    "id": 101,
+                    "project": "example-project",
+                },
+            )
+        )
+
+    approvals = context.approvals.read_all()
+    assert len(approvals) == 1
+    approval = next(iter(approvals.values()))
+    assert approval.status == ApprovalStatus.PENDING
+    assert approval.action_type == "mcp_tool_invocation"
+    assert approval.tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM.value
+
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.DELETE_ADO_BACKLOG_ITEM.value
+    ]
+    assert len(tool_events) == 1
+    assert tool_events[0]["decision"] == "pending_approval"
+    assert tool_events[0]["approval_request_id"] == approval.request_id
+    assert tool_events[0]["result"]["status"] == "pending_approval"
+
+
+@pytest.mark.parametrize(
+    ("destroy", "delete_kind"),
+    [
+        (False, "soft_delete"),
+        (True, "permanent_destroy"),
+    ],
+)
+def test_delete_ado_backlog_item_approved_exact_retry_executes_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    destroy: bool,
+    delete_kind: str,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append({"provider_config": provider_config})
+
+        def delete_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"delete": kwargs})
+            return {"provider": "azure_devops", "deleted": True}
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+    tool_arguments = {
+        "session_id": "session-1",
+        "id": 101,
+        "project": "example-project",
+        "destroy": destroy,
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(server.call_tool("delete_ado_backlog_item", tool_arguments))
+
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    result = call_tool(
+        server,
+        "delete_ado_backlog_item",
+        {**tool_arguments, "approval_request_id": approval.request_id},
+    )
+
+    assert calls == [
+        {"provider_config": context.provider_config},
+        {
+            "delete": {
+                "provider": "azure_devops",
+                "remote_issue_id": "101",
+                "directory_path": "root/team-a",
+                "project": "example-project",
+                "destroy": destroy,
+            }
+        },
+    ]
+    assert result == {
+        "provider": "azure_devops",
+        "work_item_id": "101",
+        "project": "example-project",
+        "deleted": True,
+        "destroy": destroy,
+        "delete_kind": delete_kind,
+    }
+
+
+def test_delete_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "delete_ado_backlog_item",
+                {"session_id": "session-1", "id": 101},
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error_match"),
+    [
+        ({"session_id": "session-1"}, "id"),
+        ({"session_id": "session-1", "id": "abc"}, "id"),
+        ({"session_id": "session-1", "id": "   "}, "id"),
+    ],
+)
+def test_delete_ado_backlog_item_validation_failures(
+    tmp_path: Path,
+    arguments: dict[str, object],
+    error_match: str,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match=error_match):
+        asyncio.run(server.call_tool("delete_ado_backlog_item", arguments))
+
+
+def test_delete_ado_backlog_item_propagates_missing_work_item_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append({"provider_config": provider_config})
+
+        def delete_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"delete": kwargs})
+            raise RuntimeError(
+                "Azure DevOps delete work item failed (status 404): Work item does not exist"
+            )
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+    tool_arguments = {
+        "session_id": "session-1",
+        "id": 404,
+        "project": "example-project",
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(server.call_tool("delete_ado_backlog_item", tool_arguments))
+
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(
+        ToolError,
+        match=r"Azure DevOps delete work item failed \(status 404\): Work item does not exist",
+    ):
+        asyncio.run(
+            server.call_tool(
+                "delete_ado_backlog_item",
+                {**tool_arguments, "approval_request_id": approval.request_id},
+            )
+        )
+
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.DELETE_ADO_BACKLOG_ITEM.value
+    ]
+    assert [event["decision"] for event in tool_events] == ["pending_approval", "error"]
+    assert tool_events[-1]["result"]["error_class"] == "unexpected_error"

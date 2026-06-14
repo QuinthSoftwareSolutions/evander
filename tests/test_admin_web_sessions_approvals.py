@@ -498,6 +498,9 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert "List directory-configured contact ids" in tool_options["list_contacts"]["description"]
     assert "Start host-side phone calls" in tool_options["make_phone_call"]["description"]
     assert "Read phone call status" in tool_options["get_phone_call_result"]["description"]
+    assert "Delete Azure DevOps backlog items" in tool_options[
+        "delete_ado_backlog_item"
+    ]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert (

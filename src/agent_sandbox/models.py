@@ -69,6 +69,7 @@ class ToolName(str, Enum):
     GET_ADO_DAILY_STATUS_REPORT_DATA = "get_ado_daily_status_report_data"
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
+    DELETE_ADO_BACKLOG_ITEM = "delete_ado_backlog_item"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
     UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
@@ -2343,6 +2344,44 @@ class AdoBacklogGetResponse(BaseModel):
     updates: list[dict[str, Any]] = Field(default_factory=list)
     inline_media: list[InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoBacklogDeleteRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    destroy: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        if isinstance(value, int):
+            normalized = str(value)
+        else:
+            normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class AdoBacklogDeleteResponse(BaseModel):
+    provider: str
+    work_item_id: str
+    project: str | None = None
+    deleted: bool
+    destroy: bool
+    delete_kind: Literal["soft_delete", "permanent_destroy"]
 
 
 class RequestPrReviewRequest(BaseModel):

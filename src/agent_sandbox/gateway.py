@@ -91,6 +91,8 @@ from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
     AdoBacklogCommentRequest,
+    AdoBacklogDeleteRequest,
+    AdoBacklogDeleteResponse,
     AdoCurrentIterationBacklogRequest,
     AdoCurrentIterationBacklogResponse,
     AdoDailyStatusReportRequest,
@@ -4223,6 +4225,95 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.POST_ADO_BACKLOG_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def delete_ado_backlog_item(
+        id: int | str,
+        project: str | None = None,
+        destroy: bool = False,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogDeleteRequest(
+            id=id,
+            project=project,
+            destroy=destroy,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.DELETE_ADO_BACKLOG_ITEM)
+            remote_payload = IssueService(context.provider_config).delete_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                destroy=request_model.destroy,
+            )
+            payload_source = remote_payload if isinstance(remote_payload, dict) else {}
+            normalized_destroy = bool(
+                payload_source.get("destroy", request_model.destroy)
+            )
+            response_model = AdoBacklogDeleteResponse.model_validate(
+                {
+                    "provider": str(
+                        payload_source.get("provider") or "azure_devops"
+                    ).strip()
+                    or "azure_devops",
+                    "work_item_id": str(
+                        payload_source.get("work_item_id")
+                        or payload_source.get("remote_issue_id")
+                        or payload_source.get("id")
+                        or request_model.id
+                    ).strip()
+                    or request_model.id,
+                    "project": str(
+                        payload_source.get("project") or request_model.project or ""
+                    ).strip()
+                    or request_model.project,
+                    "deleted": bool(payload_source.get("deleted", True)),
+                    "destroy": normalized_destroy,
+                    "delete_kind": str(
+                        payload_source.get("delete_kind")
+                        or (
+                            "permanent_destroy"
+                            if normalized_destroy
+                            else "soft_delete"
+                        )
+                    ).strip(),
+                }
+            )
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.DELETE_ADO_BACKLOG_ITEM,
+                args,
+                {
+                    "work_item_id": payload.get("work_item_id"),
+                    "project": payload.get("project"),
+                    "deleted": payload.get("deleted"),
+                    "destroy": payload.get("destroy"),
+                    "delete_kind": payload.get("delete_kind"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.DELETE_ADO_BACKLOG_ITEM, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DELETE_ADO_BACKLOG_ITEM,
                 args,
                 str(exc),
                 decision="error",
