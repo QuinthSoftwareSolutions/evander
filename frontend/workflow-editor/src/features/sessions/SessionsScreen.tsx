@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { JsonObjectKeyValueEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
 import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
@@ -159,9 +160,15 @@ type SessionDetailResponse = {
   summary_json: Record<string, unknown>;
 };
 
+type CatalogOption = {
+  value: string;
+  label: string;
+};
+
 type SessionCatalogResponse = {
-  tool_options: Array<{ value: string; label: string }>;
-  resume_mode_options: Array<{ value: string; label: string }>;
+  tool_options: CatalogOption[];
+  model_options?: CatalogOption[];
+  resume_mode_options: CatalogOption[];
   renew_extension_presets: string[];
 };
 
@@ -175,21 +182,21 @@ type ToolOption = SessionCatalogResponse["tool_options"][number];
 
 type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
-  allowedScriptNames: string;
+  allowedScriptNames: string[];
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
-  discordChannelAllowlist: string;
-  teamsChannelAllowlist: string;
+  discordChannelAllowlist: string[];
+  teamsChannelAllowlist: string[];
   communicationFileReceiveEnabled: boolean;
   communicationFileSendEnabled: boolean;
   communicationFileMaxBytes: string;
-  communicationFileAllowedMimeTypes: string;
-  communicationFileAllowedExtensions: string;
-  communicationFileBlockedExtensions: string;
+  communicationFileAllowedMimeTypes: string[];
+  communicationFileAllowedExtensions: string[];
+  communicationFileBlockedExtensions: string[];
   communicationFileRequireApprovalForSend: boolean;
   webSearchEnabled: boolean;
-  metadataJson: string;
+  metadata: Record<string, unknown>;
 };
 
 const POLL_INTERVAL_MS = 10000;
@@ -285,23 +292,6 @@ function sortTools(values: string[]): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function parseList(value: string): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const item of value.split(/[\n,]/)) {
-    const normalized = item.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
-}
-
-function formatList(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
-}
-
 function dedupeStrings(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -355,21 +345,21 @@ function normalizeApprovalToolSettings(
 
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   return {
-    allowedScriptNames: formatList(session.allowed_script_names),
+    allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
-    discordChannelAllowlist: formatList(session.discord_channel_allowlist),
-    teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
+    discordChannelAllowlist: dedupeStrings(session.discord_channel_allowlist ?? []),
+    teamsChannelAllowlist: dedupeStrings(session.teams_channel_allowlist ?? []),
     communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
     communicationFileSendEnabled: Boolean(session.communication_file_send_enabled),
     communicationFileMaxBytes: session.communication_file_max_bytes == null ? "" : String(session.communication_file_max_bytes),
-    communicationFileAllowedMimeTypes: formatList(session.communication_file_allowed_mime_types),
-    communicationFileAllowedExtensions: formatList(session.communication_file_allowed_extensions),
-    communicationFileBlockedExtensions: formatList(session.communication_file_blocked_extensions),
+    communicationFileAllowedMimeTypes: dedupeStrings(session.communication_file_allowed_mime_types ?? []),
+    communicationFileAllowedExtensions: dedupeStrings(session.communication_file_allowed_extensions ?? []),
+    communicationFileBlockedExtensions: dedupeStrings(session.communication_file_blocked_extensions ?? []),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
     webSearchEnabled: Boolean(session.web_search_enabled),
-    metadataJson: JSON.stringify(session.metadata ?? {}, null, 2),
+    metadata: { ...(session.metadata ?? {}) },
   };
 }
 
@@ -398,23 +388,34 @@ function parseNullablePositiveInteger(value: string, label: string): number | nu
   return parsePositiveInteger(trimmed, label);
 }
 
-function parseJsonObject(value: string, label: string): Record<string, unknown> {
-  const trimmed = value.trim();
-  if (!trimmed) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new Error(`${label} must be valid JSON.`);
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object.`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function describeTool(tool: ToolOption): string {
   return TOOL_DESCRIPTIONS[tool.value] ?? `${tool.label} tool. ${TOOL_DESCRIPTION_FALLBACK}`;
+}
+
+function validateLeadingDotExtensionValue(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (!normalized.startsWith(".")) {
+    return "Extension must start with a leading dot.";
+  }
+  if (normalized.length === 1) {
+    return "Extension must include characters after the leading dot.";
+  }
+  return null;
+}
+
+function validateLeadingDotExtensions(values: readonly string[], fieldLabel: string): string | null {
+  for (const [index, value] of values.entries()) {
+    const normalized = value.trim();
+    if (!normalized) continue;
+    if (!normalized.startsWith(".")) {
+      return `${fieldLabel} row ${index + 1} must start with a leading dot.`;
+    }
+    if (normalized.length === 1) {
+      return `${fieldLabel} row ${index + 1} must include characters after the leading dot.`;
+    }
+  }
+  return null;
 }
 
 const sessionListCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -867,7 +868,7 @@ function ApprovalSettingsModal({
 
   function commitTtl() {
     try {
-      const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Grant expires after");
       const next = clampSettings({ ...effectiveSettings, ttl_seconds: ttlSeconds });
       setDraftSettings(next);
       setTtlDraft(String(next.ttl_seconds));
@@ -879,7 +880,7 @@ function ApprovalSettingsModal({
 
   function commitUses() {
     try {
-      const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Max uses");
       const next = clampSettings({ ...effectiveSettings, max_uses: maxUses });
       setDraftSettings(next);
       setUsesDraft(next.max_uses == null ? "" : String(next.max_uses));
@@ -899,8 +900,8 @@ function ApprovalSettingsModal({
 
   function handleDone() {
     try {
-      const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
-      const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Grant expires after");
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Max uses");
       const next = clampSettings({
         ...effectiveSettings,
         ttl_seconds: ttlSeconds,
@@ -954,16 +955,60 @@ function ApprovalSettingsModal({
         <div className="modal-body session-approval-settings-body">
           {error ? <div className="callout error-callout">{error}</div> : null}
           <dl className="property-grid">
-            <div><dt>Inherited TTL</dt><dd>{inherited.ttl_seconds}s</dd></div>
-            <div><dt>Inherited uses</dt><dd>{inherited.max_uses == null ? "unlimited" : inherited.max_uses}</dd></div>
-            <div><dt>Inherited payload</dt><dd>{inherited.payload_mode === "any" ? "May vary" : "Exact payload"}</dd></div>
-            <div><dt>Hard TTL</dt><dd>{hardRule?.max_ttl_seconds == null ? "None" : `${hardRule.max_ttl_seconds}s`}</dd></div>
-            <div><dt>Hard uses</dt><dd>{hardRule?.max_uses == null ? "None" : hardRule.max_uses}</dd></div>
-            <div><dt>Payload clamp</dt><dd>{hardRule?.require_exact_payload ? "Exact required" : "None"}</dd></div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current grant expiry inherited from the parent or effective policy.">
+                  <span>Grant expiry from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.ttl_seconds}s</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current use limit inherited from the parent or effective policy. Blank means unlimited.">
+                  <span>Use limit from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.max_uses == null ? "unlimited" : inherited.max_uses}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current argument matching mode inherited from the parent or effective policy. Exact arguments only reuse a grant when submitted arguments match the approved arguments. May vary allows future calls with different arguments within the same grant limits.">
+                  <span>Argument matching from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.payload_mode === "any" ? "May vary" : "Exact arguments"}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for grant expiry. Saved values are clamped to this limit.">
+                  <span>Grant expiry capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.max_ttl_seconds == null ? "None" : `${hardRule.max_ttl_seconds}s`}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for use count. Saved values are clamped to this limit.">
+                  <span>Use limit capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.max_uses == null ? "None" : hardRule.max_uses}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for argument matching. When set, exact arguments are required and the select is locked to Exact arguments.">
+                  <span>Argument matching capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.require_exact_payload ? "Exact arguments required" : "None"}</dd>
+            </div>
           </dl>
           <div className="session-approval-settings-grid">
             <label className="field-stack">
-              <span>TTL seconds</span>
+              <Tooltip content="How long the approval grant remains valid before it expires. The value is stored in seconds.">
+                <span>Grant expires after (seconds)</span>
+              </Tooltip>
               <input
                 autoFocus
                 type="number"
@@ -976,7 +1021,9 @@ function ApprovalSettingsModal({
               />
             </label>
             <label className="field-stack">
-              <span>Uses</span>
+              <Tooltip content="How many times this approval grant can be reused. Leave blank for unlimited reuse unless the policy sets a maximum.">
+                <span>Max uses (blank = unlimited)</span>
+              </Tooltip>
               <input
                 type="number"
                 min="1"
@@ -989,13 +1036,15 @@ function ApprovalSettingsModal({
               />
             </label>
             <label className="field-stack">
-              <span>Payload</span>
+              <Tooltip content="Exact arguments only reuse the grant when submitted arguments match the approved arguments. May vary allows future calls with different arguments within the same grant limits.">
+                <span>Argument matching</span>
+              </Tooltip>
               <select
                 value={effectiveSettings.payload_mode}
                 onChange={(event) => updateDraft({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
                 disabled={locked || busy || Boolean(hardRule?.require_exact_payload)}
               >
-                <option value="exact">Exact payload</option>
+                <option value="exact">Exact arguments</option>
                 <option value="any">May vary</option>
               </select>
             </label>
@@ -1048,24 +1097,25 @@ export function SessionsScreen() {
   const [toolsDirty, setToolsDirty] = useState(false);
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
-    allowedScriptNames: "",
+    allowedScriptNames: [],
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
-    discordChannelAllowlist: "",
-    teamsChannelAllowlist: "",
+    discordChannelAllowlist: [],
+    teamsChannelAllowlist: [],
     communicationFileReceiveEnabled: false,
     communicationFileSendEnabled: false,
     communicationFileMaxBytes: "",
-    communicationFileAllowedMimeTypes: "",
-    communicationFileAllowedExtensions: "",
-    communicationFileBlockedExtensions: "",
+    communicationFileAllowedMimeTypes: [],
+    communicationFileAllowedExtensions: [],
+    communicationFileBlockedExtensions: [],
     communicationFileRequireApprovalForSend: false,
     webSearchEnabled: false,
-    metadataJson: "{}",
+    metadata: {},
   });
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policyBoundSessionId, setPolicyBoundSessionId] = useState("");
+  const [policyMetadataError, setPolicyMetadataError] = useState<string | null>(null);
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
@@ -1081,6 +1131,7 @@ export function SessionsScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [approvalSettingsTool, setApprovalSettingsTool] = useState("");
 
@@ -1205,15 +1256,21 @@ export function SessionsScreen() {
   useEffect(() => {
     if (!selectedSessionId) {
       setDetail(null);
+      setDetailLoading(false);
       setDetailError(null);
-      setEditingWakeRequestId("");
+      resetWakeEditor();
       return;
     }
     let cancelled = false;
+    setDetailLoading(true);
+    setDetail(null);
+    setDetailError(null);
+    resetWakeEditor();
     fetchJson<SessionDetailResponse>(`/api/admin/sessions/${encodeURIComponent(selectedSessionId)}`)
       .then((payload) => {
         if (cancelled) return;
         setDetail(payload);
+        setDetailLoading(false);
         setDetailError(null);
         const sessionId = payload.session.session_id;
         if (modelBoundSessionId !== sessionId) {
@@ -1233,9 +1290,11 @@ export function SessionsScreen() {
         if (policyBoundSessionId !== sessionId) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
+          setPolicyMetadataError(null);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
+          setPolicyMetadataError(null);
         }
         const visibleSchedules = filterVisibleWakeSchedules(payload.wake_schedules, {
           showPastOneTime: showPastOneTimeWakeSchedules,
@@ -1252,6 +1311,7 @@ export function SessionsScreen() {
       })
       .catch((reason) => {
         if (cancelled) return;
+        setDetailLoading(false);
         setDetailError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => {
@@ -1289,7 +1349,9 @@ export function SessionsScreen() {
     [detail?.wake_schedules, showPastOneTimeWakeSchedules, wakeVisibilityNowMs],
   );
   const hiddenPastOneTimeWakeScheduleCount = (detail?.wake_schedules.length ?? 0) - visibleWakeScheduleItems.length;
-  const wakeScheduleCountLabel = hiddenPastOneTimeWakeScheduleCount > 0 && !showPastOneTimeWakeSchedules
+  const wakeScheduleCountLabel = detailLoading && selectedSessionId
+    ? "Loading..."
+    : hiddenPastOneTimeWakeScheduleCount > 0 && !showPastOneTimeWakeSchedules
     ? `${visibleWakeScheduleItems.length} shown, ${hiddenPastOneTimeWakeScheduleCount} hidden`
     : `${detail?.wake_schedules.length ?? 0} configured`;
 
@@ -1500,6 +1562,12 @@ export function SessionsScreen() {
     updatePolicyDraft({ approvalNotificationTargetIds: dedupeStrings(nextTargets) });
   }
 
+  function sessionPolicyValidationError(): string | null {
+    return policyMetadataError
+      ?? validateLeadingDotExtensions(policyDraft.communicationFileAllowedExtensions, "Allowed extensions")
+      ?? validateLeadingDotExtensions(policyDraft.communicationFileBlockedExtensions, "Blocked extensions");
+  }
+
   function renderApprovalNotificationTargetEditor() {
     const knownTargets = selectedSession?.approval_notification_target_options ?? [];
     const entries = policyDraft.approvalNotificationTargetIds;
@@ -1654,6 +1722,13 @@ export function SessionsScreen() {
       setStatus(null);
       return;
     }
+    if (policyDirty) {
+      const validationError = sessionPolicyValidationError();
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+    }
 
     setBusy("settings");
     try {
@@ -1691,28 +1766,29 @@ export function SessionsScreen() {
           {
             method: "PATCH",
             body: JSON.stringify({
-              allowed_script_names: parseList(policyDraft.allowedScriptNames),
-              discord_channel_allowlist: parseList(policyDraft.discordChannelAllowlist),
-              teams_channel_allowlist: parseList(policyDraft.teamsChannelAllowlist),
+              allowed_script_names: policyDraft.allowedScriptNames,
+              discord_channel_allowlist: policyDraft.discordChannelAllowlist,
+              teams_channel_allowlist: policyDraft.teamsChannelAllowlist,
               communication_file_receive_enabled: policyDraft.communicationFileReceiveEnabled,
               communication_file_send_enabled: policyDraft.communicationFileSendEnabled,
               communication_file_max_bytes: parseNullableNonNegativeInteger(
                 policyDraft.communicationFileMaxBytes,
                 "Communication file max bytes",
               ),
-              communication_file_allowed_mime_types: parseList(policyDraft.communicationFileAllowedMimeTypes),
-              communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
-              communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
+              communication_file_allowed_mime_types: policyDraft.communicationFileAllowedMimeTypes,
+              communication_file_allowed_extensions: policyDraft.communicationFileAllowedExtensions,
+              communication_file_blocked_extensions: policyDraft.communicationFileBlockedExtensions,
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
-              approval_notification_target_ids: dedupeStrings(policyDraft.approvalNotificationTargetIds),
+              approval_notification_target_ids: policyDraft.approvalNotificationTargetIds,
               web_search_enabled: policyDraft.webSearchEnabled,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
-              metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
+              metadata: policyDraft.metadata,
             }),
           },
         );
         setPolicyDirty(false);
+        setPolicyMetadataError(null);
         setPolicyBoundSessionId(selectedSession.session_id);
         savedSections.push("policy");
       }
@@ -2062,9 +2138,11 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                     <datalist id="session-model-suggestions">
-                      <option value="gpt-5.4" />
-                      <option value="gpt-5.4-mini" />
-                      <option value="gpt-5.4-nano" />
+                      {(catalog?.model_options ?? []).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </datalist>
                   </label>
                   <div className="field-stack">
@@ -2135,7 +2213,7 @@ export function SessionsScreen() {
                                         <span>Require approval</span>
                                       </label>
                                       {isApprovalRequired && isEnabled && !isDenied ? (
-                                        <Tooltip content={`Configure approval TTL, use count, and payload matching for ${tool.label}.`}>
+                                        <Tooltip content={`Configure approval expiry, use limit, and argument matching for ${tool.label}.`}>
                                           <button
                                             type="button"
                                             className="session-tool-settings-button"
@@ -2157,19 +2235,21 @@ export function SessionsScreen() {
                       })}
                     </div>
                   </div>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Allowed scripts</span>
                     <p className="field-description">
-                      One script name per line or comma-separated values. Blank lines and extra spaces are
-                      trimmed, and duplicates are ignored.
+                      One script name per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
+                      removed.
                     </p>
-                    <textarea
-                      rows={4}
-                      value={policyDraft.allowedScriptNames}
-                      onChange={(event) => updatePolicyDraft({ allowedScriptNames: event.target.value })}
+                    <StringListEditor
+                      values={policyDraft.allowedScriptNames}
+                      onChange={(nextValues) => updatePolicyDraft({ allowedScriptNames: nextValues })}
                       disabled={mutationLocked}
+                      itemLabel="Script name"
+                      addLabel="Add script"
+                      placeholder="Enter a script name"
                     />
-                  </label>
+                  </div>
                   <div className="field-stack">
                     <span>Approval notifications</span>
                     <p className="field-description">
@@ -2178,26 +2258,36 @@ export function SessionsScreen() {
                     </p>
                     {renderApprovalNotificationTargetEditor()}
                   </div>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Discord channel or target allowlist</span>
-                    <textarea
-                      rows={4}
-                      value={policyDraft.discordChannelAllowlist}
-                      onChange={(event) => updatePolicyDraft({ discordChannelAllowlist: event.target.value })}
+                    <p className="field-description">
+                      One channel or communication target id per row. Blank rows are ignored and duplicates are
+                      removed.
+                    </p>
+                    <StringListEditor
+                      values={policyDraft.discordChannelAllowlist}
+                      onChange={(nextValues) => updatePolicyDraft({ discordChannelAllowlist: nextValues })}
+                      disabled={mutationLocked}
+                      itemLabel="Target id"
+                      addLabel="Add allowlist row"
                       placeholder="channel-id or communication-target-id"
-                      disabled={mutationLocked}
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Teams target allowlist</span>
-                    <textarea
-                      rows={4}
-                      value={policyDraft.teamsChannelAllowlist}
-                      onChange={(event) => updatePolicyDraft({ teamsChannelAllowlist: event.target.value })}
-                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
+                    <p className="field-description">
+                      One communication target id, team-id/channel-id pair, or chat:chat-id per row. Blank rows are
+                      ignored and duplicates are removed.
+                    </p>
+                    <StringListEditor
+                      values={policyDraft.teamsChannelAllowlist}
+                      onChange={(nextValues) => updatePolicyDraft({ teamsChannelAllowlist: nextValues })}
                       disabled={mutationLocked}
+                      itemLabel="Target id"
+                      addLabel="Add allowlist row"
+                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
                     />
-                  </label>
+                  </div>
                   <label className="checkbox-row">
                     <input
                       type="checkbox"
@@ -2255,61 +2345,74 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                   </label>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Allowed MIME types</span>
                     <p className="field-description">
-                      One MIME type per line or comma-separated values, for example <code>text/plain</code> or{" "}
-                      <code>application/pdf</code>. Blank lines and extra spaces are trimmed, and duplicates are
-                      ignored.
+                      One MIME type per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
+                      removed.
                     </p>
-                    <textarea
-                      rows={3}
-                      value={policyDraft.communicationFileAllowedMimeTypes}
-                      onChange={(event) => updatePolicyDraft({ communicationFileAllowedMimeTypes: event.target.value })}
+                    <StringListEditor
+                      values={policyDraft.communicationFileAllowedMimeTypes}
+                      onChange={(nextValues) => updatePolicyDraft({ communicationFileAllowedMimeTypes: nextValues })}
                       disabled={mutationLocked}
+                      itemLabel="MIME type"
+                      addLabel="Add MIME type"
+                      placeholder="text/plain"
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Allowed extensions</span>
                     <p className="field-description">
-                      One suffix per line or comma-separated values, for example <code>.txt</code> or{" "}
-                      <code>.pdf</code>. Blank lines and extra spaces are trimmed, and duplicates are ignored.
+                      One suffix per row, such as <code>.txt</code> or <code>.pdf</code>. Entries must start with a
+                      leading dot, blank rows are ignored, and duplicates are removed.
                     </p>
-                    <textarea
-                      rows={3}
-                      value={policyDraft.communicationFileAllowedExtensions}
-                      onChange={(event) => updatePolicyDraft({ communicationFileAllowedExtensions: event.target.value })}
+                    <StringListEditor
+                      values={policyDraft.communicationFileAllowedExtensions}
+                      onChange={(nextValues) => updatePolicyDraft({ communicationFileAllowedExtensions: nextValues })}
                       disabled={mutationLocked}
+                      itemLabel="Extension"
+                      addLabel="Add extension"
+                      placeholder=".txt"
+                      validateItem={(value) => validateLeadingDotExtensionValue(value)}
                     />
-                  </label>
-                  <label className="field-stack">
+                  </div>
+                  <div className="field-stack">
                     <span>Blocked extensions</span>
                     <p className="field-description">
-                      One suffix per line or comma-separated values. Entries such as <code>.exe</code> or{" "}
-                      <code>.sh</code> are always denied, even if an allowlist is broader. Blank lines and extra
-                      spaces are trimmed, and duplicates are ignored.
+                      One suffix per row, such as <code>.exe</code> or <code>.sh</code>. Entries must start with a
+                      leading dot, blank rows are ignored, and duplicates are removed.
                     </p>
-                    <textarea
-                      rows={3}
-                      value={policyDraft.communicationFileBlockedExtensions}
-                      onChange={(event) => updatePolicyDraft({ communicationFileBlockedExtensions: event.target.value })}
+                    <StringListEditor
+                      values={policyDraft.communicationFileBlockedExtensions}
+                      onChange={(nextValues) => updatePolicyDraft({ communicationFileBlockedExtensions: nextValues })}
                       disabled={mutationLocked}
+                      itemLabel="Extension"
+                      addLabel="Add extension"
+                      placeholder=".exe"
+                      validateItem={(value) => validateLeadingDotExtensionValue(value)}
                     />
-                  </label>
-                  <label className="field-stack">
-                    <span>Metadata JSON</span>
+                  </div>
+                  <div className="field-stack">
+                    <span>Metadata</span>
                     <p className="field-description">
-                      Must be a JSON object, for example <code>{'{ "ticket": "INC-123" }'}</code>. Blank saves{" "}
-                      <code>{'{}'}</code>. Arrays, strings, numbers, and malformed JSON are rejected before the API
-                      call.
+                      Must be a JSON object. Nested values are edited as JSON snippets and preserved when unchanged.
                     </p>
-                    <textarea
-                      rows={8}
-                      value={policyDraft.metadataJson}
-                      onChange={(event) => updatePolicyDraft({ metadataJson: event.target.value })}
+                    <JsonObjectKeyValueEditor
+                      value={policyDraft.metadata}
+                      onChange={(nextValue) => updatePolicyDraft({ metadata: nextValue })}
+                      onValidationChange={(error) => {
+                        setPolicyMetadataError(error);
+                        if (error) {
+                          setPolicyDirty(true);
+                          setStatus(null);
+                        }
+                      }}
+                      fieldLabel="Metadata"
                       disabled={mutationLocked}
+                      addLabel="Add row"
+                      emptyState="No metadata rows are configured."
                     />
-                  </label>
+                  </div>
                   <div className="feature-toolbar-actions session-panel-actions">
                     <button
                       type="button"
@@ -2417,7 +2520,8 @@ export function SessionsScreen() {
                     ) : null}
                   </div>
                   <div className="feature-list compact-list">
-                    {visibleWakeScheduleItems.map((item) => (
+                    {detailLoading && selectedSessionId ? <div className="empty-state">Loading wake schedules...</div> : null}
+                    {!detailLoading && visibleWakeScheduleItems.map((item) => (
                       <button
                         key={item.request_id}
                         type="button"
@@ -2434,8 +2538,8 @@ export function SessionsScreen() {
                         <div className="feature-list-meta">{item.resume_mode}</div>
                       </button>
                     ))}
-                    {detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
-                    {(detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
+                    {!detailLoading && detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
+                    {!detailLoading && (detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
                   </div>
                   <div className="wake-ledger-section">
                     <div className="panel-header wake-ledger-header">

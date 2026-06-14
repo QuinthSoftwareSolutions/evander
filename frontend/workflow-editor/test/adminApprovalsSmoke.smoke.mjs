@@ -196,7 +196,27 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
-  assert.equal(await page.getByLabel("Direct directory only").isChecked(), false);
+  assert.equal(await page.getByLabel("Exclude sub-directories").isChecked(), false);
+  await page.getByText("Exclude sub-directories", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Checked means only the selected directory is searched and child directories are excluded.", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.getByText("Session", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Filter approvals by session ID.", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.getByText("VM", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Filter approvals by VM ID.", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.getByText("Tool", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Filter approvals by the requested tool name.", { exact: true }).waitFor({ state: "visible" }),
+  );
+  await page.getByText("Older than (minutes)", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip").getByText("Show requests older than the entered number of minutes.", { exact: true }).waitFor({ state: "visible" }),
+  );
   await assert.doesNotReject(() => page.getByText("No approval requests matched the current filters.").waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");

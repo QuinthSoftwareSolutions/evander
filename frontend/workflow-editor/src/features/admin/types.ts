@@ -168,6 +168,7 @@ export type AgentCreateRequest = {
   allowed_tools?: string[];
   allowed_script_names?: string[];
   discord_channels?: string[];
+  teams_channel_allowlist?: string[];
   email_mailboxes?: string[];
   email_folders?: string[];
   vm_name?: string | null;

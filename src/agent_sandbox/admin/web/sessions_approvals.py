@@ -229,6 +229,38 @@ def _tool_option(tool: ToolName) -> dict[str, Any]:
     }
 
 
+def _model_option(model: str) -> dict[str, str]:
+    return {"value": model, "label": model}
+
+
+def _model_options_from_pricing_catalog(service: AdminService) -> list[dict[str, str]]:
+    status = service.read_model_pricing_catalog_status()
+    if status.get("status") != "ok":
+        return []
+    catalog = status.get("catalog")
+    if not isinstance(catalog, dict):
+        return []
+    rules = catalog.get("rules")
+    if not isinstance(rules, list):
+        return []
+
+    options: list[dict[str, str]] = []
+    seen_models: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        models = rule.get("models")
+        if not isinstance(models, list):
+            continue
+        for raw_model in models:
+            model = str(raw_model).strip()
+            if not model or model in seen_models:
+                continue
+            seen_models.add(model)
+            options.append(_model_option(model))
+    return options
+
+
 def _approval_actor_from_request(
     auth: AdminWebAuth, request: Request, payload: dict[str, Any]
 ) -> str:
@@ -418,6 +450,7 @@ def session_approval_routes(
                     _tool_option(tool)
                     for tool in ToolName
                 ],
+                "model_options": _model_options_from_pricing_catalog(service),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
                     {"value": "new_context", "label": "new_context"},
