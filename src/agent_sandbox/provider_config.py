@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field
 
 from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.contact_allowlists import resolve_effective_contact_directory
 from agent_sandbox.directory_config import (
     ContactDirectoryConfig,
     DirectoryConfigResolver,
@@ -204,6 +205,27 @@ class ProviderConfigResolver:
             directory_path=session.directory_path,
         )
         return self.resolve_contacts_for_directory(normalized_path)
+
+    def resolve_effective_contacts_for_session_id(
+        self, session_id: str
+    ) -> ContactDirectoryConfig:
+        session = self.session_store.get_session(session_id)
+        if session is None:
+            session = self.provider_session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        normalized_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="contacts config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        contacts = self.resolve_contacts_for_directory(normalized_path)
+        return resolve_effective_contact_directory(
+            contacts,
+            session.allowed_contact_ids,
+            session_id=session.session_id,
+            directory_path=normalized_path,
+        )
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
         session = self.session_store.get_session(session_id)
