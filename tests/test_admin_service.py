@@ -93,6 +93,7 @@ def _active_expires_at() -> datetime:
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         "\n".join(
             [
