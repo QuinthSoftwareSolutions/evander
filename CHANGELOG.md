@@ -18,6 +18,12 @@ material. Newer entries are added incrementally as changes land.
   forms to explain IDs, sessions, git settings, hierarchy links, and review
   criteria formats in place.
 
+## 2026-06-14 - Create Agent Tooltip Help
+
+- Added inline tooltip help to the Admin Web Create agent dialog for backend,
+  provider, image selector, bootstrap, and initial-policy fields so operators
+  can distinguish VM provider, agent provider, and model routing choices.
+
 ## 2026-06-14 - Scheduled Wake Config Hot Reload
 
 - Made the scheduled-wake worker reload `config/scheduled-wake/config.json`

@@ -598,6 +598,23 @@ function runtimeImageListSummary(runtimeImage: RuntimeImageInfo | null): string 
     : `VM image ref ${imageRef}`;
 }
 
+function CreateFieldLabel({ children, tooltip }: { children: ReactNode; tooltip: ReactNode }) {
+  const labelText = typeof children === "string" ? children : "Field";
+  return (
+    <span className="config-field-label">
+      <span>{children}</span>
+      <Tooltip
+        content={tooltip}
+        focusable
+        ariaLabel={`${labelText} help`}
+        triggerClassName="config-field-tooltip-trigger"
+      >
+        <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
+      </Tooltip>
+    </span>
+  );
+}
+
 function recordEntries(value: Record<string, unknown> | null | undefined): Array<[string, string]> {
   if (!value) return [];
   return Object.entries(value)
@@ -2206,7 +2223,9 @@ export function AgentsPage() {
                 {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
                 <div className="config-field-grid">
                   <label className="field-stack">
-                    <span>Backend</span>
+                    <CreateFieldLabel tooltip="Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.">
+                      Backend
+                    </CreateFieldLabel>
                     <span className="select-field-control">
                       <select
                         value={createForm.backend}
@@ -2233,7 +2252,9 @@ export function AgentsPage() {
                     </span>
                   </label>
                   <label className="field-stack">
-                    <span>Agent provider</span>
+                    <CreateFieldLabel tooltip="Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.">
+                      Agent provider
+                    </CreateFieldLabel>
                     <span className="select-field-control">
                       <select
                         value={createForm.agentProvider}
@@ -2251,7 +2272,9 @@ export function AgentsPage() {
                     </span>
                   </label>
                   <label className="field-stack">
-                    <span>Session</span>
+                    <CreateFieldLabel tooltip="Host-side session id for policy, logs, model routing, and resume state. Required for container workers; VM agents can derive one from the VM name.">
+                      Session
+                    </CreateFieldLabel>
                     <input
                       value={createForm.sessionId}
                       onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
@@ -2261,14 +2284,18 @@ export function AgentsPage() {
                   {createForm.backend === "libvirt_vm" ? (
                     <>
                       <label className="field-stack">
-                        <span>VM name</span>
+                        <CreateFieldLabel tooltip="Libvirt domain name to create for this VM-backed agent. It must be unique on the host.">
+                          VM name
+                        </CreateFieldLabel>
                         <input
                           value={createForm.vmName}
                           onChange={(event) => setCreateForm((current) => ({ ...current, vmName: event.target.value }))}
                         />
                       </label>
                       <label className="field-stack">
-                        <span>Provider</span>
+                        <CreateFieldLabel tooltip="VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.">
+                          Provider
+                        </CreateFieldLabel>
                         <input
                           value={createForm.provider}
                           onChange={(event) => setCreateForm((current) => ({ ...current, provider: event.target.value }))}
@@ -2276,14 +2303,18 @@ export function AgentsPage() {
                         />
                       </label>
                       <label className="field-stack">
-                        <span>VM user</span>
+                        <CreateFieldLabel tooltip="Guest runtime user used for bootstraps and agent commands. Current standard VM images use agent.">
+                          VM user
+                        </CreateFieldLabel>
                         <input
                           value={createForm.vmUser}
                           onChange={(event) => setCreateForm((current) => ({ ...current, vmUser: event.target.value }))}
                         />
                       </label>
                       <label className="field-stack">
-                        <span>VM image</span>
+                        <CreateFieldLabel tooltip="Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.">
+                          VM image
+                        </CreateFieldLabel>
                         <span className="select-field-control">
                           <select
                             value={createForm.vmImage}
@@ -2306,7 +2337,9 @@ export function AgentsPage() {
                   ) : (
                     <>
                       <label className="field-stack">
-                        <span>Target name</span>
+                        <CreateFieldLabel tooltip="Display and control-plane target name for this container-worker agent. Leave blank to reuse the session id.">
+                          Target name
+                        </CreateFieldLabel>
                         <input
                           value={createForm.targetName}
                           onChange={(event) =>
@@ -2316,7 +2349,9 @@ export function AgentsPage() {
                         />
                       </label>
                       <label className="field-stack">
-                        <span>Container image selector</span>
+                        <CreateFieldLabel tooltip="Approved container image alias for worker sessions. Leave blank to use the directory default runner image.">
+                          Container image selector
+                        </CreateFieldLabel>
                         {createOptions ? (
                           <span className="select-field-control">
                             <select
@@ -2355,7 +2390,9 @@ export function AgentsPage() {
                           checked={createForm.dotnet}
                           onChange={(event) => setCreateForm((current) => ({ ...current, dotnet: event.target.checked }))}
                         />
-                        <span>.NET</span>
+                        <CreateFieldLabel tooltip="Copy the host .NET SDK into the VM after launch.">
+                          .NET
+                        </CreateFieldLabel>
                       </label>
                       <label className="checkbox-row agent-checkbox-row">
                         <input
@@ -2363,7 +2400,9 @@ export function AgentsPage() {
                           checked={createForm.nuget}
                           onChange={(event) => setCreateForm((current) => ({ ...current, nuget: event.target.checked }))}
                         />
-                        <span>NuGet</span>
+                        <CreateFieldLabel tooltip="Configure the guest to restore packages through the host NuGet relay and cache.">
+                          NuGet
+                        </CreateFieldLabel>
                       </label>
                       <label className="checkbox-row agent-checkbox-row">
                         <input
@@ -2371,7 +2410,9 @@ export function AgentsPage() {
                           checked={createForm.mssql}
                           onChange={(event) => setCreateForm((current) => ({ ...current, mssql: event.target.checked }))}
                         />
-                        <span>MSSQL</span>
+                        <CreateFieldLabel tooltip="Provision a guest-local SQL Server instance. Requires MSSQL_SA_PASSWORD on the host.">
+                          MSSQL
+                        </CreateFieldLabel>
                       </label>
                       <label className="checkbox-row agent-checkbox-row">
                         <input
@@ -2379,10 +2420,14 @@ export function AgentsPage() {
                           checked={createForm.playwright}
                           onChange={(event) => setCreateForm((current) => ({ ...current, playwright: event.target.checked }))}
                         />
-                        <span>Playwright</span>
+                        <CreateFieldLabel tooltip="Install host-seeded Node and Playwright browser dependencies in the VM.">
+                          Playwright
+                        </CreateFieldLabel>
                       </label>
                       <label className="field-stack">
-                        <span>MSSQL init root</span>
+                        <CreateFieldLabel tooltip="Optional host directory copied into the SQL init folder. If init.sql exists there, it runs after SQL Server starts.">
+                          MSSQL init root
+                        </CreateFieldLabel>
                         <input
                           value={createForm.mssqlInitRoot}
                           onChange={(event) => setCreateForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
@@ -2392,13 +2437,17 @@ export function AgentsPage() {
                     </>
                   ) : null}
                   <div className="field-stack wide-field">
-                    <span>Initial policy</span>
+                    <CreateFieldLabel tooltip="Session policy values written when the agent is created. Empty rows are ignored.">
+                      Initial policy
+                    </CreateFieldLabel>
                     <p className="field-description">
                       Optional session policy values to apply when the agent is created. Blank rows are not sent.
                     </p>
                   </div>
                   <div className="field-stack">
-                    <span>Labels</span>
+                    <CreateFieldLabel tooltip="Key/value metadata stored on the session and shown in agent lists.">
+                      Labels
+                    </CreateFieldLabel>
                     <StringMapEditor
                       value={createForm.initialPolicy.labels}
                       onChange={(nextValue) =>
@@ -2417,7 +2466,9 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <span>Allowed tools</span>
+                    <CreateFieldLabel tooltip="MCP tools this session may call without being hidden by policy. Approval rules still apply.">
+                      Allowed tools
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.allowedTools}
                       onChange={(nextValues) =>
@@ -2443,10 +2494,14 @@ export function AgentsPage() {
                         }))
                       }
                     />
-                    <span>Web search</span>
+                    <CreateFieldLabel tooltip="Allow this session's agent runner to use live web search when the selected provider supports it.">
+                      Web search
+                    </CreateFieldLabel>
                   </label>
                   <div className="field-stack">
-                    <span>Allowed scripts</span>
+                    <CreateFieldLabel tooltip="Script names this session may run through approved script execution paths.">
+                      Allowed scripts
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.allowedScriptNames}
                       onChange={(nextValues) =>
@@ -2462,7 +2517,9 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <span>Discord channels or targets</span>
+                    <CreateFieldLabel tooltip="Discord channel ids or communication target ids the session may read or write.">
+                      Discord channels or targets
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.discordChannels}
                       onChange={(nextValues) =>
@@ -2478,7 +2535,9 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <span>Teams targets</span>
+                    <CreateFieldLabel tooltip="Teams communication target ids, team/channel ids, or chat ids the session may use.">
+                      Teams targets
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.teamsChannels}
                       onChange={(nextValues) =>
@@ -2494,7 +2553,9 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <span>Email mailboxes</span>
+                    <CreateFieldLabel tooltip="Mailbox ids the session may access through configured email providers.">
+                      Email mailboxes
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.emailMailboxes}
                       onChange={(nextValues) =>
@@ -2510,7 +2571,9 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <span>Email folders</span>
+                    <CreateFieldLabel tooltip="Folders the session may access within the allowed email mailboxes.">
+                      Email folders
+                    </CreateFieldLabel>
                     <StringListEditor
                       values={createForm.initialPolicy.emailFolders}
                       onChange={(nextValues) =>

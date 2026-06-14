@@ -108,14 +108,14 @@ test("VM image select lives in the libvirt block; container image select in the 
   // The libvirt-only field group renders the VM image select bound to vmImage.
   assert.match(
     createModal,
-    /createForm\.backend === "libvirt_vm" \?[\s\S]*?<span>VM image<\/span>[\s\S]*?value=\{createForm\.vmImage\}/,
+    /createForm\.backend === "libvirt_vm" \?[\s\S]*?VM image[\s\S]*?value=\{createForm\.vmImage\}/,
   );
   // VM image options come from the libvirt template catalog.
   assert.match(createModal, /createOptions\?\.libvirt\.templates \?\? \[\]\)\.map/);
   // The container path renders the image-alias select from the container catalog.
   assert.match(
     createModal,
-    /<span>Container image selector<\/span>[\s\S]*?createOptions\.container_worker\.images\.map/,
+    /Container image selector[\s\S]*?createOptions\.container_worker\.images\.map/,
   );
   assert.match(createModal, /value=\{createForm\.containerImage\}/);
 });
@@ -133,7 +133,7 @@ test("create modal exposes structured initial policy controls without post-creat
     "Email folders",
     "Web search",
   ]) {
-    assert.match(createModal, new RegExp(`>${label}<`));
+    assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(createModal, /StringMapEditor/);
   assert.match(createModal, /StringListEditor/);
@@ -150,10 +150,26 @@ test("create modal select wrapper owns generated caret positioning", () => {
   const createModal = createModalSource();
   assert.match(
     createModal,
-    /<span>Container image selector<\/span>[\s\S]*?<span className="select-field-control">[\s\S]*?<select/,
+    /Container image selector[\s\S]*?<span className="select-field-control">[\s\S]*?<select/,
   );
   assert.match(styles, /:has\(\.select-field-control\)::after \{[\s\S]*?content: none;/);
   assert.match(styles, /\.select-field-control::after \{[\s\S]*?top: 50%;[\s\S]*?transform: translateY\(-50%\);/);
+});
+
+test("create modal explains provider and bootstrap fields with tooltips", () => {
+  const createModal = createModalSource();
+  for (const helpText of [
+    "Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.",
+    "Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.",
+    "VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.",
+    "Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.",
+    "Approved container image alias for worker sessions. Leave blank to use the directory default runner image.",
+    "Session policy values written when the agent is created. Empty rows are ignored.",
+  ]) {
+    assert.match(createModal, new RegExp(helpText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(createModal, /<CreateFieldLabel[\s\S]*?Agent provider[\s\S]*?<\/CreateFieldLabel>/);
+  assert.match(createModal, /<CreateFieldLabel[\s\S]*?Provider[\s\S]*?<\/CreateFieldLabel>/);
 });
 
 test("the create modal never reintroduces upsert semantics", () => {
