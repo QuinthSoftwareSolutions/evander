@@ -16,6 +16,8 @@ material. Newer entries are added incrementally as changes land.
 - Recorded the focused model, issue-service, gateway, policy, and admin
   visibility tests that cover numeric-id validation, soft delete, explicit
   destroy, approval gating, and audit behavior.
+- Forced delete approvals to remain exact-payload and single-use even when a
+  session or directory config grants looser approval settings.
 
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 

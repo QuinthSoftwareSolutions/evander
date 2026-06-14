@@ -13,7 +13,13 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
 from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import ApprovalStatus, SessionManifest, ToolName
+from agent_sandbox.models import (
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
+    ApprovalStatus,
+    SessionManifest,
+    ToolName,
+)
 from agent_sandbox.runtime import build_runtime
 
 
@@ -1402,6 +1408,84 @@ def test_delete_ado_backlog_item_approved_exact_retry_executes_once(
         "destroy": destroy,
         "delete_kind": delete_kind,
     }
+
+
+def test_delete_ado_backlog_item_rejects_payload_replay_even_with_loose_session_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+            approval_tool_settings={
+                ToolName.DELETE_ADO_BACKLOG_ITEM.value: ApprovalGrantSettings(
+                    max_uses=None,
+                    payload_mode=ApprovalPayloadMode.ANY,
+                )
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append({"provider_config": provider_config})
+
+        def delete_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"delete": kwargs})
+            return {"provider": "azure_devops", "deleted": True}
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+    approved_arguments = {
+        "session_id": "session-1",
+        "id": 101,
+        "project": "example-project",
+        "destroy": False,
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(server.call_tool("delete_ado_backlog_item", approved_arguments))
+
+    approval = next(iter(context.approvals.read_all().values()))
+    assert approval.approval_settings is not None
+    assert approval.approval_settings.max_uses == 1
+    assert approval.approval_settings.payload_mode is ApprovalPayloadMode.EXACT
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="payload mismatch"):
+        asyncio.run(
+            server.call_tool(
+                "delete_ado_backlog_item",
+                {
+                    **approved_arguments,
+                    "id": 102,
+                    "destroy": True,
+                    "approval_request_id": approval.request_id,
+                },
+            )
+        )
+    assert calls == []
+
+    result = call_tool(
+        server,
+        "delete_ado_backlog_item",
+        {**approved_arguments, "approval_request_id": approval.request_id},
+    )
+
+    assert result["work_item_id"] == "101"
+    assert len(calls) == 2
+    stored_approval = context.approvals.get(approval.request_id)
+    assert stored_approval is not None
+    assert stored_approval.status == ApprovalStatus.EXHAUSTED
 
 
 def test_delete_ado_backlog_item_requires_permission(tmp_path: Path) -> None:

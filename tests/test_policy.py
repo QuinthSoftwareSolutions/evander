@@ -547,6 +547,33 @@ def test_delete_ado_backlog_item_always_requires_approval_when_allowed(
     )
 
 
+def test_delete_ado_backlog_item_approval_settings_force_exact_single_use(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DELETE_ADO_BACKLOG_ITEM],
+        approval_tool_settings={
+            ToolName.DELETE_ADO_BACKLOG_ITEM.value: ApprovalGrantSettings(
+                ttl_seconds=900,
+                max_uses=None,
+                payload_mode=ApprovalPayloadMode.ANY,
+            )
+        },
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    settings = engine.approval_grant_settings_for_tool(
+        session, ToolName.DELETE_ADO_BACKLOG_ITEM
+    )
+
+    assert settings.ttl_seconds == 900
+    assert settings.max_uses == 1
+    assert settings.payload_mode is ApprovalPayloadMode.EXACT
+
+
 def test_tool_visibility_reports_directory_denials_as_unavailable(
     tmp_path: Path,
 ) -> None:
