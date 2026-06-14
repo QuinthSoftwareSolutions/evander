@@ -57,6 +57,15 @@ _ACTIVE_CONTAINER_STATUSES = {
     "running",
 }
 
+_MODEL_UNAVAILABLE_PATTERNS = (
+    re.compile(r"\bmodel[_\s-]?not[_\s-]?found\b", re.IGNORECASE),
+    re.compile(r"\binvalid[_\s-]?model\b", re.IGNORECASE),
+    re.compile(r"\bunknown model\b", re.IGNORECASE),
+    re.compile(r"\bmodel\b.*\bunavailable\b", re.IGNORECASE),
+    re.compile(r"\bmodel\b.*\bdoes not exist\b", re.IGNORECASE),
+    re.compile(r"\bdoes not have access to model\b", re.IGNORECASE),
+)
+
 
 def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
     text = str(value or "").strip()
@@ -76,6 +85,39 @@ def _sanitize_operator_text(value: object, *, limit: int = 240) -> str | None:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _normalize_failure_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _is_model_unavailable_failure(*, stdout: object = None, stderr: object = None, exception: object = None, reason: object = None) -> bool:
+    for value in (stdout, stderr, exception, reason):
+        text = _normalize_failure_text(value)
+        if not text:
+            continue
+        if any(pattern.search(text) for pattern in _MODEL_UNAVAILABLE_PATTERNS):
+            return True
+    return False
+
+
+def _model_unavailable_failure_summary(
+    *,
+    agent_provider: str | None = None,
+    agent_model: str | None = None,
+) -> str:
+    provider = _sanitize_operator_text(agent_provider, limit=80)
+    model = _sanitize_operator_text(agent_model, limit=120)
+    if provider and model:
+        return (
+            f"model unavailable: configured {provider} model '{model}' "
+            "is unavailable or not permitted"
+        )
+    if provider:
+        return f"model unavailable: configured {provider} model is unavailable or not permitted"
+    if model:
+        return f"model unavailable: configured model '{model}' is unavailable or not permitted"
+    return "model unavailable: configured model is unavailable or not permitted"
+
+
 def _build_dispatch_failure_details(
     *,
     backend: str,
@@ -88,6 +130,8 @@ def _build_dispatch_failure_details(
     stderr: str | None = None,
     exception: BaseException | None = None,
     reason: str | None = None,
+    agent_provider: str | None = None,
+    agent_model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     metadata: dict[str, Any] = {"backend": backend, "session_id": session_id}
     context_parts = [f"backend={backend}", f"session_id={session_id}"]
@@ -97,6 +141,10 @@ def _build_dispatch_failure_details(
     if target_name:
         metadata["target_name"] = target_name
         context_parts.append(f"target_name={target_name}")
+    if agent_provider is not None:
+        metadata["agent_provider"] = agent_provider
+    if agent_model is not None:
+        metadata["agent_model"] = agent_model
     if timeout_seconds is not None:
         metadata["timeout_seconds"] = timeout_seconds
         context_parts.append(f"timeout_seconds={timeout_seconds:.3f}")
@@ -105,13 +153,19 @@ def _build_dispatch_failure_details(
         context_parts.append(f"exit_code={exit_code}")
     sanitized_stdout = _sanitize_operator_text(stdout, limit=240)
     sanitized_stderr = _sanitize_operator_text(stderr, limit=240)
-    if sanitized_stdout is not None:
-        metadata["stdout"] = sanitized_stdout
-        context_parts.append(f"stdout={sanitized_stdout}")
-    if sanitized_stderr is not None:
-        metadata["stderr"] = sanitized_stderr
-        context_parts.append(f"stderr={sanitized_stderr}")
-    if exception is not None:
+    model_unavailable = _is_model_unavailable_failure(
+        stdout=stdout,
+        stderr=stderr,
+        exception=exception,
+        reason=reason,
+    )
+    if model_unavailable:
+        metadata["failure_kind"] = "model_unavailable"
+        summary = _model_unavailable_failure_summary(
+            agent_provider=agent_provider,
+            agent_model=agent_model,
+        )
+    elif exception is not None:
         exception_type = type(exception).__name__
         metadata["exception_type"] = exception_type
         message = _sanitize_operator_text(exception, limit=180) or exception_type
@@ -122,6 +176,12 @@ def _build_dispatch_failure_details(
         summary = f"exit_code={exit_code}"
     else:
         summary = "dispatch failed"
+    if sanitized_stdout is not None:
+        metadata["stdout"] = sanitized_stdout
+        context_parts.append(f"stdout={sanitized_stdout}")
+    if sanitized_stderr is not None:
+        metadata["stderr"] = sanitized_stderr
+        context_parts.append(f"stderr={sanitized_stderr}")
     summary = f"{summary} {' '.join(context_parts)}".strip()
     return _sanitize_operator_text(summary, limit=320) or summary, metadata
 
@@ -334,6 +394,8 @@ class HostWakeDispatcher:
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -367,6 +429,8 @@ class HostWakeDispatcher:
                 vm_id=binding.vm_id,
                 timeout_seconds=worker_config.wake_resume_timeout_seconds,
                 reason="resume script timed out",
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -420,6 +484,8 @@ class HostWakeDispatcher:
             exit_code=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            agent_provider=agent_provider,
+            agent_model=agent_model,
         )
         dispatch_record = self._build_dispatch_record(
             dispatch_id=dispatch_id,
@@ -460,6 +526,8 @@ class HostWakeDispatcher:
         target_name = self._container_target_name(session=session, session_id=session_id)
         effective_resume_mode = normalize_optional_string(resume_mode) or "same_context"
         dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{session_id}"
+        agent_provider: str | None = None
+        agent_model: str | None = None
         try:
             ensure_session_not_expired(session)
         except SessionExpiredError as exc:
@@ -468,6 +536,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=target_name,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -515,6 +585,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=target_name,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
@@ -571,6 +643,8 @@ class HostWakeDispatcher:
                     session_id=session_id,
                     target_name=target_name,
                     exception=exc,
+                    agent_provider=agent_provider,
+                    agent_model=agent_model,
                 )
                 dispatch_record = self._build_dispatch_record(
                     dispatch_id=dispatch_id,
@@ -649,6 +723,8 @@ class HostWakeDispatcher:
                 session_id=session_id,
                 target_name=execution_id,
                 exception=exc,
+                agent_provider=agent_provider,
+                agent_model=agent_model,
             )
             dispatch_record = self._build_dispatch_record(
                 dispatch_id=dispatch_id,
