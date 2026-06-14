@@ -377,6 +377,189 @@ def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
     assert not worker.worker_config.session_cooldown_path.exists()
 
 
+def test_scheduled_wake_worker_retries_failed_one_time_request_with_backoff_and_exhausts_at_cap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 2,
+            "completion_confirmation_retry_window_seconds": 3600.0,
+            "completion_confirmation_retry_base_backoff_seconds": 1.0,
+            "completion_confirmation_retry_max_backoff_seconds": 1.0,
+        },
+    )
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(worker, request_id="wake-failed", session_id="session-a", due_at=due_at)
+
+    dispatch_calls: list[str] = []
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+
+    def resume_binding(binding, **kwargs):
+        dispatch_calls.append(binding.session_id)
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-failed-{len(dispatch_calls)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            error="resume failed",
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 1
+    assert first_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    refreshed = worker.runtime.wake_store.get_request("wake-failed")
+    assert refreshed is not None
+    assert refreshed.status == "pending"
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > datetime.now(UTC)
+    assert refreshed.auto_dispatch_attempts == 1
+    assert refreshed.auto_retry_started_at is not None
+    assert refreshed.auto_retry_last_backoff_seconds == 1.0
+    assert refreshed.auto_retry_exhausted_at is None
+
+    second_cycle = worker.run_once()
+    assert second_cycle.requests_due == 0
+    assert second_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    retry_ready = worker.runtime.wake_store.get_request("wake-failed")
+    assert retry_ready is not None
+    retry_ready.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(retry_ready)
+
+    third_cycle = worker.run_once()
+    assert third_cycle.requests_due == 1
+    assert third_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a", "session-a"]
+
+    exhausted = worker.runtime.wake_store.get_request("wake-failed")
+    assert exhausted is not None
+    assert exhausted.enabled is False
+    assert exhausted.next_run_at is None
+    assert exhausted.status == "failed"
+    assert exhausted.auto_dispatch_attempts == 2
+    assert exhausted.auto_retry_exhausted_at is not None
+    assert exhausted.last_error is not None
+    assert "retry limit" in exhausted.last_error.casefold()
+
+
+def test_scheduled_wake_worker_backs_off_unconfirmed_one_time_dispatch_before_retrying(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 2,
+            "completion_confirmation_retry_window_seconds": 3600.0,
+            "completion_confirmation_retry_base_backoff_seconds": 1.0,
+            "completion_confirmation_retry_max_backoff_seconds": 1.0,
+        },
+    )
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker, request_id="wake-unconfirmed", session_id="session-a", due_at=due_at
+    )
+
+    dispatch_time = datetime.now(UTC) - timedelta(minutes=2)
+    worker.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-unconfirmed",
+            request_id="wake-unconfirmed",
+            session_id="session-a",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=dispatch_time,
+        )
+    )
+    pending = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert pending is not None
+    pending.auto_dispatch_attempts = 1
+    pending.auto_retry_started_at = dispatch_time
+    pending.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(pending)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+
+    first_cycle = worker.run_once()
+    assert first_cycle.requests_due == 0
+    assert first_cycle.wakes_dispatched == 0
+
+    refreshed = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert refreshed is not None
+    assert refreshed.status == "pending"
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > datetime.now(UTC)
+    assert refreshed.auto_dispatch_attempts == 1
+    assert refreshed.auto_retry_last_backoff_seconds == 1.0
+    assert refreshed.last_error is not None
+    assert "confirmation window" in refreshed.last_error.casefold()
+
+    retry_ready = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert retry_ready is not None
+    retry_ready.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+    worker.runtime.wake_store.upsert_request(retry_ready)
+
+    dispatch_calls: list[str] = []
+
+    def resume_binding(binding, **kwargs):
+        dispatch_calls.append(binding.session_id)
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-unconfirmed-{len(dispatch_calls)}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+            error="resume failed",
+        )
+        worker.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    second_cycle = worker.run_once()
+    assert second_cycle.requests_due == 1
+    assert second_cycle.wakes_dispatched == 0
+    assert dispatch_calls == ["session-a"]
+
+    exhausted = worker.runtime.wake_store.get_request("wake-unconfirmed")
+    assert exhausted is not None
+    assert exhausted.enabled is False
+    assert exhausted.next_run_at is None
+    assert exhausted.status == "failed"
+    assert exhausted.auto_dispatch_attempts == 2
+    assert exhausted.auto_retry_exhausted_at is not None
+    assert exhausted.last_error is not None
+    assert "retry limit" in exhausted.last_error.casefold()
+
+
 def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_binding(
     tmp_path: Path,
     monkeypatch,

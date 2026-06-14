@@ -82,6 +82,15 @@ class ScheduledWakeWorker:
         now_utc = datetime.now(UTC)
         wake_store = getattr(self.runtime, "wake_store", None)
         if wake_store is not None:
+            refresh_retry_state = getattr(wake_store, "refresh_one_time_retry_state", None)
+            if callable(refresh_retry_state):
+                refresh_retry_state(
+                    now_utc=now_utc,
+                    retry_max_attempts=self.config.wake_completion_confirmation_retry_max_attempts,
+                    retry_window_seconds=self.config.wake_completion_confirmation_retry_window_seconds,
+                    retry_base_backoff_seconds=self.config.wake_completion_confirmation_retry_base_backoff_seconds,
+                    retry_max_backoff_seconds=self.config.wake_completion_confirmation_retry_max_backoff_seconds,
+                )
             wake_store.mark_request_due_or_missed(
                 now_utc=now_utc,
                 late_after=timedelta(
@@ -272,6 +281,16 @@ class ScheduledWakeWorker:
                 wake_metadata=wake_metadata,
             )
         dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
+        if request.schedule.resume_at is not None and not dispatch_handled:
+            refresh_retry_state = getattr(wake_store, "refresh_one_time_retry_state", None)
+            if callable(refresh_retry_state):
+                refresh_retry_state(
+                    now_utc=now_utc,
+                    retry_max_attempts=self.config.wake_completion_confirmation_retry_max_attempts,
+                    retry_window_seconds=self.config.wake_completion_confirmation_retry_window_seconds,
+                    retry_base_backoff_seconds=self.config.wake_completion_confirmation_retry_base_backoff_seconds,
+                    retry_max_backoff_seconds=self.config.wake_completion_confirmation_retry_max_backoff_seconds,
+                )
         if dispatch_handled:
             set_session_cooldown(
                 path=scoped_config.wake_session_cooldown_path,
@@ -514,8 +533,12 @@ def _defer_one_time_wake_confirmation(
     if request.last_dispatched_at is None:
         request.last_dispatched_at = now_utc
     request.enabled = True
+    request.auto_dispatch_attempts = max(0, request.auto_dispatch_attempts) + 1
+    if request.auto_retry_started_at is None:
+        request.auto_retry_started_at = request.last_dispatched_at or now_utc
     request.updated_at = now_utc
     request.next_run_at = now_utc + timedelta(
         seconds=max(0.0, float(confirmation_timeout_seconds))
     )
+    request.auto_retry_exhausted_at = None
     wake_store.upsert_request(request)
