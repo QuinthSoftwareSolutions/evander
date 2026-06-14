@@ -1337,6 +1337,16 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     assert profile["name"] == "Security review v2"
     assert profile["archived"] is True
 
+    # Empty strings are meaningful on edit: they clear the optional description.
+    response = client.patch(
+        "/api/addons/team-addon/review-profiles/profile",
+        json={"description": ""},
+    )
+    assert response.status_code == 200
+    response = client.get("/api/addons/team-addon/review-profiles/profile")
+    profile = response.json()
+    assert profile["description"] == ""
+
     # Archived profiles cannot be assigned through the Admin API.
     response = client.post(
         "/api/addons/team-addon/review-requests",

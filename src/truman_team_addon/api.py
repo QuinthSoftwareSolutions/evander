@@ -332,7 +332,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         state = repository.update_review_profile(
             profile_id=request.path_params["review_profile_id"],
             name=_optional(payload, "name"),
-            description=_optional(payload, "description"),
+            description=_optional_present_text(payload, "description"),
             applicable_roles=_optional_string_list(payload, "applicable_roles"),
             criteria=criteria,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
@@ -552,6 +552,12 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_present_text(payload: Mapping[str, Any], field_name: str) -> str | None:
+    if field_name not in payload or payload.get(field_name) is None:
+        return None
+    return str(payload[field_name]).strip()
 
 
 def _query_text(request: Request, field_name: str) -> str | None:

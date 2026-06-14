@@ -17,6 +17,8 @@ material. Newer entries are added incrementally as changes land.
 - Added reusable field tooltips across Team Add-on setup, mutation, and edit
   forms to explain IDs, sessions, git settings, hierarchy links, and review
   criteria formats in place.
+- Fixed review profile edits so clearing the optional description persists
+  instead of leaving the old description behind.
 
 ## 2026-06-14 - Create Agent Tooltip Help
 
