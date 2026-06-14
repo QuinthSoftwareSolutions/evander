@@ -59,6 +59,7 @@ type OptionMultiSelectEditorProps = {
 type StringMapEditorProps = {
   value: Record<string, string>;
   onChange: (nextValue: Record<string, string>) => void;
+  onValidationChange?: (error: string | null) => void;
   fieldLabel: string;
   disabled?: boolean;
   className?: string;
@@ -335,6 +336,7 @@ export function OptionMultiSelectEditor({
 export function StringMapEditor({
   value,
   onChange,
+  onValidationChange,
   fieldLabel,
   disabled = false,
   className,
@@ -365,6 +367,19 @@ export function StringMapEditor({
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     }
   }
+
+  const validationError = error ?? (() => {
+    try {
+      parseStringMapDraftRows(rows, fieldLabel, false);
+      return null;
+    } catch (nextError) {
+      return nextError instanceof Error ? nextError.message : String(nextError);
+    }
+  })();
+
+  useEffect(() => {
+    onValidationChange?.(validationError);
+  }, [onValidationChange, validationError]);
 
   return (
     <div className={["structured-input-editor", className].filter(Boolean).join(" ")}>

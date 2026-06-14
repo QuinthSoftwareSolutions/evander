@@ -5,6 +5,7 @@ import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { StringMapEditor } from "../admin/StructuredPolicyInputs";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -114,7 +115,7 @@ type AgentCreateFormState = {
 type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
-  labels: string;
+  labels: Record<string, string>;
   webSearchEnabled: boolean;
   allowedTools: string;
   allowedScriptNames: string;
@@ -192,7 +193,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
   return {
     model: "",
     ttlHours: "",
-    labels: "",
+    labels: {},
     webSearchEnabled: false,
     allowedTools: "",
     allowedScriptNames: "",
@@ -246,28 +247,6 @@ function formatNotificationTargetOptionLabel(option: { value: string; label: str
     return value;
   }
   return `${label} (${value})`;
-}
-
-function parseLabels(value: string): Record<string, string> {
-  const labels: Record<string, string> = {};
-  for (const line of value.split(/\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.includes("=") ? "=" : ":";
-    const [rawKey, ...rest] = trimmed.split(separator);
-    const key = rawKey.trim();
-    const labelValue = rest.join(separator).trim();
-    if (key && labelValue) labels[key] = labelValue;
-  }
-  return labels;
-}
-
-function formatLabels(value: Record<string, unknown> | null | undefined): string {
-  if (!value) return "";
-  return Object.entries(value)
-    .filter(([, item]) => item != null && typeof item !== "object")
-    .map(([key, item]) => `${key}=${String(item)}`)
-    .join("\n");
 }
 
 function optionalText(value: string): string | null {
@@ -688,7 +667,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   return {
     model: policy?.model ?? "",
     ttlHours: "",
-    labels: formatLabels(labels),
+    labels,
     webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
@@ -730,7 +709,7 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
 function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
-    labels: parseLabels(form.labels),
+    labels: form.labels,
     web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
@@ -947,6 +926,7 @@ export function AgentsPage() {
     emptySkillInstallForm(),
   );
   const [inlineValidation, setInlineValidation] = useState("");
+  const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1616,6 +1596,7 @@ export function AgentsPage() {
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
+    setLabelsValidationError(null);
   }
 
   function openSkillInstallForm() {
@@ -1681,6 +1662,10 @@ export function AgentsPage() {
     if (!selectedAgent) return;
     if (ttlIsInvalid(editForm.ttlHours)) {
       setInlineValidation("TTL hours must be a number.");
+      return;
+    }
+    if (labelsValidationError) {
+      setInlineValidation(labelsValidationError);
       return;
     }
     setBusyAction("edit-agent");
@@ -2397,14 +2382,20 @@ export function AgentsPage() {
                       placeholder="Leave blank"
                     />
                   </label>
-                  <label className="field-stack">
+                  <div className="field-stack">
                     <span>Labels</span>
-                    <textarea
-                      rows={4}
+                    <StringMapEditor
                       value={editForm.labels}
-                      onChange={(event) => setEditForm((current) => ({ ...current, labels: event.target.value }))}
+                      onChange={(nextValue) => setEditForm((current) => ({ ...current, labels: nextValue }))}
+                      onValidationChange={setLabelsValidationError}
+                      fieldLabel="Labels"
+                      description="Key/value rows for agent labels. Blank rows are ignored and duplicate keys are blocked."
+                      emptyState="No labels are configured."
+                      addLabel="Add label"
+                      keyLabel="Key"
+                      valueLabel="Value"
                     />
-                  </label>
+                  </div>
                   <label className="field-stack">
                     <span>Allowed tools</span>
                     <textarea
