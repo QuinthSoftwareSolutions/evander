@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Plumbed `allowed_contact_ids` through workflow `effect:vm:create` and
   `effect:agent:create`, admin session policy payload/update surfaces, and the
   admin session policy field catalog.
+- Preserved existing container-worker session contact restrictions when
+  `effect:agent:create` upserts omit `allowed_contact_ids`.
 - Preserved contact allowlist resolution for provider-session fallback records
   used by directory-scoped provider config resolution.
 - Documented that omitted or `null` allowlists keep the full directory contact

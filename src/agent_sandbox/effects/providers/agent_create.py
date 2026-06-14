@@ -40,6 +40,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
+        allowed_contact_ids_provided = "allowed_contact_ids" in getattr(
+            effect, "model_fields_set", set()
+        )
         payload = {
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
@@ -83,7 +86,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "metadata": effect.metadata,
         }
         if resolved_config:
-            payload.update(dict(resolved_config))
+            resolved_payload = dict(resolved_config)
+            if "allowed_contact_ids" in resolved_payload:
+                allowed_contact_ids_provided = True
+            payload.update(resolved_payload)
+        payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -270,13 +277,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         existing_session = session_repository.get_session(session_id)
         resolved_contact_ids = None
-        if payload.get("allowed_contact_ids") is not None:
+        if bool(payload.get("_allowed_contact_ids_provided")):
             resolved_contact_ids = validate_allowed_contact_ids_for_directory(
                 contacts_config_for_directory(context, directory_path),
                 payload.get("allowed_contact_ids"),
                 session_id=session_id,
                 directory_path=directory_path,
             )
+        else:
+            existing_contact_ids = getattr(existing_session, "allowed_contact_ids", None)
+            if existing_contact_ids is not None:
+                resolved_contact_ids = list(existing_contact_ids)
         if existing_agent_behavior == "noop" and existing_session is not None:
             return _existing_agent_noop_result(
                 session_id=session_id,
