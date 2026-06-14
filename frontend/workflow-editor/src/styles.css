@@ -5442,6 +5442,10 @@ select {
   background: rgba(255, 250, 241, 0.76);
 }
 
+.wide-field {
+  grid-column: 1 / -1;
+}
+
 .contacts-field-card {
   grid-column: 1 / -1;
 }
@@ -5655,6 +5659,97 @@ select {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+}
+
+.structured-input-editor {
+  gap: 0.85rem;
+}
+
+.structured-input-description {
+  color: rgba(61, 77, 68, 0.82);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.structured-input-row {
+  align-items: end;
+}
+
+.structured-input-field {
+  margin-bottom: 0;
+}
+
+.structured-input-error {
+  color: #9d392e;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.structured-input-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.55rem 0.75rem;
+}
+
+.structured-input-option-row {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 10px;
+  background: rgba(248, 250, 248, 0.76);
+}
+
+.structured-input-unknown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 10px;
+  background: rgba(248, 250, 248, 0.76);
+}
+
+.structured-input-unknown-copy {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.structured-input-unknown-copy strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.structured-input-json-row {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.structured-input-json-value textarea {
+  min-height: 180px;
+}
+
+.structured-input-preview {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 10px;
+  background: rgba(248, 250, 248, 0.76);
+}
+
+.structured-input-preview > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #4f5f57;
+}
+
+.structured-input-json-preview {
+  min-height: 0;
+  max-height: 18rem;
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .string-list-selector-row {
@@ -8456,6 +8551,8 @@ button.mobile-record-card:focus-visible,
   .contact-editor-grid,
   .communication-target-grid,
   .string-list-selector-row,
+  .structured-input-row,
+  .structured-input-unknown-row,
   .contact-row,
   .contact-phone-row {
     grid-template-columns: 1fr;
@@ -8474,6 +8571,10 @@ button.mobile-record-card:focus-visible,
   .contact-editor-item-header,
   .contact-subsection-header {
     flex-direction: column;
+  }
+
+  .structured-input-unknown-row {
+    align-items: stretch;
   }
 
   .admin-topbar,
@@ -9640,6 +9741,26 @@ button.mobile-record-card:focus-visible,
   color: #d7e3ea;
   color-scheme: dark;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+:root[data-theme="dark"] .structured-input-description {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .structured-input-error {
+  color: #f0a6a0;
+}
+
+:root[data-theme="dark"] .structured-input-option-row,
+:root[data-theme="dark"] .structured-input-unknown-row,
+:root[data-theme="dark"] .structured-input-preview {
+  border-color: rgba(124, 142, 154, 0.2);
+  background: rgba(16, 28, 36, 0.82);
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .structured-input-preview > summary {
+  color: #b8cbd5;
 }
 
 :root[data-theme="dark"] .agent-log-tabs button {
