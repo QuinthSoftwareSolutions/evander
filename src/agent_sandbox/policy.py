@@ -778,7 +778,7 @@ class PolicyEngine:
         if session_settings is not None:
             settings = session_settings
         effective_settings = self._apply_approval_grant_limits(settings, rule)
-        if tool_name == ToolName.DELETE_ADO_BACKLOG_ITEM:
+        if tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS:
             return ApprovalGrantSettings(
                 ttl_seconds=effective_settings.ttl_seconds,
                 max_uses=1,
