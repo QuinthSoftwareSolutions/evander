@@ -434,6 +434,7 @@ export function ApprovalsScreen() {
   const [detail, setDetail] = useState<ApprovalDetailResponse | null>(null);
   const [approver, setApprover] = useState("admin");
   const [reason, setReason] = useState("");
+  const [revokeReason, setRevokeReason] = useState("");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -446,6 +447,7 @@ export function ApprovalsScreen() {
   const usesAnonymousApprover = !authRequired;
   const signedInApprover = currentUserLabel.trim() || currentUserId.trim() || "unknown";
   const mutationLocked = !privilegedUnlocked;
+  const isPendingApproval = detail?.request.status === "pending";
 
   async function loadApprovals(options: { preserveSelectedId?: string } = {}) {
     const next = await fetchJson<ApprovalIndexResponse>(`/api/admin/approvals${query}`);
@@ -520,7 +522,8 @@ export function ApprovalsScreen() {
       .then((payload) => {
         if (cancelled) return;
         setDetail(payload);
-        setReason(payload.request.status === "pending" || (payload.request.status === "approved" && payload.expires_in_seconds > 0) ? "" : payload.request.decision_reason ?? "");
+        setReason(payload.request.status === "pending" ? "" : payload.request.decision_reason ?? "");
+        setRevokeReason("");
         setError(null);
       })
       .catch((reasonValue: unknown) => {
@@ -577,7 +580,7 @@ export function ApprovalsScreen() {
       setError("Approver is required.");
       return;
     }
-    if (!reason.trim()) {
+    if (!revokeReason.trim()) {
       setError("Reason is required.");
       return;
     }
@@ -587,13 +590,13 @@ export function ApprovalsScreen() {
         method: "POST",
         body: JSON.stringify({
           ...(usesAnonymousApprover ? { approver: resolvedApprover } : {}),
-          reason: reason.trim(),
+          reason: revokeReason.trim(),
         }),
       });
       await loadApprovals({ preserveSelectedId: detail.request.request_id });
       const refreshed = await fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}`);
       setDetail(refreshed);
-      setReason(refreshed.request.decision_reason ?? reason.trim());
+      setRevokeReason(refreshed.request.decision_reason ?? revokeReason.trim());
       setStatusMessage(`Revoked ${detail.request.request_id}.`);
       setError(null);
     } catch (reasonValue: unknown) {
@@ -605,6 +608,7 @@ export function ApprovalsScreen() {
 
   const items = response?.items ?? [];
   const selectedApprovalIsValid = detail ? detail.request.status === "approved" && detail.expires_in_seconds > 0 : false;
+  const canRevokeSelectedApproval = selectedApprovalIsValid;
   const approvalDiagnostics = detail?.approval_diagnostics ?? null;
   const approvalDiagnostic = useMemo(() => {
     if (!approvalDiagnostics) {
@@ -805,24 +809,32 @@ export function ApprovalsScreen() {
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Decision</h3>
-                    <span className="panel-meta">{usesAnonymousApprover ? "Required approver and reason" : "Signed-in user and reason"}</span>
+                    <span className="panel-meta">
+                      {isPendingApproval
+                        ? usesAnonymousApprover
+                          ? "Required approver and reason"
+                          : "Signed-in user and reason"
+                        : canRevokeSelectedApproval
+                          ? "Revocation reason required"
+                          : "Recorded decision"}
+                    </span>
                   </div>
                   <div className="panel-body">
-                    {usesAnonymousApprover ? (
-                      <label className="field-stack">
-                        <span>Approver</span>
-                        <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
-                      </label>
-                    ) : (
-                      <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
-                    )}
-                    <label className="field-stack">
-                      <span>Reason</span>
-                      <textarea value={reason} rows={4} onChange={(event) => setReason(event.target.value)} disabled={mutationLocked} />
-                    </label>
-                    <div className="action-row">
-                      {detail.request.status === "pending" ? (
-                        <>
+                    {isPendingApproval ? (
+                      <>
+                        {usesAnonymousApprover ? (
+                          <label className="field-stack">
+                            <span>Approver</span>
+                            <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
+                          </label>
+                        ) : (
+                          <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
+                        )}
+                        <label className="field-stack">
+                          <span>Reason</span>
+                          <textarea value={reason} rows={4} onChange={(event) => setReason(event.target.value)} disabled={mutationLocked} />
+                        </label>
+                        <div className="action-row">
                           <button
                             type="button"
                             className="primary"
@@ -841,21 +853,36 @@ export function ApprovalsScreen() {
                           >
                             {acting === "deny" ? "Denying..." : "Deny"}
                           </button>
-                        </>
-                      ) : selectedApprovalIsValid ? (
-                        <Tooltip content="Revoking invalidates this grant for all future use.">
-                          <button
-                            type="button"
-                            className="danger"
-                            disabled={acting !== null || mutationLocked}
-                            onClick={() => void submitRevoke()}
-                          >
-                            {acting === "revoke" ? "Revoking..." : "Revoke"}
-                          </button>
-                        </Tooltip>
-                      ) : null}
-                    </div>
-                    {detail.request.status !== "pending" ? (
+                        </div>
+                      </>
+                    ) : canRevokeSelectedApproval ? (
+                      <>
+                        <label className="field-stack">
+                          <Tooltip content="Explain why the approved grant is being revoked.">
+                            <span>Revocation reason</span>
+                          </Tooltip>
+                          <textarea
+                            value={revokeReason}
+                            rows={4}
+                            onChange={(event) => setRevokeReason(event.target.value)}
+                            disabled={mutationLocked}
+                          />
+                        </label>
+                        <div className="action-row">
+                          <Tooltip content="Revoking invalidates this grant for all future use.">
+                            <button
+                              type="button"
+                              className="danger"
+                              disabled={acting !== null || mutationLocked}
+                              onClick={() => void submitRevoke()}
+                            >
+                              {acting === "revoke" ? "Revoking..." : "Revoke"}
+                            </button>
+                          </Tooltip>
+                        </div>
+                      </>
+                    ) : null}
+                    {!isPendingApproval ? (
                       <p className="muted-copy">
                         Decision recorded by {detail.request.approver ?? "unknown"} at {formatTimestamp(detail.request.decision_at)}.
                       </p>

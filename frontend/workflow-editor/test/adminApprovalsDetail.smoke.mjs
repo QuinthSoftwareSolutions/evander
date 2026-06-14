@@ -610,8 +610,9 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
   await assert.doesNotReject(() =>
-    page.getByText("Decision will be recorded as Taylor Operator.", { exact: true }).waitFor({ state: "visible" }),
+    page.getByText("Decision recorded by Ops Lead", { exact: false }).waitFor({ state: "visible" }),
   );
   assert.equal(await page.getByRole("button", { name: "Approve", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Deny", exact: true }).count(), 0);
@@ -621,12 +622,22 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
   await assert.doesNotReject(() =>
     page.getByRole("tooltip").getByText("Revoking invalidates this grant for all future use.", { exact: true }).waitFor({ state: "visible" }),
   );
+  const revokeReason = page.getByLabel("Revocation reason");
+  await assert.doesNotReject(() => revokeReason.waitFor({ state: "visible" }));
+  assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
 
-  await page.getByLabel("Reason").fill("No longer safe.");
+  await revokeReason.fill("No longer safe.");
   await revokeButton.click();
   await assert.doesNotReject(() => page.getByText("Revoked approval-1.", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.getByText("Decision recorded by Taylor Operator", { exact: false }).waitFor({ state: "visible" }),
+  );
 
   assert.deepEqual(revokePayload, { reason: "No longer safe." });
+  assert.equal(await page.getByLabel("Approver").count(), 0);
+  assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Revocation reason").count(), 0);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "POST /api/admin/approvals/approval-1/revoke"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
