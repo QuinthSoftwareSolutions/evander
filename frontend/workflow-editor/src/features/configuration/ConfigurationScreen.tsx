@@ -5,6 +5,8 @@ import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
+import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
+import { formatJsonTextDraftValue, parseJsonTextDraftValue } from "../admin/structuredPolicyInputs";
 
 type Diagnostic = { code: string; message: string; field?: string | null };
 
@@ -831,7 +833,7 @@ function normalizeFieldValue(field: ConfigurationField, value: unknown): string 
     return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : value == null ? "" : String(value);
   }
   if (field.kind === "json") {
-    return value == null ? "" : JSON.stringify(value, null, 2);
+    return formatJsonTextDraftValue(value);
   }
   return value == null ? "" : String(value);
 }
@@ -924,11 +926,7 @@ function parseFieldValue(field: ConfigurationField, rawValue: string | boolean):
     return String(rawValue);
   }
   if (field.kind === "json") {
-    const text = String(rawValue).trim();
-    if (!text) {
-      throw new Error(`${field.label} must be valid JSON.`);
-    }
-    return JSON.parse(text);
+    return parseJsonTextDraftValue(rawValue, field.label);
   }
   return String(rawValue).trim();
 }
@@ -2567,7 +2565,33 @@ export function ConfigurationScreen() {
         </select>
       );
     }
-    if (field.kind === "multiline_text" || field.kind === "string_list" || field.kind === "json") {
+    if (field.kind === "string_list") {
+      return (
+        <StringListEditor
+          values={parseStringListDraftValue(fieldState.value)}
+          onChange={(nextValues) =>
+            updateFieldState(field.field_name, {
+              value: encodeStringListDraftValue(nextValues),
+            })
+          }
+          disabled={disabled}
+          itemLabel="Value"
+          suggestions={field.options}
+          placeholder="Enter a value"
+        />
+      );
+    }
+    if (field.kind === "json") {
+      return (
+        <JsonTextEditor
+          value={String(fieldState.value)}
+          onChange={(nextValue) => updateFieldState(field.field_name, { value: nextValue })}
+          fieldLabel={field.label}
+          disabled={disabled}
+        />
+      );
+    }
+    if (field.kind === "multiline_text") {
       return (
         <textarea
           className="json-editor compact-editor"

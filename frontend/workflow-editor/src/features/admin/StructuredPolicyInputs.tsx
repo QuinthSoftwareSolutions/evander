@@ -7,11 +7,13 @@ import {
   dedupeStrings,
   encodeStringListDraftValue,
   jsonObjectDraftRowsFromValue,
+  parseJsonTextDraftValue,
   parseJsonObjectDraftRows,
   parseRegexPatternDraftRows,
   parseStringMapDraftRows,
   regexPatternDraftRowsFromValue,
   stringMapDraftRowsFromValue,
+  validateJsonTextDraftValue,
   validateRegexPattern,
   type JsonObjectDraftRow,
   type RegexPatternDraftRow,
@@ -77,6 +79,16 @@ type JsonObjectKeyValueEditorProps = {
   description?: ReactNode;
   emptyState?: string;
   addLabel?: string;
+};
+
+type JsonTextEditorProps = {
+  value: string;
+  onChange: (nextValue: string) => void;
+  fieldLabel: string;
+  disabled?: boolean;
+  className?: string;
+  description?: ReactNode;
+  placeholder?: string;
 };
 
 type RegexListEditorProps = {
@@ -208,6 +220,48 @@ export function StringListEditor({
             <option key={option} value={option} />
           ))}
         </datalist>
+      ) : null}
+    </div>
+  );
+}
+
+export function JsonTextEditor({
+  value,
+  onChange,
+  fieldLabel,
+  disabled = false,
+  className,
+  description,
+  placeholder = "Enter valid JSON",
+}: JsonTextEditorProps) {
+  const validationError = validateJsonTextDraftValue(value, fieldLabel);
+  let preview: string | null = null;
+  if (!validationError) {
+    try {
+      const parsed = parseJsonTextDraftValue(value, fieldLabel);
+      preview = parsed === null ? "null" : JSON.stringify(parsed, null, 2) ?? "";
+    } catch {
+      preview = null;
+    }
+  }
+
+  return (
+    <div className={["structured-input-editor", className].filter(Boolean).join(" ")}>
+      {description ? <div className="structured-input-description">{description}</div> : null}
+      <textarea
+        className="json-editor compact-editor"
+        value={value}
+        spellCheck={false}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+      />
+      {validationError ? <div className="structured-input-error">{validationError}</div> : null}
+      {preview ? (
+        <details className="structured-input-preview">
+          <summary>Preview</summary>
+          <pre className="json-view structured-input-json-preview">{preview}</pre>
+        </details>
       ) : null}
     </div>
   );

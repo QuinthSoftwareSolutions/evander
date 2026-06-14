@@ -79,6 +79,44 @@ export function encodeStringListDraftValue(entries: readonly string[]): string {
   return dedupeStrings(entries).join("\n");
 }
 
+export function formatJsonTextDraftValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  return JSON.stringify(value, null, 2) ?? "";
+}
+
+export function parseJsonTextDraftValue(
+  value: string | boolean | null | undefined,
+  fieldLabel: string,
+): unknown {
+  if (typeof value === "boolean" || value == null) {
+    throw new Error(`${fieldLabel} must be valid JSON.`);
+  }
+  const text = String(value).trim();
+  if (!text) {
+    throw new Error(`${fieldLabel} must be valid JSON.`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const suffix = error instanceof Error && error.message ? `: ${error.message}` : "";
+    throw new Error(`${fieldLabel} must be valid JSON${suffix}`);
+  }
+}
+
+export function validateJsonTextDraftValue(
+  value: string,
+  fieldLabel: string,
+): string | null {
+  try {
+    parseJsonTextDraftValue(value, fieldLabel);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export function createStringMapDraftRow(key = "", value = ""): StringMapDraftRow {
   return {
     id: createDraftRowId("map-row"),
@@ -117,8 +155,7 @@ export function parseStringMapDraftRows(
 }
 
 function formatJsonSnippet(value: unknown): string {
-  if (value === undefined) return "";
-  return JSON.stringify(value, null, 2) ?? "";
+  return formatJsonTextDraftValue(value);
 }
 
 export function createJsonObjectDraftRow(key = "", valueText = ""): JsonObjectDraftRow {

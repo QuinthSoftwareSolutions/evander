@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   dedupeStrings,
   encodeStringListDraftValue,
+  formatJsonTextDraftValue,
   jsonObjectDraftRowsFromValue,
   normalizeLeadingDotExtension,
   normalizeLeadingDotExtensions,
+  parseJsonTextDraftValue,
   parseJsonObjectDraftRows,
   parseRegexPatternDraftRows,
   parseStringListDraftValue,
@@ -14,6 +16,7 @@ import {
   regexPatternDraftRowsFromValue,
   stringMapDraftRowsFromValue,
   validateRegexPattern,
+  validateJsonTextDraftValue,
 } from "../src/features/admin/structuredPolicyInputs.ts";
 
 test("dedupeStrings trims blanks and preserves first-seen values", () => {
@@ -82,6 +85,21 @@ test("json object rows preserve nested values and round-trip untouched rows", ()
         "Metadata",
       ),
     /Metadata contains duplicate key 'alpha'\./,
+  );
+});
+
+test("json text helpers format and validate generic json values", () => {
+  assert.equal(formatJsonTextDraftValue(null), "");
+  assert.equal(formatJsonTextDraftValue({ alpha: 1 }), '{\n  "alpha": 1\n}');
+  assert.deepEqual(parseJsonTextDraftValue('{"alpha":1}', "Metadata"), { alpha: 1 });
+  assert.equal(validateJsonTextDraftValue("{}", "Metadata"), null);
+  assert.match(
+    validateJsonTextDraftValue("{", "Metadata") ?? "",
+    /Metadata must be valid JSON:/,
+  );
+  assert.throws(
+    () => parseJsonTextDraftValue("", "Metadata"),
+    /Metadata must be valid JSON\./,
   );
 });
 
