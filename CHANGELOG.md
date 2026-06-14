@@ -18,6 +18,12 @@ material. Newer entries are added incrementally as changes land.
 - Expanded the focused Node and smoke coverage to assert structured hydration,
   malformed-input blocking, and round-trip payload assertions.
 
+## 2026-06-14 - Admin Approval UX Updates
+
+- Clarified Admin Web approval labels and tooltips across visible approvals,
+  issue VM bootstrap controls, session approval settings, and approval
+  decision panel behavior.
+
 ## 2026-06-13 - Admin Agents Status Performance
 
 - Reduced Admin Web all-directory agent status expansion work by using

@@ -57,7 +57,13 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       inherited_approval_required_tools: [],
       approval_required_tools: ["prompt_agent"],
       approval_tool_settings: {},
-      mcp_tool_policies: {},
+      mcp_tool_policies: {
+        prompt_agent: {
+          max_ttl_seconds: 7200,
+          max_uses: 3,
+          require_exact_payload: true,
+        },
+      },
       tool_argument_policies: {},
     },
     allowed_script_names: ["sync-session", "deploy-session"],
@@ -233,7 +239,6 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         policyBodies.push(body);
-        assert.deepEqual(body.approval_required_tools, []);
         assert.deepEqual(body.approval_notification_target_ids, sessionRecord.approval_notification_target_ids);
         assert.deepEqual(body.allowed_script_names, sessionRecord.allowed_script_names);
         assert.deepEqual(body.discord_channel_allowlist, sessionRecord.discord_channel_allowlist);
@@ -246,7 +251,21 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
         assert.deepEqual(body.communication_file_blocked_extensions, sessionRecord.communication_file_blocked_extensions);
         assert.equal(body.web_search_enabled, false);
         assert.deepEqual(body.metadata, sessionRecord.metadata);
+        if (policyBodies.length === 1) {
+          assert.deepEqual(body.approval_required_tools, ["prompt_agent"]);
+          assert.deepEqual(body.approval_tool_settings, {
+            prompt_agent: {
+              ttl_seconds: 1800,
+              max_uses: 2,
+              payload_mode: "exact",
+            },
+          });
+        } else {
+          assert.deepEqual(body.approval_required_tools, []);
+          assert.deepEqual(body.approval_tool_settings, {});
+        }
         sessionRecord.approval_required_tools = body.approval_required_tools;
+        sessionRecord.approval_tool_settings = body.approval_tool_settings;
         await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
         return;
       }
@@ -363,10 +382,69 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   const allowedExtensionsSection = fieldDescription("Allowed extensions");
   const allowedExtensionsRow = allowedExtensionsSection.locator(".string-list-selector-row").first();
   const allowedExtensionsInput = allowedExtensionsRow.locator("input").first();
+  const approvalSettingsButton = promptAgentRow.getByRole("button", { name: "Configure approval settings for Prompt agent" });
 
   assert.equal(await allowedTool.isChecked(), true);
   assert.equal(await approvalGate.isChecked(), true);
   assert.equal(await approvalGate.isDisabled(), false);
+
+  await approvalSettingsButton.click();
+  const approvalSettingsDialog = page.getByRole("dialog", { name: "Prompt agent" });
+  await assert.doesNotReject(() => approvalSettingsDialog.waitFor({ state: "visible" }));
+  const modalText = await approvalSettingsDialog.innerText();
+  assert.match(modalText, /grant expiry from parent policy/i);
+  assert.match(modalText, /use limit from parent policy/i);
+  assert.match(modalText, /argument matching from parent policy/i);
+  assert.match(modalText, /grant expiry capped by policy maximum/i);
+  assert.match(modalText, /use limit capped by policy maximum/i);
+  assert.match(modalText, /argument matching capped by policy maximum/i);
+  assert.doesNotMatch(modalText, /TTL seconds|Inherited TTL|Hard TTL|Inherited uses|Hard uses|Payload clamp|Exact payload/i);
+
+  await approvalSettingsDialog.getByText("Grant expires after (seconds)", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip")
+      .filter({ hasText: "How long the approval grant remains valid before it expires." })
+      .waitFor({ state: "visible" }),
+  );
+  await approvalSettingsDialog.getByText("Max uses (blank = unlimited)", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip")
+      .filter({ hasText: "How many times this approval grant can be reused. Leave blank for unlimited reuse unless the policy sets a maximum." })
+      .waitFor({ state: "visible" }),
+  );
+  await approvalSettingsDialog.getByText("Argument matching", { exact: true }).hover();
+  await assert.doesNotReject(() =>
+    page.getByRole("tooltip")
+      .filter({ hasText: "Exact arguments only reuse the grant when submitted arguments match the approved arguments. May vary allows future calls with different arguments within the same grant limits." })
+      .waitFor({ state: "visible" }),
+  );
+
+  const ttlInput = approvalSettingsDialog.getByLabel("Grant expires after (seconds)");
+  const usesInput = approvalSettingsDialog.getByLabel("Max uses (blank = unlimited)");
+  const matchingSelect = approvalSettingsDialog.getByLabel("Argument matching");
+  assert.equal(await ttlInput.inputValue(), "3600");
+  assert.equal(await usesInput.inputValue(), "1");
+  assert.equal(await matchingSelect.inputValue(), "exact");
+  assert.equal(await matchingSelect.isDisabled(), true);
+
+  await ttlInput.fill("1800");
+  await ttlInput.blur();
+  await usesInput.fill("2");
+  await usesInput.blur();
+  const firstPolicySave = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/admin/sessions/session-1" && response.request().method() === "PATCH",
+  );
+  await saveButton.evaluate((button) => button.click());
+  await firstPolicySave;
+  assert.equal(policyBodies.length, 1);
+  assert.deepEqual(policyBodies[0].approval_tool_settings, {
+    prompt_agent: {
+      ttl_seconds: 1800,
+      max_uses: 2,
+      payload_mode: "exact",
+    },
+  });
+  await approvalSettingsDialog.getByRole("button", { name: "Done" }).first().click();
 
   const policyBodiesBeforeInvalidSave = policyBodies.length;
   await labelsValueInput.fill("{bad");
@@ -409,13 +487,22 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await approvalGate.isChecked(), false);
   assert.equal(await approvalGate.isDisabled(), true);
 
+  const secondToolsSave = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/admin/sessions/session-1/allowed-tools" && response.request().method() === "PUT",
+  );
+  const secondPolicySave = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/admin/sessions/session-1" && response.request().method() === "PATCH",
+  );
   await saveButton.evaluate((button) => button.click());
+  await Promise.all([secondToolsSave, secondPolicySave]);
   await assert.doesNotReject(() => page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(await navEntry.count(), 1);
   assert.equal(await allowedToolsBodies.length, 1);
-  assert.equal(await policyBodies.length, 1);
+  assert.equal(await policyBodies.length, 2);
+  assert.deepEqual(policyBodies[1].approval_required_tools, []);
+  assert.deepEqual(policyBodies[1].approval_tool_settings, {});
   assert.deepEqual(sessionRecord.allowed_tools, []);
   assert.deepEqual(sessionRecord.approval_required_tools, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1/allowed-tools"));

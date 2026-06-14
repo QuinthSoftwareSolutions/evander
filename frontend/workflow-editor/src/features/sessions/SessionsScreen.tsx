@@ -846,7 +846,7 @@ function ApprovalSettingsModal({
 
   function commitTtl() {
     try {
-      const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Grant expires after");
       commit({ ttl_seconds: ttlSeconds });
       setError(null);
     } catch (reason) {
@@ -856,7 +856,7 @@ function ApprovalSettingsModal({
 
   function commitUses() {
     try {
-      const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Max uses");
       commit({ max_uses: maxUses });
       setError(null);
     } catch (reason) {
@@ -888,16 +888,60 @@ function ApprovalSettingsModal({
         <div className="modal-body session-approval-settings-body">
           {error ? <div className="callout error-callout">{error}</div> : null}
           <dl className="property-grid">
-            <div><dt>Inherited TTL</dt><dd>{inherited.ttl_seconds}s</dd></div>
-            <div><dt>Inherited uses</dt><dd>{inherited.max_uses == null ? "unlimited" : inherited.max_uses}</dd></div>
-            <div><dt>Inherited payload</dt><dd>{inherited.payload_mode === "any" ? "May vary" : "Exact payload"}</dd></div>
-            <div><dt>Hard TTL</dt><dd>{hardRule?.max_ttl_seconds == null ? "None" : `${hardRule.max_ttl_seconds}s`}</dd></div>
-            <div><dt>Hard uses</dt><dd>{hardRule?.max_uses == null ? "None" : hardRule.max_uses}</dd></div>
-            <div><dt>Payload clamp</dt><dd>{hardRule?.require_exact_payload ? "Exact required" : "None"}</dd></div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current grant expiry inherited from the parent or effective policy.">
+                  <span>Grant expiry from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.ttl_seconds}s</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current use limit inherited from the parent or effective policy. Blank means unlimited.">
+                  <span>Use limit from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.max_uses == null ? "unlimited" : inherited.max_uses}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the current argument matching mode inherited from the parent or effective policy. Exact arguments only reuse a grant when submitted arguments match the approved arguments. May vary allows future calls with different arguments within the same grant limits.">
+                  <span>Argument matching from parent policy</span>
+                </Tooltip>
+              </dt>
+              <dd>{inherited.payload_mode === "any" ? "May vary" : "Exact arguments"}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for grant expiry. Saved values are clamped to this limit.">
+                  <span>Grant expiry capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.max_ttl_seconds == null ? "None" : `${hardRule.max_ttl_seconds}s`}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for use count. Saved values are clamped to this limit.">
+                  <span>Use limit capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.max_uses == null ? "None" : hardRule.max_uses}</dd>
+            </div>
+            <div>
+              <dt>
+                <Tooltip content="This is the policy maximum for argument matching. When set, exact arguments are required and the select is locked to Exact arguments.">
+                  <span>Argument matching capped by policy maximum</span>
+                </Tooltip>
+              </dt>
+              <dd>{hardRule?.require_exact_payload ? "Exact arguments required" : "None"}</dd>
+            </div>
           </dl>
           <div className="session-approval-settings-grid">
             <label className="field-stack">
-              <span>TTL seconds</span>
+              <Tooltip content="How long the approval grant remains valid before it expires. The value is stored in seconds.">
+                <span>Grant expires after (seconds)</span>
+              </Tooltip>
               <input
                 autoFocus
                 type="number"
@@ -910,7 +954,9 @@ function ApprovalSettingsModal({
               />
             </label>
             <label className="field-stack">
-              <span>Uses</span>
+              <Tooltip content="How many times this approval grant can be reused. Leave blank for unlimited reuse unless the policy sets a maximum.">
+                <span>Max uses (blank = unlimited)</span>
+              </Tooltip>
               <input
                 type="number"
                 min="1"
@@ -923,13 +969,15 @@ function ApprovalSettingsModal({
               />
             </label>
             <label className="field-stack">
-              <span>Payload</span>
+              <Tooltip content="Exact arguments only reuse the grant when submitted arguments match the approved arguments. May vary allows future calls with different arguments within the same grant limits.">
+                <span>Argument matching</span>
+              </Tooltip>
               <select
                 value={effectiveSettings.payload_mode}
                 onChange={(event) => commit({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
                 disabled={locked || busy || Boolean(hardRule?.require_exact_payload)}
               >
-                <option value="exact">Exact payload</option>
+                <option value="exact">Exact arguments</option>
                 <option value="any">May vary</option>
               </select>
             </label>
@@ -2114,7 +2162,7 @@ export function SessionsScreen() {
                                         <span>Require approval</span>
                                       </label>
                                       {isApprovalRequired && isEnabled && !isDenied ? (
-                                        <Tooltip content={`Configure approval TTL, use count, and payload matching for ${tool.label}.`}>
+                                        <Tooltip content={`Configure approval expiry, use limit, and argument matching for ${tool.label}.`}>
                                           <button
                                             type="button"
                                             className="session-tool-settings-button"
