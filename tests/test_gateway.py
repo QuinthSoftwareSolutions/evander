@@ -1944,6 +1944,60 @@ def test_list_contacts_enforces_policy_and_redacts_contact_values(tmp_path: Path
     assert "+15550000002" not in audit_text
     assert "ops@example.com" not in audit_text
 
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-2",
+            allowed_tools=[ToolName.LIST_CONTACTS],
+            allowed_contact_ids=["ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = _call_tool(server, "list_contacts", {"session_id": "session-2"})
+
+    assert result == {
+        "directory_path": "root",
+        "contacts": [
+            {
+                "id": "ops",
+                "name": "Ops Duty",
+                "description": "Deployment window escalation contact",
+                "email_address_count": 1,
+                "phone_number_count": 1,
+                "primary_phone_label": "mobile",
+                "callable": True,
+            }
+        ],
+    }
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-3",
+            allowed_tools=[ToolName.LIST_CONTACTS],
+            allowed_contact_ids=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = _call_tool(server, "list_contacts", {"session_id": "session-3"})
+
+    assert result == {
+        "directory_path": "root",
+        "contacts": [],
+    }
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-4",
+            allowed_tools=[ToolName.LIST_CONTACTS],
+            allowed_contact_ids=["ops", "missing"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(ToolError, match="references unknown contact ids: missing"):
+        _call_tool(server, "list_contacts", {"session_id": "session-4"})
+
 
 def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
