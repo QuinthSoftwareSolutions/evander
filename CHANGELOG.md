@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Made the scheduled-wake worker reload `config/scheduled-wake/config.json`
   between cycles so edits such as `scheduled_wake_prefix_text` take effect
   without restarting the service.
+- Rebuilt the scheduled-wake runtime context when a hot reload changes
+  `runtime_dir`, keeping wake stores, session repositories, queues, and
+  dispatch paths on the same runtime directory.
 
 ## 2026-06-14 - Approval Grant Clamp Generalization
 

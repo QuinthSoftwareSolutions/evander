@@ -32,6 +32,7 @@ from agent_sandbox.messaging.scheduled_wake import (
     build_scheduled_wake_worker,
 )
 from agent_sandbox.orchestration.host_polling import HostFileLockManager
+from agent_sandbox.runtime import build_runtime
 
 
 def _build_worker(
@@ -348,6 +349,114 @@ def test_scheduled_wake_worker_reloads_prefix_text_between_cycles(
     assert worker.worker_config.scheduled_wake_prefix_text == "Updated:"
     assert worker.config.scheduled_wake_prefix_text == "Updated:"
     assert worker.dispatcher.config.scheduled_wake_prefix_text == "Updated:"
+
+
+def test_scheduled_wake_worker_rebuilds_runtime_when_runtime_dir_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "cooldown_seconds": 0.0,
+            "jitter_seconds": 0.0,
+            "scheduled_wake_prefix_text": "Initial:",
+        },
+    )
+    old_runtime = worker.runtime
+    _register_session(worker, session_id="session-old")
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-old",
+        session_id="session-old",
+        due_at=due_at,
+    )
+
+    new_runtime_dir = tmp_path / "runtime-new"
+    new_runtime = build_runtime(GatewayConfig(runtime_dir=new_runtime_dir))
+    new_runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-new",
+            vm_id="vm-new",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    new_runtime.wake_store.schedule_resume_request(
+        session_id="session-new",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(resume_at=due_at),
+        request_id="wake-new",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        lambda **kwargs: "idle",
+    )
+
+    dispatches: list[tuple[str, Path]] = []
+
+    def resume_binding(self, binding, **kwargs):
+        dispatches.append((kwargs["request_id"], self.runtime.config.runtime_dir))
+        record = WakeDispatchRecord(
+            dispatch_id=f"dispatch-{kwargs['request_id']}",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={
+                "vm_id": binding.vm_id,
+                "source": binding.source,
+                **kwargs["wake_metadata"],
+            },
+        )
+        self.runtime.wake_store.record_dispatch(record)
+        return record
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        resume_binding,
+    )
+
+    worker_config_path = tmp_path / "project" / "config" / "scheduled-wake" / "config.json"
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(new_runtime_dir),
+                "directories": ["root/team-a"],
+                "cooldown_seconds": 0.0,
+                "jitter_seconds": 0.0,
+                "scheduled_wake_prefix_text": "Updated:",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert dispatches == [("wake-new", new_runtime_dir)]
+    assert worker.runtime is not old_runtime
+    assert worker.runtime.config.runtime_dir == new_runtime_dir
+    assert worker.runtime.config.session_store_path == new_runtime_dir / "sessions.json"
+    assert worker.config.runtime_dir == new_runtime_dir
+    assert worker.config.session_store_path == new_runtime_dir / "sessions.json"
+    assert worker.dispatcher.runtime is worker.runtime
+    assert worker.dispatcher.config.runtime_dir == new_runtime_dir
+    assert worker.runtime.wake_store.get_request("wake-new").status == "dispatched"
+    assert old_runtime.wake_store.get_request("wake-old").status == "pending"
+    assert old_runtime.wake_store.latest_dispatch_by_request_id() == {}
 
 
 def test_scheduled_wake_worker_keeps_last_known_good_prefix_when_reload_payload_is_invalid(

@@ -57,11 +57,7 @@ class ScheduledWakeWorker:
             or FixedScheduledWakeWorkerGlobalConfigReloader(self.worker_config)
         )
         self.runtime = runtime
-        self.dispatcher = HostWakeDispatcher(
-            config=self.config,
-            runtime=runtime,
-            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
-        )
+        self.dispatcher = self._build_dispatcher()
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -85,6 +81,13 @@ class ScheduledWakeWorker:
 
     def run_once_with_lock(self) -> ScheduledWakeCycleResult:
         return self._kernel.run_once_with_lock()
+
+    def _build_dispatcher(self) -> HostWakeDispatcher:
+        return HostWakeDispatcher(
+            config=self.config,
+            runtime=self.runtime,
+            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
+        )
 
     def run_once(self) -> ScheduledWakeCycleResult:
         self._refresh_config_from_reloader()
@@ -188,20 +191,32 @@ class ScheduledWakeWorker:
         if not changed:
             return
 
-        self.worker_config = latest_config
-        self.config = _effective_gateway_config_for_scheduled_wake(
+        next_config = _effective_gateway_config_for_scheduled_wake(
             self._base_config,
-            self.worker_config,
+            latest_config,
         )
-        self.dispatcher = HostWakeDispatcher(
-            config=self.config,
-            runtime=self.runtime,
-            agent_control_store=AgentControlStore(self.config.host_agent_control_state_path),
+        runtime_rebuilt = False
+        if _runtime_dir_changed(self.config.runtime_dir, next_config.runtime_dir):
+            self.runtime = build_runtime(next_config)
+            runtime_rebuilt = True
+
+        self.worker_config = latest_config
+        self.config = next_config
+        self.dispatcher = self._build_dispatcher()
+        self._kernel.config = PollingKernelConfig(
+            poll_interval_seconds=self.worker_config.poll_interval_seconds,
+            jitter_seconds=self.worker_config.jitter_seconds,
+            lock_path=self.worker_config.lock_path,
         )
         logger.info(
-            "Scheduled wake worker config reloaded prefix_text=%r directories=%d",
+            (
+                "Scheduled wake worker config reloaded prefix_text=%r directories=%d "
+                "runtime_dir=%s runtime_rebuilt=%s"
+            ),
             self.worker_config.scheduled_wake_prefix_text,
             len(self.worker_config.directories),
+            self.config.runtime_dir,
+            runtime_rebuilt,
         )
 
     def _dispatch_request(
@@ -383,6 +398,48 @@ def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "scheduled-wake" / "config.json"
 
 
+def _runtime_dir_changed(current: Path, updated: Path) -> bool:
+    return _runtime_dir_identity(current) != _runtime_dir_identity(updated)
+
+
+def _runtime_dir_identity(path: Path) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+_GATEWAY_RUNTIME_DEFAULT_PATH_NAMES: dict[str, str] = {
+    "audit_log_path": "audit.jsonl",
+    "session_store_path": "sessions.json",
+    "approval_store_path": "approvals.json",
+    "draft_store_path": "drafts.json",
+    "email_store_path": "emails.json",
+    "email_cursor_store_path": "email_cursors.json",
+    "discord_command_store_path": "discord_commands.json",
+    "teams_message_store_path": "teams_messages.json",
+    "teams_meeting_store_path": "teams-meetings.json",
+    "teams_delegated_credential_store_path": "teams-delegated-credentials.json",
+    "directories_store_path": "directories.json",
+    "wake_session_cooldown_path": "wake-session-cooldown.json",
+    "host_agent_control_state_path": "host-agent-control-state.json",
+    "wake_dispatch_state_path": "wake-dispatch-state.json",
+    "pr_map_path": "pr-map.json",
+}
+
+
+def _retarget_runtime_default_paths(
+    payload: dict[str, Any],
+    *,
+    base_config: GatewayConfig,
+    runtime_dir: Path,
+) -> None:
+    base_runtime_dir = base_config.runtime_dir
+    for field_name, file_name in _GATEWAY_RUNTIME_DEFAULT_PATH_NAMES.items():
+        current_path = Path(getattr(base_config, field_name))
+        if _runtime_dir_identity(current_path) == _runtime_dir_identity(
+            base_runtime_dir / file_name
+        ):
+            payload[field_name] = runtime_dir / file_name
+
+
 def _load_scheduled_wake_worker_global_config(
     project_dir: Path,
     *,
@@ -432,9 +489,16 @@ def _effective_gateway_config_for_scheduled_wake(
     base_config: GatewayConfig,
     worker_config: ScheduledWakeWorkerGlobalConfig,
 ) -> GatewayConfig:
+    payload = base_config.model_dump(mode="json")
+    if _runtime_dir_changed(base_config.runtime_dir, worker_config.runtime_dir):
+        _retarget_runtime_default_paths(
+            payload,
+            base_config=base_config,
+            runtime_dir=worker_config.runtime_dir,
+        )
     return GatewayConfig.model_validate(
         {
-            **base_config.model_dump(mode="json"),
+            **payload,
             "runtime_dir": worker_config.runtime_dir,
             "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
             "wake_jitter_seconds": worker_config.jitter_seconds,
