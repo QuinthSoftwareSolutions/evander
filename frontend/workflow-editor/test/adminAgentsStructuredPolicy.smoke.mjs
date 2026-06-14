@@ -227,6 +227,12 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
         const body = JSON.parse(route.request().postData() ?? "{}");
         patchBodies.push(body);
         assert.deepEqual(body.labels, { team: "ops" });
+        assert.deepEqual(body.allowed_tools, ["prompt_agent"]);
+        assert.deepEqual(body.allowed_script_names, ["collect-logs"]);
+        assert.deepEqual(body.discord_channels, []);
+        assert.deepEqual(body.teams_channel_allowlist, []);
+        assert.deepEqual(body.email_mailboxes, []);
+        assert.deepEqual(body.email_folders, []);
         await route.fulfill(jsonResponse({ message: "Updated agent policy.", target_name: "Dispatch agent" }));
         return;
       }
@@ -252,9 +258,26 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
 
   const labelsField = editDialog.locator(".field-stack").filter({ hasText: "Labels" });
   assert.equal(await labelsField.locator("textarea").count(), 0);
+  for (const label of [
+    "Allowed tools",
+    "Allowed scripts",
+    "Discord channels or targets",
+    "Teams targets",
+    "Email mailboxes",
+    "Email folders",
+  ]) {
+    assert.equal(
+      await editDialog.locator(".field-stack").filter({ hasText: label }).locator("textarea").count(),
+      0,
+      `${label} should use structured controls instead of a textarea`,
+    );
+  }
 
   const firstRow = labelsField.locator(".structured-input-row").first();
   await firstRow.locator("input").nth(1).fill("ops");
+  const scriptsField = editDialog.locator(".field-stack").filter({ hasText: "Allowed scripts" });
+  await scriptsField.getByRole("button", { name: "Add script" }).click();
+  await scriptsField.locator(".structured-input-row").first().locator("input").fill("collect-logs");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await page.locator(".modal-card[aria-label='Edit agent policy']").waitFor({ state: "hidden" });
   assert.equal(patchBodies.length, 1);

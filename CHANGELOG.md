@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Added shared structured editors for list, map, JSON-object, and regex policy
   fields, then wired them into the Sessions, Agents, configuration, workers,
   and model-pricing admin screens.
+- Added an optional structured Initial policy section to the Admin Web Create
+  agent dialog so labels and list-style policy fields can be seeded without
+  typing raw newline/key-value text.
 - Preserved the existing backend payload shapes while adding inline validation
   for metadata JSON, label maps, leading-dot extensions, and regex rows.
 - Expanded the focused Node and smoke coverage to assert structured hydration,
