@@ -6,6 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
+import agent_sandbox.policy as policy_module
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
@@ -173,6 +174,45 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     assert payload["counts"]["requires_approval"] == 1
     assert "visible-secret" not in json.dumps(payload)
     assert "visible-result-secret" not in json.dumps(payload)
+
+
+def test_admin_web_tool_visibility_marks_locked_approval_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-locked",
+        vm_id="vm-1",
+        vm_provider="libvirt",
+        allowed_tools=[
+            ToolName.GET_AGENT_STATUS,
+            ToolName.CREATE_ADO_BACKLOG_ITEM,
+        ],
+        approval_required_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        policy_module,
+        "_tool_approval_locked",
+        lambda tool_name: tool_name == ToolName.GET_AGENT_STATUS,
+    )
+    service.runtime.session_repository.upsert_session(session)
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/tool-visibility",
+        params={"session_id": "session-locked"},
+    )
+
+    payload = response.json()
+    rows = {row["tool_name"]: row for row in payload["tools"]}
+
+    assert response.status_code == 200
+    assert rows["get_agent_status"]["requires_approval"] is True
+    assert rows["get_agent_status"]["approval_locked"] is True
+    assert rows["create_ado_backlog_item"]["requires_approval"] is True
+    assert rows["create_ado_backlog_item"]["approval_locked"] is False
 
 
 def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(

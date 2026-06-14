@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import agent_sandbox.policy as policy_module
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.tool_visibility import (
     ToolVisibilityBindingState,
@@ -172,6 +173,48 @@ def test_admin_service_tool_visibility_payload_classifies_rows_and_metadata(
     assert "visible-result-secret" not in serialized_text
     assert "unknown-secret" not in serialized_text
     assert "unknown-result-secret" not in serialized_text
+
+
+def test_admin_service_tool_visibility_payload_marks_locked_approval_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-locked",
+            vm_id="vm-1",
+            vm_provider="libvirt",
+            allowed_tools=[
+                ToolName.GET_AGENT_STATUS,
+                ToolName.CREATE_ADO_BACKLOG_ITEM,
+            ],
+            approval_required_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    monkeypatch.setattr(
+        policy_module,
+        "_tool_approval_locked",
+        lambda tool_name: tool_name == ToolName.GET_AGENT_STATUS,
+    )
+
+    payload = service.tool_visibility_payload(target="session-locked")
+    rows = _tool_rows(payload)
+
+    locked = rows[ToolName.GET_AGENT_STATUS.value]
+    assert locked.visibility_state is ToolVisibilityState.VISIBLE
+    assert locked.source == "session.allowed_tools"
+    assert locked.requires_approval is True
+    assert locked.approval_locked is True
+    assert locked.approval_settings is not None
+
+    operator_configured = rows[ToolName.CREATE_ADO_BACKLOG_ITEM.value]
+    assert operator_configured.visibility_state is ToolVisibilityState.VISIBLE
+    assert operator_configured.source == "session.allowed_tools"
+    assert operator_configured.requires_approval is True
+    assert operator_configured.approval_locked is False
+    assert operator_configured.approval_settings is not None
 
 
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
