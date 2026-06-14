@@ -11,6 +11,10 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_sandbox.cron import next_cron_time
+from agent_sandbox.messaging.scheduled_wake_queue import (
+    discard_scheduled_wake_queue_record,
+    scheduled_wake_queue_should_be_discarded,
+)
 from agent_sandbox.models import (
     WakeDispatchRecord,
     WakeMessageEnvelope,
@@ -417,11 +421,13 @@ class WakeRequestStore:
                 self._request_update_row(request),
             )
             self._compact(connection)
-            return WakeRequestCancellationResult(
+            result = WakeRequestCancellationResult(
                 status="cancelled",
                 request_id=normalized_request_id,
                 request=request,
             )
+        discard_scheduled_wake_queue_record(self.path.parent, normalized_request_id)
+        return result
 
     def schedule_resume_request(
         self,
@@ -545,6 +551,12 @@ class WakeRequestStore:
                 )
                 updated_requests.append(request)
             self._compact(connection)
+        for updated_request in updated_requests:
+            if scheduled_wake_queue_should_be_discarded(updated_request):
+                discard_scheduled_wake_queue_record(
+                    self.path.parent,
+                    updated_request.request_id,
+                )
         return updated_requests
 
     def mark_request_dispatching(
@@ -662,6 +674,12 @@ class WakeRequestStore:
                 )
                 updated_requests.append(updated_request)
             self._compact(connection)
+        for updated_request in updated_requests:
+            if scheduled_wake_queue_should_be_discarded(updated_request):
+                discard_scheduled_wake_queue_record(
+                    self.path.parent,
+                    updated_request.request_id,
+                )
         return updated_requests
 
     def mark_completed_by_dispatch_id(

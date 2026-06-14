@@ -281,11 +281,12 @@ class ScheduledWakeWorker:
                 wake_metadata=wake_metadata,
             )
         dispatch_handled = _wake_dispatch_counts_as_handled(dispatch)
+        dispatch_completed_at = datetime.now(UTC)
         if request.schedule.resume_at is not None and not dispatch_handled:
             refresh_retry_state = getattr(wake_store, "refresh_one_time_retry_state", None)
             if callable(refresh_retry_state):
                 refresh_retry_state(
-                    now_utc=now_utc,
+                    now_utc=dispatch_completed_at,
                     retry_max_attempts=self.config.wake_completion_confirmation_retry_max_attempts,
                     retry_window_seconds=self.config.wake_completion_confirmation_retry_window_seconds,
                     retry_base_backoff_seconds=self.config.wake_completion_confirmation_retry_base_backoff_seconds,
@@ -309,7 +310,7 @@ class ScheduledWakeWorker:
             _defer_one_time_wake_confirmation(
                 wake_store=wake_store,
                 request=request,
-                now_utc=now_utc,
+                now_utc=getattr(dispatch, "dispatched_at", None) or dispatch_completed_at,
                 confirmation_timeout_seconds=(
                     scoped_config.wake_completion_confirmation_timeout_seconds
                 ),

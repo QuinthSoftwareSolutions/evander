@@ -39,6 +39,9 @@ material. Newer entries are added incrementally as changes land.
 - Reset the automatic retry counters for one-time scheduled wakes when Admin
   Web or the API retries them, so an exhausted confirmation batch starts fresh
   while the previous retry state stays available in retry history metadata.
+- Fixed stale `scheduled-wake:*` prompt queue entries so cancelled or exhausted
+  one-time wakes are not delivered later, and retry backoff now starts from the
+  actual dispatch completion time.
 - Documented the one-time wake confirmation retry policy keys, cancellation
   behavior, and manual retry reset behavior in the operations and configuration
   references.
