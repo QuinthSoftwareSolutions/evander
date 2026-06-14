@@ -215,6 +215,31 @@ def test_admin_web_tool_visibility_marks_locked_approval_rows(
     assert rows["create_ado_backlog_item"]["approval_locked"] is False
 
 
+def test_admin_web_tool_visibility_classifies_update_title_tool(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt",
+        allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.session_repository.upsert_session(session)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/tool-visibility", params={"session_id": "session-1"})
+    payload = response.json()
+    rows = {row["tool_name"]: row for row in payload["tools"]}
+
+    assert response.status_code == 200
+    assert rows["update_ado_backlog_title"]["visibility_state"] == "visible"
+    assert rows["update_ado_backlog_title"]["source"] == "session.allowed_tools"
+    assert rows["update_ado_backlog_title"]["provider"] == "azure_devops"
+    assert rows["update_ado_backlog_title"]["category"] == "Azure DevOps"
+
+
 def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(
     tmp_path: Path,
 ) -> None:

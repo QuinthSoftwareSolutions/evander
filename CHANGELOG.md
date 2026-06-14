@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-14 - Azure DevOps Backlog Title Updates
+
+- Added the `update_ado_backlog_title` MCP tool for renaming Azure DevOps
+  backlog items by numeric work-item id.
+- Required title validation now rejects blank or whitespace-only values before
+  the ADO update call and writes the trimmed value to `System.Title`.
+
 ## 2026-06-12 - Wake And Approval Diagnostic Fixes
 
 - Prevented libvirt wake timeout summaries from storing resume prompt text from
@@ -25,6 +32,26 @@ material. Newer entries are added incrementally as changes land.
   loop execution so in-progress loops resume cleanly after upgrade.
 - Added opt-in PR feedback suppression for comments authored by the configured
   agent identity while leaving agent-authored feedback publishable by default.
+
+## 2026-06-14 - Scheduled Wake Retry And Cancellation Bounds
+
+- Added a bounded automatic retry policy for one-time scheduled wakes that fail
+  dispatch or remain unconfirmed, including persisted attempt state,
+  configurable retry window/backoff, and terminal failed/missed ledger reasons.
+- Allowed sessions to cancel their own one-time wakes while dispatching,
+  queued, dispatched/awaiting confirmation, failed, or missed/late; completed
+  and already-cancelled wakes remain immutable.
+- Recorded model-unavailable resume failures as specific wake ledger failure
+  reasons instead of generic transient dispatch errors.
+- Reset the automatic retry counters for one-time scheduled wakes when Admin
+  Web or the API retries them, so an exhausted confirmation batch starts fresh
+  while the previous retry state stays available in retry history metadata.
+- Fixed stale `scheduled-wake:*` prompt queue entries so cancelled or exhausted
+  one-time wakes are not delivered later, and retry backoff now starts from the
+  actual dispatch completion time.
+- Documented the one-time wake confirmation retry policy keys, cancellation
+  behavior, and manual retry reset behavior in the operations and configuration
+  references.
 
 ## 2026-06-12 - Scheduled Wake Delivery Ledger
 
