@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Agent Email Target Capability Enforcement
+
+- Required mailbox-backed email communication targets selected for agent
+  creation to declare both read and write capabilities, avoiding broader
+  session mailbox allowlists for read-only or write-only targets.
+- Filtered Create Agent and workflow editor agent-session email target options
+  to only show mailbox targets that satisfy the full session capability
+  requirement.
+
 ## 2026-06-15 - Create Agent Communication Target Picker
 
 - Replaced the Create agent dialog's separate Discord, Teams, and email

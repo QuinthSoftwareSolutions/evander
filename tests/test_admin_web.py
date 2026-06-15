@@ -1872,6 +1872,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "address": "ops@example.com",
                     "policy": {"capabilities": ["write"], "auth_profile_ref": "email.ops"},
                 },
+                {
+                    "id": "mail-read-write",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "full@example.com",
+                    "policy": {
+                        "capabilities": ["read", "write"],
+                        "auth_profile_ref": "email.full",
+                    },
+                },
             ]
         },
     )
@@ -2054,16 +2064,14 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(trigger_read_root) == set(message_read_root)
     assert set(trigger_read_ops) == set(message_read_ops)
     assert set(agent_create_root) == {
-        "mail-read",
-        "mail-write",
+        "mail-read-write",
         "root-chat",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
     }
     assert set(agent_create_ops) == {
-        "mail-read",
-        "mail-write",
+        "mail-read-write",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
@@ -11342,7 +11350,10 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
                     "provider": "email",
                     "kind": "email",
                     "address": "ops@example.com",
-                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
+                    "policy": {
+                        "capabilities": ["read", "write"],
+                        "auth_profile_ref": "email.ops",
+                    },
                 },
             ]
         },
@@ -11437,6 +11448,67 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
     }
 
 
+@pytest.mark.parametrize(
+    ("target_id", "capabilities"),
+    [
+        ("ops-email-read", ["read"]),
+        ("ops-email-write", ["write"]),
+    ],
+)
+def test_admin_web_agents_create_rejects_capability_limited_email_targets(
+    tmp_path: Path,
+    monkeypatch,
+    target_id: str,
+    capabilities: list[str],
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
+    communication_targets_write = service.write_directory_domain_config(
+        "root/team-a",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": target_id,
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {
+                        "capabilities": capabilities,
+                        "auth_profile_ref": "email.ops",
+                    },
+                },
+            ]
+        },
+    )
+    assert communication_targets_write.ok is True
+    create_vm_calls: list[dict[str, object]] = []
+
+    def create_vm(self, **payload):
+        del self
+        create_vm_calls.append(payload)
+        raise AssertionError("create_vm should not run for invalid email targets")
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "session_id": "lab-session",
+            "directory_path": "root/team-a",
+            "communication_target_ids": [target_id],
+        },
+    )
+
+    assert response.status_code == 400
+    assert target_id in response.json()["error"]
+    assert "requires both read and write capabilities" in response.json()["error"]
+    assert create_vm_calls == []
+
+
 def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     client = TestClient(create_app(service))
@@ -11519,7 +11591,27 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
                     "provider": "email",
                     "kind": "email",
                     "address": "ops@example.com",
-                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
+                    "policy": {
+                        "capabilities": ["read", "write"],
+                        "auth_profile_ref": "email.ops",
+                    },
+                },
+                {
+                    "id": "ops-email-read",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "read@example.com",
+                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.read"},
+                },
+                {
+                    "id": "ops-email-write",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "write@example.com",
+                    "policy": {
+                        "capabilities": ["write"],
+                        "auth_profile_ref": "email.write",
+                    },
                 },
             ]
         },

@@ -547,10 +547,13 @@ def _agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            if not set(target.policy.capabilities).intersection({"read", "write"}):
+            missing_capabilities = sorted(
+                {"read", "write"} - set(target.policy.capabilities)
+            )
+            if missing_capabilities:
                 raise ValueError(
                     "effect:agent:create email communication target "
-                    f"{target.id!r} requires read or write capability"
+                    f"{target.id!r} requires both read and write capabilities"
                 )
             selected_email_mailboxes.append(_email_mailbox_id_for_target(target))
             continue

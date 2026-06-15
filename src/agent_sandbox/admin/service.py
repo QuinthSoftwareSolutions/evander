@@ -1670,6 +1670,8 @@ def _communication_target_option_metadata(
         metadata["required_capability"] = "read"
     elif purpose == "agent-session":
         metadata["supported_capabilities"] = ["read", "write", "reply"]
+        if provider == "email":
+            metadata["required_capabilities"] = ["read", "write"]
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
@@ -6868,9 +6870,13 @@ def _admin_agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            if not set(target.policy.capabilities).intersection({"read", "write"}):
+            missing_capabilities = sorted(
+                {"read", "write"} - set(target.policy.capabilities)
+            )
+            if missing_capabilities:
                 raise ValueError(
-                    f"email communication target {target.id!r} requires read or write capability"
+                    "email communication target "
+                    f"{target.id!r} requires both read and write capabilities"
                 )
             selected_email_mailboxes.append(
                 _email_mailbox_id_from_auth_profile_ref(
@@ -16099,8 +16105,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             elif purpose == "agent-session":
                 if provider not in {"teams", "discord", "email"}:
                     continue
-                if not capabilities.intersection({"read", "write", "reply"}):
-                    continue
                 policy = target.get("policy")
                 if (
                     provider == "email"
@@ -16109,7 +16113,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     ).strip()
                 ):
                     continue
-                if provider == "email" and not capabilities.intersection({"read", "write"}):
+                if provider == "email":
+                    if not {"read", "write"}.issubset(capabilities):
+                        continue
+                elif not capabilities.intersection({"read", "write", "reply"}):
                     continue
                 if (
                     _communication_target_shape(target) == "teams_user"
