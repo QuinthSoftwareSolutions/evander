@@ -100,6 +100,7 @@ type AgentCreateFormState = {
   vmName: string;
   targetName: string;
   sessionId: string;
+  model: string;
   provider: string;
   vmUser: string;
   agentProvider: string;
@@ -185,6 +186,7 @@ function emptyCreateForm(): AgentCreateFormState {
     vmName: "",
     targetName: "",
     sessionId: "",
+    model: "",
     provider: "",
     vmUser: "agent",
     agentProvider: "",
@@ -722,6 +724,8 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
     session_id: optionalText(form.sessionId),
     directory_path: optionalText(directoryPath),
   };
+  const model = optionalText(form.model);
+  if (model) payload.model = model;
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
   if (form.backend === "libvirt_vm") {
@@ -1605,7 +1609,38 @@ export function AgentsPage() {
     });
   }
 
-  async function handleCreateAgent() {
+  async function finishCreateAgent(createPayload: AgentCreateRequest) {
+    try {
+      const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
+        method: "POST",
+        body: JSON.stringify(createPayload),
+      });
+      const successMessage = `Agent ${payload.target_name} was successfully created.`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message: successMessage, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(successMessage);
+      setError(null);
+      setCreateForm(emptyCreateForm());
+      await refreshLiveAgents();
+      setSelectedKey(`${payload.backend}:${payload.agent_id}`);
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function scheduleCreateAgent(createPayload: AgentCreateRequest) {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        void finishCreateAgent(createPayload);
+      }, 0);
+    });
+  }
+
+  function handleCreateAgent() {
     if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
       setInlineValidation("VM name is required.");
       return;
@@ -1634,26 +1669,7 @@ export function AgentsPage() {
       { at: new Date().toISOString(), message: `Create agent: started ${targetLabel}`, tone: "info" as const },
       ...current,
     ].slice(0, 30));
-    try {
-      const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
-        method: "POST",
-        body: JSON.stringify(createPayload),
-      });
-      const successMessage = `Agent ${payload.target_name} was successfully created.`;
-      setActionLog((current) => [{ at: new Date().toISOString(), message: successMessage, tone: "info" as const }, ...current].slice(0, 30));
-      setStatus(successMessage);
-      setError(null);
-      setCreateForm(emptyCreateForm());
-      await refreshLiveAgents();
-      setSelectedKey(`${payload.backend}:${payload.agent_id}`);
-    } catch (reason: unknown) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      setError(message);
-      setStatus(null);
-      setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
-    } finally {
-      setBusyAction(null);
-    }
+    scheduleCreateAgent(createPayload);
   }
 
   function openEditForm() {
@@ -2284,6 +2300,16 @@ export function AgentsPage() {
                       value={createForm.sessionId}
                       onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
                       placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <CreateFieldLabel tooltip="Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.">
+                      Model
+                    </CreateFieldLabel>
+                    <input
+                      value={createForm.model}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, model: event.target.value }))}
+                      placeholder={createForm.agentProvider === "claude" ? "claude-sonnet-4-6" : "Directory default"}
                     />
                   </label>
                   {createForm.backend === "libvirt_vm" ? (

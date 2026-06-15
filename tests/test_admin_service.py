@@ -11683,9 +11683,11 @@ def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_
     setup_env = captured["env"]
     assert setup_env is not None
     assert setup_env["AGENT_PROVIDER"] == "claude"
+    assert setup_env["AGENT_MODEL"] == "claude-sonnet-4-6"
     assert setup_env["LIBVIRT_BASE_IMAGE"] == "dotnet-agent.qcow2"
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
+    assert manifest.model == "claude-sonnet-4-6"
     assert manifest.metadata["libvirt_vm_template"] == {
         "image_ref": "dotnet-agent.qcow2",
         "template_alias": "dotnet",

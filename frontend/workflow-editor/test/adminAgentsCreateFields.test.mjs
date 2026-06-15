@@ -37,8 +37,22 @@ function buildCreatePayloadSource() {
 
 function handleCreateAgentSource() {
   return sourceBetween(
-    "async function handleCreateAgent() {",
+    "function handleCreateAgent() {",
     "function openEditForm() {",
+  );
+}
+
+function finishCreateAgentSource() {
+  return sourceBetween(
+    "async function finishCreateAgent(createPayload: AgentCreateRequest) {",
+    "function scheduleCreateAgent(createPayload: AgentCreateRequest) {",
+  );
+}
+
+function scheduleCreateAgentSource() {
+  return sourceBetween(
+    "function scheduleCreateAgent(createPayload: AgentCreateRequest) {",
+    "function handleCreateAgent() {",
   );
 }
 
@@ -51,15 +65,18 @@ function zIndexForSelector(selector) {
 
 test("create form state carries backend-aware provider and image selections", () => {
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?agentProvider: string;[\s\S]*?\};/);
+  assert.match(page, /type AgentCreateFormState = \{[\s\S]*?model: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
   // emptyCreateForm must seed both image/provider fields so the modal opens with defaults.
-  assert.match(page, /function emptyCreateForm\([\s\S]*?agentProvider: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+  assert.match(page, /function emptyCreateForm\([\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
 });
 
 test("buildCreatePayload gates provider and image fields by backend", () => {
   const source = buildCreatePayloadSource();
   // agent_provider is emitted for both backends, but only when set.
   assert.match(source, /if \(agentProvider\) payload\.agent_provider = agentProvider;/);
+  // model is emitted for both backends, but only when set.
+  assert.match(source, /const model = optionalText\(form\.model\);\s*if \(model\) payload\.model = model;/);
   // vm_image is emitted only inside the libvirt branch (before the `else`),
   // and container_image only in the container branch (after the `else`).
   assert.match(
@@ -113,22 +130,27 @@ test("create modal always posts the selected page directory", () => {
 test("create submit dismisses the modal before waiting for agent creation", () => {
   const source = handleCreateAgentSource();
   const closeIndex = source.indexOf("setShowCreateForm(false);");
-  const fetchIndex = source.indexOf("await fetchJson<AgentActionResponse>");
+  const scheduleIndex = source.indexOf("scheduleCreateAgent(createPayload);");
 
   assert.notEqual(closeIndex, -1, "create handler should close the modal");
-  assert.notEqual(fetchIndex, -1, "create handler should await the create request");
-  assert.ok(closeIndex < fetchIndex, "create modal must close before the long-running create request resolves");
+  assert.notEqual(scheduleIndex, -1, "create handler should schedule the create request");
+  assert.ok(closeIndex < scheduleIndex, "create modal must close before the long-running create request is scheduled");
   assert.match(source, /const createPayload = buildCreatePayload\(submittedForm, selectedDirectoryPath\);/);
   assert.match(source, /setStatus\(`Creating \$\{targetLabel\}\.\.\.`\);/);
   assert.doesNotMatch(source, /setInlineValidation\(message\);/);
+  assert.doesNotMatch(source, /fetchJson<AgentActionResponse>/);
+});
+
+test("create request starts after the modal has a paint opportunity", () => {
+  const source = scheduleCreateAgentSource();
+
+  assert.match(source, /window\.requestAnimationFrame\(\(\) => \{/);
+  assert.match(source, /window\.setTimeout\(\(\) => \{/);
+  assert.match(source, /void finishCreateAgent\(createPayload\);/);
 });
 
 test("create success summarizes setup output instead of showing bootstrap logs", () => {
-  const source = handleCreateAgentSource();
-  const successSource = source.slice(
-    source.indexOf("const payload = await fetchJson<AgentActionResponse>"),
-    source.indexOf("} catch (reason: unknown) {"),
-  );
+  const successSource = finishCreateAgentSource();
 
   assert.match(successSource, /const successMessage = `Agent \$\{payload\.target_name\} was successfully created\.`/);
   assert.match(successSource, /setStatus\(successMessage\);/);
@@ -164,7 +186,7 @@ test("VM image select lives in the libvirt block; container image select in the 
   assert.match(createModal, /value=\{createForm\.containerImage\}/);
 });
 
-test("create modal exposes structured initial policy controls without post-create-only fields", () => {
+test("create modal exposes model override and structured initial policy controls without post-create-only fields", () => {
   const createModal = createModalSource();
   for (const label of [
     "Initial policy",
@@ -173,6 +195,7 @@ test("create modal exposes structured initial policy controls without post-creat
     "Allowed scripts",
     "Communication targets",
     "Web search",
+    "Model",
   ]) {
     assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -188,7 +211,6 @@ test("create modal exposes structured initial policy controls without post-creat
     assert.doesNotMatch(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   for (const label of [
-    "Model",
     "TTL hours",
     "Codex skills",
   ]) {
@@ -217,6 +239,7 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
   for (const helpText of [
     "Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.",
     "Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.",
+    "Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.",
     "VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.",
     "Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.",
     "Approved container image alias for worker sessions. Leave blank to use the directory default runner image.",
@@ -247,6 +270,7 @@ test("the create modal never reintroduces upsert semantics", () => {
 
 test("request and options types expose the new create fields", () => {
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?agent_provider\?: string \| null;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateRequest = \{[\s\S]*?model\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?vm_image\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?communication_target_ids\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?teams_channel_allowlist\?: string\[\];[\s\S]*?\};/);
