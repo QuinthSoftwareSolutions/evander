@@ -13,6 +13,12 @@ material. Newer entries are added incrementally as changes land.
 - Focused the first editable field when opening an edit dialog and skipped
   global select refreshes for controls inside the active edit form.
 
+## 2026-06-15 - Workflow Directory Draft Reset
+
+- Cleared discarded workflow editor draft state when switching directories
+  after the unsaved-changes warning, so the save panel and future saves reflect
+  only the current saved workflow state.
+
 ## 2026-06-15 - Create Agent Sudo Environment Fix
 
 - Passed Create Agent `agent_provider` and selected libvirt VM template choices

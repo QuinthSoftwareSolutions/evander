@@ -44,6 +44,15 @@ function createDirectoryTree() {
   };
 }
 
+function selectedDirectoryInfo(directoryPath) {
+  return {
+    path: directoryPath,
+    parent_path: directoryPath === "root" ? null : "root",
+    can_create: true,
+    can_delete: directoryPath !== "root",
+  };
+}
+
 async function workflowViewportTransform(page) {
   const viewport = page.locator(".react-flow__viewport");
   await viewport.waitFor({ state: "visible" });
@@ -104,6 +113,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const saveRequests = [];
   const tabConfirmMessages = [];
   const directoryConfirmMessages = [];
+  let acceptNextDirectoryConfirm = false;
 
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -149,12 +159,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     directory_scoped_config_enabled: true,
     selected_directory_path: "root",
     execution_backend: "libvirt_vm",
-    selected_directory: {
-      path: "root",
-      parent_path: null,
-      can_create: true,
-      can_delete: false,
-    },
+    selected_directory: selectedDirectoryInfo("root"),
     tree: {
       ok: true,
       data: createDirectoryTree(),
@@ -302,8 +307,12 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     }
 
     if (pathname === "/api/admin/state") {
-      assert.equal(url.searchParams.get("directory_path"), "root");
-      await route.fulfill(jsonResponse(adminStateResponse));
+      const directoryPath = url.searchParams.get("directory_path") ?? "root";
+      assert.ok(["root", "root/team-a"].includes(directoryPath));
+      await route.fulfill(jsonResponse({
+        ...adminStateResponse,
+        selected_directory_path: directoryPath,
+      }));
       return;
     }
 
@@ -316,8 +325,13 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     }
 
     if (pathname === "/api/configuration/state") {
-      assert.equal(url.searchParams.get("directory_path"), "root");
-      await route.fulfill(jsonResponse(configurationStateResponse));
+      const directoryPath = url.searchParams.get("directory_path") ?? "root";
+      assert.ok(["root", "root/team-a"].includes(directoryPath));
+      await route.fulfill(jsonResponse({
+        ...configurationStateResponse,
+        selected_directory_path: directoryPath,
+        selected_directory: selectedDirectoryInfo(directoryPath),
+      }));
       return;
     }
 
@@ -350,7 +364,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     }
 
     if (pathname === "/api/workflow-editor/catalog") {
-      assert.equal(url.searchParams.get("directory_path"), "root");
+      assert.ok(["root", "root/team-a"].includes(url.searchParams.get("directory_path") ?? "root"));
       await route.fulfill(jsonResponse(workflowCatalog));
       return;
     }
@@ -411,6 +425,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
         return;
       }
       directoryConfirmMessages.push(dialog.message());
+      if (acceptNextDirectoryConfirm) {
+        acceptNextDirectoryConfirm = false;
+        await dialog.accept();
+        return;
+      }
       await dialog.dismiss();
       return;
     }
@@ -425,6 +444,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await page.getByRole("button", { name: "Apply node changes" }).count(), 0);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   const saveStatus = page.locator(".save-status");
+  const saveStatusHeadline = saveStatus.locator("strong");
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
   await changeWorkflowCanvasViewport(page);
@@ -552,6 +572,44 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v3");
   assert.equal(await promptInput.inputValue(), "Handle renewals");
 
+  await displayNameInput.fill("Dispatch agent v4");
+  await promptInput.fill("Handle follow-ups");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v4"),
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+
+  acceptNextDirectoryConfirm = true;
+  await page.getByRole("button", { name: "Choose directory" }).click();
+  await page.getByRole("button", { name: "root/team-a", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".admin-directory-context strong")?.textContent?.trim() === "root/team-a",
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await page.waitForFunction(
+    () => document.querySelector(".save-status strong")?.textContent?.trim() === "No unsaved workflow changes",
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatusHeadline.innerText(), "No unsaved workflow changes");
+  assert.equal(saveRequests.length, 2);
+  assert.deepEqual(directoryConfirmMessages, [
+    "Workflow has unsaved changes. Discard them and continue?",
+    "Workflow has unsaved changes. Discard them and continue?",
+  ]);
+
+  await page.getByRole("button", { name: "Choose directory" }).click();
+  await page.getByRole("button", { name: "root", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".admin-directory-context strong")?.textContent?.trim() === "root",
+  );
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  assert.equal(await page.locator(".node-title").filter({ hasText: "Dispatch agent v4" }).count(), 0);
+  assert.equal(saveRequests.length, 2);
+  assert.equal(await saveStatusHeadline.innerText(), "No unsaved workflow changes");
+
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, [], JSON.stringify(consoleErrorDetails));
   assert.deepEqual(failedResponses, []);
@@ -559,8 +617,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root%2Fteam-a"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root%2Fteam-a"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs/stream"));
 });
