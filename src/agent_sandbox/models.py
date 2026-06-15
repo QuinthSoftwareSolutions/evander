@@ -90,6 +90,7 @@ class ToolName(str, Enum):
     COMMUNICATION_DOWNLOAD_ATTACHMENT = "communication_download_attachment"
     LIST_INLINE_MEDIA = "list_inline_media"
     DOWNLOAD_INLINE_MEDIA = "download_inline_media"
+    STAGE_ARTIFACT = "stage_artifact"
     COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE = "communication_copy_artifact_to_workspace"
     COMMUNICATION_STAGE_WORKSPACE_FILE = "communication_stage_workspace_file"
     DISCORD_POST_FILE = "discord_post_file"
@@ -1373,6 +1374,26 @@ class CommunicationCopyArtifactToWorkspaceResponse(BaseModel):
     destination_path: str
     copied_count: int
     copied_paths: list[str] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class StageArtifactRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    destination_path: str | None = None
+
+
+class StageArtifactResponse(BaseModel):
+    success: bool = True
+    message: str = ""
+    session_id: str | None = None
+    vm_name: str | None = None
+    execution_backend: str | None = None
+    source_path: str = ""
+    artifact_path: str = ""
+    artifacts_root: str = ""
+    copied_count: int = Field(default=0, ge=0)
+    byte_count: int = Field(default=0, ge=0)
     result: dict[str, Any] = Field(default_factory=dict)
 
 

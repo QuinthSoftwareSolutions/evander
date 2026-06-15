@@ -35,6 +35,13 @@ function buildCreatePayloadSource() {
   );
 }
 
+function handleCreateAgentSource() {
+  return sourceBetween(
+    "async function handleCreateAgent() {",
+    "function openEditForm() {",
+  );
+}
+
 function zIndexForSelector(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = styles.match(new RegExp(`${escapedSelector}\\s*\\{[\\s\\S]*?z-index:\\s*(\\d+);`));
@@ -100,7 +107,32 @@ test("create modal always posts the selected page directory", () => {
   assert.doesNotMatch(page, /<span>Directory<\/span>/);
   assert.match(page, /function buildCreatePayload\(form: AgentCreateFormState, directoryPath: string\)/);
   assert.match(page, /directory_path: optionalText\(directoryPath\)/);
-  assert.match(page, /buildCreatePayload\(createForm, selectedDirectoryPath\)/);
+  assert.match(page, /buildCreatePayload\(submittedForm, selectedDirectoryPath\)/);
+});
+
+test("create submit dismisses the modal before waiting for agent creation", () => {
+  const source = handleCreateAgentSource();
+  const closeIndex = source.indexOf("setShowCreateForm(false);");
+  const fetchIndex = source.indexOf("await fetchJson<AgentActionResponse>");
+
+  assert.notEqual(closeIndex, -1, "create handler should close the modal");
+  assert.notEqual(fetchIndex, -1, "create handler should await the create request");
+  assert.ok(closeIndex < fetchIndex, "create modal must close before the long-running create request resolves");
+  assert.match(source, /const createPayload = buildCreatePayload\(submittedForm, selectedDirectoryPath\);/);
+  assert.match(source, /setStatus\(`Creating \$\{targetLabel\}\.\.\.`\);/);
+  assert.doesNotMatch(source, /setInlineValidation\(message\);/);
+});
+
+test("create success summarizes setup output instead of showing bootstrap logs", () => {
+  const source = handleCreateAgentSource();
+  const successSource = source.slice(
+    source.indexOf("const payload = await fetchJson<AgentActionResponse>"),
+    source.indexOf("} catch (reason: unknown) {"),
+  );
+
+  assert.match(successSource, /const successMessage = `Agent \$\{payload\.target_name\} was successfully created\.`/);
+  assert.match(successSource, /setStatus\(successMessage\);/);
+  assert.doesNotMatch(successSource, /payload\.message/);
 });
 
 test("provider options are filtered by execution_backends against the selected backend", () => {

@@ -572,7 +572,9 @@ while `push-agent` verifies the destination and base branches before using the s
 session-namespaced push pattern. The guest-side PID and state files live under
 `/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
 VM and container agents share `/artifacts` as the workflow-readable artifacts
-folder. Workflow query nodes can read UTF-8 text files from this folder by
+folder. Agents can call the `stage_artifact` MCP tool to copy a file or
+directory from `/home/agent` into this folder without leaving their working
+directory. Workflow query nodes can read UTF-8 text files from this folder by
 session id and relative path. Artifact workflow effects can stage files from
 `/home/agent` into this folder and publish the folder as an immutable keyed
 `tar.gz` archive in the host runtime artifact store.

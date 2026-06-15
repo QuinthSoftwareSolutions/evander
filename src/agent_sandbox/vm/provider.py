@@ -1042,6 +1042,7 @@ def _libvirt_create_vm(
                 "LLM_BASE_URL",
                 "AGENT_MODEL",
                 "BASE_IMAGE",
+                "HOST_CLAUDE_BIN",
                 "NUGET_RELAY_BASE_URL",
                 "AGENT_SANDBOX_RUNTIME_DIR",
                 "VM_STORAGE_DIR",

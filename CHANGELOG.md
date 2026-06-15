@@ -5,6 +5,30 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Session Artifact Staging Tool
+
+- Added a `stage_artifact` MCP tool that lets agents copy files or directories
+  from `/home/agent` into the session `/artifacts` folder without leaving their
+  workspace.
+- Granted the tool by default to newly created agent sessions and updated the
+  standard workflow pack examples and Admin UI tool descriptions.
+
+## 2026-06-15 - Create Agent Dialog Submit Behavior
+
+- Closed the Create Agent dialog immediately after a valid submit while the
+  longer-running VM/container creation request continues and reports through
+  page-level status and action logs.
+- Summarized successful Create Agent completions instead of showing raw
+  bootstrap stdout in the success callout.
+
+## 2026-06-15 - Claude VM Bootstrap Readiness
+
+- Resolved caller-local NVM Claude Code installs during VM bootstrap when the
+  setup flow is launched through sudo, and preserved explicit `HOST_CLAUDE_BIN`
+  values across sudo/pkexec and privileged-helper launch boundaries.
+- Waited for guest cloud-init and repaired `/home/agent` ownership before the
+  Claude provider bootstrap writes files as the runtime user.
+
 ## 2026-06-15 - Create Agent Labels Help
 
 - Removed the redundant visible Labels helper text from the Create Agent dialog

@@ -162,6 +162,10 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
 
     assert "Usage: bootstrap_claude_vm.sh <vm-name> [vm-user]" in script
     assert "HOST_CLAUDE_BIN" in script
+    assert "resolve_host_claude_bin()" in script
+    assert '"${CALLER_HOME}"/.nvm/versions/node/*/bin/claude' in script
+    assert 'HOST_CLAUDE_BIN="$(readlink -f "${HOST_CLAUDE_BIN}")"' in script
+    assert "Host Claude Code binary is not executable" in script
     assert "ANTHROPIC_BASE_URL" in script
     assert "ANTHROPIC_AUTH_TOKEN" in script
     assert 'source "${SCRIPT_DIR}/lib/guest_ssh.sh"' in script
@@ -174,6 +178,12 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
         "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
         in script
     )
+    assert 'SSH_USER="${VM_SSH_USER:-agent-admin}"' in script
+    assert 'GUEST_BOOTSTRAP_WAIT_SECONDS="${GUEST_BOOTSTRAP_WAIT_SECONDS:-180}"' in script
+    assert "cloud-init status --wait" in script
+    assert 'install -d -m 0775 -o "${VM_USER}" -g "${agent_group}" /artifacts' in script
+    assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
+    assert "prepare_guest_home" in script
     assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
     assert "DISABLE_TELEMETRY" in script

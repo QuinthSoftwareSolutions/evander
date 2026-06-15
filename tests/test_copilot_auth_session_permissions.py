@@ -38,6 +38,8 @@ def test_admin_issue_session_manifest_only_adds_copilot_auth_for_copilot_provide
 
     assert ToolName.COPILOT_HOST_AUTH not in default_manifest.allowed_tools
     assert ToolName.COPILOT_HOST_AUTH in copilot_manifest.allowed_tools
+    assert ToolName.STAGE_ARTIFACT in default_manifest.allowed_tools
+    assert ToolName.STAGE_ARTIFACT in copilot_manifest.allowed_tools
     assert copilot_manifest.metadata["agent_provider"] == "copilot"
 
 
@@ -55,4 +57,5 @@ def test_cli_issue_session_manifest_adds_copilot_auth_for_copilot_provider(monke
     )
 
     assert ToolName.COPILOT_HOST_AUTH in manifest.allowed_tools
+    assert ToolName.STAGE_ARTIFACT in manifest.allowed_tools
     assert manifest.metadata["agent_provider"] == "copilot"

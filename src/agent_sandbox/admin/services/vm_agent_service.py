@@ -2131,6 +2131,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     "LLM_BASE_URL",
                     "AGENT_MODEL",
                     "AGENT_PROVIDER",
+                    "HOST_CLAUDE_BIN",
                     "NUGET_RELAY_BASE_URL",
                     "AGENT_SANDBOX_RUNTIME_DIR",
                     "VM_STORAGE_DIR",

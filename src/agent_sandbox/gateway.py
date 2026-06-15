@@ -64,12 +64,14 @@ from agent_sandbox.communication_artifact_links import (
 from agent_sandbox.config import GatewayConfig, InboundPhoneRoute, _normalize_phone_number
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from agent_sandbox.effects.providers.artifacts import ArtifactStageEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.schemas import (
     AgentCopyFilesEffectDefinition,
     AgentExecEffectDefinition,
+    ArtifactStageEffectDefinition,
     VmCopyFilesItemDefinition,
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
@@ -153,6 +155,8 @@ from agent_sandbox.models import (
     CancelScheduledWakeResponse,
     ScheduleResumeRequest,
     ScheduleResumeResponse,
+    StageArtifactRequest,
+    StageArtifactResponse,
     SubmitPrReviewRequest,
     SubmitVoiceQueryResponseRequest,
     SubmitVoiceQueryResponseResponse,
@@ -8562,6 +8566,81 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def stage_artifact(
+        session_id: str,
+        path: str,
+        destination_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy a file or directory under /home/agent into the session /artifacts folder."""
+        request = StageArtifactRequest(
+            session_id=session_id,
+            path=path,
+            destination_path=destination_path,
+        )
+        args = request.model_dump(mode="json", exclude_none=True)
+        try:
+            session = context.policy.require_tool(session_id, ToolName.STAGE_ARTIFACT)
+            effect = ArtifactStageEffectDefinition(
+                id="stage-artifact",
+                display_name="Stage artifact",
+                type="effect:artifact:stage",
+                session_id=session_id,
+                path=request.path,
+                destination_path=request.destination_path,
+            )
+            effect_context = EffectRuntimeContext(
+                provider_config=context.resolve_provider_config_for_session(session_id).model_dump(
+                    mode="json"
+                ),
+                admin_service=_admin_service(),
+                metadata={"directory_path": session.directory_path or "root"},
+            )
+            provider = ArtifactStageEffectProvider()
+            provider.initialize(effect_definition=effect, runtime_context=effect_context)
+            stage_result = provider.execute()
+            response = StageArtifactResponse(
+                success=bool(stage_result.get("success", True)),
+                message=str(stage_result.get("message") or ""),
+                session_id=str(stage_result.get("session_id") or session_id),
+                vm_name=str(stage_result.get("vm_name") or "") or None,
+                execution_backend=str(stage_result.get("execution_backend") or "") or None,
+                source_path=str(stage_result.get("source_path") or ""),
+                artifact_path=str(stage_result.get("artifact_path") or ""),
+                artifacts_root=str(stage_result.get("artifacts_root") or ""),
+                copied_count=int(stage_result.get("copied_count") or 0),
+                byte_count=int(stage_result.get("byte_count") or 0),
+                result=dict(stage_result),
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.STAGE_ARTIFACT,
+                args,
+                {
+                    "decision": "allowed",
+                    "source_path": response.source_path,
+                    "artifact_path": response.artifact_path,
+                    "artifacts_root": response.artifacts_root,
+                    "copied_count": response.copied_count,
+                    "byte_count": response.byte_count,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.STAGE_ARTIFACT, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.STAGE_ARTIFACT,
                 args,
                 str(exc),
                 decision="error",

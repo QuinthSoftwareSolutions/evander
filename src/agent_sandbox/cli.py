@@ -1382,6 +1382,7 @@ def _build_issue_session_manifest(
     allowed_tools: list[ToolName] = [
         ToolName.APPROVAL_SUBMIT,
         ToolName.APPROVAL_CHECK,
+        ToolName.STAGE_ARTIFACT,
     ]
 
     if discord_channels:
@@ -2292,6 +2293,7 @@ def create_session(
             ToolName.EMAIL_CREATE_DRAFT,
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
+            ToolName.STAGE_ARTIFACT,
             ToolName.PROMPT_AGENT,
             ToolName.RESPOND_TO_AGENT,
             ToolName.HAS_PENDING_FEEDBACK,

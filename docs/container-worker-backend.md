@@ -279,7 +279,8 @@ Each session contains:
 - `agent_home/`: mounted into containers at `/home/agent`
 - `agent_home/repos/`: in-container repository root at `/home/agent/repos`
 - `artifacts/`: mounted into containers at `/artifacts`; agents should write
-  workflow-readable text artifacts here
+  workflow-readable text artifacts here, preferably by calling the
+  `stage_artifact` MCP tool from their workspace
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 

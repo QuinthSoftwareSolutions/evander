@@ -1618,18 +1618,31 @@ export function AgentsPage() {
       setInlineValidation(createLabelsValidationError);
       return;
     }
+    const submittedForm = createForm;
+    const createPayload = buildCreatePayload(submittedForm, selectedDirectoryPath);
+    const targetLabel =
+      submittedForm.vmName.trim() ||
+      submittedForm.targetName.trim() ||
+      submittedForm.sessionId.trim() ||
+      "agent";
     setBusyAction("create-agent");
     setInlineValidation("");
+    setShowCreateForm(false);
+    setStatus(`Creating ${targetLabel}...`);
+    setError(null);
+    setActionLog((current) => [
+      { at: new Date().toISOString(), message: `Create agent: started ${targetLabel}`, tone: "info" as const },
+      ...current,
+    ].slice(0, 30));
     try {
       const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
         method: "POST",
-        body: JSON.stringify(buildCreatePayload(createForm, selectedDirectoryPath)),
+        body: JSON.stringify(createPayload),
       });
-      const message = `${payload.target_name}: ${payload.message}`;
-      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
-      setStatus(payload.message);
+      const successMessage = `Agent ${payload.target_name} was successfully created.`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message: successMessage, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(successMessage);
       setError(null);
-      setShowCreateForm(false);
       setCreateForm(emptyCreateForm());
       await refreshLiveAgents();
       setSelectedKey(`${payload.backend}:${payload.agent_id}`);
@@ -1637,7 +1650,6 @@ export function AgentsPage() {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
       setStatus(null);
-      setInlineValidation(message);
       setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
     } finally {
       setBusyAction(null);

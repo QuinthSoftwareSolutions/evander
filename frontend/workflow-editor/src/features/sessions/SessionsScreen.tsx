@@ -219,6 +219,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_issues: "List local issues that the session is allowed to inspect in the current directory scope.",
   get_issue: "Read the details of a specific local issue, including status, metadata, and body content.",
   set_issue_plan: "Store or update the implementation plan attached to a local issue.",
+  stage_artifact: "Copy a file or directory from the agent workspace into the session artifacts folder.",
   approve_issue: "Mark a local issue as approved so execution work can proceed.",
   commit_issue: "Move a local issue into the committed state once work is ready to start.",
   reject_issue: "Reject a local issue instead of approving it for execution.",
@@ -513,6 +514,7 @@ function groupToolOption(tool: ToolOption): string {
   if ([
     "communication_list_attachments",
     "communication_download_attachment",
+    "stage_artifact",
     "communication_copy_artifact_to_workspace",
     "communication_stage_workspace_file",
     "discord_post_file",
