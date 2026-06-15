@@ -655,6 +655,9 @@ undoing any work already performed. Optional `session_id` and
 `effect:artifact:stage` copies a file or directory that resolves under
 `/home/agent` into the session `/artifacts` folder. `destination_path`, when
 set, is relative to `/artifacts` and cannot contain dot or parent segments.
+Agents can perform the same session-artifact staging directly through the
+policy-gated `stage_artifact` MCP tool; it does not publish an immutable archive
+or create a communication artifact id.
 `effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder
 as a `tar.gz` archive and stores it in the host durable artifact store under an
 immutable caller-provided `key`. Reusing a key fails.

@@ -1044,7 +1044,8 @@
             "list_unread_feedback",
             "list_all_feedback",
             "post_pr_feedback_reply",
-            "set_issue_plan"
+            "set_issue_plan",
+            "stage_artifact"
           ],
           "directory_path": "${{gate-merge-1.directory_path}}",
           "discord_channels": [],
@@ -1390,7 +1391,8 @@
             "post_pr_feedback_reply",
             "list_unread_feedback",
             "list_all_feedback",
-            "submit_pr_review"
+            "submit_pr_review",
+            "stage_artifact"
           ],
           "directory_path": "root/example-industry/app",
           "discord_channels": [],

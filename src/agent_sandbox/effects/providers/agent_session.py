@@ -457,6 +457,8 @@ def build_container_session_manifest(
         else timedelta(seconds=config.default_session_ttl_seconds)
     )
     resolved_tools = normalize_allowed_tools(allowed_tools)
+    if ToolName.STAGE_ARTIFACT not in resolved_tools:
+        resolved_tools.append(ToolName.STAGE_ARTIFACT)
     if discord_channels:
         for tool in (
             ToolName.DISCORD_GET_COMMANDS,

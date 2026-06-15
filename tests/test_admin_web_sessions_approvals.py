@@ -105,7 +105,11 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
         '"list_contacts", "make_phone_call", "get_phone_call_result", "submit_voice_query_response"'
         in source
     )
-    assert '"communication_copy_artifact_to_workspace",\n    "communication_stage_workspace_file",' in source
+    assert (
+        '"stage_artifact",\n    "communication_copy_artifact_to_workspace",\n'
+        '    "communication_stage_workspace_file",'
+        in source
+    )
 
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:

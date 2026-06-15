@@ -448,6 +448,7 @@ Storage layout for directory config:
 - `./scripts/bootstrap_claude_vm.sh <vm-name>` copies a host Claude Code CLI command into `~/bin/claude` for the guest user and verifies `claude --version`.
 - The bootstrap script writes `~/.claude/settings.json` with the session-scoped `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_AUTH_TOKEN`, gateway model discovery enabled, telemetry disabled, and Claude Code commit-message attribution disabled. It also writes `~/.claude/mcp-config.json` so Claude Code can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
 - The bootstrap script appends `~/bin`, `AGENT_PROVIDER=claude`, placeholder Anthropic auth, and the configured Anthropic base URL to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Claude bootstrap.
 - Host-side routing is selected with `model_provider_mode: "anthropic"` in the effective provider config. The relay keeps the real Anthropic API key on the host and injects it as `x-api-key` upstream.
 
 ### GitHub Copilot CLI provider bootstrap
@@ -2447,6 +2448,9 @@ folder. Container workers mount it from durable session storage; VM setup create
 it as an agent-writable guest directory and exports `AGENT_SANDBOX_ARTIFACTS_DIR`.
 Use `query:agent:artifact-text` with a session id and relative path to read a
 UTF-8 text file from that folder.
+Agents can call the `stage_artifact` MCP tool with a file or directory path
+under `/home/agent` and an optional relative `destination_path` to copy
+deliverables into that folder without changing directories.
 Use `effect:artifact:stage` to copy a file or directory from `/home/agent` into
 that folder, then `effect:artifact:publish-artifacts` to publish the full folder
 as an immutable keyed `tar.gz` archive under `runtime/published-artifacts/`.

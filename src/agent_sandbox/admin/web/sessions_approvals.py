@@ -52,6 +52,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
         "Build the daily status report JSON from Azure DevOps current-iteration data."
     ),
+    ToolName.STAGE_ARTIFACT: (
+        "Copy a file or directory from the agent workspace into the session artifacts folder."
+    ),
     ToolName.LIST_CONTACTS: (
         "List directory-configured contact ids without exposing addresses or phone numbers."
     ),

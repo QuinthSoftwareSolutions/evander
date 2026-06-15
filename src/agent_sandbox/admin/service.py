@@ -6646,7 +6646,11 @@ def _build_issue_session_manifest(
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool = False,
 ) -> SessionManifest:
-    resolved_allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
+    resolved_allowed_tools: list[ToolName] = [
+        ToolName.APPROVAL_SUBMIT,
+        ToolName.APPROVAL_CHECK,
+        ToolName.STAGE_ARTIFACT,
+    ]
     if discord_channels:
         resolved_allowed_tools.extend(
             [

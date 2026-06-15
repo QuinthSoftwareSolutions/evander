@@ -15,6 +15,7 @@ from typing import Any
 import agent_sandbox.admin.service as admin_service
 import httpx
 import pytest
+from agent_sandbox.admin import privileged_helper
 from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.admin.facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin.service import AdminService
@@ -11531,6 +11532,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
 
     monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/gh_id_ed25519.pub")
     monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
+    monkeypatch.setenv("HOST_CLAUDE_BIN", "/opt/claude/bin/claude")
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
     )
@@ -11568,6 +11570,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
         part.startswith("--preserve-env=")
         and "SSH_PUBLIC_KEY_FILE" in part
         and "SSH_PRIVATE_KEY_PATH" in part
+        and "HOST_CLAUDE_BIN" in part
         for part in calls[0][0]
     )
     assert calls[0][0][-7:] == [
@@ -11621,6 +11624,7 @@ def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_
 
     monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/gh_id_ed25519.pub")
     monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
+    monkeypatch.setenv("HOST_CLAUDE_BIN", "/opt/claude/bin/claude")
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
     )
@@ -11665,6 +11669,7 @@ def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_
     preserve_env_args = [part for part in captured["cmd"] if part.startswith("--preserve-env=")]
     assert all("AGENT_PROVIDER" not in part for part in preserve_env_args)
     assert all("LIBVIRT_BASE_IMAGE" not in part for part in preserve_env_args)
+    assert any("HOST_CLAUDE_BIN" in part for part in preserve_env_args)
     setup_script_index = next(
         index for index, part in enumerate(captured["cmd"]) if part.endswith("setup_vm.sh")
     )
@@ -13006,6 +13011,15 @@ def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path)
     assert service.privileged_operations_unlocked() is True
     service.lock_privileged_operations()
     assert started == ["init", "start", "close"]
+
+
+def test_privileged_helper_preserves_host_claude_binary_env() -> None:
+    filtered = privileged_helper._filtered_env(
+        {"HOST_CLAUDE_BIN": "/opt/claude/bin/claude", "UNRELATED": "ignored"}
+    )
+
+    assert filtered["HOST_CLAUDE_BIN"] == "/opt/claude/bin/claude"
+    assert "UNRELATED" not in filtered
 
 
 def test_destroy_vm_prunes_generic_sessions_and_feedback_state(

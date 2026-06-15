@@ -9,10 +9,15 @@ Copies a host Claude Code CLI command into the guest and writes session-aware
 Anthropic relay and MCP configuration.
 
 Environment:
-  HOST_CLAUDE_BIN       Host Claude Code binary. Default: `command -v claude`.
+  HOST_CLAUDE_BIN       Host Claude Code binary. Default: `command -v claude`,
+                        then caller-local NVM installs.
   ANTHROPIC_BASE_URL    Guest Anthropic relay base URL. Overrides guest session env when set.
   GATEWAY_URL           Guest MCP gateway URL. Default from guest session env.
   SSH_PRIVATE_KEY_PATH  SSH private key for guest access.
+  VM_SSH_USER           Privileged guest SSH user used to wait for cloud-init and
+                        repair guest home ownership. Default: agent-admin
+  GUEST_BOOTSTRAP_WAIT_SECONDS
+                        How long to wait for guest bootstrap readiness. Default: 180
 EOF
 }
 
@@ -47,12 +52,39 @@ SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" && -z "${SSH_KEY_PATH:-}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
-HOST_CLAUDE_BIN="${HOST_CLAUDE_BIN:-$(command -v claude || true)}"
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 GATEWAY_URL="${GATEWAY_URL:-}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
+GUEST_BOOTSTRAP_WAIT_SECONDS="${GUEST_BOOTSTRAP_WAIT_SECONDS:-180}"
 
-if [[ -z "${HOST_CLAUDE_BIN}" || ! -f "${HOST_CLAUDE_BIN}" ]]; then
+resolve_host_claude_bin() {
+  local candidate
+  if [[ -n "${HOST_CLAUDE_BIN:-}" ]]; then
+    printf '%s\n' "${HOST_CLAUDE_BIN}"
+    return 0
+  fi
+  candidate="$(command -v claude || true)"
+  if [[ -n "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  for candidate in "${CALLER_HOME}"/.nvm/versions/node/*/bin/claude "${CALLER_HOME}"/.local/bin/claude; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+HOST_CLAUDE_BIN="$(resolve_host_claude_bin || true)"
+if [[ -z "${HOST_CLAUDE_BIN}" ]]; then
   echo "Missing host Claude Code binary. Install Claude Code or set HOST_CLAUDE_BIN." >&2
+  exit 1
+fi
+HOST_CLAUDE_BIN="$(readlink -f "${HOST_CLAUDE_BIN}")"
+if [[ ! -x "${HOST_CLAUDE_BIN}" ]]; then
+  echo "Host Claude Code binary is not executable: ${HOST_CLAUDE_BIN}" >&2
   exit 1
 fi
 
@@ -61,11 +93,97 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   echo "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key." >&2
   exit 1
 fi
+if ! [[ "${GUEST_BOOTSTRAP_WAIT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "GUEST_BOOTSTRAP_WAIT_SECONDS must be a positive integer: ${GUEST_BOOTSTRAP_WAIT_SECONDS}" >&2
+  exit 1
+fi
 
 if ! vm_network_vm_exists "${VM_NAME}"; then
   echo "VM not found: ${VM_NAME}" >&2
   exit 1
 fi
+
+guest_user_home_writable() {
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" 'test -d "$HOME" && test -w "$HOME"' \
+    >/dev/null 2>&1
+}
+
+repair_guest_home_with_user() {
+  local ssh_user="$1"
+
+  ssh "${SSH_OPTS[@]}" "${ssh_user}@${VM_IP}" \
+    sudo -n env "VM_USER=${VM_USER}" "GUEST_BOOTSTRAP_WAIT_SECONDS=${GUEST_BOOTSTRAP_WAIT_SECONDS}" bash -s <<'EOF'
+set -euo pipefail
+
+if command -v cloud-init >/dev/null 2>&1; then
+  if command -v timeout >/dev/null 2>&1; then
+    cloud_init_status=0
+    timeout "${GUEST_BOOTSTRAP_WAIT_SECONDS}" cloud-init status --wait >/dev/null 2>&1 || cloud_init_status=$?
+    if [[ "${cloud_init_status}" == "124" ]]; then
+      echo "Timed out waiting for guest cloud-init after ${GUEST_BOOTSTRAP_WAIT_SECONDS}s." >&2
+      exit 1
+    fi
+    if [[ "${cloud_init_status}" != "0" ]]; then
+      echo "cloud-init completed with a non-zero status; continuing with home ownership repair." >&2
+    fi
+  else
+    cloud-init status --wait >/dev/null 2>&1 \
+      || echo "cloud-init completed with a non-zero status; continuing with home ownership repair." >&2
+  fi
+fi
+
+agent_home="$(getent passwd "${VM_USER}" | cut -d: -f6)"
+if [[ -z "${agent_home}" ]]; then
+  echo "Unknown guest user: ${VM_USER}" >&2
+  exit 1
+fi
+agent_group="$(id -gn "${VM_USER}")"
+install -d -m 0755 -o "${VM_USER}" -g "${agent_group}" "${agent_home}"
+install -d -m 0775 -o "${VM_USER}" -g "${agent_group}" /artifacts
+ln -sfn /artifacts "${agent_home}/artifacts"
+chown -h "${VM_USER}:${agent_group}" "${agent_home}/artifacts"
+chown -R "${VM_USER}:${agent_group}" "${agent_home}"
+EOF
+}
+
+try_repair_guest_home() {
+  local ssh_user="$1"
+
+  [[ -n "${ssh_user}" ]] || return 1
+  repair_guest_home_with_user "${ssh_user}" >/dev/null 2>&1
+}
+
+prepare_guest_home() {
+  local deadline
+  deadline=$((SECONDS + GUEST_BOOTSTRAP_WAIT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if try_repair_guest_home "${SSH_USER}"; then
+      return 0
+    fi
+    if [[ "${SSH_USER}" != "${VM_USER}" ]] && try_repair_guest_home "${VM_USER}"; then
+      return 0
+    fi
+    if guest_user_home_writable; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  if repair_guest_home_with_user "${SSH_USER}"; then
+    return 0
+  fi
+  if [[ "${SSH_USER}" != "${VM_USER}" ]] && repair_guest_home_with_user "${VM_USER}"; then
+    return 0
+  fi
+  if guest_user_home_writable; then
+    return 0
+  fi
+
+  echo "Timed out waiting for guest home to become writable for ${VM_USER}@${VM_IP}." >&2
+  echo "Check cloud-init and guest user ownership, or set VM_SSH_USER to a sudo-capable guest user." >&2
+  return 1
+}
 
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS:-180}")"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
@@ -78,6 +196,7 @@ if [[ ! -f "${PROVIDER_RUNNER_LIB_PATH}" ]]; then
 fi
 
 echo "Bootstrapping Claude Code into ${VM_USER}@${VM_IP}"
+prepare_guest_home
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail

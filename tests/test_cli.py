@@ -1702,6 +1702,7 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     assert "email_send_approved" not in manifest["allowed_tools"]
     assert "prompt_agent" in manifest["allowed_tools"]
     assert "respond_to_agent" in manifest["allowed_tools"]
+    assert "stage_artifact" in manifest["allowed_tools"]
 
 
 def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
