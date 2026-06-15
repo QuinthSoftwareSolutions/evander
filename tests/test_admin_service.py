@@ -5068,6 +5068,88 @@ def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_h
     ]
 
 
+def test_get_admin_agent_log_page_container_session_threads_large_history_rebuilds_grouped_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-large-fallback",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-large-fallback",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-large-fallback",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(150):
+        thread_metadata_key = "thread_id" if index == 0 else "resume_thread_id"
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-large-fallback-{index:03d}",
+                session_id="session-thread-large-fallback",
+                worker_job_id=f"job-large-fallback-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-large-fallback",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+                + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={thread_metadata_key: "thread-large-fallback"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                raise AssertionError("stored thread ids should avoid raw log probes")
+            if mode == "session":
+                return ""
+            if mode == "execution":
+                return f"fallback body for {target}\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-large-fallback",
+        backend="container_worker_vm",
+        view="threads",
+        limit=400,
+    )
+
+    assert page["view"] == "threads"
+    assert "thread=thread-large-fallback" in page["text"]
+    assert "executions=150" in page["text"]
+    assert "fallback body for exec-large-fallback-000" in page["text"]
+    assert "fallback body for exec-large-fallback-149" in page["text"]
+    assert ("exec-large-fallback-149", 0, "execution") in fake_backend.calls
+    assert all(mode != "raw" for _target, _lines, mode in fake_backend.calls)
+
+
 def test_get_admin_agent_log_page_container_session_threads_searches_full_transcript(
     tmp_path: Path,
     monkeypatch,

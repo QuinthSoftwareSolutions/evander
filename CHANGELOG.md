@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Bounded the initial Agents page thread-log load for container worker sessions
   with large execution histories, avoiding a worker log probe for every past
   execution before the first page can render.
+- Rebuilt grouped large-history thread chunks after resumed executions are
+  associated with the same stored thread id, so fallback logs and header counts
+  match the grouped history.
 - Reused stored container thread ids from execution metadata where available and
   recorded resume thread ids on new container prompt executions.
 

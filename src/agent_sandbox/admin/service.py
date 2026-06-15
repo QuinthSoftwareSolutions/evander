@@ -12767,8 +12767,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
         chunks: list[str] = []
         grouped_records: dict[str, list[Any]] = {}
-        seen_thread_ids: set[str] = set()
+        thread_chunk_indexes: dict[str, int] = {}
+        dirty_thread_ids: set[str] = set()
         line_count = 0
+        truncated_after = False
         for index, execution in enumerate(sorted_records):
             raw_text = None
             thread_id = self._container_execution_stored_thread_id(execution)
@@ -12778,9 +12780,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if thread_id is not None:
                 records = grouped_records.setdefault(thread_id, [])
                 records.append(execution)
-                if thread_id in seen_thread_ids:
+                chunk_index = thread_chunk_indexes.get(thread_id)
+                if chunk_index is not None:
+                    dirty_thread_ids.add(thread_id)
                     continue
-                seen_thread_ids.add(thread_id)
+                thread_chunk_indexes[thread_id] = len(chunks)
             else:
                 records = [execution]
             chunk = self._container_thread_group_chunk(
@@ -12792,8 +12796,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             chunks.append(chunk)
             line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
             if line_count >= target_lines:
-                return chunks, index < len(sorted_records) - 1
-        return chunks, False
+                truncated_after = index < len(sorted_records) - 1
+                break
+        for thread_id in dirty_thread_ids:
+            chunk_index = thread_chunk_indexes.get(thread_id)
+            if chunk_index is None:
+                continue
+            chunks[chunk_index] = self._container_thread_group_chunk(
+                worker_backend,
+                thread_id=thread_id,
+                records=grouped_records[thread_id],
+                raw_text=None,
+            )
+        return chunks, truncated_after
 
     def _container_thread_group_chunk(
         self,
