@@ -198,6 +198,7 @@ test("agents structured labels round-trip and block malformed rows", async (t) =
           directory_path: "root",
           backends: ["libvirt_vm", "container_worker_vm"],
           agent_providers: [],
+          communication_targets: [],
           libvirt: {
             default_template: null,
             templates: [],

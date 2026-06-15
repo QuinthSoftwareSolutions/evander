@@ -2054,12 +2054,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(trigger_read_root) == set(message_read_root)
     assert set(trigger_read_ops) == set(message_read_ops)
     assert set(agent_create_root) == {
+        "mail-read",
+        "mail-write",
         "root-chat",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
     }
     assert set(agent_create_ops) == {
+        "mail-read",
+        "mail-write",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
@@ -11321,6 +11325,29 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     service.create_directory_child("root", "team-a")
     service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
+    communication_targets_write = service.write_directory_domain_config(
+        "root/team-a",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "ops-teams",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-2",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "ops-email",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
+                },
+            ]
+        },
+    )
+    assert communication_targets_write.ok is True
     captured: dict[str, object] = {}
 
     def create_vm(self, **payload):
@@ -11350,6 +11377,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "labels": {"team": "a"},
             "allowed_tools": ["run_script"],
             "allowed_script_names": ["demo"],
+            "communication_target_ids": ["ops-teams", "ops-email"],
             "discord_channels": ["ops"],
             "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
             "email_mailboxes": ["default"],
@@ -11382,9 +11410,10 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "allowed_script_names": ["demo"],
         "allowed_contact_ids": None,
         "discord_channels": ["ops"],
-        "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
+        "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1", "ops-teams"],
+        "teams_chat_allowlist": None,
         "teams_user_allowlist": None,
-        "email_mailboxes": ["default"],
+        "email_mailboxes": ["default", "ops"],
         "email_folders": ["inbox"],
         "communication_file_receive_enabled": True,
         "communication_file_send_enabled": True,
@@ -11434,6 +11463,7 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
     ]
     assert body["container_worker"]["default_image"] == "agent-sandbox-runner:latest"
     assert body["container_worker"]["images"] == []
+    assert body["communication_targets"] == []
 
 
 def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
@@ -11465,6 +11495,36 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     )
     assert vm_write.ok is True
+    communications_write = service.write_directory_domain_config(
+        team_path,
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "ops-teams",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["read", "reply"]},
+                },
+                {
+                    "id": "ops-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "ops-email",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
+                },
+            ]
+        },
+    )
+    assert communications_write.ok is True
     client = TestClient(create_app(service))
 
     response = client.get(
@@ -11489,6 +11549,13 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
             "image_ref": "runner-dotnet-playwright:2026-06-05",
         },
     ]
+    communication_targets = {
+        target["value"]: target for target in body["communication_targets"]
+    }
+    assert set(communication_targets) == {"ops-teams", "ops-discord", "ops-email"}
+    assert communication_targets["ops-teams"]["metadata"]["provider"] == "teams"
+    assert communication_targets["ops-discord"]["metadata"]["provider"] == "discord"
+    assert communication_targets["ops-email"]["metadata"]["provider"] == "email"
 
 
 def test_admin_web_agents_create_vm_duplicate_session_returns_409(

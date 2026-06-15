@@ -167,6 +167,7 @@ export type AgentCreateRequest = {
   web_search_enabled?: boolean;
   allowed_tools?: string[];
   allowed_script_names?: string[];
+  communication_target_ids?: string[];
   discord_channels?: string[];
   teams_channel_allowlist?: string[];
   email_mailboxes?: string[];
@@ -197,10 +198,18 @@ export type AgentCreateImageOption = {
   image_ref: string;
 };
 
+export type AgentCreateCommunicationTargetOption = {
+  value: string;
+  label: string;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type AgentCreateOptionsResponse = {
   directory_path: string;
   backends: AgentBackend[];
   agent_providers: AgentCreateProviderOption[];
+  communication_targets: AgentCreateCommunicationTargetOption[];
   libvirt: {
     default_template: string | null;
     templates: AgentCreateImageOption[];

@@ -867,6 +867,13 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
                 "address": "123456789012345678",
                 "policy": {"capabilities": ["read", "write"]},
             },
+            {
+                "id": "ops-email",
+                "provider": "email",
+                "kind": "email",
+                "address": "ops@example.com",
+                "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
+            },
         ],
     )
     effect = AgentCreateEffectDefinition(
@@ -881,9 +888,11 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
             "teams-chat",
             "teams-user",
             "discord-ops",
+            "ops-email",
         ],
         teams_channel_allowlist=["team-a/existing"],
         discord_channels=["111111111111111111"],
+        email_mailboxes=["default"],
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -910,6 +919,7 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
     ]
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
     assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
+    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default", "ops"]
 
 
 def test_agent_create_provider_passes_session_metadata() -> None:
