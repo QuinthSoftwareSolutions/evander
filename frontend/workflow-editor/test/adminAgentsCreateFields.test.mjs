@@ -73,12 +73,17 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
     "web_search_enabled",
     "allowed_tools",
     "allowed_script_names",
+    "communication_target_ids",
+  ]) {
+    assert.match(source, new RegExp(`payload\\.${field}`));
+  }
+  for (const field of [
     "discord_channels",
     "teams_channel_allowlist",
     "email_mailboxes",
     "email_folders",
   ]) {
-    assert.match(source, new RegExp(`payload\\.${field}`));
+    assert.doesNotMatch(source, new RegExp(`payload\\.${field}`));
   }
   assert.doesNotMatch(source, /payload\.codex_skills/);
 });
@@ -134,16 +139,22 @@ test("create modal exposes structured initial policy controls without post-creat
     "Labels",
     "Allowed tools",
     "Allowed scripts",
-    "Discord channels or targets",
-    "Teams targets",
-    "Email mailboxes",
-    "Email folders",
+    "Communication targets",
     "Web search",
   ]) {
     assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(createModal, /StringMapEditor/);
+  assert.match(createModal, /OptionMultiSelectEditor/);
   assert.match(createModal, /StringListEditor/);
+  for (const label of [
+    "Discord channels or targets",
+    "Teams targets",
+    "Email mailboxes",
+    "Email folders",
+  ]) {
+    assert.doesNotMatch(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
   for (const label of [
     "Model",
     "TTL hours",
@@ -199,7 +210,9 @@ test("the create modal never reintroduces upsert semantics", () => {
 test("request and options types expose the new create fields", () => {
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?agent_provider\?: string \| null;[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?vm_image\?: string \| null;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateRequest = \{[\s\S]*?communication_target_ids\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateRequest = \{[\s\S]*?teams_channel_allowlist\?: string\[\];[\s\S]*?\};/);
   assert.match(types, /type AgentCreateProviderOption = \{[\s\S]*?execution_backends: AgentBackend\[\];[\s\S]*?\};/);
-  assert.match(types, /type AgentCreateOptionsResponse = \{[\s\S]*?agent_providers: AgentCreateProviderOption\[\];[\s\S]*?libvirt: \{[\s\S]*?container_worker: \{[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateCommunicationTargetOption = \{[\s\S]*?metadata\?: Record<string, unknown>;[\s\S]*?\};/);
+  assert.match(types, /type AgentCreateOptionsResponse = \{[\s\S]*?agent_providers: AgentCreateProviderOption\[\];[\s\S]*?communication_targets: AgentCreateCommunicationTargetOption\[\];[\s\S]*?libvirt: \{[\s\S]*?container_worker: \{[\s\S]*?\};/);
 });

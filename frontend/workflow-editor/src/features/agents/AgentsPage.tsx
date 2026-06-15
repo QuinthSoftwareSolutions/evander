@@ -5,7 +5,7 @@ import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
-import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
+import { OptionMultiSelectEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -118,10 +118,7 @@ type AgentInitialPolicyFormState = {
   webSearchEnabled: boolean;
   allowedTools: string[];
   allowedScriptNames: string[];
-  discordChannels: string[];
-  teamsChannels: string[];
-  emailMailboxes: string[];
-  emailFolders: string[];
+  communicationTargetIds: string[];
 };
 
 type AgentPolicyFormState = {
@@ -208,10 +205,7 @@ function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     webSearchEnabled: false,
     allowedTools: [],
     allowedScriptNames: [],
-    discordChannels: [],
-    teamsChannels: [],
-    emailMailboxes: [],
-    emailFolders: [],
+    communicationTargetIds: [],
   };
 }
 
@@ -757,14 +751,8 @@ function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): 
   if (allowedTools.length > 0) payload.allowed_tools = allowedTools;
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
-  const discordChannels = dedupeStrings(initialPolicy.discordChannels);
-  if (discordChannels.length > 0) payload.discord_channels = discordChannels;
-  const teamsChannels = dedupeStrings(initialPolicy.teamsChannels);
-  if (teamsChannels.length > 0) payload.teams_channel_allowlist = teamsChannels;
-  const emailMailboxes = dedupeStrings(initialPolicy.emailMailboxes);
-  if (emailMailboxes.length > 0) payload.email_mailboxes = emailMailboxes;
-  const emailFolders = dedupeStrings(initialPolicy.emailFolders);
-  if (emailFolders.length > 0) payload.email_folders = emailFolders;
+  const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);
+  if (communicationTargetIds.length > 0) payload.communication_target_ids = communicationTargetIds;
   return payload;
 }
 
@@ -1068,6 +1056,10 @@ export function AgentsPage() {
       agentProvider: "",
       vmImage: "",
       containerImage: "",
+      initialPolicy: {
+        ...current.initialPolicy,
+        communicationTargetIds: [],
+      },
     }));
   }, [selectedDirectoryPath]);
 
@@ -1816,6 +1808,7 @@ export function AgentsPage() {
   const createProviderOptions = (createOptions?.agent_providers ?? []).filter((option) =>
     option.execution_backends.includes(createForm.backend),
   );
+  const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
     canControlWorkflowRuns &&
@@ -2517,75 +2510,23 @@ export function AgentsPage() {
                     />
                   </div>
                   <div className="field-stack">
-                    <CreateFieldLabel tooltip="Discord channel ids or communication target ids the session may read or write.">
-                      Discord channels or targets
+                    <CreateFieldLabel tooltip="Directory communication targets the session may use for messaging. Only registered targets with session-compatible capabilities are selectable.">
+                      Communication targets
                     </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.discordChannels}
+                    <OptionMultiSelectEditor
+                      values={createForm.initialPolicy.communicationTargetIds}
+                      options={createCommunicationTargetOptions}
                       onChange={(nextValues) =>
                         setCreateForm((current) => ({
                           ...current,
-                          initialPolicy: { ...current.initialPolicy, discordChannels: nextValues },
+                          initialPolicy: { ...current.initialPolicy, communicationTargetIds: nextValues },
                         }))
                       }
-                      addLabel="Add Discord target"
-                      itemLabel="Discord target"
-                      placeholder="channel-id or communication-target-id"
-                      emptyState="No Discord targets are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Teams communication target ids, team/channel ids, or chat ids the session may use.">
-                      Teams targets
-                    </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.teamsChannels}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, teamsChannels: nextValues },
-                        }))
+                      emptyState={
+                        createCommunicationTargetOptions.length
+                          ? "No communication targets selected."
+                          : "No session-capable communication targets are registered for this directory."
                       }
-                      addLabel="Add Teams target"
-                      itemLabel="Teams target"
-                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
-                      emptyState="No Teams targets are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Mailbox ids the session may access through configured email providers.">
-                      Email mailboxes
-                    </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.emailMailboxes}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, emailMailboxes: nextValues },
-                        }))
-                      }
-                      addLabel="Add mailbox"
-                      itemLabel="Mailbox"
-                      placeholder="ops"
-                      emptyState="No email mailboxes are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Folders the session may access within the allowed email mailboxes.">
-                      Email folders
-                    </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.emailFolders}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, emailFolders: nextValues },
-                        }))
-                      }
-                      addLabel="Add folder"
-                      itemLabel="Folder"
-                      placeholder="Inbox"
-                      emptyState="No email folders are allowlisted."
                     />
                   </div>
                 </div>

@@ -867,6 +867,16 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
                 "address": "123456789012345678",
                 "policy": {"capabilities": ["read", "write"]},
             },
+            {
+                "id": "ops-email",
+                "provider": "email",
+                "kind": "email",
+                "address": "ops@example.com",
+                "policy": {
+                    "capabilities": ["read", "write"],
+                    "auth_profile_ref": "email.ops",
+                },
+            },
         ],
     )
     effect = AgentCreateEffectDefinition(
@@ -881,9 +891,11 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
             "teams-chat",
             "teams-user",
             "discord-ops",
+            "ops-email",
         ],
         teams_channel_allowlist=["team-a/existing"],
         discord_channels=["111111111111111111"],
+        email_mailboxes=["default"],
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -910,6 +922,61 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
     ]
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
     assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
+    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default", "ops"]
+
+
+@pytest.mark.parametrize(
+    ("target_id", "capabilities"),
+    [
+        ("ops-email-read", ["read"]),
+        ("ops-email-write", ["write"]),
+    ],
+)
+def test_agent_create_provider_rejects_capability_limited_email_targets(
+    tmp_path: Path, target_id: str, capabilities: list[str]
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    _write_root_communication_targets(
+        config,
+        [
+            {
+                "id": target_id,
+                "provider": "email",
+                "kind": "email",
+                "address": "ops@example.com",
+                "policy": {
+                    "capabilities": capabilities,
+                    "auth_profile_ref": "email.ops",
+                },
+            },
+        ],
+    )
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        communication_target_ids=[target_id],
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service.runtime.provider_config = _ContainerResolverStub(config)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(ValueError, match="requires both read and write capabilities"):
+        factory.build(effect).execute()
+
+    assert admin_service.create_vm_calls == []
 
 
 def test_agent_create_provider_passes_session_metadata() -> None:

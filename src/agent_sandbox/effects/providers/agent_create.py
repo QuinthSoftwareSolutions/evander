@@ -215,8 +215,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
             teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
-            email_mailboxes=as_string_list(payload.get("email_mailboxes")),
-            email_folders=as_string_list(payload.get("email_folders")),
+            email_mailboxes=communication_allowlists["email_mailboxes"],
+            email_folders=communication_allowlists["email_folders"],
             communication_file_receive_enabled=as_bool_or_none(
                 payload.get("communication_file_receive_enabled")
             ),
@@ -382,8 +382,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
             teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
-            email_mailboxes=as_string_list(payload.get("email_mailboxes")),
-            email_folders=as_string_list(payload.get("email_folders")),
+            email_mailboxes=communication_allowlists["email_mailboxes"],
+            email_folders=communication_allowlists["email_folders"],
             communication_file_receive_enabled=as_bool_or_none(
                 payload.get("communication_file_receive_enabled")
             ),
@@ -501,6 +501,8 @@ def _agent_communication_allowlists(
     teams_channel_allowlist = as_string_list(payload.get("teams_channel_allowlist")) or []
     teams_chat_allowlist = as_string_list(payload.get("teams_chat_allowlist")) or []
     teams_user_allowlist = as_string_list(payload.get("teams_user_allowlist")) or []
+    email_mailboxes = as_string_list(payload.get("email_mailboxes")) or []
+    email_folders = as_string_list(payload.get("email_folders")) or []
     communication_target_ids = [
         target_id.lower()
         for target_id in (as_string_list(payload.get("communication_target_ids")) or [])
@@ -511,6 +513,8 @@ def _agent_communication_allowlists(
             "teams_channel_allowlist": teams_channel_allowlist or None,
             "teams_chat_allowlist": teams_chat_allowlist or None,
             "teams_user_allowlist": teams_user_allowlist or None,
+            "email_mailboxes": email_mailboxes or None,
+            "email_folders": email_folders or None,
         }
 
     targets_by_id = load_communication_targets_config(
@@ -522,6 +526,7 @@ def _agent_communication_allowlists(
     selected_teams_channels: list[str] = []
     selected_teams_chats: list[str] = []
     selected_teams_users: list[str] = []
+    selected_email_mailboxes: list[str] = []
     for target_id in communication_target_ids:
         target = targets_by_id.get(target_id)
         if target is None:
@@ -541,8 +546,19 @@ def _agent_communication_allowlists(
             else:
                 selected_teams_channels.append(target.id)
             continue
+        if target.provider == "email":
+            missing_capabilities = sorted(
+                {"read", "write"} - set(target.policy.capabilities)
+            )
+            if missing_capabilities:
+                raise ValueError(
+                    "effect:agent:create email communication target "
+                    f"{target.id!r} requires both read and write capabilities"
+                )
+            selected_email_mailboxes.append(_email_mailbox_id_for_target(target))
+            continue
         raise ValueError(
-            "effect:agent:create communication_target_ids only supports Teams and Discord "
+            "effect:agent:create communication_target_ids only supports Teams, Discord, and email "
             f"targets for now; target {target.id!r} uses provider {target.provider!r}"
         )
 
@@ -563,7 +579,22 @@ def _agent_communication_allowlists(
             selected_teams_users,
         )
         or None,
+        "email_mailboxes": _append_unique(email_mailboxes, selected_email_mailboxes) or None,
+        "email_folders": email_folders or None,
     }
+
+
+def _email_mailbox_id_for_target(target: Any) -> str:
+    auth_profile_ref = getattr(getattr(target, "policy", None), "auth_profile_ref", None)
+    normalized = str(auth_profile_ref or "").strip()
+    if normalized.startswith("email."):
+        normalized = normalized.removeprefix("email.")
+    if not normalized:
+        raise ValueError(
+            "effect:agent:create email communication target "
+            f"{getattr(target, 'id', '')!r} requires policy.auth_profile_ref"
+        )
+    return normalized
 
 
 def _container_image_selection_for_create(

@@ -108,7 +108,10 @@ from agent_sandbox.approval_notification_targets import (
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
-from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
+from agent_sandbox.messaging.targets import (
+    COMMUNICATION_TARGETS_DOMAIN,
+    load_communication_targets_config,
+)
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
@@ -1667,6 +1670,8 @@ def _communication_target_option_metadata(
         metadata["required_capability"] = "read"
     elif purpose == "agent-session":
         metadata["supported_capabilities"] = ["read", "write", "reply"]
+        if provider == "email":
+            metadata["required_capabilities"] = ["read", "write"]
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
@@ -3196,8 +3201,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Communication targets",
                 "string_list",
                 description=(
-                    "Known Teams or Discord communication targets to allowlist for the "
-                    "created session. Select from the directory communication target catalogue."
+                    "Known Teams, Discord, or mailbox-backed email communication targets "
+                    "to allowlist for the created session. Select from the directory "
+                    "communication target catalogue."
                 ),
                 metadata={"selection_only": True},
             ),
@@ -6756,6 +6762,160 @@ def _normalize_session_labels(value: object) -> dict[str, str]:
         if mapped_value:
             normalized[key] = mapped_value
     return normalized
+
+
+def _append_unique_string_values(base: list[str], values: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*base, *values]:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+    return merged
+
+
+def _email_mailbox_id_from_auth_profile_ref(
+    auth_profile_ref: object, *, target_id: str
+) -> str:
+    normalized = str(auth_profile_ref or "").strip()
+    if normalized.startswith("email."):
+        normalized = normalized.removeprefix("email.")
+    if not normalized:
+        raise ValueError(
+            f"email communication target {target_id!r} requires policy.auth_profile_ref"
+        )
+    return normalized
+
+
+def _admin_agent_communication_allowlists(
+    payload: Mapping[str, Any],
+    *,
+    config: GatewayConfig,
+    directory_path: str,
+) -> dict[str, list[str] | None]:
+    discord_channels = _normalize_plain_string_list(
+        payload.get("discord_channels") if "discord_channels" in payload else None,
+        field_name="discord_channels",
+    )
+    teams_channel_allowlist = _normalize_plain_string_list(
+        payload.get("teams_channel_allowlist")
+        if "teams_channel_allowlist" in payload
+        else None,
+        field_name="teams_channel_allowlist",
+    )
+    teams_chat_allowlist = _normalize_plain_string_list(
+        payload.get("teams_chat_allowlist") if "teams_chat_allowlist" in payload else None,
+        field_name="teams_chat_allowlist",
+    )
+    teams_user_allowlist = _normalize_plain_string_list(
+        payload.get("teams_user_allowlist") if "teams_user_allowlist" in payload else None,
+        field_name="teams_user_allowlist",
+    )
+    email_mailboxes = _normalize_plain_string_list(
+        payload.get("email_mailboxes") if "email_mailboxes" in payload else None,
+        field_name="email_mailboxes",
+    )
+    email_folders = _normalize_plain_string_list(
+        payload.get("email_folders") if "email_folders" in payload else None,
+        field_name="email_folders",
+    )
+    communication_target_ids = [
+        target_id.lower()
+        for target_id in _normalize_plain_string_list(
+            payload.get("communication_target_ids")
+            if "communication_target_ids" in payload
+            else None,
+            field_name="communication_target_ids",
+        )
+    ]
+    if not communication_target_ids:
+        return {
+            "discord_channels": discord_channels or None,
+            "teams_channel_allowlist": teams_channel_allowlist or None,
+            "teams_chat_allowlist": teams_chat_allowlist or None,
+            "teams_user_allowlist": teams_user_allowlist or None,
+            "email_mailboxes": email_mailboxes or None,
+            "email_folders": email_folders or None,
+        }
+
+    targets_by_id = load_communication_targets_config(
+        runtime_dir=config.runtime_dir,
+        directory_store=DirectoryStore(config.directories_store_path),
+        directory_path=directory_path,
+    ).by_id()
+    selected_discord_channels: list[str] = []
+    selected_teams_channels: list[str] = []
+    selected_teams_chats: list[str] = []
+    selected_teams_users: list[str] = []
+    selected_email_mailboxes: list[str] = []
+    for target_id in communication_target_ids:
+        target = targets_by_id.get(target_id)
+        if target is None:
+            raise ValueError(
+                "communication_target_ids contains unknown target "
+                f"{target_id!r} for directory {directory_path!r}"
+            )
+        if target.provider == "discord":
+            selected_discord_channels.append(target.id)
+            continue
+        if target.provider == "teams":
+            teams_kind = parse_teams_target(target.address).kind
+            if teams_kind == "chat":
+                selected_teams_chats.append(target.id)
+            elif teams_kind == "user":
+                selected_teams_users.append(target.id)
+            else:
+                selected_teams_channels.append(target.id)
+            continue
+        if target.provider == "email":
+            missing_capabilities = sorted(
+                {"read", "write"} - set(target.policy.capabilities)
+            )
+            if missing_capabilities:
+                raise ValueError(
+                    "email communication target "
+                    f"{target.id!r} requires both read and write capabilities"
+                )
+            selected_email_mailboxes.append(
+                _email_mailbox_id_from_auth_profile_ref(
+                    target.policy.auth_profile_ref,
+                    target_id=target.id,
+                )
+            )
+            continue
+        raise ValueError(
+            "communication_target_ids only supports Teams, Discord, and email targets; "
+            f"target {target.id!r} uses provider {target.provider!r}"
+        )
+
+    return {
+        "discord_channels": _append_unique_string_values(
+            discord_channels, selected_discord_channels
+        )
+        or None,
+        "teams_channel_allowlist": _append_unique_string_values(
+            teams_channel_allowlist,
+            selected_teams_channels,
+        )
+        or None,
+        "teams_chat_allowlist": _append_unique_string_values(
+            teams_chat_allowlist,
+            selected_teams_chats,
+        )
+        or None,
+        "teams_user_allowlist": _append_unique_string_values(
+            teams_user_allowlist,
+            selected_teams_users,
+        )
+        or None,
+        "email_mailboxes": _append_unique_string_values(
+            email_mailboxes, selected_email_mailboxes
+        )
+        or None,
+        "email_folders": email_folders or None,
+    }
 
 
 def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
@@ -11443,6 +11603,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 directory_path=directory_path,
                 allowed_contact_ids=payload.get("allowed_contact_ids"),
             )
+            communication_allowlists = _admin_agent_communication_allowlists(
+                payload,
+                config=self.config,
+                directory_path=directory_path,
+            )
             result = self.create_vm(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -11459,20 +11624,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 ),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
                 allowed_contact_ids=resolved_allowed_contact_ids,
-                discord_channels=self._agent_string_list(payload, "discord_channels"),
-                teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist"),
-                **(
-                    {
-                        "teams_chat_allowlist": self._agent_string_list(
-                            payload, "teams_chat_allowlist"
-                        )
-                    }
-                    if "teams_chat_allowlist" in payload
-                    else {}
-                ),
-                teams_user_allowlist=self._agent_string_list(payload, "teams_user_allowlist"),
-                email_mailboxes=self._agent_string_list(payload, "email_mailboxes"),
-                email_folders=self._agent_string_list(payload, "email_folders"),
+                discord_channels=communication_allowlists["discord_channels"],
+                teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
+                teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
+                teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
+                email_mailboxes=communication_allowlists["email_mailboxes"],
+                email_folders=communication_allowlists["email_folders"],
                 communication_file_receive_enabled=(
                     _normalize_session_policy_bool(
                         payload.get("communication_file_receive_enabled"),
@@ -11595,6 +11752,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             allowed_contact_ids=payload.get("allowed_contact_ids"),
         )
+        communication_allowlists = _admin_agent_communication_allowlists(
+            payload,
+            config=self.config,
+            directory_path=directory_path,
+        )
         manifest = _build_issue_session_manifest(
             policy=policy,
             session_id=session_id,
@@ -11610,13 +11772,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
             allowed_contact_ids=resolved_allowed_contact_ids,
-            discord_channels=self._agent_string_list(payload, "discord_channels") or [],
-            teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
-            or [],
-            teams_chat_allowlist=self._agent_string_list(payload, "teams_chat_allowlist") or [],
-            teams_user_allowlist=self._agent_string_list(payload, "teams_user_allowlist") or [],
-            email_mailboxes=self._agent_string_list(payload, "email_mailboxes") or [],
-            email_folders=self._agent_string_list(payload, "email_folders") or [],
+            discord_channels=communication_allowlists["discord_channels"] or [],
+            teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"] or [],
+            teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"] or [],
+            teams_user_allowlist=communication_allowlists["teams_user_allowlist"] or [],
+            email_mailboxes=communication_allowlists["email_mailboxes"] or [],
+            email_folders=communication_allowlists["email_folders"] or [],
             communication_file_receive_enabled=(
                 _normalize_session_policy_bool(
                     payload.get("communication_file_receive_enabled"),
@@ -15942,9 +16103,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if _communication_target_shape(target) == "teams_user":
                     continue
             elif purpose == "agent-session":
-                if provider not in {"teams", "discord"}:
+                if provider not in {"teams", "discord", "email"}:
                     continue
-                if not capabilities.intersection({"read", "write", "reply"}):
+                policy = target.get("policy")
+                if (
+                    provider == "email"
+                    and not str(
+                        policy.get("auth_profile_ref") if isinstance(policy, dict) else ""
+                    ).strip()
+                ):
+                    continue
+                if provider == "email":
+                    if not {"read", "write"}.issubset(capabilities):
+                        continue
+                elif not capabilities.intersection({"read", "write", "reply"}):
                     continue
                 if (
                     _communication_target_shape(target) == "teams_user"
@@ -21407,6 +21579,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "label": "Copilot",
                     "execution_backends": ["libvirt_vm"],
                 },
+            ],
+            "communication_targets": [
+                option.model_dump(mode="json")
+                for option in self._agent_communication_target_options(normalized_directory)
             ],
             "libvirt": {
                 "default_template": vm_defaults.libvirt_vm_default_template,

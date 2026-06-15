@@ -1623,10 +1623,11 @@ resolved at use time from the session directory, take precedence over raw IDs wh
 and must expose the capability required by the operation: `read` for message reads, inbound
 trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
 replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
-`effect:agent:create.communication_target_ids` is an additive shorthand for known Teams and Discord
-targets in the session directory. The workflow editor presents it as a catalogue-backed multi-select,
-and execution maps the selected target IDs into the existing Discord, Teams channel/chat, or Teams
-user allowlist fields. Email mailbox access still uses `email_mailboxes` and `email_folders`.
+`effect:agent:create.communication_target_ids` is an additive shorthand for known Teams, Discord,
+and mailbox-backed email targets in the session directory. The workflow editor presents it as a
+catalogue-backed multi-select, and execution maps the selected target IDs into the existing Discord,
+Teams channel/chat/user, or email mailbox allowlist fields. Email target folders still resolve from
+the effective email policy defaults unless `email_folders` is provided directly.
 
 Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
 targets with `teams_chat_allowlist`, and one-on-one user send targets with
