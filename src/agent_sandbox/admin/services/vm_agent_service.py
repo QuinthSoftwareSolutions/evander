@@ -1345,7 +1345,136 @@ fi
 echo "Repo: ${RESOLVED_REPO_NAME}"
 echo "Log: ${LOG_PATH}"
 echo
-tail -n "${TAIL_LINES}" "${LOG_PATH}"
+TAIL_PATH="$(mktemp)"
+trap 'rm -f "${TAIL_PATH}"' EXIT
+tail -n "${TAIL_LINES}" "${LOG_PATH}" > "${TAIL_PATH}"
+cat "${TAIL_PATH}"
+python3 - "${TAIL_PATH}" "${AGENT_HOME}" <<'PY' || true
+import json
+import re
+import sys
+from pathlib import Path
+
+tail_path = Path(sys.argv[1])
+agent_home = Path(sys.argv[2])
+try:
+    tail_text = tail_path.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    raise SystemExit(0)
+
+matches = re.findall(r"(?im)^session id:\s*(\S+)\s*$", tail_text)
+if not matches:
+    raise SystemExit(0)
+thread_id = matches[-1].strip()
+if not thread_id:
+    raise SystemExit(0)
+
+
+def first_text(*values):
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def content_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for part in value:
+            if isinstance(part, str):
+                if part:
+                    parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type and part_type not in {"text", "output_text", "assistant_message"}:
+                continue
+            text = first_text(part.get("text"), part.get("content"), part.get("message"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return first_text(value.get("text"), value.get("content"), value.get("message"))
+    return ""
+
+
+def messages_from_event(event):
+    if not isinstance(event, dict):
+        return []
+    event_type = str(event.get("type") or "")
+    payload = event.get("payload")
+    if event_type == "event_msg" and isinstance(payload, dict):
+        payload_type = str(payload.get("type") or "")
+        if payload_type == "agent_message":
+            return [first_text(payload.get("message"))]
+        if payload_type == "task_complete":
+            return [first_text(payload.get("last_agent_message"))]
+        return []
+    if event_type == "response_item" and isinstance(payload, dict):
+        if str(payload.get("type") or "") != "message":
+            return []
+        if str(payload.get("role") or "") != "assistant":
+            return []
+        return [
+            first_text(
+                payload.get("text"),
+                payload.get("message"),
+                content_text(payload.get("content")),
+                content_text(payload.get("formatted")),
+            )
+        ]
+    return []
+
+
+def is_artifact(message):
+    normalized = " ".join(message.strip().split()).casefold()
+    return normalized in {"no response requested", "no response requested."}
+
+
+roots = [
+    agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
+    agent_home / ".codex" / "sessions",
+]
+candidates = []
+for root in roots:
+    if not root.exists():
+        continue
+    try:
+        candidates.extend(root.rglob(f"*{thread_id}*.jsonl"))
+    except OSError:
+        continue
+if not candidates:
+    raise SystemExit(0)
+
+try:
+    session_path = max(candidates, key=lambda path: path.stat().st_mtime)
+except OSError:
+    raise SystemExit(0)
+
+messages = []
+try:
+    with session_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            try:
+                event = json.loads(raw_line)
+            except ValueError:
+                continue
+            messages.extend(messages_from_event(event))
+except OSError:
+    raise SystemExit(0)
+
+seen = set()
+for message in messages:
+    if not message or is_artifact(message):
+        continue
+    if message in seen or message in tail_text:
+        continue
+    seen.add(message)
+    print(message, flush=True)
+PY
 """
         result: subprocess.CompletedProcess[str] | None = None
         attempted_errors: list[str] = []

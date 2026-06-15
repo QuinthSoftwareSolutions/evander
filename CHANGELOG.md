@@ -15,6 +15,14 @@ material. Newer entries are added incrementally as changes land.
 - Clarified that the Team Add-on operator communication target remains an
   outbound escalation destination, not an inbound wake subscription.
 
+## 2026-06-15 - Agent Prompt Log Recovery
+
+- Recovered Codex final messages from guest session JSONL when a libvirt VM run
+  log only captured the shell preamble and session id.
+- Repaired malformed guest profile session-env and Claude settings blocks before
+  resume and during provider bootstrap so future prompts do not start with shell
+  syntax errors.
+
 ## 2026-06-15 - Create Agent Model Override
 
 - Added a Create Agent model field that stores an explicit session model for VM

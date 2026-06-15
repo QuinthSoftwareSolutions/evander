@@ -478,6 +478,45 @@ install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-s
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
 RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
+repair_agent_profile_session_env() {
+  local target="${AGENT_HOME}/.profile"
+  [[ -f "${target}" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "${target}" <<'PY' || true
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+try:
+    lines = target.read_text(encoding="utf-8").splitlines()
+except OSError:
+    raise SystemExit(0)
+
+out = []
+changed = False
+in_session_env = False
+indent = ""
+for line in lines:
+    stripped = line.strip()
+    if in_session_env and stripped == "fi":
+        in_session_env = False
+    elif in_session_env and line == line.lstrip() and stripped.startswith("export "):
+        out.append(f"{indent}fi")
+        changed = True
+        in_session_env = False
+    out.append(line)
+    if stripped in {
+        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        'if [ -f "$HOME/.claude/settings.json" ]; then',
+    }:
+        in_session_env = True
+        indent = line[: len(line) - len(line.lstrip())]
+
+if changed:
+    target.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+}
+
 resolve_primary_agent_paths() {
   local log_dir="$1"
   local resolved_repo_name="${GUEST_REPO_NAME:-}"
@@ -555,6 +594,8 @@ if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
 fi
 
 ensure_agent_enabled
+
+repair_agent_profile_session_env
 
 write_state() {
   local status="$1"
@@ -673,6 +714,45 @@ install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-s
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
 RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
+repair_agent_profile_session_env() {
+  local target="${AGENT_HOME}/.profile"
+  [[ -f "${target}" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "${target}" <<'PY' || true
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+try:
+    lines = target.read_text(encoding="utf-8").splitlines()
+except OSError:
+    raise SystemExit(0)
+
+out = []
+changed = False
+in_session_env = False
+indent = ""
+for line in lines:
+    stripped = line.strip()
+    if in_session_env and stripped == "fi":
+        in_session_env = False
+    elif in_session_env and line == line.lstrip() and stripped.startswith("export "):
+        out.append(f"{indent}fi")
+        changed = True
+        in_session_env = False
+    out.append(line)
+    if stripped in {
+        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        'if [ -f "$HOME/.claude/settings.json" ]; then',
+    }:
+        in_session_env = True
+        indent = line[: len(line) - len(line.lstrip())]
+
+if changed:
+    target.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+}
+
 resolve_primary_agent_paths() {
   local log_dir="$1"
   local resolved_repo_name="${GUEST_REPO_NAME:-}"
@@ -748,6 +828,8 @@ if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
 fi
 
 ensure_agent_enabled
+
+repair_agent_profile_session_env
 
 "${RUN_AS_AGENT[@]}" \
   SESSION_ID="${SESSION_ID}" \
@@ -838,6 +920,45 @@ install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-s
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
 RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
+repair_agent_profile_session_env() {
+  local target="${AGENT_HOME}/.profile"
+  [[ -f "${target}" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "${target}" <<'PY' || true
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+try:
+    lines = target.read_text(encoding="utf-8").splitlines()
+except OSError:
+    raise SystemExit(0)
+
+out = []
+changed = False
+in_session_env = False
+indent = ""
+for line in lines:
+    stripped = line.strip()
+    if in_session_env and stripped == "fi":
+        in_session_env = False
+    elif in_session_env and line == line.lstrip() and stripped.startswith("export "):
+        out.append(f"{indent}fi")
+        changed = True
+        in_session_env = False
+    out.append(line)
+    if stripped in {
+        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        'if [ -f "$HOME/.claude/settings.json" ]; then',
+    }:
+        in_session_env = True
+        indent = line[: len(line) - len(line.lstrip())]
+
+if changed:
+    target.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+}
+
 resolve_primary_agent_paths() {
   local log_dir="$1"
   local resolved_repo_name="${GUEST_REPO_NAME:-}"
@@ -917,6 +1038,8 @@ if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
 fi
 
 ensure_agent_enabled
+
+repair_agent_profile_session_env
 
 write_state() {
   local status="$1"

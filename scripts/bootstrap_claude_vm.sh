@@ -269,11 +269,35 @@ import sys
 target = Path(sys.argv[1]).expanduser()
 target.parent.mkdir(parents=True, exist_ok=True)
 lines = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+
+def repair_missing_profile_fi(profile_lines):
+    out = []
+    changed = False
+    in_managed_block = False
+    indent = ""
+    for line in profile_lines:
+        stripped = line.strip()
+        if in_managed_block and stripped == "fi":
+            in_managed_block = False
+        elif in_managed_block and line == line.lstrip() and stripped.startswith("export "):
+            out.append(f"{indent}fi")
+            changed = True
+            in_managed_block = False
+        out.append(line)
+        if stripped in {
+            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            'if [ -f "$HOME/.claude/settings.json" ]; then',
+        }:
+            in_managed_block = True
+            indent = line[: len(line) - len(line.lstrip())]
+    return out if changed else profile_lines
+
 managed = {
     'export PATH="$HOME/bin:$PATH"',
     'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"',
     'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"',
 }
+lines = repair_missing_profile_fi(lines)
 filtered = [line for line in lines if line.strip() not in managed]
 filtered.extend(sorted(managed))
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")

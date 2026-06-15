@@ -4296,6 +4296,10 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
     assert 'candidates+=("codex-heartbeat")' in remote_script
     assert 'LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in remote_script
     assert 'LEGACY_LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in remote_script
+    assert 'agent_home / ".config" / "agent-sandbox" / "codex" / "sessions"' in remote_script
+    assert 'matches = re.findall(r"(?im)^session id:' in remote_script
+    assert 'payload_type == "task_complete"' in remote_script
+    assert 'payload.get("last_agent_message")' in remote_script
     assert "agent-admin@192.168.122.11" in " ".join(str(part) for part in captured["cmd"])
 
 
