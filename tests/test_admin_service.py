@@ -11599,7 +11599,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert result.message == "ok:setup_vm.sh"
 
 
-def test_effect_agent_create_passes_selected_libvirt_base_image_into_setup_env(
+def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_setup_args(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -11649,6 +11649,7 @@ def test_effect_agent_create_passes_selected_libvirt_base_image_into_setup_env(
         display_name="Create agent",
         type="effect:agent:create",
         execution_backend="libvirt_vm",
+        agent_provider="claude",
         vm_name="lab-vm",
         session_id="lab-session",
         vm_image="dotnet",
@@ -11661,12 +11662,22 @@ def test_effect_agent_create_passes_selected_libvirt_base_image_into_setup_env(
     assert result["vm_image_alias"] == "dotnet"
     assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
     assert captured["cmd"][:2] == ["sudo", "-n"]
-    assert any(
-        part.startswith("--preserve-env=") and "LIBVIRT_BASE_IMAGE" in part
-        for part in captured["cmd"]
+    preserve_env_args = [part for part in captured["cmd"] if part.startswith("--preserve-env=")]
+    assert all("AGENT_PROVIDER" not in part for part in preserve_env_args)
+    assert all("LIBVIRT_BASE_IMAGE" not in part for part in preserve_env_args)
+    setup_script_index = next(
+        index for index, part in enumerate(captured["cmd"]) if part.endswith("setup_vm.sh")
     )
+    setup_args = captured["cmd"][setup_script_index + 1 :]
+    assert setup_args[:4] == [
+        "--agent-provider",
+        "claude",
+        "--libvirt-base-image",
+        "dotnet-agent.qcow2",
+    ]
     setup_env = captured["env"]
     assert setup_env is not None
+    assert setup_env["AGENT_PROVIDER"] == "claude"
     assert setup_env["LIBVIRT_BASE_IMAGE"] == "dotnet-agent.qcow2"
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None

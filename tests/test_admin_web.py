@@ -11340,6 +11340,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "/api/admin/agents",
         json={
             "backend": "libvirt_vm",
+            "agent_provider": "claude",
             "provider": "libvirt",
             "vm_name": "lab-vm",
             "session_id": "lab-session",
@@ -11379,6 +11380,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "ttl_hours": 12,
         "allowed_tools": ["run_script"],
         "allowed_script_names": ["demo"],
+        "allowed_contact_ids": None,
         "discord_channels": ["ops"],
         "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
         "teams_user_allowlist": None,
@@ -11397,6 +11399,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
         "metadata": {
+            "agent_provider": "claude",
             "libvirt_vm_template": {
                 "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
                 "template_alias": "default",

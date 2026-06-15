@@ -336,7 +336,14 @@ function bindRecordEditing() {
   document.addEventListener("click", (event) => {
     const closeTarget = event.target.closest("[data-edit-close]");
     if (closeTarget) {
+      if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
+        return;
+      }
       closeEditDialog();
+      return;
+    }
+
+    if (elements.editModal?.contains(event.target)) {
       return;
     }
 
@@ -2707,9 +2714,12 @@ function readTimelineFilters() {
   };
 }
 
-function refreshSelects() {
+function refreshSelects({ includeEditForm = false } = {}) {
   const options = buildSelectOptionSets();
   document.querySelectorAll("select[data-options]").forEach((select) => {
+    if (!includeEditForm && elements.editForm?.contains(select)) {
+      return;
+    }
     const key = select.dataset.options;
     fillSelect(select, options[key] || []);
   });
@@ -3130,7 +3140,10 @@ function openEditDialog(type, id) {
   fillSelectsIn(elements.editFormBody);
   decorateFieldTooltips(elements.editFormBody);
   elements.editModal.hidden = false;
-  elements.editModal.querySelector("input:not([readonly]), select, textarea, button")?.focus();
+  const firstEditableField = elements.editFormBody.querySelector(
+    "input:not([readonly]), select, textarea",
+  );
+  firstEditableField?.focus();
 }
 
 function closeEditDialog() {
@@ -3377,7 +3390,11 @@ function captureFormDrafts() {
   document.querySelectorAll("form").forEach((form) => {
     const formId = formIdentifier(form);
     if (formId) {
-      drafts[formId] = formData(form);
+      const values = formData(form);
+      form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => {
+        values[field.name] = field.checked ? "true" : "false";
+      });
+      drafts[formId] = values;
     }
   });
   return drafts;
@@ -3392,6 +3409,10 @@ function restoreFormDrafts(drafts) {
     Object.entries(values).forEach(([name, value]) => {
       const field = form.elements[name];
       if (!field) {
+        return;
+      }
+      if (field instanceof HTMLInputElement && field.type === "checkbox") {
+        field.checked = value === true || value === "true" || value === "on";
         return;
       }
       field.value = value;

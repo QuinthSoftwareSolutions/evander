@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_vm.sh [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--codex-skill NAME ...] <vm-name> <session-id> [vm-user]
+Usage: setup_vm.sh [--agent-provider PROVIDER] [--libvirt-base-image IMAGE] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--codex-skill NAME ...] <vm-name> <session-id> [vm-user]
 
 Run the shared standalone-VM bootstrap flow:
   1. launch the VM
@@ -36,6 +36,7 @@ Arguments:
 Environment:
   SSH_PUBLIC_KEY_FILE         Public key injected into the guest.
   SSH_PRIVATE_KEY_PATH        Private key matching the guest authorized key.
+  AGENT_PROVIDER              Agent CLI/bootstrap provider. Default: codex.
   LIBVIRT_BASE_IMAGE          Selected base image passed through to launch_agent_vm.sh.
   BASE_IMAGE                  Manual base image override passed through to launch_agent_vm.sh.
   VM_WAIT_IP_TIMEOUT_SECONDS  How long to wait for the guest to receive an IPv4 address.
@@ -45,6 +46,11 @@ Environment:
   MSSQL_SA_PASSWORD           Required when --mssql is enabled.
 
 Optional guest toolchains:
+  --agent-provider PROVIDER
+                      Agent CLI/bootstrap provider. Overrides AGENT_PROVIDER.
+  --libvirt-base-image IMAGE
+                      Base image ref passed through to launch_agent_vm.sh. Overrides
+                      LIBVIRT_BASE_IMAGE.
   --dotnet            Bootstrap the host .NET SDK into the guest.
   --nuget             Bootstrap NuGet relay configuration into the guest.
   --mssql             Bootstrap a guest-local Microsoft SQL Server instance into the guest.
@@ -64,6 +70,8 @@ BOOTSTRAP_MSSQL=0
 BOOTSTRAP_PLAYWRIGHT=0
 BOOTSTRAP_CODEX_SKILLS=()
 MSSQL_INIT_ROOT="${AGENT_SANDBOX_MSSQL_INIT_ROOT:-}"
+AGENT_PROVIDER_OVERRIDE="${AGENT_PROVIDER:-}"
+LIBVIRT_BASE_IMAGE_OVERRIDE="${LIBVIRT_BASE_IMAGE:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -72,6 +80,22 @@ fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --agent-provider)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      AGENT_PROVIDER_OVERRIDE="$2"
+      shift 2
+      ;;
+    --libvirt-base-image)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      LIBVIRT_BASE_IMAGE_OVERRIDE="$2"
+      shift 2
+      ;;
     --dotnet)
       BOOTSTRAP_DOTNET=1
       shift
@@ -191,7 +215,8 @@ source "${SCRIPT_DIR}/lib/vm_network.sh"
 # shellcheck source=lib/agent_provider_assets.sh
 source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 
-AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
+AGENT_PROVIDER="${AGENT_PROVIDER_OVERRIDE:-codex}"
+LIBVIRT_BASE_IMAGE="${LIBVIRT_BASE_IMAGE_OVERRIDE:-}"
 AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"
 if [[ ! -f "${AGENT_BOOTSTRAP_SCRIPT_PATH}" ]]; then
   echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing bootstrap script ${AGENT_BOOTSTRAP_SCRIPT_PATH}" >&2

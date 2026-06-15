@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -3885,6 +3886,7 @@ export default function App() {
   const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
   const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
   const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -5802,6 +5804,41 @@ export default function App() {
       hasAutoFitRef.current = false;
     }
   }
+
+  useLayoutEffect(() => {
+    const previousDirectoryPath = previousSelectedDirectoryPathRef.current;
+    if (previousDirectoryPath === selectedDirectoryPath) return;
+    previousSelectedDirectoryPathRef.current = selectedDirectoryPath;
+    validationCacheRef.current.clear();
+    setSaveState("idle");
+    if (!hasUnsavedWorkflowChanges && !workflowGeneratorOpen) return;
+
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorOpen(false);
+    setWorkflowGeneratorDescription("");
+    setWorkflowGeneratorState("idle");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    setWorkflowGeneratorReadyDescription(null);
+    setRunDetail(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeEditOrigins({});
+    setInspectorDraftError(null);
+
+    if (savedDocument) {
+      applyWorkflowDocumentState(
+        savedDocument,
+        [],
+        savedDocument.validation_diagnostics ?? [],
+        { autoFit: true },
+      );
+    }
+  }, [hasUnsavedWorkflowChanges, savedDocument, selectedDirectoryPath, workflowGeneratorOpen]);
 
   function patchDocument(
     nextConfig: WorkflowConfig,

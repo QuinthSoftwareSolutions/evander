@@ -363,6 +363,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "bindGeneratedIds" in script.text
     assert "bindExistingAgentPickers" in script.text
     assert "submitEditForm" in script.text
+    assert "elements.editModal?.contains(event.target)" in script.text
+    assert "firstEditableField?.focus()" in script.text
+    assert "refreshSelects({ includeEditForm = false } = {})" in script.text
+    assert "elements.editForm?.contains(select)" in script.text
     assert "gitToBareRepo" in script.text
     assert "fieldTooltips" in script.text
     assert "decorateFieldTooltips" in script.text
