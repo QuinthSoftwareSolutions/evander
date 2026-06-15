@@ -221,6 +221,10 @@ def test_setup_vm_supports_codex_skills() -> None:
     script = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
 
     assert "--codex-skill" in script
+    assert "--agent-provider" in script
+    assert "--libvirt-base-image" in script
+    assert 'AGENT_PROVIDER="${AGENT_PROVIDER_OVERRIDE:-codex}"' in script
+    assert 'LIBVIRT_BASE_IMAGE="${LIBVIRT_BASE_IMAGE_OVERRIDE:-}"' in script
     assert "BOOTSTRAP_CODEX_SKILLS=()" in script
     assert "--codex-skill requires AGENT_PROVIDER=codex." in script
     assert 'BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")' in script

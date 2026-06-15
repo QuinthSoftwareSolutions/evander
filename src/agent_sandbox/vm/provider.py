@@ -81,6 +81,18 @@ def _libvirt_base_image_from_manifest_metadata(manifest: SessionManifest | Any |
     return normalized_image_ref or None
 
 
+def _append_setup_vm_selection_args(
+    setup_args: list[str],
+    *,
+    agent_provider: str | None,
+    libvirt_base_image: str | None,
+) -> None:
+    if agent_provider:
+        setup_args.extend(["--agent-provider", agent_provider])
+    if libvirt_base_image:
+        setup_args.extend(["--libvirt-base-image", libvirt_base_image])
+
+
 class AzureVmControlClientProtocol(Protocol):
     def list_vms(self, *, config: Any, include_inactive: bool = True) -> list[dict[str, Any]]: ...
 
@@ -993,6 +1005,11 @@ def _libvirt_create_vm(
         if helper is not None and not helper.is_running():
             helper.start()
         setup_args: list[str] = []
+        _append_setup_vm_selection_args(
+            setup_args,
+            agent_provider=agent_provider,
+            libvirt_base_image=libvirt_base_image,
+        )
         if dotnet:
             setup_args.append("--dotnet")
         if nuget:
@@ -1024,8 +1041,6 @@ def _libvirt_create_vm(
                 "GATEWAY_URL",
                 "LLM_BASE_URL",
                 "AGENT_MODEL",
-                "AGENT_PROVIDER",
-                "LIBVIRT_BASE_IMAGE",
                 "BASE_IMAGE",
                 "NUGET_RELAY_BASE_URL",
                 "AGENT_SANDBOX_RUNTIME_DIR",
