@@ -13,6 +13,12 @@ material. Newer entries are added incrementally as changes land.
 - Reused stored container thread ids from execution metadata where available and
   recorded resume thread ids on new container prompt executions.
 
+## 2026-06-15 - Sessions Metadata Editor Layout
+
+- Tightened the Sessions metadata key/value editor into aligned row cards,
+  reduced oversized JSON snippet fields, removed redundant unchanged-value
+  previews, and switched metadata row removal to the shared icon button style.
+
 ## 2026-06-15 - Discord Inbound Target Discovery
 
 - Removed the separate Discord inbox route policy surface; Discord ingest now

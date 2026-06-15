@@ -19,6 +19,7 @@ import {
   type RegexPatternDraftRow,
   type StringMapDraftRow,
 } from "./structuredPolicyInputs";
+import { DeleteIcon } from "./PageActionIcons";
 
 type KnownOption = {
   value: string;
@@ -534,6 +535,9 @@ export function JsonObjectKeyValueEditor({
           try {
             const parsed = JSON.parse(valueText);
             rowPreview = JSON.stringify(parsed, null, 2);
+            if (rowPreview.trim() === valueText) {
+              rowPreview = null;
+            }
           } catch (nextError) {
             rowError = nextError instanceof Error && nextError.message
               ? nextError.message
@@ -577,7 +581,9 @@ export function JsonObjectKeyValueEditor({
               <div className="inline-actions compact-actions">
                 <button
                   type="button"
-                  className="danger"
+                  className="admin-icon-button danger compact"
+                  aria-label={`Remove ${fieldLabel.toLowerCase()} row ${index + 1}`}
+                  title={`Remove ${fieldLabel.toLowerCase()} row ${index + 1}`}
                   onClick={() => {
                     const nextRows = rows.filter((_, currentIndex) => currentIndex !== index);
                     setRows(nextRows);
@@ -585,12 +591,12 @@ export function JsonObjectKeyValueEditor({
                   }}
                   disabled={disabled}
                 >
-                  Remove
+                  <DeleteIcon />
                 </button>
               </div>
             </div>
             {rowPreview ? (
-              <details className="structured-input-preview">
+              <details className="structured-input-preview structured-input-json-row-preview">
                 <summary>Preview</summary>
                 <pre className="json-view structured-input-json-preview">{rowPreview}</pre>
               </details>
