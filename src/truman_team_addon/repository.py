@@ -174,6 +174,10 @@ class TeamStateRepository:
                 team.operator_communication_target_id = operator_communication_target_id
             if archived is not None:
                 team.archived = archived
+                if archived:
+                    for agent in state.agents.values():
+                        if agent.team_id == team_id:
+                            agent.status = AgentStatus.ARCHIVED
             team.updated_at = utc_now()
             return state
 

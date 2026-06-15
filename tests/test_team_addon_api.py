@@ -721,6 +721,9 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     assert body["teams"]["team"]["name"] == "Renamed Team"
     assert body["teams"]["team"]["operator_communication_target_id"] is None
     assert body["teams"]["team"]["archived"] is True
+    assert body["agents"]["manager"]["status"] == "archived"
+    assert body["agents"]["lead"]["status"] == "archived"
+    assert body["agents"]["backend"]["status"] == "archived"
 
     response = client.patch(
         "/api/addons/team-addon/projects/project",

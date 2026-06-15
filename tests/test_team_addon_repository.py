@@ -183,6 +183,12 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert team.name == "Renamed Team"
     assert team.operator_communication_target_id is None
     assert team.archived is True
+    assert {agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED} == {
+        "backend",
+        "lead",
+        "manager",
+        "worker",
+    }
 
     state = repo.update_project(
         project_id="project",

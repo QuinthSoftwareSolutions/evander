@@ -12,6 +12,12 @@ material. Newer entries are added incrementally as changes land.
 - Resolved omitted VM Claude create models to the Claude provider default instead
   of the directory Codex default.
 
+## 2026-06-15 - Team Add-on Archive Consistency
+
+- Hid archived teams, agents, projects, and review profiles from Team Add-on
+  entity views by default, with an explicit Show archived toggle to reveal them.
+- Archived all persistent agents belonging to a team when that team is archived.
+
 ## 2026-06-15 - MCP Tool Descriptions
 
 - Added descriptions for every MCP tool in the Admin Web tool option payloads,
