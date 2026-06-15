@@ -460,6 +460,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                         metadata={
                             "effect_type": self.node_type(),
                             "dispatch_id": dispatch_id,
+                            "resume_thread_id": effective_resume_thread_id,
                         },
                     )
                 )

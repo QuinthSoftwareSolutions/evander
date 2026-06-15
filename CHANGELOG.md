@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Agents Thread Log Loading
+
+- Bounded the initial Agents page thread-log load for container worker sessions
+  with large execution histories, avoiding a worker log probe for every past
+  execution before the first page can render.
+- Reused stored container thread ids from execution metadata where available and
+  recorded resume thread ids on new container prompt executions.
+
 ## 2026-06-15 - Discord Inbound Target Discovery
 
 - Removed the separate Discord inbox route policy surface; Discord ingest now

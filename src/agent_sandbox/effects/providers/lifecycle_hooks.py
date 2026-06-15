@@ -342,6 +342,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             "effect_type": "effect:agent:enqueue-prompt",
                             "dispatch_id": dispatch_id,
                             "agent_provider": agent_harness,
+                            "resume_thread_id": effective_resume_thread_id,
                             "queued": True,
                         },
                     )
