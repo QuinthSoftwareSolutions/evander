@@ -310,15 +310,17 @@ name at least one target from the selected `directory_path` (default `root`); om
 not subscribe to all targets. Version 1 accepts only Teams channel/chat and Discord channel targets
 with the `read` capability, rejects Teams `user:` targets, and intentionally excludes email. The
 optional `author_ids` list filters by provider-native author/user ID, `content_contains` applies a
-substring filter to message content, and `case_sensitive` defaults to `false`. The trigger reads
-the existing host-owned Teams and Discord inbox stores and emits `provider`,
+substring filter to message content, and `case_sensitive` defaults to `false`. Host-side Teams and
+Discord ingest workers observe the declared targets and feed the inbox stores that the trigger
+reads. The trigger emits `provider`,
 `communication_target_id`, `message_id`, `thread_id`, `content`, `author_id`, `author_name`,
 `created_at`, `received_at`, `target`, and a nested `message` object with safe provider metadata;
 communication target `policy.auth_profile_ref` values are not emitted.
 
 These flows are independent from the wake workers. Discord inbox waking and scheduled resumes are
 covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
-ADO worker.
+ADO worker. Discord wake derives routes from active session Discord allowlists, not a separate
+policy route map.
 
 ### Scheduled wake worker keys
 

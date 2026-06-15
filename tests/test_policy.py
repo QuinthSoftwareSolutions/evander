@@ -2390,7 +2390,7 @@ def test_require_discord_command_source_allows_communication_target_refs(tmp_pat
     engine.require_discord_command_source(session, command)
 
 
-def test_discord_inbox_routes_resolve_communication_target_refs(tmp_path: Path) -> None:
+def test_discord_session_allowlist_resolves_communication_target_refs(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     write_root_communication_targets(
         engine.config,
@@ -2404,14 +2404,21 @@ def test_discord_inbox_routes_resolve_communication_target_refs(tmp_path: Path) 
             }
         ],
     )
-    write_root_policy_overlay(
-        engine.config,
-        {"discord_inbox_routes": {"discord-inbox": ["session-a"]}},
+    session = SessionManifest(
+        session_id="session-a",
+        allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+        discord_channel_allowlist=["discord-inbox"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
+    engine.session_store.upsert_session(session)
 
-    assert engine.policy_config.discord_inbox_routes_for_directory("root") == {
-        "123456789012345678": ["session-a"]
-    }
+    assert engine.policy_config.resolved_discord_channel_ids_for_session(
+        session,
+        capability="read",
+    ) == ["123456789012345678"]
+    assert engine.policy_config.allowed_discord_channel_ids_for_session_id("session-a") == [
+        "123456789012345678"
+    ]
 
 
 def test_require_teams_message_source_allows_session_channel(tmp_path: Path) -> None:

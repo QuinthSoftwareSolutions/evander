@@ -7,11 +7,15 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import DiscordIngestWorkerGlobalConfig, GatewayConfig
-from agent_sandbox.models import DirectoryPath, DiscordMessageEnvelope, SessionManifest
+from agent_sandbox.events.models import materialize_node_definition
+from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
+from agent_sandbox.messaging.targets import load_communication_targets_config
+from agent_sandbox.models import DirectoryPath, DiscordMessageEnvelope, SessionManifest, ToolName
 from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import (
     PollingKernelConfig,
@@ -20,6 +24,8 @@ from agent_sandbox.orchestration.kernels import (
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.services import DiscordBotApiService
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
+from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 logger = logging.getLogger(__name__)
 _ATTACHMENT_SECRET_KEYS = {
@@ -45,10 +51,12 @@ class DiscordIngestWorker:
         self,
         *,
         config: GatewayConfig,
+        project_dir: Path,
         worker_config: DiscordIngestWorkerGlobalConfig,
         runtime: RuntimeContext,
     ) -> None:
         self.config = config
+        self.project_dir = project_dir
         self.worker_config = worker_config
         self.runtime = runtime
         self.session_repository = runtime.session_repository
@@ -79,14 +87,20 @@ class DiscordIngestWorker:
     def run_once(self) -> DiscordIngestCycleResult:
         now = datetime.now(UTC)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
-        directories = self._directories_to_scan(active_sessions)
+        communication_trigger_targets = self._communication_trigger_discord_targets_by_directory()
+        directories = self._directories_to_scan(
+            active_sessions,
+            include_directories=set(communication_trigger_targets),
+        )
         for directory_path in directories:
-            routed_channels = self.runtime.policy_config.discord_inbox_routes_for_directory(
-                directory_path
+            channel_ids = self._channel_ids_for_directory(
+                directory_path,
+                active_sessions=active_sessions,
+                communication_trigger_targets=communication_trigger_targets,
             )
-            if not routed_channels:
+            if not channel_ids:
                 continue
-            self._poll_directory(directory_path, channel_ids=sorted(routed_channels))
+            self._poll_directory(directory_path, channel_ids=channel_ids)
         if self.worker_config.directories:
             matching_sessions = {
                 session.session_id
@@ -131,13 +145,110 @@ class DiscordIngestWorker:
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Discord ingest worker cycle failed")
 
-    def _directories_to_scan(self, active_sessions: list[SessionManifest]) -> list[str]:
+    def _directories_to_scan(
+        self,
+        active_sessions: list[SessionManifest],
+        *,
+        include_directories: set[str] | None = None,
+    ) -> list[str]:
         if self.worker_config.directories:
             return list(self.worker_config.directories)
         directories = {
             DirectoryPath(segments=session.directory_path).as_posix() for session in active_sessions
         }
+        directories.update(include_directories or set())
         return sorted(directories)
+
+    def _channel_ids_for_directory(
+        self,
+        directory_path: str,
+        *,
+        active_sessions: list[SessionManifest],
+        communication_trigger_targets: dict[str, set[str]] | None = None,
+    ) -> list[str]:
+        channel_ids = {
+            channel_id
+            for session in active_sessions
+            if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools
+            and _directory_is_within_scope(session.directory_path, directory_path)
+            for channel_id in self.runtime.policy_config.resolved_discord_channel_ids_for_session(
+                session,
+                capability="read",
+            )
+        }
+        for trigger_directory, trigger_channel_ids in (
+            communication_trigger_targets or {}
+        ).items():
+            if _directory_is_within_scope(trigger_directory, directory_path):
+                channel_ids.update(trigger_channel_ids)
+        return sorted(channel_id for channel_id in channel_ids if channel_id)
+
+    def _communication_trigger_discord_targets_by_directory(self) -> dict[str, set[str]]:
+        try:
+            trigger_config = load_trigger_orchestrator_worker_global_config(
+                self.project_dir,
+                base_config=self.config,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load trigger orchestrator config for Discord communication ingest"
+            )
+            return {}
+
+        targets_by_directory: dict[str, set[str]] = {}
+        communication_targets_by_directory: dict[str, dict[str, Any]] = {}
+        for trigger in trigger_config.triggers:
+            if not workflow_node_is_enabled(trigger):
+                continue
+            if trigger.type != "trigger:communication:new-message":
+                continue
+            materialized = materialize_node_definition(trigger)
+            if not isinstance(materialized, CommunicationNewMessageTriggerDefinition):
+                continue
+            directory_path = DirectoryPath(
+                segments=materialized.directory_path or "root"
+            ).as_posix()
+            targets_by_id = communication_targets_by_directory.get(directory_path)
+            if targets_by_id is None:
+                try:
+                    targets_by_id = load_communication_targets_config(
+                        runtime_dir=self.config.runtime_dir,
+                        directory_store=self.runtime.directories,
+                        directory_path=directory_path,
+                    ).by_id()
+                except Exception:
+                    logger.warning(
+                        "Failed to load communication targets for Discord ingest directory=%s",
+                        directory_path,
+                        exc_info=True,
+                    )
+                    targets_by_id = {}
+                communication_targets_by_directory[directory_path] = targets_by_id
+            for target_id in materialized.communication_target_ids:
+                target = targets_by_id.get(target_id)
+                if target is None:
+                    logger.warning(
+                        "Skipping Discord ingest communication target %r for trigger %s "
+                        "because it is not defined for directory=%s",
+                        target_id,
+                        materialized.id,
+                        directory_path,
+                    )
+                    continue
+                if target.provider != "discord":
+                    continue
+                if "read" not in set(target.policy.capabilities):
+                    logger.warning(
+                        "Skipping Discord ingest communication target %r for trigger %s "
+                        "because it does not allow read capability",
+                        target_id,
+                        materialized.id,
+                    )
+                    continue
+                channel_id = _discord_channel_id_from_address(target.address)
+                if channel_id:
+                    targets_by_directory.setdefault(directory_path, set()).add(channel_id)
+        return targets_by_directory
 
     def _poll_directory(self, directory_path: str, *, channel_ids: list[str]) -> None:
         provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
@@ -308,6 +419,7 @@ def build_discord_ingest_worker(
     runtime = build_runtime(effective_config)
     return DiscordIngestWorker(
         config=effective_config,
+        project_dir=resolved_project_dir,
         worker_config=worker_config,
         runtime=runtime,
     )
@@ -357,6 +469,10 @@ def _message_sort_key(message_id: str) -> tuple[int, int | str]:
     if message_id.isdigit():
         return (0, int(message_id))
     return (1, message_id)
+
+
+def _discord_channel_id_from_address(address: str) -> str:
+    return str(address or "").strip().split("/")[-1].strip()
 
 
 def _directory_is_within_scope(directory_path: str | None, scope_directory_path: str) -> bool:

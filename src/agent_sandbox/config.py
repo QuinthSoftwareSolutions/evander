@@ -319,7 +319,6 @@ class GatewayConfig(BaseModel):
     didww_sip_bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
     didww_from_number: str | None = None
     inbound_phone_routes: list[InboundPhoneRoute] = Field(default_factory=list)
-    discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"

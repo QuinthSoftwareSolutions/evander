@@ -355,6 +355,11 @@ Team communication is directional and enforced by the repository, not by prose:
   that event to an `effect:communication:send-message` node bound to the team's
   `operator_communication_target_id`. The repository and effect providers never
   call the communication sender directly — routing is the workflow pack's job.
+- `Team.operator_communication_target_id` is outbound-only. It does not grant the
+  manager's real session inbound Discord or Teams access and does not wake that
+  session by itself. If the operator should message or wake the manager through
+  Discord, create the manager agent/session with a read-capable Discord
+  communication target in its session allowlist and grant `discord_get_commands`.
 
 ### Action-Driven Reviews And Decision Cascade
 

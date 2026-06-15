@@ -53,7 +53,6 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "discord_retry_max_backoff_seconds"),
     ("providers", "discord_read_reaction_emoji"),
     ("policy", "discord_operator_channel_allowlist"),
-    ("policy", "discord_inbox_routes"),
     ("policy", "discord_operator_user_allowlist"),
     ("policy", "discord_poll_operator_dms"),
     ("wake", "discord_resume_prompt"),

@@ -1228,6 +1228,11 @@ Audit/result behavior:
   - It does **not** treat prior Discord history as an open-ended source universe.
   - Polling additional channels requires explicitly seeding those channel IDs into the command
     store.
+- `agent-sandbox-discord-ingest` is the host-side inbox poller. It discovers Discord channels from
+  active sessions that have `discord_get_commands` and read-capable `discord_channel_allowlist`
+  entries, plus enabled `trigger:communication:new-message` nodes that name read-capable Discord
+  communication targets. It writes normalized messages into the Discord inbox store used by
+  unread-message tools and communication triggers.
 - Seed a dedicated test/control channel and get an initial cursor with:
 
   ```bash
@@ -1823,6 +1828,10 @@ live provider APIs.
   - `sudo systemctl stop agent-sandbox-scheduled-wake.service`
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
+  When no explicit directory list is configured, the worker derives its scan scope from active
+  session directories. It wakes sessions from unread Discord inbox messages only for channels
+  resolved from that session's read-capable `discord_channel_allowlist`; global operator Discord
+  channels are not used as wake routes.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
   The scheduled-wake worker reloads that file between cycles, so saved changes
   such as `scheduled_wake_prefix_text` apply without restarting
@@ -2273,17 +2282,21 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
 compatibility with older live workflow packs and should not be used for new provisioning graphs.
 
-### Teams ingest worker
+### Teams and Discord ingest workers
 
 - `trigger:teams:new-message` and `trigger:teams:direct-message` events are produced by a
   host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- The Discord ingest worker polls the Discord Bot API on the host and writes into the Discord inbox
+  store. Its target set comes from active sessions with `discord_get_commands` plus read-capable
+  Discord session allowlists, and from enabled provider-neutral communication triggers that name
+  read-capable Discord targets.
 - `trigger:communication:new-message` is the provider-neutral inbound chat trigger for declared
   communication targets. Configure it with explicit `communication_target_ids`; each selected
   target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
-  `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
-  separate ingest worker or provider credential is configured for this node.
+  `directory_path`. The Teams and Discord ingest workers observe those declared targets and feed
+  the host-owned inbox stores consumed by the trigger.
 - Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
   addresses so only configured one-on-one senders can wake workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with

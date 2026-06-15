@@ -7103,10 +7103,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = HasPendingDiscordMessagesRequest(session_id=session_id).model_dump(mode="json")
         try:
             context.policy.require_tool(session_id, ToolName.HAS_PENDING_DISCORD_MESSAGES)
+            session = context.policy.get_session(session_id)
             streams = [
                 {"channel_id": channel_id}
-                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
-                    session_id
+                for channel_id in context.policy_config.resolved_discord_channel_ids_for_session(
+                    session,
+                    capability="read",
                 )
             ]
             result = (
@@ -7147,10 +7149,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ).model_dump(mode="json")
         try:
             context.policy.require_tool(session_id, ToolName.LIST_UNREAD_DISCORD_MESSAGES)
+            session = context.policy.get_session(session_id)
             streams = [
                 {"channel_id": channel_id}
-                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
-                    session_id
+                for channel_id in context.policy_config.resolved_discord_channel_ids_for_session(
+                    session,
+                    capability="read",
                 )
             ]
             response = context.discord_inbox_service_for_session(
@@ -7188,10 +7192,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "limit": limit}
         try:
             context.policy.require_tool(session_id, ToolName.LIST_ALL_DISCORD_MESSAGES)
+            session = context.policy.get_session(session_id)
             streams = [
                 {"channel_id": channel_id}
-                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
-                    session_id
+                for channel_id in context.policy_config.resolved_discord_channel_ids_for_session(
+                    session,
+                    capability="read",
                 )
             ]
             response = context.discord_inbox_service_for_session(

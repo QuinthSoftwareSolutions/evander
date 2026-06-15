@@ -56,7 +56,6 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "approval_notification_target_ids",
             "default_session_ttl_seconds",
             "discord_operator_channel_allowlist",
-            "discord_inbox_routes",
             "discord_operator_user_allowlist",
             "discord_poll_operator_dms",
             "email_draft_domain_allowlist",

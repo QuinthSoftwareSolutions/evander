@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Discord Inbound Target Discovery
+
+- Removed the separate Discord inbox route policy surface; Discord ingest now
+  discovers channels from active session Discord allowlists and read-capable
+  `trigger:communication:new-message` Discord targets.
+- Updated Discord wake to resume sessions from unread inbox messages on each
+  active session's read-capable Discord allowlist.
+- Clarified that the Team Add-on operator communication target remains an
+  outbound escalation destination, not an inbound wake subscription.
+
 ## 2026-06-15 - Create Agent Model Override
 
 - Added a Create Agent model field that stores an explicit session model for VM

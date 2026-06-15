@@ -84,7 +84,6 @@ class EffectivePolicyConfig(BaseModel):
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
-    discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -379,52 +378,6 @@ class PolicyConfigResolver:
 
     def include_operator_dms_for_session_id(self, session_id: str) -> bool:
         return self.resolve_for_session_id(session_id).discord_poll_operator_dms
-
-    def discord_inbox_routes_for_directory(
-        self, directory_path: str | None
-    ) -> dict[str, list[str]]:
-        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
-        policy = self.resolve_for_directory(directory_path)
-        routes: dict[str, list[str]] = {}
-        for channel_id, session_ids in policy.discord_inbox_routes.items():
-            resolved_channel_id = self._discord_channel_id_from_ref(
-                normalized_path,
-                str(channel_id).strip(),
-                capability="read",
-                strict_target_capability=True,
-            )
-            if not resolved_channel_id:
-                continue
-            routes.setdefault(resolved_channel_id, [])
-            for session_id in session_ids:
-                normalized_session_id = str(session_id).strip()
-                if normalized_session_id:
-                    routes[resolved_channel_id].append(normalized_session_id)
-        return routes
-
-    def discord_inbox_channel_ids_for_session_id(self, session_id: str) -> list[str]:
-        routes = self.resolve_for_session_id(session_id).discord_inbox_routes
-        session = self.session_store.get_session(session_id)
-        if session is None:
-            raise ValueError(f"unknown session: {session_id}")
-        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
-            context="policy config",
-            session_id=session.session_id,
-            directory_path=session.directory_path,
-        )
-        channel_ids: set[str] = set()
-        for channel_id, target_session_ids in routes.items():
-            if session_id not in {str(candidate).strip() for candidate in target_session_ids}:
-                continue
-            resolved_channel_id = self._discord_channel_id_from_ref(
-                directory_path,
-                str(channel_id).strip(),
-                capability="read",
-                strict_target_capability=True,
-            )
-            if resolved_channel_id:
-                channel_ids.add(resolved_channel_id)
-        return sorted(channel_ids)
 
     def _active_session_directory_paths(self) -> list[str]:
         directories = {"root"}

@@ -723,6 +723,10 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `runtime/discord_commands.json` (the Discord command store). The adapter does not discover
   channels from guild membership, does not enumerate channel history beyond configured per-channel
   fetches, and does not poll arbitrary channels unless they are explicitly seeded in that store.
+- The host-side `agent-sandbox-discord-ingest` worker fills the Discord inbox store. It polls
+  channels resolved from active sessions that have `discord_get_commands` and read-capable
+  `discord_channel_allowlist` entries, plus enabled `trigger:communication:new-message` nodes that
+  name read-capable Discord communication targets.
 - Source filtering for `discord_get_commands` is strict:
   - Message source metadata must be `source == "discord_bot_api"`.
   - A command is accepted when **either** its `channel_id` is in the session's
@@ -806,8 +810,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
   `directory_path` to `root`, supports optional `author_ids`, `content_contains`, and
   `case_sensitive`, and listens only to read-capable Teams channel/chat or Discord channel targets.
-  It reuses the host-owned Teams and Discord inbox stores and does not expose communication target
-  auth profile references in trigger outputs.
+  The host-side Teams and Discord ingest workers observe those declared targets and feed the
+  host-owned inbox stores consumed by the trigger; trigger outputs do not expose communication
+  target auth profile references.
 - Direct-message triggers use a separate sender allowlist:
   - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
