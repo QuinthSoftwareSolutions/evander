@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Team Add-on Edit Modal Focus Fix
+
+- Kept Team Add-on edit dialogs from reopening themselves on modal control
+  clicks, preserving in-progress edits and checkbox toggles while the dialog is
+  open.
+- Focused the first editable field when opening an edit dialog and skipped
+  global select refreshes for controls inside the active edit form.
+
 ## 2026-06-15 - Create Agent Sudo Environment Fix
 
 - Passed Create Agent `agent_provider` and selected libvirt VM template choices
