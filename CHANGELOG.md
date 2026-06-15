@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Create Agent Labels Help
+
+- Removed the redundant visible Labels helper text from the Create Agent dialog
+  while keeping the tooltip and empty-state guidance.
+
 ## 2026-06-15 - Agent Email Target Capability Enforcement
 
 - Required mailbox-backed email communication targets selected for agent

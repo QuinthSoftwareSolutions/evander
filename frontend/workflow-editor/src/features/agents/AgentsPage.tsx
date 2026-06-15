@@ -2451,7 +2451,6 @@ export function AgentsPage() {
                       }
                       onValidationChange={setCreateLabelsValidationError}
                       fieldLabel="Labels"
-                      description="Key/value rows for agent labels."
                       emptyState="No labels are configured."
                       addLabel="Add label"
                       keyLabel="Key"

@@ -164,6 +164,12 @@ test("create modal exposes structured initial policy controls without post-creat
   }
 });
 
+test("create modal label rows rely on tooltip help instead of a visible helper", () => {
+  const createModal = createModalSource();
+  assert.match(createModal, /<CreateFieldLabel tooltip="Key\/value metadata stored on the session and shown in agent lists\.">[\s\S]*?Labels[\s\S]*?<\/CreateFieldLabel>/);
+  assert.doesNotMatch(createModal, /description="Key\/value rows for agent labels\./);
+});
+
 test("create modal select wrapper owns generated caret positioning", () => {
   const createModal = createModalSource();
   assert.match(
