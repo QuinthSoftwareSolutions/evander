@@ -112,6 +112,15 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
     )
 
 
+def test_mcp_tools_page_renders_tool_descriptions() -> None:
+    source = (
+        ROOT / "frontend" / "workflow-editor" / "src" / "features" / "mcpTools" / "McpToolsPage.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "mcp-tool-policy-description" in source
+    assert "item.description" in source
+
+
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -508,9 +517,15 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         "teams_meeting_stop",
     }.issubset(catalog_tool_values)
     tool_options = {item["value"]: item for item in catalog_payload["tool_options"]}
+    missing_catalog_descriptions = [
+        item["value"] for item in catalog_payload["tool_options"] if not item["description"].strip()
+    ]
+    assert missing_catalog_descriptions == []
     assert "List directory-configured contact ids" in tool_options["list_contacts"]["description"]
     assert "Start host-side phone calls" in tool_options["make_phone_call"]["description"]
     assert "Read phone call status" in tool_options["get_phone_call_result"]["description"]
+    assert "Submit a human approval request" in tool_options["approval_submit"]["description"]
+    assert "Check the current state" in tool_options["approval_check"]["description"]
     assert "Delete Azure DevOps backlog items" in tool_options[
         "delete_ado_backlog_item"
     ]["description"]
@@ -847,6 +862,15 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
     assert initial_response.status_code == 200
     initial_payload = json.loads(initial_response.body)
     initial_by_tool = {item["value"]: item for item in initial_payload["items"]}
+    assert set(initial_by_tool) == {tool.value for tool in ToolName}
+    missing_descriptions = [
+        item["value"] for item in initial_payload["items"] if not item["description"].strip()
+    ]
+    assert missing_descriptions == []
+    assert "Submit a human approval request" in initial_by_tool["approval_submit"][
+        "description"
+    ]
+    assert "Check the current state" in initial_by_tool["approval_check"]["description"]
     assert initial_by_tool["semantic_delete_points"]["approval_required"] is True
     run_script = next(
         item for item in initial_payload["items"] if item["value"] == "run_script"

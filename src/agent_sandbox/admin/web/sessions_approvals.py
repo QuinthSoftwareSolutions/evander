@@ -33,11 +33,45 @@ from agent_sandbox.policy import mandatory_approval_required_for_tool
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
-    ToolName.MSSQL_PROVISION_DATABASE: (
-        "Provision a session-owned SQL Server database through the container worker."
+    ToolName.ASSISTANT_READ_STATUS: (
+        "Read high-level control-plane status for the assistant Admin chat surface."
     ),
-    ToolName.MSSQL_LIST_DATABASES: "List SQL Server databases owned by this session.",
-    ToolName.MSSQL_DROP_DATABASE: "Drop a SQL Server database owned by this session.",
+    ToolName.ASSISTANT_LIST_AGENTS: (
+        "List agent sessions visible to the assistant Admin chat surface."
+    ),
+    ToolName.ASSISTANT_INSPECT_WORKFLOWS: (
+        "Inspect workflow definitions and recent workflow runtime state."
+    ),
+    ToolName.ASSISTANT_READ_CONFIG: (
+        "Read directory-scoped configuration visible to the assistant Admin chat surface."
+    ),
+    ToolName.ASSISTANT_UPSERT_CONFIG: (
+        "Create or update directory-scoped configuration through the assistant Admin chat surface."
+    ),
+    ToolName.ASSISTANT_CREATE_WORKFLOW: (
+        "Create workflow drafts through the assistant Admin chat surface."
+    ),
+    ToolName.ASSISTANT_RUN_SAFE_OPERATION: (
+        "Run allowlisted safe host operations through the assistant Admin chat surface."
+    ),
+    ToolName.ASSISTANT_POST_CHAT_REPLY: (
+        "Post a reply back into the assistant Admin chat conversation."
+    ),
+    ToolName.CREATE_ADO_BACKLOG_ITEM: (
+        "Create an Azure DevOps backlog item using the host-side ADO integration."
+    ),
+    ToolName.QUERY_ADO_BACKLOG_ITEMS: (
+        "Search Azure DevOps backlog items with host-side filters."
+    ),
+    ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS: (
+        "List Azure DevOps backlog items in the configured current iteration."
+    ),
+    ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
+        "Build daily status report data from Azure DevOps current-iteration items."
+    ),
+    ToolName.GET_ADO_BACKLOG_ITEM: (
+        "Fetch details for one Azure DevOps backlog item."
+    ),
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),
@@ -49,11 +83,87 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.UPDATE_ADO_BACKLOG_TITLE: "Update the title of an Azure DevOps backlog item.",
     ToolName.UPDATE_ADO_BACKLOG_TAGS: "Add or remove Azure DevOps backlog item tags.",
-    ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
-        "Build the daily status report JSON from Azure DevOps current-iteration data."
+    ToolName.CREATE_LOCAL_ISSUE: (
+        "Create a local issue record in the session's directory scope."
+    ),
+    ToolName.LIST_ISSUES: (
+        "List local issue records visible to the session."
+    ),
+    ToolName.GET_ISSUE: (
+        "Read details for a local issue record."
+    ),
+    ToolName.SET_ISSUE_PLAN: (
+        "Store or update the implementation plan attached to a local issue."
+    ),
+    ToolName.APPROVE_ISSUE: (
+        "Mark a local issue as approved for implementation."
+    ),
+    ToolName.COMMIT_ISSUE: (
+        "Move a local issue into the committed state when work is ready."
+    ),
+    ToolName.REJECT_ISSUE: (
+        "Reject a local issue instead of approving it for execution."
+    ),
+    ToolName.CLAIM_NEXT_ISSUE: (
+        "Claim the next available local issue in the session's directory scope."
+    ),
+    ToolName.COMPLETE_ISSUE: (
+        "Mark a local issue as completed after the work is finished."
+    ),
+    ToolName.GET_AGENT_STATUS: (
+        "Inspect current guest agent state, including whether it is running."
+    ),
+    ToolName.GET_AGENT_LOGS: "Fetch recent logs for the guest agent attached to this session.",
+    ToolName.DISCORD_GET_COMMANDS: (
+        "Read Discord command traffic ingested for this session or directory."
+    ),
+    ToolName.DISCORD_POST_STATUS: (
+        "Post a Discord status update from the host on behalf of the session."
+    ),
+    ToolName.COMMUNICATION_LIST_ATTACHMENTS: (
+        "List inbound attachment metadata from allowlisted Discord, Teams, or email sources."
+    ),
+    ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT: (
+        "Download an inbound attachment into the host communication artifact store."
+    ),
+    ToolName.LIST_INLINE_MEDIA: (
+        "List inline media references available from an inbound communication item."
+    ),
+    ToolName.DOWNLOAD_INLINE_MEDIA: (
+        "Download inline media into the host communication artifact store."
     ),
     ToolName.STAGE_ARTIFACT: (
         "Copy a file or directory from the agent workspace into the session artifacts folder."
+    ),
+    ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE: (
+        "Copy a host-managed communication artifact into the agent workspace."
+    ),
+    ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE: (
+        "Stage a workspace file as a host-managed communication artifact."
+    ),
+    ToolName.DISCORD_POST_FILE: (
+        "Post staged communication file artifacts to an allowlisted Discord channel."
+    ),
+    ToolName.TEAMS_GET_MESSAGES: (
+        "Read Microsoft Teams messages made available by the host ingest worker."
+    ),
+    ToolName.TEAMS_POST_STATUS: (
+        "Post a Microsoft Teams status update from the host on behalf of the session."
+    ),
+    ToolName.TEAMS_POST_FILE: (
+        "Post staged communication file artifacts to an allowlisted Microsoft Teams target."
+    ),
+    ToolName.TEAMS_MEETING_GET_EVENTS: (
+        "Read Teams meeting transcript and status events captured for this session."
+    ),
+    ToolName.TEAMS_MEETING_SPEAK: (
+        "Speak into the active Teams meeting through the host-managed meeting bridge."
+    ),
+    ToolName.TEAMS_MEETING_STOP: (
+        "Leave the active Teams meeting and close the host-side meeting binding."
+    ),
+    ToolName.ADD_MESSAGE_REACTION: (
+        "Add a reaction to an allowlisted Discord or Teams message from the host side."
     ),
     ToolName.LIST_CONTACTS: (
         "List directory-configured contact ids without exposing addresses or phone numbers."
@@ -66,6 +176,108 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.SUBMIT_VOICE_QUERY_RESPONSE: (
         "Answer delegated live voice questions for phone calls projected from this session."
+    ),
+    ToolName.EMAIL_LIST_UNREAD: (
+        "List unread email messages available through the host email provider."
+    ),
+    ToolName.EMAIL_GET_MESSAGE: (
+        "Open a specific email message the session is allowed to inspect."
+    ),
+    ToolName.EMAIL_CREATE_DRAFT: (
+        "Create an email draft on the host without sending it."
+    ),
+    ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS: (
+        "Create an email draft with staged communication file artifacts attached."
+    ),
+    ToolName.APPROVAL_SUBMIT: (
+        "Submit a human approval request for a guarded action the session wants reviewed."
+    ),
+    ToolName.APPROVAL_CHECK: (
+        "Check the current state of a human approval request previously submitted by the session."
+    ),
+    ToolName.EMAIL_SEND_APPROVED: (
+        "Send a previously approved email draft through the host email provider."
+    ),
+    ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS: (
+        "Send a previously approved email with staged communication file artifacts attached."
+    ),
+    ToolName.HAS_PENDING_FEEDBACK: (
+        "Check whether pull request or review feedback is waiting for the session."
+    ),
+    ToolName.LIST_UNREAD_FEEDBACK: (
+        "List unread review feedback items that need the session's attention."
+    ),
+    ToolName.LIST_ALL_FEEDBACK: (
+        "List all review feedback visible to the session within its scope."
+    ),
+    ToolName.POST_PR_FEEDBACK_REPLY: (
+        "Post a reply to pull request feedback using the host integration."
+    ),
+    ToolName.LIST_PULL_REQUESTS: (
+        "List pull requests available to the session through the configured provider."
+    ),
+    ToolName.GET_PULL_REQUEST: "Fetch the latest details for a specific pull request.",
+    ToolName.REQUEST_PR_REVIEW: (
+        "Request reviewers on a pull request from the host side."
+    ),
+    ToolName.POST_PR_COMMENT: (
+        "Post a pull request comment using the host integration."
+    ),
+    ToolName.POST_PR_INLINE_COMMENT: (
+        "Post an inline pull request comment at a specific diff position."
+    ),
+    ToolName.SUBMIT_PR_REVIEW: (
+        "Submit a pull request review decision and body from the host side."
+    ),
+    ToolName.HAS_PENDING_DISCORD_MESSAGES: (
+        "Check whether the session has unread Discord messages waiting."
+    ),
+    ToolName.LIST_UNREAD_DISCORD_MESSAGES: (
+        "List unread Discord messages available to the session."
+    ),
+    ToolName.LIST_ALL_DISCORD_MESSAGES: (
+        "List all Discord messages visible to the session within its policy scope."
+    ),
+    ToolName.SCHEDULE_RESUME: (
+        "Create or update a host-managed wake schedule that resumes this session later."
+    ),
+    ToolName.CANCEL_SCHEDULED_WAKE: (
+        "Cancel an obsolete host-managed wake schedule owned by this session."
+    ),
+    ToolName.PROMPT_AGENT: (
+        "Send a new prompt to another agent session within the allowed directory scope."
+    ),
+    ToolName.LIST_PENDING_AGENT_PROMPTS: (
+        "List prompts queued for this agent session that have not been handled yet."
+    ),
+    ToolName.RESPOND_TO_AGENT: (
+        "Reply to a pending agent prompt using its one-time response token."
+    ),
+    ToolName.RUN_SCRIPT: (
+        "Run an approved host-side script on behalf of the session."
+    ),
+    ToolName.GET_WORKFLOW_SNAPSHOT: (
+        "Read the current workflow editor document and optional run snapshot."
+    ),
+    ToolName.SEMANTIC_UPSERT_TEXT: (
+        "Insert or update text points in an allowlisted semantic collection."
+    ),
+    ToolName.SEMANTIC_SEARCH: (
+        "Search an allowlisted semantic collection for relevant points."
+    ),
+    ToolName.SEMANTIC_GET_POINTS: (
+        "Read specific points from an allowlisted semantic collection."
+    ),
+    ToolName.SEMANTIC_DELETE_POINTS: (
+        "Delete specific points from an allowlisted semantic collection."
+    ),
+    ToolName.MSSQL_PROVISION_DATABASE: (
+        "Provision a session-owned SQL Server database through the container worker."
+    ),
+    ToolName.MSSQL_LIST_DATABASES: "List SQL Server databases owned by this session.",
+    ToolName.MSSQL_DROP_DATABASE: "Drop a SQL Server database owned by this session.",
+    ToolName.COPILOT_HOST_AUTH: (
+        "Bridge host-managed GitHub Copilot authentication into the guest when that provider is used."
     ),
 }
 

@@ -6632,6 +6632,15 @@ select {
   overflow-wrap: anywhere;
 }
 
+.mcp-tool-policy-description {
+  color: rgba(47, 68, 82, 0.84);
+  line-height: 1.35;
+}
+
+:root[data-theme="dark"] .mcp-tool-policy-description {
+  color: rgba(211, 226, 235, 0.82);
+}
+
 .mcp-tool-policy-editor {
   display: grid;
   gap: 0.85rem;

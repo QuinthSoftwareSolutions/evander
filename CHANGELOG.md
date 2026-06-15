@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - MCP Tool Descriptions
+
+- Added descriptions for every MCP tool in the Admin Web tool option payloads,
+  including `approval_submit` and `approval_check`.
+- Showed tool descriptions directly in each MCP Tools directory-policy list row
+  so operators can scan policy impact without opening every tool.
+
 ## 2026-06-15 - Session Artifact Staging Tool
 
 - Added a `stage_artifact` MCP tool that lets agents copy files or directories
