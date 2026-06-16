@@ -3866,9 +3866,16 @@ class DidwwSipBridgeService:
                 if audio_delta:
                     await mark_assistant_speaking()
                     mark_audio_delta(event)
+                    try:
+                        decoded_audio_delta = base64.b64decode(audio_delta)
+                    except Exception as exc:
+                        tracker = self._audio_quality_trackers.get(voice_session_id)
+                        if tracker is not None and hasattr(tracker, "record_decode_error"):
+                            tracker.record_decode_error(reason=str(exc))
+                        raise
                     await outbound_audio_queue.put(
                         OutboundAudioFrame(
-                            payload=base64.b64decode(audio_delta),
+                            payload=decoded_audio_delta,
                             response_id=_realtime_response_id(event),
                             item_id=_realtime_item_id(event),
                             content_index=_realtime_content_index(event),
