@@ -2285,6 +2285,16 @@ class RtpUdpEndpoint:
             self.transport = None
 
 
+@dataclass(frozen=True)
+class _AudioQualityTrackerAttachment:
+    voice_session_id: str
+    tracker: Any
+    created_tracker: bool
+    had_rtp_tracker: bool
+    previous_rtp_tracker: Any
+    assigned_rtp_tracker: bool
+
+
 class DidwwSipBridgeService:
     def __init__(
         self,
@@ -2385,6 +2395,7 @@ class DidwwSipBridgeService:
             if record is None:
                 return JSONResponse({"error": "Unknown phone call"}, status_code=404)
             await service._flush_audio_quality_tracker(record.voice_session_id)
+            record = service.store.get(record.voice_session_id) or record
             return JSONResponse(record.response_payload())
 
         async def hangup_voice_session(request: Request) -> JSONResponse:
@@ -2503,6 +2514,81 @@ class DidwwSipBridgeService:
             carrier=_audio_quality_tag(record, "carrier"),
             region=_audio_quality_tag(record, "region"),
         )
+
+    def _attach_audio_quality_tracker(
+        self,
+        voice_session_id: str,
+        rtp: RtpUdpEndpoint,
+    ) -> _AudioQualityTrackerAttachment | None:
+        normalized_voice_session_id = str(voice_session_id or "").strip()
+        if not normalized_voice_session_id:
+            return None
+        tracker = self._audio_quality_trackers.get(normalized_voice_session_id)
+        created_tracker = False
+        if tracker is None:
+            record = self.store.get(normalized_voice_session_id)
+            if record is None:
+                return None
+            tracker = self._create_audio_quality_tracker(record, rtp)
+            self._audio_quality_trackers[normalized_voice_session_id] = tracker
+            created_tracker = True
+
+        if getattr(tracker, "rtp_port", None) is None:
+            rtp_port = getattr(rtp, "port", None)
+            if rtp_port is not None:
+                try:
+                    setattr(tracker, "rtp_port", rtp_port)
+                except Exception:
+                    logger.exception(
+                        "didww_bridge_audio_quality_port_attach_failed voice_session_id=%s",
+                        normalized_voice_session_id,
+                    )
+
+        had_rtp_tracker = hasattr(rtp, "tracker")
+        previous_rtp_tracker = getattr(rtp, "tracker", None)
+        assigned_rtp_tracker = False
+        if previous_rtp_tracker is not tracker:
+            try:
+                setattr(rtp, "tracker", tracker)
+                assigned_rtp_tracker = True
+            except Exception:
+                logger.exception(
+                    "didww_bridge_audio_quality_attach_failed voice_session_id=%s",
+                    normalized_voice_session_id,
+                )
+        return _AudioQualityTrackerAttachment(
+            voice_session_id=normalized_voice_session_id,
+            tracker=tracker,
+            created_tracker=created_tracker,
+            had_rtp_tracker=had_rtp_tracker,
+            previous_rtp_tracker=previous_rtp_tracker,
+            assigned_rtp_tracker=assigned_rtp_tracker,
+        )
+
+    async def _release_audio_quality_tracker(
+        self,
+        attachment: _AudioQualityTrackerAttachment,
+        rtp: RtpUdpEndpoint,
+    ) -> None:
+        await self._flush_audio_quality_tracker(attachment.voice_session_id)
+        if (
+            attachment.created_tracker
+            and self._audio_quality_trackers.get(attachment.voice_session_id)
+            is attachment.tracker
+        ):
+            self._audio_quality_trackers.pop(attachment.voice_session_id, None)
+        if not attachment.assigned_rtp_tracker:
+            return
+        try:
+            if attachment.had_rtp_tracker:
+                setattr(rtp, "tracker", attachment.previous_rtp_tracker)
+            else:
+                delattr(rtp, "tracker")
+        except Exception:
+            logger.exception(
+                "didww_bridge_audio_quality_detach_failed voice_session_id=%s",
+                attachment.voice_session_id,
+            )
 
     def _inbound_gateway_client(self) -> VoiceMediaControllerClient:
         return VoiceMediaControllerClient(
@@ -2635,10 +2721,15 @@ class DidwwSipBridgeService:
     ) -> None:
         async with self._semaphore:
             rtp = self.rtp_endpoint_factory()
+            tracker_attachment: _AudioQualityTrackerAttachment | None = None
             try:
                 await rtp.start()
                 if rtp.port is None:
                     raise RuntimeError("RTP endpoint did not bind a port")
+                tracker_attachment = self._attach_audio_quality_tracker(
+                    record.voice_session_id,
+                    rtp,
+                )
                 external_host = f"{self.config.external_media_host}:{rtp.port}"
                 async with self.realtime_factory(payload.projection, payload.realtime) as realtime:
                     media_controller = VoiceMediaControllerClient.from_realtime(
@@ -2689,6 +2780,8 @@ class DidwwSipBridgeService:
                 )
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
             finally:
+                if tracker_attachment is not None:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
                 rtp.close()
                 latest = self.store.get(record.voice_session_id)
                 if latest is not None:
@@ -2698,10 +2791,15 @@ class DidwwSipBridgeService:
     async def run_call(self, record: DidwwBridgeCallRecord, payload: PhoneCallStartRequest) -> None:
         async with self._semaphore:
             rtp = self.rtp_endpoint_factory()
+            tracker_attachment: _AudioQualityTrackerAttachment | None = None
             try:
                 await rtp.start()
                 if rtp.port is None:
                     raise RuntimeError("RTP endpoint did not bind a port")
+                tracker_attachment = self._attach_audio_quality_tracker(
+                    record.voice_session_id,
+                    rtp,
+                )
                 external_host = f"{self.config.external_media_host}:{rtp.port}"
                 async with self.realtime_factory(payload.projection, payload.realtime) as realtime:
                     media_controller = VoiceMediaControllerClient.from_realtime(
@@ -2749,6 +2847,8 @@ class DidwwSipBridgeService:
                 logger.exception("didww_bridge_call_failed voice_session_id=%s", record.voice_session_id)
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
             finally:
+                if tracker_attachment is not None:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
                 rtp.close()
                 latest = self.store.get(record.voice_session_id)
                 if latest is not None:
@@ -2764,20 +2864,7 @@ class DidwwSipBridgeService:
         ari_events: Any | None = None,
     ) -> None:
         stop_event = asyncio.Event()
-        tracker: DidwwAudioQualityTracker | None = None
-        had_rtp_tracker = hasattr(rtp, "tracker")
-        previous_rtp_tracker = getattr(rtp, "tracker", None)
-        record = self.store.get(voice_session_id)
-        if record is not None:
-            tracker = self._create_audio_quality_tracker(record, rtp)
-            self._audio_quality_trackers[voice_session_id] = tracker
-            try:
-                setattr(rtp, "tracker", tracker)
-            except Exception:
-                logger.exception(
-                    "didww_bridge_audio_quality_attach_failed voice_session_id=%s",
-                    voice_session_id,
-                )
+        tracker_attachment = self._attach_audio_quality_tracker(voice_session_id, rtp)
         tasks = [
             asyncio.create_task(self._rtp_to_realtime(rtp, realtime, stop_event)),
             asyncio.create_task(
@@ -2819,19 +2906,11 @@ class DidwwSipBridgeService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if tracker is not None:
-                await self._flush_audio_quality_tracker(voice_session_id)
-                self._audio_quality_trackers.pop(voice_session_id, None)
-                try:
-                    if had_rtp_tracker:
-                        setattr(rtp, "tracker", previous_rtp_tracker)
-                    else:
-                        delattr(rtp, "tracker")
-                except Exception:
-                    logger.exception(
-                        "didww_bridge_audio_quality_detach_failed voice_session_id=%s",
-                        voice_session_id,
-                    )
+            if tracker_attachment is not None:
+                if tracker_attachment.created_tracker:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
+                else:
+                    await self._flush_audio_quality_tracker(voice_session_id)
 
     async def _rtp_to_realtime(
         self,

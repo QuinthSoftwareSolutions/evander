@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - DIDWW Audio Quality Diagnostics
+
+- Refreshed call-id audio-quality diagnostics after active tracker flushes and
+  attached RTP trackers before call startup media begins so early packets and
+  malformed RTP are included in persisted quality metrics.
+
 ## 2026-06-16 - DIDWW Origin Query Patience
 
 - Kept DIDWW origin-agent queries polling until the backend timeout after the
