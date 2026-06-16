@@ -945,14 +945,16 @@ class OpenAIRelay:
                 "method": "POST",
                 "path": f"/v1/{upstream_path}",
             },
-            response_metadata={
-                "status_code": upstream_response.status_code,
-                "content_type": upstream_response.headers.get("content-type"),
-                "provider_request_id": self._provider_request_id_from_response(
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                },
+                provider_request_id=self._provider_request_id_from_response(
                     upstream_response=upstream_response,
                     response_payload=response_payload,
                 ),
-            },
+            ),
             duration_ms=duration_ms,
             provider_name=provider_name,
         )
@@ -986,15 +988,17 @@ class OpenAIRelay:
                 "path": f"/v1/{upstream_path}",
                 "stream": True,
             },
-            response_metadata={
-                "status_code": upstream_response.status_code,
-                "content_type": upstream_response.headers.get("content-type"),
-                "stream": True,
-                "provider_request_id": self._provider_request_id_from_response(
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                    "stream": True,
+                },
+                provider_request_id=self._provider_request_id_from_response(
                     upstream_response=upstream_response,
                     response_payload=response_payload,
                 ),
-            },
+            ),
             duration_ms=duration_ms,
             provider_name=provider_name,
         )
@@ -1029,12 +1033,14 @@ class OpenAIRelay:
                 "path": f"/v1/{upstream_path}",
                 "websocket": True,
             },
-            response_metadata={
-                "websocket": True,
-                "event_type": event_type,
-                "message_bytes": len(message_body),
-                "provider_request_id": self._provider_request_id_from_payload(response_payload),
-            },
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "websocket": True,
+                    "event_type": event_type,
+                    "message_bytes": len(message_body),
+                },
+                provider_request_id=self._provider_request_id_from_payload(response_payload),
+            ),
             duration_ms=duration_ms,
         )
 
@@ -1104,8 +1110,18 @@ class OpenAIRelay:
         ):
             value = upstream_response.headers.get(header_name)
             if value:
-                return value.strip()
+                text = value.strip()
+                if text:
+                    return text
         return cls._provider_request_id_from_payload(response_payload)
+
+    @staticmethod
+    def _response_metadata_with_provider_request_id(
+        response_metadata: dict[str, Any], *, provider_request_id: str | None
+    ) -> dict[str, Any]:
+        if provider_request_id is not None:
+            response_metadata["provider_request_id"] = provider_request_id
+        return response_metadata
 
     @staticmethod
     def _provider_request_id_from_payload(response_payload: dict[str, Any]) -> str | None:

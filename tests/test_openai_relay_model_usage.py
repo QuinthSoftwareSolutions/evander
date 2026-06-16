@@ -1106,6 +1106,7 @@ def test_openai_relay_records_streaming_final_usage_without_raw_text(
     assert event.total_tokens == 15
     assert event.normalized_usage_status == "available"
     assert event.raw_usage_metadata["request_metadata"]["stream"] is True
+    assert "provider_request_id" not in event.raw_usage_metadata["response_metadata"]
     assert event.response_body_sha256 is not None
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
@@ -1265,6 +1266,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
     assert event.output_tokens is None
     assert event.total_tokens is None
     assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.done"
+    assert "provider_request_id" not in event.raw_usage_metadata["response_metadata"]
     assert "secret completion text" not in event_json
 
 

@@ -15,6 +15,8 @@ material. Newer entries are added incrementally as changes land.
   prompt or response content.
 - Improved relay metering coverage by preserving provider request IDs and
   keeping streaming usage-recording failures warning-only.
+- Omitted absent provider request IDs from relay usage metadata instead of
+  serializing them as `null`.
 
 ## 2026-06-16 - Team Add-on Operator Directives
 
