@@ -101,9 +101,11 @@ _FAILED_HANGUP_CAUSE_TEXTS = {
 _DEBUG_SNIPPET_LIMIT = 200
 _ORIGIN_QUERY_ACK_GRACE_SECONDS = 2.0
 _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
+_BRIDGE_IDLE_PROMPT_MAX_PER_CALL = 2
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
+_ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS = "Still waiting on that, thanks for holding."
 _PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
 _PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
     "Answer the caller from the projected calling task now. "
@@ -119,16 +121,20 @@ _CALLER_TURN_COMPLETION_INSTRUCTIONS = (
     "Do not use or mention the queued lookup result yet."
 )
 _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
-    "Start with a natural transition such as 'I heard back on the earlier question.' "
-    "Then briefly answer from the lookup result. Do not mention internal agent handoffs, "
-    "do not say the query is still pending, and do not say that you are still checking."
+    "Start with a natural transition. If the conversation has moved on, start with a soft "
+    "callback such as 'Quick callback to your earlier question -' or "
+    "'I heard back on the earlier question.' Then briefly answer from the lookup result. "
+    "Do not mention internal agent handoffs, do not say the query is still pending, and do "
+    "not say that you are still checking."
 )
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
-    "Tell the caller in one short sentence that you will look that up for them. "
-    "Then say, in one short sentence, that you will wait for the answer; if they want "
-    "you to keep discussing something relevant while you wait, they can say so. "
-    "Do not expose internal handoffs, delegated-query details, or technical underpinnings. "
-    "Do not introduce unrelated filler or a new topic unless the caller asks for it."
+    'Tell the caller in one short natural sentence: "Let me look that up for you - one moment." '
+    "Do not add filler, do not invite a topic shift, and do not expose internal handoffs."
+)
+_ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS = (
+    "Tell the caller you cannot pull that up right now and offer to take a message, set a "
+    "follow-up, or help with something else. Do not mention any internal transfer of the "
+    "request, do not say the query is still pending, and do not say you are still checking."
 )
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
@@ -189,6 +195,7 @@ class DidwwSipBridgeConfig(BaseModel):
     request_timeout_seconds: float = Field(default=15.0, gt=0)
     max_concurrent_calls: int = Field(default=4, ge=1)
     voice_query_poll_interval_seconds: float = Field(default=1.0, gt=0)
+    voice_query_caller_patience_seconds: float = Field(default=18.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
@@ -1124,11 +1131,7 @@ class OpenAIRealtimeSession:
             }
         )
         if request_response:
-            await self.request_response(
-                "Start with a natural transition such as 'I heard back on the earlier question.' "
-                "Then briefly tell the caller the lookup result is ready. "
-                "Do not mention internal agent handoffs."
-            )
+            await self.request_response(_ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS)
 
     async def recv_json(self) -> dict[str, Any]:
         if self.websocket is None:
@@ -2085,6 +2088,7 @@ class DidwwSipBridgeService:
         barge_delay_tasks: set[asyncio.Task[None]] = set()
         idle_prompt_task: asyncio.Task[None] | None = None
         idle_prompt_sent_this_period = False
+        idle_prompt_sent_count = 0
         idle_generation = 0
         loop = asyncio.get_running_loop()
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
@@ -2201,6 +2205,11 @@ class DidwwSipBridgeService:
                 return True
             return any(_is_origin_query_response_key(request.key) for request in pending_responses)
 
+        def origin_query_pending() -> bool:
+            return any(state.status == "pending" for state in origin_queries_by_id.values()) or any(
+                state.status == "pending" for state in origin_queries_by_question.values()
+            )
+
         def response_blocked_by_caller_turn(request: BridgeResponseRequest) -> bool:
             # Caller speech can still barge in, but origin-query results must stay queued
             # until the caller turn has a final transcript.
@@ -2263,7 +2272,7 @@ class DidwwSipBridgeService:
                 await realtime.cancel_response(active_response_id)
 
         async def idle_prompt_after_playback(generation: int, *, reason: str) -> None:
-            nonlocal idle_prompt_sent_this_period
+            nonlocal idle_prompt_sent_this_period, idle_prompt_sent_count
             try:
                 while not stop_event.is_set() and assistant_audio_active():
                     await asyncio.sleep(0.05)
@@ -2271,6 +2280,7 @@ class DidwwSipBridgeService:
                     stop_event.is_set()
                     or generation != idle_generation
                     or idle_prompt_sent_this_period
+                    or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
                 ):
                     return
                 self._append_debug_event(
@@ -2291,11 +2301,18 @@ class DidwwSipBridgeService:
                     or response_active
                     or assistant_speaking
                     or pending_responses
+                    or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
                 ):
                     return
                 idle_prompt_sent_this_period = True
+                idle_prompt_sent_count += 1
+                response_instructions = (
+                    _ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS
+                    if origin_query_pending()
+                    else _IDLE_PROMPT_INSTRUCTIONS
+                )
                 await request_bridge_response(
-                    _IDLE_PROMPT_INSTRUCTIONS,
+                    response_instructions,
                     reason="idle_prompt",
                     key=_IDLE_PROMPT_RESPONSE_KEY,
                 )
@@ -2304,7 +2321,10 @@ class DidwwSipBridgeService:
 
         def schedule_idle_prompt_after_playback(*, reason: str) -> None:
             nonlocal idle_prompt_task
-            if idle_prompt_sent_this_period:
+            if (
+                idle_prompt_sent_this_period
+                or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
+            ):
                 return
             if not audio_response_started_at and last_assistant_audio_at is None:
                 return
@@ -3283,8 +3303,13 @@ class DidwwSipBridgeService:
             ) -> None:
                 await realtime.request_response(instructions)
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.voice_query_timeout_seconds
         started_at = loop.time()
+        backend_deadline = started_at + self.config.voice_query_timeout_seconds
+        caller_deadline = started_at + min(
+            self.config.voice_query_caller_patience_seconds,
+            self.config.voice_query_timeout_seconds,
+        )
+        caller_patience_can_expire_first = caller_deadline < backend_deadline
         if state is None:
             state = OriginQueryState(
                 query_id=query_id,
@@ -3294,8 +3319,24 @@ class DidwwSipBridgeService:
                 completed_event=asyncio.Event(),
             )
         poll_attempt = 0
-        while not stop_event.is_set() and loop.time() < deadline:
-            await asyncio.sleep(self.config.voice_query_poll_interval_seconds)
+        caller_patience_response_queued = False
+        while not stop_event.is_set():
+            now = loop.time()
+            if now >= backend_deadline:
+                break
+            sleep_deadline = backend_deadline
+            if caller_patience_can_expire_first and not caller_patience_response_queued:
+                sleep_deadline = min(sleep_deadline, caller_deadline)
+            await asyncio.sleep(
+                min(
+                    self.config.voice_query_poll_interval_seconds,
+                    max(0.0, sleep_deadline - now),
+                )
+            )
+            if stop_event.is_set():
+                break
+            if loop.time() >= backend_deadline:
+                break
             query = await media_controller.get_query(voice_session_id, query_id)
             poll_attempt += 1
             status = str(query.get("status") or "").strip()
@@ -3321,6 +3362,20 @@ class DidwwSipBridgeService:
                     "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
                 },
             )
+            now = loop.time()
+            if (
+                caller_patience_can_expire_first
+                and not caller_patience_response_queued
+                and now >= caller_deadline
+                and now < backend_deadline
+            ):
+                caller_patience_response_queued = True
+                await self._queue_origin_query_caller_patience_response(
+                    voice_session_id,
+                    state,
+                    request_response=request_response,
+                    started_at=started_at,
+                )
         if not stop_event.is_set():
             query = await media_controller.mark_query_timeout(voice_session_id, query_id)
             await self._handle_terminal_origin_query_result(
@@ -3332,6 +3387,46 @@ class DidwwSipBridgeService:
                 event_type="origin_query.timeout",
                 started_at=started_at,
             )
+
+    async def _queue_origin_query_caller_patience_response(
+        self,
+        voice_session_id: str,
+        state: OriginQueryState,
+        *,
+        request_response: Callable[..., Awaitable[None]],
+        started_at: float,
+    ) -> None:
+        if state.timeout_response_queued:
+            return
+        state.timeout_response_queued = True
+        loop = asyncio.get_running_loop()
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.caller_patience_expired",
+            metadata={
+                "query_id": state.query_id,
+                "reason": "caller_patience_expired",
+                "status": state.status,
+                "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
+            },
+        )
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.response_requested",
+            metadata={
+                "query_id": state.query_id,
+                "reason": "caller_patience_expired",
+                **_instruction_debug_metadata(_ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS),
+            },
+        )
+        await request_response(
+            _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS,
+            reason="caller_patience_expired",
+            key=_origin_query_response_key(state.query_id, "timeout"),
+            supersede_keys={
+                _origin_query_response_key(state.query_id, "ack"),
+            },
+        )
 
     async def _queue_delayed_origin_query_ack(
         self,
@@ -3353,7 +3448,12 @@ class DidwwSipBridgeService:
                 pass
         else:
             await asyncio.sleep(_ORIGIN_QUERY_ACK_GRACE_SECONDS)
-        if stop_event.is_set() or state.status != "pending" or state.ack_response_queued:
+        if (
+            stop_event.is_set()
+            or state.status != "pending"
+            or state.ack_response_queued
+            or state.timeout_response_queued
+        ):
             return
         state.ack_response_queued = True
         response_instructions = _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS
@@ -3443,10 +3543,7 @@ class DidwwSipBridgeService:
             if state.timeout_response_queued:
                 return
             state.timeout_response_queued = True
-            response_instructions = (
-                "Tell the caller the lookup did not finish in time. "
-                "Do not mention internal agent handoffs or say the query is still pending."
-            )
+            response_instructions = _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS
             response_kind = "timeout"
             response_reason = "query_timeout"
         else:
@@ -3463,6 +3560,11 @@ class DidwwSipBridgeService:
                 response_instructions = _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
             response_kind = "answer"
             response_reason = "query_result"
+        supersede_keys = {
+            _origin_query_response_key(state.query_id, "ack"),
+        }
+        if response_kind == "answer":
+            supersede_keys.add(_origin_query_response_key(state.query_id, "timeout"))
         self._append_debug_event(
             voice_session_id,
             "origin_query.response_requested",
@@ -3476,9 +3578,7 @@ class DidwwSipBridgeService:
             response_instructions,
             reason=response_reason,
             key=_origin_query_response_key(state.query_id, response_kind),
-            supersede_keys={
-                _origin_query_response_key(state.query_id, "ack"),
-            },
+            supersede_keys=supersede_keys,
         )
 
     async def _wait_for_asterisk_end(
@@ -3730,6 +3830,9 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         max_concurrent_calls=_env_int("DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS", 4),
         voice_query_poll_interval_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS", 1.0
+        ),
+        voice_query_caller_patience_seconds=_env_float(
+            "DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS", 18.0
         ),
         voice_query_timeout_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0
