@@ -873,6 +873,96 @@ def test_audio_quality_tracker_marks_out_of_order_frame_gaps_and_malformed_packe
     assert "rtp.frame_gap" in event_types
 
 
+def test_audio_quality_tracker_records_outbound_gaps_decode_errors_and_bounds_snapshot() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-2b",
+        call_id="call-2b",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        carrier="carrier-one",
+        region="us-east-1",
+    )
+
+    for index in range(70):
+        tracker.record_decode_error(reason=f"decode failure {index}")
+    tracker.record_queue_depth(41)
+    tracker.record_outbound_packet(
+        samples_sent=160,
+        payload_bytes=160,
+        rtp_timestamp=160,
+        send_gap_seconds=0.1,
+        sent_at_monotonic=1.0,
+    )
+
+    snapshot = tracker.snapshot()
+    dumped = snapshot.model_dump(mode="json")
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+
+    assert snapshot.voice_session_id == "voice-2b"
+    assert snapshot.call_id == "call-2b"
+    assert dumped["started_at"]
+    assert dumped["updated_at"]
+    assert snapshot.outbound_packets == 1
+    assert snapshot.outbound_bytes == 160
+    assert snapshot.outbound_samples == 160
+    assert snapshot.queue_depth_max == 41
+    assert snapshot.decode_errors == 70
+    assert snapshot.carrier == "carrier-one"
+    assert snapshot.region == "us-east-1"
+    assert len(snapshot.anomaly_events) <= 64
+    assert "rtp.queue_overrun" in event_types
+    assert "rtp.frame_gap" in event_types
+    assert event_types[-1] == "rtp.frame_gap"
+    assert "realtime.audio_delta.decode_error" in event_types
+    assert "decode failure" in json.dumps(dumped, sort_keys=True)
+
+
+def test_rtp_endpoint_send_payload_tracks_outbound_packets_and_frame_gaps(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-4b",
+        call_id="call-4b",
+        media_format=config.media_format,
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
+    endpoint.remote_addr = ("127.0.0.1", 49999)
+    endpoint._last_send_monotonic = 0.0
+    sent: list[tuple[bytes, tuple[str, int]]] = []
+
+    class FakeTransport:
+        def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+            sent.append((data, addr))
+
+    endpoint.transport = FakeTransport()  # type: ignore[assignment]
+    samples_per_frame = int(config.sample_rate_hz * config.frame_duration_ms / 1000)
+    payload = b"\x55" * (samples_per_frame * 2)
+
+    reported_samples: list[int] = []
+    sent_samples = asyncio.run(
+        endpoint.send_payload(payload, on_samples_sent=reported_samples.append)
+    )
+
+    snapshot = tracker.snapshot()
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    packets = [RtpPacket.parse(data) for data, _addr in sent]
+
+    assert sent_samples == len(payload)
+    assert reported_samples == [samples_per_frame, samples_per_frame]
+    assert [len(packet.payload) for packet in packets] == [samples_per_frame, samples_per_frame]
+    assert tracker.outbound_packets == 2
+    assert tracker.outbound_samples == len(payload)
+    assert snapshot.outbound_packets == 2
+    assert snapshot.outbound_samples == len(payload)
+    assert "rtp.frame_gap" in event_types
+
+
 def test_rtp_datagram_protocol_tracks_malformed_and_payload_type_mismatch_without_dropping_payload(
     tmp_path: Path,
 ) -> None:
