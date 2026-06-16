@@ -353,7 +353,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       if (requestIndex === 0) {
         assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "false");
-        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("omit_vm_state"), "false");
         assert.equal(url.searchParams.get("_dashboard"), "1");
       } else if (
         manualRefreshRequested &&
@@ -379,7 +379,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       } else {
         assert.equal(url.searchParams.get("summary_only"), "true");
         assert.equal(url.searchParams.get("reconcile_containers"), "false");
-        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("omit_vm_state"), "false");
         assert.equal(url.searchParams.get("_dashboard"), "1");
         assert.equal(url.searchParams.get("_dashboard_refresh"), null);
       }
@@ -527,7 +527,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.ok(agentListRequests.length >= 1);
   assert.match(agentListRequests[0], /summary_only=true/);
   assert.match(agentListRequests[0], /reconcile_containers=false/);
-  assert.match(agentListRequests[0], /omit_vm_state=true/);
+  assert.match(agentListRequests[0], /omit_vm_state=false/);
   assert.match(agentListRequests[0], /_dashboard=1/);
   assert.ok(manualRefreshRequest);
   assert.match(manualRefreshRequest, /summary_only=false/);

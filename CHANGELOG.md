@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Changed the Agents page status badge and Status filter to use actual agent
   execution state instead of VM power state, while showing VM or worker state
   as separate target metadata in the list and selected-agent details.
+- Kept the Agents page's visible summary refresh from omitting VM guest state,
+  avoiding `Unknown` badges for reachable VM-backed agents.
 
 ## 2026-06-16 - Team Add-on Dispatch Routing Guard
 

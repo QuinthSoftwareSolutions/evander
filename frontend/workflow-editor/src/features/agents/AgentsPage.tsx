@@ -1292,7 +1292,7 @@ export function AgentsPage() {
   }, [backendFilter, selectedDirectoryPath]);
 
   const refreshSummaryAgents = useCallback(async () => {
-    await refreshAgents({ summaryOnly: true, dashboardCache: true });
+    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: false });
   }, [refreshAgents]);
 
   const refreshSummaryCache = useCallback(async () => {
