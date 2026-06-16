@@ -2271,6 +2271,7 @@ class DidwwSipBridgeService:
         self.start_background_tasks = start_background_tasks
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._audio_quality_trackers: dict[str, Any] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_calls)
 
     def create_app(self) -> Starlette:
@@ -2316,9 +2317,32 @@ class DidwwSipBridgeService:
             if auth_error is not None:
                 return auth_error
             voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+            await service._flush_audio_quality_tracker(voice_session_id)
             record = service.store.get(voice_session_id)
             if record is None:
                 return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+            return JSONResponse(record.response_payload())
+
+        async def get_voice_session_audio_quality(request: Request) -> JSONResponse:
+            auth_error = service._auth_error(request)
+            if auth_error is not None:
+                return auth_error
+            voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+            await service._flush_audio_quality_tracker(voice_session_id)
+            record = service.store.get(voice_session_id)
+            if record is None:
+                return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+            return JSONResponse(record.response_payload())
+
+        async def get_phone_call_audio_quality(request: Request) -> JSONResponse:
+            auth_error = service._auth_error(request)
+            if auth_error is not None:
+                return auth_error
+            call_id = str(request.path_params.get("call_id") or "").strip()
+            record = service.store.get_by_call_id(call_id)
+            if record is None:
+                return JSONResponse({"error": "Unknown phone call"}, status_code=404)
+            await service._flush_audio_quality_tracker(record.voice_session_id)
             return JSONResponse(record.response_payload())
 
         async def hangup_voice_session(request: Request) -> JSONResponse:
@@ -2357,6 +2381,16 @@ class DidwwSipBridgeService:
                 Route("/phone-calls", start_phone_call, methods=["POST"]),
                 Route("/voice-sessions/{voice_session_id}", get_voice_session, methods=["GET"]),
                 Route(
+                    "/voice-sessions/{voice_session_id}/audio-quality",
+                    get_voice_session_audio_quality,
+                    methods=["GET"],
+                ),
+                Route(
+                    "/phone-calls/{call_id}/audio-quality",
+                    get_phone_call_audio_quality,
+                    methods=["GET"],
+                ),
+                Route(
                     "/voice-sessions/{voice_session_id}/hangup",
                     hangup_voice_session,
                     methods=["POST"],
@@ -2378,6 +2412,26 @@ class DidwwSipBridgeService:
                 logger.exception("didww_bridge_background_task_failed")
 
         task.add_done_callback(discard)
+
+    async def _flush_audio_quality_tracker(self, voice_session_id: str) -> None:
+        normalized_voice_session_id = str(voice_session_id or "").strip()
+        if not normalized_voice_session_id:
+            return
+        tracker = self._audio_quality_trackers.get(normalized_voice_session_id)
+        if tracker is None:
+            return
+        flush = getattr(tracker, "flush", None)
+        if not callable(flush):
+            return
+        try:
+            result = flush()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            logger.exception(
+                "didww_bridge_audio_quality_flush_failed voice_session_id=%s",
+                normalized_voice_session_id,
+            )
 
     def _inbound_gateway_client(self) -> VoiceMediaControllerClient:
         return VoiceMediaControllerClient(

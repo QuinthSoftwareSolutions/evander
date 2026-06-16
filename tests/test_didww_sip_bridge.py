@@ -145,7 +145,68 @@ def test_bridge_api_starts_and_returns_projected_call_without_leaking_numbers(
     payload = result.json()
     assert payload["metadata"]["to_number"] == "***4567"
     assert payload["metadata"]["from_number"] == "***0001"
+    assert payload["audio_quality"] is None
     assert "+15551234567" not in json.dumps(payload)
+
+
+def test_bridge_api_returns_audio_quality_for_voice_session_and_call_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    metrics = DidwwAudioQualityMetrics(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        direction=record.direction,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        rtp_port=49100,
+        route_id="route-1",
+        asterisk_pjsip_endpoint="didww",
+        carrier="carrier-one",
+        region="us-east-1",
+        inbound_packets=1,
+        inbound_bytes=160,
+        inbound_samples=160,
+        outbound_packets=2,
+        outbound_bytes=320,
+        outbound_samples=320,
+        lost_packets=1,
+        late_packets=0,
+        out_of_order_packets=0,
+        duplicate_packets=0,
+        malformed_packets=0,
+        decode_errors=0,
+        jitter_ms=0.5,
+        queue_depth_max=2,
+    )
+    updated = store.update_audio_quality(record.voice_session_id, metrics)
+    expected_audio_quality = updated.audio_quality.model_dump(mode="json")
+    app = create_app(_config(tmp_path), store=store, start_background_tasks=False)
+    client = TestClient(app)
+
+    voice_session_response = client.get(
+        "/voice-sessions/voice-1/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+    call_id_response = client.get(
+        f"/phone-calls/{record.call_id}/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+
+    assert voice_session_response.status_code == 200
+    assert call_id_response.status_code == 200
+    voice_payload = voice_session_response.json()
+    call_payload = call_id_response.json()
+    assert voice_payload["audio_quality"] == expected_audio_quality
+    assert call_payload["audio_quality"] == expected_audio_quality
+    assert voice_payload == call_payload
+    assert voice_payload["metadata"]["to_number"] == "***4567"
+    assert "+15551234567" not in json.dumps(voice_payload)
 
 
 def test_bridge_api_is_idempotent_by_request_id(tmp_path: Path, monkeypatch) -> None:
@@ -455,6 +516,40 @@ def test_bridge_api_requires_bearer_token(tmp_path: Path, monkeypatch) -> None:
     response = client.post("/phone-calls", json=_phone_payload())
 
     assert response.status_code == 401
+
+
+def test_bridge_api_requires_bearer_token_for_audio_quality_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    app = create_app(_config(tmp_path), start_background_tasks=False)
+    client = TestClient(app)
+
+    response = client.get("/voice-sessions/voice-1/audio-quality")
+
+    assert response.status_code == 401
+
+
+def test_bridge_api_returns_404_for_unknown_audio_quality_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    app = create_app(_config(tmp_path), start_background_tasks=False)
+    client = TestClient(app)
+
+    missing_voice_session = client.get(
+        "/voice-sessions/missing/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+    missing_call_id = client.get(
+        "/phone-calls/missing/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+
+    assert missing_voice_session.status_code == 404
+    assert missing_call_id.status_code == 404
 
 
 def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -> None:
