@@ -252,8 +252,11 @@ set:
   disposable workers and `ephemeral_acceptances` to promote or reject completed
   ephemeral results.
 - `query:team:session-routing` classifies a completed Truman session as a
-  persistent team agent, ephemeral assignment, or unknown session before action
-  artifacts are applied.
+  persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
+  unknown session before action artifacts are applied. Persistent agents are
+  routed only when the completed dispatch id matches the active Team runtime
+  lease, so ordinary Discord/Teams wake completions do not create missing
+  `team-action.json` failures.
 - `effect:team:mark-ephemeral-spawned`, `effect:team:apply-ephemeral-action`,
   `effect:team:accept-ephemeral-deliverable`, and
   `effect:team:mark-ephemeral-cleaned-up` track the ephemeral worker lifecycle
@@ -263,9 +266,10 @@ set:
 
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and they must not be moved into Truman core. The packaged
-`truman_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition shows the intended
-cron plus agent-completion loop. Operators can import that definition into a
-workflow pack when they want this opinionated runtime.
+`truman_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
+workflow pack for the intended cron plus agent-completion loop. Operators can
+write that definition into an operator-owned pack file when they want this
+opinionated runtime.
 
 ### Agent Action Protocol
 
@@ -487,7 +491,7 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
 3. Enable workflow providers in `config/trigger-orchestrator/config.json` with
    the same `addon_loader` block. Trigger and effect workers both read this
    worker config.
-4. If autonomous team wakeups are desired, materialize
+4. If autonomous team wakeups are desired, write the current-schema payload from
    `truman_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
    workflow pack file under `config/workflow-packs/` and list that file in
    `workflow_packs`. Do not edit checked-in example packs for live operator

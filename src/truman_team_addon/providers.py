@@ -383,7 +383,7 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             self.effect_definition,
             "promotion_id",
             "success",
-            "outputs",
+            "result_outputs",
             "error",
             "commit_sha",
             "expected_revision",
@@ -395,7 +395,10 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             _state, result = repo.record_git_promotion_result(
                 promotion_id=_required_text(payload.get("promotion_id"), "promotion_id"),
                 success=_optional_bool(payload.get("success"), default=True),
-                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                outputs=_optional_mapping(
+                    _result_outputs_payload(payload), "result_outputs"
+                )
+                or {},
                 error=_optional_text(payload.get("error")),
                 commit_sha=_optional_text(payload.get("commit_sha")),
                 expected_revision=_optional_int(payload.get("expected_revision"), default=None),
@@ -430,7 +433,7 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
             "success",
             "canonical_branch",
             "published_commit_sha",
-            "outputs",
+            "result_outputs",
             "error",
             "expected_revision",
         )
@@ -445,7 +448,10 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
                 success=_optional_bool(payload.get("success"), default=True),
                 canonical_branch=_optional_text(payload.get("canonical_branch")),
                 published_commit_sha=_optional_text(payload.get("published_commit_sha")),
-                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                outputs=_optional_mapping(
+                    _result_outputs_payload(payload), "result_outputs"
+                )
+                or {},
                 error=_optional_text(payload.get("error")),
                 expected_revision=_optional_int(payload.get("expected_revision"), default=None),
             )
@@ -588,41 +594,74 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
         return query_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        payload = _definition_payload(self.query_definition, "session_id")
+        payload = _definition_payload(self.query_definition, "session_id", "dispatch_id")
         if resolved_config:
             payload.update(dict(resolved_config))
         session_id = _required_text(payload.get("session_id"), "session_id")
+        dispatch_id = _optional_text(payload.get("dispatch_id"))
         state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
         for agent in state.agents.values():
             if agent.session_id == session_id:
+                runtime = state.agent_runtimes.get(agent.id)
+                expected_dispatch_id = (
+                    _optional_text(runtime.active_dispatch_id)
+                    if runtime is not None
+                    else None
+                )
+                if dispatch_id is not None and dispatch_id != expected_dispatch_id:
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "dispatch_id": dispatch_id,
+                        "kind": "ignored",
+                        "agent_id": agent.id,
+                        "assignment_id": None,
+                        "persistent": False,
+                        "ephemeral": False,
+                        "ignored": True,
+                        "reason": "dispatch_id does not match active team runtime lease",
+                        "expected_dispatch_id": expected_dispatch_id,
+                    }
                 return {
                     "success": True,
                     "session_id": session_id,
+                    "dispatch_id": dispatch_id,
                     "kind": "persistent",
                     "agent_id": agent.id,
                     "assignment_id": None,
                     "persistent": True,
                     "ephemeral": False,
+                    "ignored": False,
+                    "reason": None,
+                    "expected_dispatch_id": expected_dispatch_id,
                 }
         for assignment in state.ephemeral_assignments.values():
             if assignment.session_id == session_id:
                 return {
                     "success": True,
                     "session_id": session_id,
+                    "dispatch_id": dispatch_id,
                     "kind": "ephemeral",
                     "agent_id": None,
                     "assignment_id": assignment.id,
                     "persistent": False,
                     "ephemeral": True,
+                    "ignored": False,
+                    "reason": None,
+                    "expected_dispatch_id": None,
                 }
         return {
             "success": False,
             "session_id": session_id,
+            "dispatch_id": dispatch_id,
             "kind": "unknown",
             "agent_id": None,
             "assignment_id": None,
             "persistent": False,
             "ephemeral": False,
+            "ignored": False,
+            "reason": None,
+            "expected_dispatch_id": None,
         }
 
 
@@ -821,13 +860,20 @@ def _internal_event_bus(context: Any) -> InternalEventBus:
 
 
 def _materialize(model_class: type[Any], node: WorkflowNodeEnvelope) -> Any:
+    config = dict(node.config)
+    if (
+        "outputs" in config
+        and "result_outputs" not in config
+        and "result_outputs" in getattr(model_class, "model_fields", {})
+    ):
+        config["result_outputs"] = config.pop("outputs")
     return model_class.model_validate(
         {
             "id": node.id,
             "display_name": node.display_name,
             "type": node.type,
             "outputs": node.outputs,
-            **dict(node.config),
+            **config,
         }
     )
 
@@ -838,6 +884,12 @@ def _definition_payload(definition: Any, *field_names: str) -> dict[str, Any]:
         for field_name in field_names
         if definition is not None and hasattr(definition, field_name)
     }
+
+
+def _result_outputs_payload(payload: Mapping[str, Any]) -> Any:
+    if "result_outputs" in payload:
+        return payload.get("result_outputs")
+    return payload.get("outputs")
 
 
 def _runtime_dir(context: Any) -> Path:

@@ -5,6 +5,24 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Runtime Pack Materialization
+
+- Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
+  workflow pack directly, so operators can write it to `config/workflow-packs/`
+  and list it in `workflow_packs` without local schema conversion.
+- Allowed workflow bindings in communication target references and Git promotion
+  bare-repo selectors, while preserving static validation for unknown
+  communication targets and mutually exclusive static repo selectors.
+- Loaded configured add-on provider output schemas before serving workflow
+  editor documents, so Team runtime nodes do not show false missing-output
+  binding diagnostics in Admin Web.
+- Renamed Team Git result metadata config from reserved `outputs` to
+  `result_outputs` in the generated runtime pack, while still accepting legacy
+  `outputs` in existing Team packs.
+- Routed completed persistent Team sessions only when the completed dispatch id
+  matches the active Team runtime lease, preventing ordinary Discord wake
+  replies from being recorded as missing `team-action.json` failures.
+
 ## 2026-06-15 - Agents Thread Log Loading
 
 - Bounded the initial Agents page thread-log load for container worker sessions

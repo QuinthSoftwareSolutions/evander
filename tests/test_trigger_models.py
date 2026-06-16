@@ -1280,6 +1280,33 @@ def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> No
             }
         )
 
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        GitPromoteAgentBranchEffectDefinition.model_validate(
+            {
+                "id": "effect-promote-static-conflict",
+                "display_name": "Promote branch",
+                "type": "effect:git:promote-agent-branch",
+                "host_repo_path": "/repo",
+                "bare_repo_path": "/git-remotes/repo.git",
+                "bare_repo_name": "repo.git",
+                "agent_branch": "agents/session-1/topic",
+            }
+        )
+
+    dynamic_selector = GitPromoteAgentBranchEffectDefinition.model_validate(
+        {
+            "id": "effect-promote-dynamic-bare",
+            "display_name": "Promote branch",
+            "type": "effect:git:promote-agent-branch",
+            "host_repo_path": "/repo",
+            "bare_repo_path": "${{event.payload.bare_repo_path ?? null}}",
+            "bare_repo_name": "${{event.payload.bare_repo_name ?? null}}",
+            "agent_branch": "agents/session-1/topic",
+        }
+    )
+    assert dynamic_selector.bare_repo_path == "${{event.payload.bare_repo_path ?? null}}"
+    assert dynamic_selector.bare_repo_name == "${{event.payload.bare_repo_name ?? null}}"
+
 
 def test_git_push_branch_effect_requires_branch_fields() -> None:
     effect = GitPushBranchEffectDefinition.model_validate(

@@ -230,7 +230,7 @@ def compose_workflow_ir(
     queries: list[dict[str, Any]] = []
 
     for ir_node in nodes:
-        node_payload = ir_node.node.model_dump(mode="json")
+        node_payload = ir_node.node.model_dump(mode="json", exclude_none=True)
         node_type = str(node_payload.get("type") or "")
         if node_type.startswith("trigger:"):
             triggers.append(node_payload)

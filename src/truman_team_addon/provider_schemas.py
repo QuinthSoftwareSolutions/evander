@@ -114,17 +114,19 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
     type: Literal["effect:team:record-git-promotion"]
     promotion_id: ConfigValue
     success: ConfigValue | None = None
-    outputs: ConfigValue | None = None
+    result_outputs: ConfigValue | None = None
     error: ConfigValue | None = None
     commit_sha: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
-    @field_validator("outputs")
+    @field_validator("result_outputs")
     @classmethod
-    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+    def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError("effect:team:record-git-promotion outputs must be a JSON object")
+        raise ValueError(
+            "effect:team:record-git-promotion result_outputs must be a JSON object"
+        )
 
 
 class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
@@ -133,16 +135,18 @@ class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
     success: ConfigValue | None = None
     canonical_branch: ConfigValue | None = None
     published_commit_sha: ConfigValue | None = None
-    outputs: ConfigValue | None = None
+    result_outputs: ConfigValue | None = None
     error: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
-    @field_validator("outputs")
+    @field_validator("result_outputs")
     @classmethod
-    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+    def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError("effect:team:mark-release-published outputs must be a JSON object")
+        raise ValueError(
+            "effect:team:mark-release-published result_outputs must be a JSON object"
+        )
 
 
 class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
@@ -180,6 +184,7 @@ class TeamAgentActionArtifactQueryDefinition(QueryDefinition):
 class TeamSessionRoutingQueryDefinition(QueryDefinition):
     type: Literal["query:team:session-routing"]
     session_id: ConfigValue
+    dispatch_id: ConfigValue | None = None
 
 
 TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
@@ -302,10 +307,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     "query:team:session-routing": {
         "success": {"type": "boolean"},
         "session_id": {"type": "string"},
+        "dispatch_id": {"type": ["string", "null"]},
         "kind": {"type": "string"},
         "agent_id": {"type": ["string", "null"]},
         "assignment_id": {"type": ["string", "null"]},
         "persistent": {"type": "boolean"},
         "ephemeral": {"type": "boolean"},
+        "ignored": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "expected_dispatch_id": {"type": ["string", "null"]},
     },
 }

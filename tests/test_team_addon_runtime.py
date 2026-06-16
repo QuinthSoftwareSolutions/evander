@@ -4,9 +4,13 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
+from agent_sandbox.workflow.packs import WorkflowPack
+from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -49,6 +53,168 @@ from truman_team_addon.providers import (
 )
 from truman_team_addon.repository import TeamStateRepository
 from truman_team_addon.workflow_packs import team_runtime_v1
+
+
+def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
+    pack = WorkflowPack.model_validate(team_runtime_v1())
+    sections: dict[str, list[dict[str, object]]] = {
+        "triggers": [],
+        "gates": [],
+        "queries": [],
+        "effects": [],
+        "edges": [edge.model_dump(mode="json") for edge in pack.ir.edges],
+    }
+    for ir_node in pack.ir.nodes:
+        node = ir_node.node.model_dump(mode="json")
+        config = node.pop("config", {}) or {}
+        node.update(config)
+        node_type = str(node["type"])
+        if node_type.startswith("trigger:"):
+            sections["triggers"].append(node)
+        elif node_type.startswith("gate:"):
+            sections["gates"].append(node)
+        elif node_type.startswith("query:"):
+            sections["queries"].append(node)
+        elif node_type.startswith("effect:"):
+            sections["effects"].append(node)
+    return sections
+
+
+def _flatten_workflow_config_for_editor(
+    config: dict[str, object],
+) -> dict[str, object]:
+    flattened = json.loads(json.dumps(config))
+    for collection_name in ("triggers", "gates", "queries", "effects"):
+        entries = flattened.get(collection_name)
+        if not isinstance(entries, list):
+            continue
+        next_entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                next_entries.append(entry)
+                continue
+            nested_config = entry.pop("config", None)
+            if isinstance(nested_config, dict):
+                entry = {**nested_config, **entry}
+            next_entries.append(entry)
+        flattened[collection_name] = next_entries
+    return flattened
+
+
+def _legacy_outputs_config(config: dict[str, object]) -> dict[str, object]:
+    legacy = json.loads(json.dumps(config))
+    effects = legacy.get("effects")
+    if not isinstance(effects, list):
+        return legacy
+    for effect in effects:
+        if not isinstance(effect, dict):
+            continue
+        if effect.get("type") not in {
+            "effect:team:record-git-promotion",
+            "effect:team:mark-release-published",
+        }:
+            continue
+        if "result_outputs" in effect and "outputs" not in effect:
+            effect["outputs"] = effect.pop("result_outputs")
+    return legacy
+
+
+def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "team-runtime.v1.json").write_text(
+        json.dumps(team_runtime_v1(), indent=2),
+        encoding="utf-8",
+    )
+    config_dir = tmp_path / "config" / "trigger-orchestrator"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["team-runtime.v1.json"],
+                "addon_loader": {
+                    "modules": ["truman_team_addon"],
+                    "enabled_entry_points": False,
+                    "enabled_addon_ids": ["team-addon"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        tmp_path,
+        base_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+    )
+
+    assert _node_ids(config.triggers) == [
+        "team-cron",
+        "team-agent-run-completed",
+        "team-ephemeral-requested",
+        "team-operator-escalation",
+        "team-git-promotion-requested",
+        "system.chat_assistant",
+    ]
+    assert "team-wake-due-agents" in _node_ids(config.effects)
+    assert "team-notify-operator" in _node_ids(config.effects)
+    assert "team-git-promote-review-branch" in _node_ids(config.effects)
+
+    service = AdminService(tmp_path / "runtime")
+    document = service.read_workflow_editor_document()
+    assert service.read_workflow_editor_document().revision == document.revision
+    assert document.output_schemas["team-route-completed-session"]["persistent"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-route-completed-session"]["ignored"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-read-persistent-action"]["valid"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
+        "type": ["string", "null"]
+    }
+    graphs = [
+        graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
+        for graph in document.graphs
+    ]
+    flattened_config = _flatten_workflow_config_for_editor(document.config)
+    effects = {
+        str(effect["id"]): effect
+        for effect in flattened_config.get("effects", [])
+        if isinstance(effect, dict)
+    }
+    assert "outputs" not in effects["team-record-review-promotion"]
+    assert effects["team-record-review-promotion"]["result_outputs"] == {
+        "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
+        "host_repo_path": "${{team-git-promote-review-branch.host_repo_path ?? null}}",
+        "message": "${{team-git-promote-review-branch.message ?? null}}",
+    }
+    validation = service.validate_workflow_editor_document(
+        config=flattened_config,
+        layout=document.layout,
+        graphs=graphs,
+    )
+    assert validation.validation_diagnostics == []
+    legacy_validation = service.validate_workflow_editor_document(
+        config=_legacy_outputs_config(flattened_config),
+        layout=document.layout,
+        graphs=graphs,
+    )
+    assert legacy_validation.validation_diagnostics == []
+    current_document = service.read_workflow_editor_document()
+    save = service.save_workflow_editor_document(
+        config=flattened_config,
+        layout=document.layout,
+        graphs=graphs,
+        expected_revision=current_document.revision,
+    )
+    assert save.validation_diagnostics == []
+
+
+def _node_ids(nodes: object) -> list[str]:
+    return [str(getattr(node, "id")) for node in nodes]
 
 
 class FakeResumer:
@@ -407,6 +573,63 @@ def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
     reread = TeamStateRepository(tmp_path).read()
     assert len(reread.deliverables) == 1
     assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+            dispatch_id="wake-123-session-backend",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "ignored"
+    assert result["persistent"] is False
+    assert result["ignored"] is True
+    assert result["reason"] == "dispatch_id does not match active team runtime lease"
+    assert result["expected_dispatch_id"] == team_dispatch_id
+
+
+def test_session_routing_accepts_active_team_dispatch_for_persistent_agent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+            dispatch_id=team_dispatch_id,
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "persistent"
+    assert result["persistent"] is True
+    assert result["ignored"] is False
+    assert result["expected_dispatch_id"] == team_dispatch_id
 
 
 def test_invalid_action_artifact_increments_no_progress(tmp_path: Path) -> None:
@@ -862,7 +1085,7 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
 
 
 def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     queries = {node["id"]: node for node in pack["queries"]}
@@ -888,6 +1111,9 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
         "effect:team:mark-ephemeral-cleaned-up"
     )
     assert queries["team-route-completed-session"]["type"] == "query:team:session-routing"
+    assert queries["team-route-completed-session"]["dispatch_id"] == (
+        "${{team-agent-run-completed.dispatch_id ?? null}}"
+    )
     assert gates["team-completed-ephemeral"]["when"]["all"][0] == {
         "equals": True,
         "left": "${{team-route-completed-session.ephemeral}}",
@@ -906,7 +1132,7 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
 
 
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
@@ -928,7 +1154,7 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     gates = {node["id"]: node for node in pack["gates"]}
@@ -1018,7 +1244,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
 
 
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     push_nodes = [
         node for node in pack["effects"] if node["type"] == "effect:git:push-branch"
     ]

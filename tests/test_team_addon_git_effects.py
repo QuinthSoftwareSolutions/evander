@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.events.models import WorkflowNodeEnvelope
 from truman_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
@@ -125,7 +126,7 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
         promotion_id="promotion-1",
         success=True,
         commit_sha="deadbeef",
-        outputs={"review_branch": "team/team/reviews/ephemeral-1"},
+        result_outputs={"review_branch": "team/team/reviews/ephemeral-1"},
     )
 
     assert result["success"] is True
@@ -139,6 +140,33 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
     assert refs.agent_branch == "agents/eph-1/ephemeral-1"
     assert refs.commit_sha == "deadbeef"
     assert "promotion-1" in refs.promotion_record_ids
+
+
+def test_record_git_promotion_accepts_legacy_outputs_config(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_review_promotion(repo)
+    provider = TeamRecordGitPromotionEffectProvider()
+    provider.initialize(
+        WorkflowNodeEnvelope(
+            id="record",
+            display_name="Record",
+            type="effect:team:record-git-promotion",
+            config={
+                "promotion_id": "promotion-1",
+                "success": True,
+                "commit_sha": "deadbeef",
+                "outputs": {"review_branch": "team/team/reviews/ephemeral-1"},
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert repo.read().git_promotions["promotion-1"].outputs == {
+        "review_branch": "team/team/reviews/ephemeral-1"
+    }
 
 
 def test_record_git_promotion_failure_blocks_and_notifies(tmp_path: Path) -> None:
@@ -253,7 +281,7 @@ def test_record_canonical_promotion_success_updates_record(
         promotion_id="canonical-promotion",
         success=True,
         commit_sha="cafef00d",
-        outputs={"origin_branch": "releases/project/release-1"},
+        result_outputs={"origin_branch": "releases/project/release-1"},
     )
 
     assert result["success"] is True

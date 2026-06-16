@@ -1238,6 +1238,47 @@ def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) ->
         )
 
 
+def test_load_config_allows_dynamic_communication_target_ref(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "event-1",
+                        "display_name": "Escalation",
+                        "type": "trigger:event",
+                        "event_type": "team.operator.escalation_requested",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "send-message-1",
+                        "display_name": "Send message",
+                        "type": "effect:communication:send-message",
+                        "communication_target_id": "${{event-1.payload.communication_target_id}}",
+                        "message": "Done",
+                    }
+                ],
+                "edges": [{"source_id": "event-1", "target_id": "send-message-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert config.effects[0].id == "send-message-1"
+    assert config.effects[0].communication_target_id == (
+        "${{event-1.payload.communication_target_id}}"
+    )
+
+
 def test_load_config_accepts_read_capable_communication_targets(
     tmp_path: Path,
 ) -> None:
