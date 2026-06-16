@@ -4,6 +4,9 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +42,35 @@ from agent_sandbox.didww_sip_bridge import (
     load_config,
     projection_to_instructions,
 )
+
+
+def test_didww_sip_bridge_imports_with_deprecation_warnings_as_errors() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    src_path = str(repo_root / "src")
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        src_path
+        if not existing_pythonpath
+        else os.pathsep.join([src_path, existing_pythonpath])
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::DeprecationWarning",
+            "-c",
+            "import agent_sandbox.didww_sip_bridge",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _config(tmp_path: Path) -> DidwwSipBridgeConfig:
@@ -701,6 +733,7 @@ def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
     )
 
     assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
     assert fade_payload[0] != silence_byte[0]
     assert fade_payload[-1] == silence_byte[0]
     assert fade_payload != b"".join(frame.payload for frame in frames)
@@ -727,6 +760,7 @@ def test_barge_in_fade_payload_pads_short_audio_with_codec_silence(
     )
 
     assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
     assert fade_payload[:160] != silence_byte * 160
     assert fade_payload[160:] == silence_byte * 160
 

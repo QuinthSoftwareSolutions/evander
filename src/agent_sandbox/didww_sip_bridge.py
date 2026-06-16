@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import audioop
 import base64
 import hashlib
 import inspect
@@ -15,6 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -1030,11 +1030,63 @@ _G711_SILENCE_BYTES = {
 }
 
 
+def _decode_g711_alaw_sample(encoded_sample: int) -> int:
+    value = encoded_sample ^ 0x55
+    mantissa = value & 0x0F
+    exponent = (value >> 4) & 0x07
+    if exponent == 0:
+        linear_sample = (mantissa << 4) + 8
+    else:
+        linear_sample = ((mantissa << 4) + 0x108) << (exponent - 1)
+    return linear_sample if value & 0x80 else -linear_sample
+
+
+def _decode_g711_ulaw_sample(encoded_sample: int) -> int:
+    value = (~encoded_sample) & 0xFF
+    mantissa = value & 0x0F
+    exponent = (value >> 4) & 0x07
+    linear_sample = ((mantissa << 3) + 0x84) << exponent
+    linear_sample -= 0x84
+    return -linear_sample if value & 0x80 else linear_sample
+
+
+_G711_DECODE_TABLES = {
+    "alaw": tuple(_decode_g711_alaw_sample(sample) for sample in range(256)),
+    "ulaw": tuple(_decode_g711_ulaw_sample(sample) for sample in range(256)),
+}
+
+
 def _g711_silence_byte(media_format: str) -> bytes:
     try:
         return _G711_SILENCE_BYTES[media_format]
     except KeyError as exc:  # pragma: no cover - guarded by config validation
         raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+
+def _g711_decode_sample(media_format: str, encoded_sample: int) -> int:
+    try:
+        return _G711_DECODE_TABLES[media_format][encoded_sample]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+
+@lru_cache(maxsize=32768)
+def _g711_encode_sample(media_format: str, linear_sample: int) -> int:
+    if linear_sample == 0:
+        return _g711_silence_byte(media_format)[0]
+    try:
+        decode_table = _G711_DECODE_TABLES[media_format]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+    best_sample = 0
+    best_distance: int | None = None
+    for candidate, decoded_sample in enumerate(decode_table):
+        distance = abs(decoded_sample - linear_sample)
+        if best_distance is None or distance < best_distance:
+            best_sample = candidate
+            best_distance = distance
+    return best_sample
 
 
 def _build_barge_in_fade_payload(
@@ -1055,8 +1107,6 @@ def _build_barge_in_fade_payload(
     if not source_payload:
         return b""
     fade_window = max(1, samples_to_fade - 1)
-    decode = audioop.alaw2lin if media_format == "alaw" else audioop.ulaw2lin
-    encode = audioop.lin2alaw if media_format == "alaw" else audioop.lin2ulaw
     payload = bytearray()
     for index in range(samples_to_fade):
         offset = index * bytes_per_sample
@@ -1064,11 +1114,10 @@ def _build_barge_in_fade_payload(
         if not sample_fragment:
             payload.extend(silence_byte)
             continue
-        linear_sample = decode(sample_fragment, 2)
+        linear_sample = _g711_decode_sample(media_format, sample_fragment[0])
         gain = 0.0 if samples_to_fade == 1 else 1.0 - (index / fade_window)
-        faded_sample = audioop.mul(linear_sample, 2, gain)
-        encoded_sample = encode(faded_sample, 2)
-        payload.extend(encoded_sample if encoded_sample else silence_byte)
+        faded_sample = int(linear_sample * gain)
+        payload.append(_g711_encode_sample(media_format, faded_sample))
     return bytes(payload)
 
 

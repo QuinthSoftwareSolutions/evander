@@ -12,6 +12,8 @@ material. Newer entries are added incrementally as changes land.
 - Routed confirmed barge-in cancels through a short faded queued-RTP tail instead of dropping
   pending assistant audio immediately, while keeping prompt Realtime response cancellation and
   assistant audio truncation.
+- Removed the fade helper's deprecated `audioop` dependency so the DIDWW bridge imports cleanly on
+  Python 3.13 while preserving G.711 A-law and u-law fade behavior.
 - Documented the fade window in the DIDWW bridge operations guide, configuration reference, and
   sample env file so operators can distinguish a taper from a hard cut.
 
