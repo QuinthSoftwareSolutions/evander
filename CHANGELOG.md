@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Kept DIDWW origin-agent queries polling until the backend timeout after the
   caller-facing patience response, so late answers can still be injected into
   the live call.
+- Suppressed the delayed origin-query hold prompt after the caller-facing
+  patience response has already been queued.
 
 ## 2026-06-15 - Agents Thread Log Loading
 

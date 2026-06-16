@@ -3448,7 +3448,12 @@ class DidwwSipBridgeService:
                 pass
         else:
             await asyncio.sleep(_ORIGIN_QUERY_ACK_GRACE_SECONDS)
-        if stop_event.is_set() or state.status != "pending" or state.ack_response_queued:
+        if (
+            stop_event.is_set()
+            or state.status != "pending"
+            or state.ack_response_queued
+            or state.timeout_response_queued
+        ):
             return
         state.ack_response_queued = True
         response_instructions = _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS

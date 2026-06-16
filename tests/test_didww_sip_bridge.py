@@ -4948,7 +4948,9 @@ def test_empty_origin_query_with_incomplete_startup_requests_keyed_call_objectiv
 
 def test_origin_query_caller_patience_keeps_query_pending_for_reuse(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ORIGIN_QUERY_ACK_GRACE_SECONDS", 0.05)
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
 
@@ -5046,6 +5048,8 @@ def test_origin_query_caller_patience_keeps_query_pending_for_reuse(
             origin_queries_by_question=origin_queries_by_question,
             origin_queries_by_id=origin_queries_by_id,
         )
+        while loop.time() - started_at < 0.12:
+            await asyncio.sleep(0.005)
         for task in query_tasks:
             task.cancel()
         await asyncio.gather(*query_tasks, return_exceptions=True)
