@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - DIDWW Origin Query Patience
+
+- Kept DIDWW origin-agent queries polling until the backend timeout after the
+  caller-facing patience response, so late answers can still be injected into
+  the live call.
+
 ## 2026-06-15 - Agents Thread Log Loading
 
 - Bounded the initial Agents page thread-log load for container worker sessions

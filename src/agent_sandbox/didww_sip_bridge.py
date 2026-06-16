@@ -3303,11 +3303,13 @@ class DidwwSipBridgeService:
             ) -> None:
                 await realtime.request_response(instructions)
         loop = asyncio.get_running_loop()
-        caller_deadline = loop.time() + min(
+        started_at = loop.time()
+        backend_deadline = started_at + self.config.voice_query_timeout_seconds
+        caller_deadline = started_at + min(
             self.config.voice_query_caller_patience_seconds,
             self.config.voice_query_timeout_seconds,
         )
-        started_at = loop.time()
+        caller_patience_can_expire_first = caller_deadline < backend_deadline
         if state is None:
             state = OriginQueryState(
                 query_id=query_id,
@@ -3317,19 +3319,23 @@ class DidwwSipBridgeService:
                 completed_event=asyncio.Event(),
             )
         poll_attempt = 0
+        caller_patience_response_queued = False
         while not stop_event.is_set():
             now = loop.time()
-            if now >= caller_deadline:
+            if now >= backend_deadline:
                 break
+            sleep_deadline = backend_deadline
+            if caller_patience_can_expire_first and not caller_patience_response_queued:
+                sleep_deadline = min(sleep_deadline, caller_deadline)
             await asyncio.sleep(
                 min(
                     self.config.voice_query_poll_interval_seconds,
-                    max(0.0, caller_deadline - now),
+                    max(0.0, sleep_deadline - now),
                 )
             )
             if stop_event.is_set():
                 break
-            if loop.time() >= caller_deadline:
+            if loop.time() >= backend_deadline:
                 break
             query = await media_controller.get_query(voice_session_id, query_id)
             poll_attempt += 1
@@ -3356,6 +3362,20 @@ class DidwwSipBridgeService:
                     "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
                 },
             )
+            now = loop.time()
+            if (
+                caller_patience_can_expire_first
+                and not caller_patience_response_queued
+                and now >= caller_deadline
+                and now < backend_deadline
+            ):
+                caller_patience_response_queued = True
+                await self._queue_origin_query_caller_patience_response(
+                    voice_session_id,
+                    state,
+                    request_response=request_response,
+                    started_at=started_at,
+                )
         if not stop_event.is_set():
             query = await media_controller.mark_query_timeout(voice_session_id, query_id)
             await self._handle_terminal_origin_query_result(
@@ -3367,6 +3387,46 @@ class DidwwSipBridgeService:
                 event_type="origin_query.timeout",
                 started_at=started_at,
             )
+
+    async def _queue_origin_query_caller_patience_response(
+        self,
+        voice_session_id: str,
+        state: OriginQueryState,
+        *,
+        request_response: Callable[..., Awaitable[None]],
+        started_at: float,
+    ) -> None:
+        if state.timeout_response_queued:
+            return
+        state.timeout_response_queued = True
+        loop = asyncio.get_running_loop()
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.caller_patience_expired",
+            metadata={
+                "query_id": state.query_id,
+                "reason": "caller_patience_expired",
+                "status": state.status,
+                "elapsed_ms": int(max(0.0, loop.time() - started_at) * 1000),
+            },
+        )
+        self._append_debug_event(
+            voice_session_id,
+            "origin_query.response_requested",
+            metadata={
+                "query_id": state.query_id,
+                "reason": "caller_patience_expired",
+                **_instruction_debug_metadata(_ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS),
+            },
+        )
+        await request_response(
+            _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS,
+            reason="caller_patience_expired",
+            key=_origin_query_response_key(state.query_id, "timeout"),
+            supersede_keys={
+                _origin_query_response_key(state.query_id, "ack"),
+            },
+        )
 
     async def _queue_delayed_origin_query_ack(
         self,
@@ -3495,6 +3555,11 @@ class DidwwSipBridgeService:
                 response_instructions = _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
             response_kind = "answer"
             response_reason = "query_result"
+        supersede_keys = {
+            _origin_query_response_key(state.query_id, "ack"),
+        }
+        if response_kind == "answer":
+            supersede_keys.add(_origin_query_response_key(state.query_id, "timeout"))
         self._append_debug_event(
             voice_session_id,
             "origin_query.response_requested",
@@ -3508,9 +3573,7 @@ class DidwwSipBridgeService:
             response_instructions,
             reason=response_reason,
             key=_origin_query_response_key(state.query_id, response_kind),
-            supersede_keys={
-                _origin_query_response_key(state.query_id, "ack"),
-            },
+            supersede_keys=supersede_keys,
         )
 
     async def _wait_for_asterisk_end(

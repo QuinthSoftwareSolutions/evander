@@ -4946,7 +4946,7 @@ def test_empty_origin_query_with_incomplete_startup_requests_keyed_call_objectiv
     ]
 
 
-def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
+def test_origin_query_caller_patience_keeps_query_pending_for_reuse(
     tmp_path: Path,
 ) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
@@ -5000,6 +5000,7 @@ def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
         service = DidwwSipBridgeService(
             _config(tmp_path).model_copy(
                 update={
+                    "voice_query_poll_interval_seconds": 0.01,
                     "voice_query_caller_patience_seconds": 0.03,
                     "voice_query_timeout_seconds": 1.0,
                 }
@@ -5028,7 +5029,8 @@ def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
             origin_queries_by_question=origin_queries_by_question,
             origin_queries_by_id=origin_queries_by_id,
         )
-        await asyncio.wait_for(asyncio.gather(*query_tasks), timeout=1)
+        while not realtime.responses and loop.time() - started_at < 0.5:
+            await asyncio.sleep(0.005)
         elapsed = loop.time() - started_at
         await service._handle_realtime_function_call(  # type: ignore[attr-defined]
             record.voice_session_id,
@@ -5044,6 +5046,9 @@ def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
             origin_queries_by_question=origin_queries_by_question,
             origin_queries_by_id=origin_queries_by_id,
         )
+        for task in query_tasks:
+            task.cancel()
+        await asyncio.gather(*query_tasks, return_exceptions=True)
         return realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id
 
     realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id = asyncio.run(
@@ -5052,7 +5057,7 @@ def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
 
     assert elapsed < 1.0
     assert controller.create_query_calls[0]["deadline_seconds"] == 1
-    assert controller.mark_timeout_calls == 1
+    assert controller.mark_timeout_calls == 0
     assert realtime.tool_outputs == [
         {
             "call_id": "tool-call-1",
@@ -5061,18 +5066,114 @@ def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
         {
             "call_id": "tool-call-2",
             "output": {
-                "status": "timeout",
+                "status": "pending",
                 "query_id": "voice-query-1",
-                "error": "Timed out while calling +15551234567 for help.",
                 "deduplicated": True,
             },
         },
     ]
-    assert realtime.injected[0]["status"] == "timeout"
+    assert realtime.injected == []
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS]
     assert "handoff" not in str(realtime.responses[0]).lower()
     assert len(origin_queries_by_question) == 1
     assert len(origin_queries_by_id) == 1
+
+
+def test_origin_query_answer_after_caller_patience_is_injected_before_backend_timeout(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.injected: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeController:
+        def __init__(self) -> None:
+            self.started_at = 0.0
+            self.get_query_calls = 0
+            self.mark_timeout_calls = 0
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.get_query_calls += 1
+            if asyncio.get_running_loop().time() - self.started_at >= 0.05:
+                return {
+                    "query_id": query_id,
+                    "status": "answered",
+                    "answer": "The package is ready.",
+                }
+            return {"query_id": query_id, "status": "pending"}
+
+        async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.mark_timeout_calls += 1
+            return {"query_id": query_id, "status": "timeout"}
+
+    async def run() -> tuple[FakeRealtime, FakeController]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={
+                    "voice_query_poll_interval_seconds": 0.01,
+                    "voice_query_caller_patience_seconds": 0.02,
+                    "voice_query_timeout_seconds": 0.2,
+                }
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        controller.started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(
+            service._poll_origin_query_result(  # type: ignore[arg-type]
+                record.voice_session_id,
+                "voice-query-late-answer",
+                controller,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                asyncio.Event(),
+            ),
+            timeout=1,
+        )
+        return realtime, controller
+
+    realtime, controller = asyncio.run(run())
+
+    assert controller.mark_timeout_calls == 0
+    assert controller.get_query_calls >= 2
+    assert realtime.injected == [
+        {
+            "query_id": "voice-query-late-answer",
+            "status": "answered",
+            "answer": "The package is ready.",
+        }
+    ]
+    assert realtime.responses == [
+        didww_sip_bridge._ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS,
+        didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS,
+    ]
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "origin_query.caller_patience_expired" in event_types
+    assert "origin_query.answered" in event_types
+    requested_reasons = [
+        event.metadata["reason"]
+        for event in latest.debug_events
+        if event.event_type == "origin_query.response_requested"
+    ]
+    assert requested_reasons == ["caller_patience_expired", "query_result"]
 
 
 def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
