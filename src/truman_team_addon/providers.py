@@ -6,8 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
+from agent_sandbox.events.provider_models import AgentCopyFilesEffectDefinition
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.contracts import register_node_output_schema
@@ -34,6 +36,9 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
+ACTION_CONTRACT_SCHEMA_VERSION = 3
+ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
+ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 
 
 class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
@@ -82,8 +87,13 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         errors: list[str] = []
         for lease in leases:
             agent = lease["agent"]
-            prompt = _build_prompt(lease, action_artifact_path=action_path)
             try:
+                seed_result = _seed_action_contract_files(
+                    context,
+                    agent=agent,
+                    action_artifact_path=action_path,
+                )
+                prompt = _build_prompt(lease, action_artifact_path=action_path)
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=prompt,
@@ -101,6 +111,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         "agent_id": agent["id"],
                         "session_id": agent["session_id"],
                         "dispatch_id": lease["dispatch_id"],
+                        "action_contract": seed_result,
                         "result": result_payload,
                     }
                 )
@@ -767,6 +778,8 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "handled_inbox_item_ids": [],
         "notes": "",
     }
+    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
+    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
     return (
         "Continue your assigned team-agent work.\n"
         "Use the provided team context and update only your own assigned tasks. "
@@ -796,10 +809,447 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "review_requests item for that reviewer; do not mark the task accepted "
         "yourself unless the task is actually yours.\n\n"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
+        f"Team action contract files have been seeded at {schema_path} and "
+        f"{example_path}. Read {schema_path} for the JSON Schema contract and "
+        f"use {example_path} as a writable template. Do not infer required fields "
+        "from memory; follow the schema file.\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
     )
+
+
+def _seed_action_contract_files(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    action_artifact_path: str,
+) -> dict[str, Any]:
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
+    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
+    metadata = _session_metadata(context, session_id=session_id)
+    known_vm_ip = _session_known_vm_ip(metadata)
+    if _metadata_has_current_action_contract(
+        metadata,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=f"/artifacts/{action_artifact_path}",
+    ):
+        return {
+            "seeded": False,
+            "reason": "already_seeded",
+            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+            "schema_path": schema_path,
+            "example_path": example_path,
+        }
+
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(
+        AgentCopyFilesEffectDefinition(
+            id="team-seed-action-contract",
+            display_name="Seed Team action contract",
+            type="effect:agent:copy-files",
+            session_id=session_id,
+            vm_user="agent",
+            files=[
+                {
+                    "content": _json_dumps(_persistent_action_schema()),
+                    "destination_path": schema_path,
+                    "mode": "0644",
+                    "overwrite": True,
+                },
+                {
+                    "content": _json_dumps(_persistent_action_example()),
+                    "destination_path": example_path,
+                    "mode": "0644",
+                    "overwrite": True,
+                },
+            ],
+        ),
+        context,
+    )
+    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
+    copy_result = provider.execute(resolved_config=resolved_config)
+    if not bool(copy_result.get("success")):
+        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
+        raise RuntimeError(message or "failed to seed Team action contract files")
+
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    _mark_action_contract_seeded(
+        context,
+        session_id=session_id,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=f"/artifacts/{action_artifact_path}",
+        copy_result=copy_result,
+        vm_ip=copied_vm_ip,
+    )
+    return {
+        "seeded": True,
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "schema_path": schema_path,
+        "example_path": example_path,
+        "vm_ip": copied_vm_ip,
+        "copied_paths": list(copy_result.get("copied_paths") or []),
+    }
+
+
+def _session_has_current_action_contract(
+    context: Any,
+    *,
+    session_id: str,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+) -> bool:
+    metadata = _session_metadata(context, session_id=session_id)
+    return _metadata_has_current_action_contract(
+        metadata,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=action_artifact_path,
+    )
+
+
+def _metadata_has_current_action_contract(
+    metadata: Mapping[str, Any],
+    *,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    contract = team_addon.get("action_contract")
+    if not isinstance(contract, Mapping):
+        return False
+    return (
+        int(contract.get("schema_version") or 0) == ACTION_CONTRACT_SCHEMA_VERSION
+        and contract.get("schema_path") == schema_path
+        and contract.get("example_path") == example_path
+        and contract.get("action_artifact_path") == action_artifact_path
+        and contract.get("seeded") is True
+    )
+
+
+def _session_known_vm_ip(metadata: Mapping[str, Any]) -> str | None:
+    team_addon = metadata.get("team_addon")
+    if isinstance(team_addon, Mapping):
+        for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
+            value = _optional_text(team_addon.get(key))
+            if value:
+                return value
+    for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
+        value = _optional_text(metadata.get(key))
+        if value:
+            return value
+    return None
+
+
+def _session_metadata(context: Any, *, session_id: str) -> dict[str, Any]:
+    lookup = getattr(context, "session_lookup", None)
+    read_all = getattr(lookup, "read_all_sessions", None)
+    if not callable(read_all):
+        return {}
+    sessions = read_all()
+    if not isinstance(sessions, Mapping):
+        return {}
+    session = sessions.get(session_id)
+    if session is None:
+        return {}
+    metadata = None
+    if isinstance(session, Mapping):
+        metadata = session.get("metadata")
+    else:
+        metadata = getattr(session, "metadata", None)
+    return dict(metadata) if isinstance(metadata, Mapping) else {}
+
+
+def _mark_action_contract_seeded(
+    context: Any,
+    *,
+    session_id: str,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+    copy_result: Mapping[str, Any],
+    vm_ip: str | None,
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    team_metadata: dict[str, Any] = {
+        "action_contract": {
+            "seeded": True,
+            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+            "schema_path": schema_path,
+            "example_path": example_path,
+            "action_artifact_path": action_artifact_path,
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
+    }
+    if vm_ip:
+        team_metadata["last_known_vm_ip"] = vm_ip
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": team_metadata},
+    )
+
+
+def _persistent_action_schema() -> dict[str, Any]:
+    text_or_null = {"type": ["string", "null"]}
+    string_array = {"type": "array", "items": {"type": "string"}, "default": []}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://agent-sandbox.local/team-addon/team-action.v1.schema.json",
+        "title": "Team Add-on persistent agent action",
+        "description": (
+            "Action artifact written by a persistent Team agent to "
+            "/artifacts/team-action.json after a Team wake."
+        ),
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["agent_id"],
+        "properties": {
+            "schema_version": {"type": "integer", "const": ACTION_CONTRACT_SCHEMA_VERSION},
+            "agent_id": {"type": "string", "minLength": 1},
+            "dispatch_id": {"type": "string", "minLength": 1},
+            "task_updates": {
+                "type": "array",
+                "description": (
+                    "Update tasks owned by this agent. State, priority, title, "
+                    "and description are owner-only. Supervisors/leads/managers "
+                    "may maintain dependency_task_ids, but must use "
+                    "review_decisions to accept or reject deliverables and the "
+                    "tasks they satisfy."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id"],
+                    "properties": {
+                        "task_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review", "finished", "accepted", "rejected"]},
+                        "priority": {"type": "integer", "minimum": 0},
+                        "title": {"type": "string", "minLength": 1},
+                        "description": {"type": "string", "minLength": 1},
+                        "dependency_task_ids": string_array,
+                    },
+                },
+            },
+            "task_creations": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["owner_agent_id", "project_id", "title", "description"],
+                    "properties": {
+                        "task_id": {"type": "string", "minLength": 1},
+                        "id": {"type": "string", "minLength": 1},
+                        "owner_agent_id": {"type": "string", "minLength": 1},
+                        "project_id": {"type": "string", "minLength": 1},
+                        "priority": {"type": "integer", "minimum": 0},
+                        "title": {"type": "string", "minLength": 1},
+                        "description": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review"]},
+                        "parent_task_id": text_or_null,
+                        "dependency_task_ids": string_array,
+                    },
+                },
+            },
+            "status_requests": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "required": ["recipient_agent_id"],
+                    "properties": {
+                        "recipient_agent_id": {"type": "string", "minLength": 1},
+                        "task_id": text_or_null,
+                        "question": {"type": "string"},
+                    },
+                },
+            },
+            "questions": {
+                "type": "array",
+                "default": [],
+                "items": _message_item_schema(),
+            },
+            "status_reports": {
+                "type": "array",
+                "default": [],
+                "items": _message_item_schema(),
+            },
+            "operator_escalations": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["title", "message"],
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "message": {"type": "string", "minLength": 1},
+                        "urgency": {"type": "string"},
+                        "project_id": text_or_null,
+                        "task_id": text_or_null,
+                    },
+                },
+            },
+            "deliverables": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id", "summary"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "task_id": {"type": "string", "minLength": 1},
+                        "summary": {"type": "string", "minLength": 1},
+                        "artifact_refs": string_array,
+                        "artifact_space_ref": text_or_null,
+                    },
+                },
+            },
+            "review_requests": {
+                "type": "array",
+                "description": (
+                    "Request review of a deliverable from a specific same-team "
+                    "reviewer. This is how leads route deliverable review to a "
+                    "reviewer agent instead of directly accepting subordinate work."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["deliverable_id", "reviewer_agent_id"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "deliverable_id": {"type": "string", "minLength": 1},
+                        "reviewer_agent_id": {"type": "string", "minLength": 1},
+                        "review_profile_id": text_or_null,
+                        "instructions": text_or_null,
+                    },
+                },
+            },
+            "review_decisions": {
+                "type": "array",
+                "description": (
+                    "Decide review requests assigned to this agent. Accepted "
+                    "review decisions cascade to deliverable/task acceptance only "
+                    "after every review attached to the deliverable is accepted."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "required": ["review_request_id", "state"],
+                    "properties": {
+                        "review_request_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["accepted", "rejected", "blocked"]},
+                        "findings": string_array,
+                        "criteria": {"type": "array"},
+                    },
+                },
+            },
+            "goal_updates": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["project_id", "goal_id", "state"],
+                    "properties": {
+                        "project_id": {"type": "string", "minLength": 1},
+                        "goal_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "accepted", "rejected", "blocked"]},
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+            "git_review_promotions": {"type": "array", "default": [], "items": {"type": "object"}},
+            "git_feature_updates": {"type": "array", "default": [], "items": {"type": "object"}},
+            "git_release_requests": {"type": "array", "default": [], "items": {"type": "object"}},
+            "ephemeral_requests": {"type": "array", "default": [], "items": {"type": "object"}},
+            "ephemeral_acceptances": {"type": "array", "default": [], "items": {"type": "object"}},
+            "handled_inbox_item_ids": string_array,
+            "notes": {"type": "string"},
+        },
+    }
+
+
+def _message_item_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "recipient_agent_id": {"type": ["string", "null"]},
+            "task_id": {"type": ["string", "null"]},
+            "message": {"type": "string"},
+            "summary": {"type": "string"},
+            "question": {"type": "string"},
+        },
+    }
+
+
+def _persistent_action_example() -> dict[str, Any]:
+    return {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": "replace-with-current-agent-id",
+        "dispatch_id": "replace-with-current-dispatch-id",
+        "task_updates": [],
+        "task_creations": [
+            {
+                "task_id": "optional-stable-task-id",
+                "owner_agent_id": "target-agent-id",
+                "project_id": "project-id",
+                "priority": 10,
+                "title": "Short task title",
+                "description": "Complete task instructions.",
+                "state": "pending",
+                "parent_task_id": None,
+                "dependency_task_ids": [],
+            }
+        ],
+        "status_requests": [],
+        "questions": [],
+        "status_reports": [],
+        "operator_escalations": [],
+        "deliverables": [],
+        "review_requests": [
+            {
+                "deliverable_id": "deliverable-id",
+                "reviewer_agent_id": "reviewer-agent-id",
+                "instructions": "Review this deliverable for the criteria needed to unblock dependent work.",
+            }
+        ],
+        "review_decisions": [
+            {
+                "review_request_id": "review-request-assigned-to-this-agent",
+                "state": "accepted",
+                "findings": [],
+            }
+        ],
+        "goal_updates": [],
+        "git_review_promotions": [],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
+        "handled_inbox_item_ids": [],
+        "notes": "",
+    }
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, indent=2)
 
 
 def _mirror_session_metadata(

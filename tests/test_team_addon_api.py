@@ -666,6 +666,65 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     }
 
 
+def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role": "backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()["tasks"]["task"]
+    assert task["created_by_agent_id"] is None
+    assert task["created_by_actor"] == "operator:admin"
+
+    timeline = client.get("/api/addons/team-addon/timeline?type=task").json()
+    created = next(
+        entry for entry in timeline["entries"] if entry["id"] == "task:task:created"
+    )
+    assert created["actor_agent_id"] is None
+    assert created["actor_subject"] == "operator:admin"
+
+
 def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

@@ -277,6 +277,7 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
         "timestamp_source": "created_at",
         "timestamp_missing": False,
         "actor_agent_id": "alpha-lead",
+        "actor_subject": "alpha-lead",
         "related_agent_ids": ["alpha-dev", "alpha-lead"],
         "team_id": "alpha-team",
         "project_id": "alpha-project",

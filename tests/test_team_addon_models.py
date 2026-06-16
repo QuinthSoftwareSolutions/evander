@@ -794,6 +794,22 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
 
 
+def test_runtime_attention_hides_failed_action_after_later_success() -> None:
+    state = _state_with_runtime_operations()
+    state.action_records["action-2"] = AgentActionRecord(
+        id="action-2",
+        agent_id="ui",
+        dispatch_id="dispatch-ui",
+        action={"kind": "build"},
+        success=True,
+        created_at=state.action_records["action-1"].created_at + timedelta(seconds=1),
+    )
+
+    payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert all(row["kind"] != "failed_action_record" for row in payload["attention"])
+
+
 def test_dependency_status_satisfied_and_blocked() -> None:
     state = _state_with_task_graph()
     # Both dependencies accepted/finished -> satisfied.

@@ -160,7 +160,6 @@ const fieldTooltips = {
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
-  "create-task-form:created_by_agent_id": "Agent credited as the creator for routing and timeline context.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
@@ -2697,15 +2696,16 @@ function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPr
 
 function renderTimelineEntry(entry) {
   const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
+  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
   const actorLine = [
-    entry.actor_agent_id ? `Actor ${entry.actor_agent_id}` : "Actor unknown",
+    actorSubject ? `Actor ${actorSubject}` : "Actor unknown",
     entry.team_id ? `team ${entry.team_id}` : "",
     entry.project_id ? `project ${entry.project_id}` : "",
   ]
     .filter(Boolean)
     .join(" - ");
   const relatedAgents = [
-    entry.actor_agent_id ? `actor ${entry.actor_agent_id}` : null,
+    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
     (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
   ]
     .filter(Boolean)
@@ -3086,7 +3086,6 @@ function payloadForForm(form, data = formData(form)) {
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
-      created_by_agent_id: text(data.created_by_agent_id),
     };
     if (text(data.state)) {
       payload.state = text(data.state);

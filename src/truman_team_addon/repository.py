@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,19 @@ _NON_TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.WAITING_FOR_REVIEW,
     }
 )
+
+
+@dataclass(frozen=True)
+class _TaskCreationPlan:
+    task_id: str
+    owner_id: str
+    project_id: str
+    task_state: TeamTaskState
+    parent_task_id: str | None
+    dependency_task_ids: list[str]
+    priority: int
+    title: str
+    description: str
 
 
 class TeamStateConflictError(RuntimeError):
@@ -364,7 +378,8 @@ class TeamStateRepository:
         priority: int,
         title: str,
         description: str,
-        created_by_agent_id: str,
+        created_by_agent_id: str | None = None,
+        created_by_actor: str | None = None,
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
@@ -383,6 +398,12 @@ class TeamStateRepository:
                 if dependency_task_ids is not None:
                     task.dependency_task_ids = dependency_task_ids
                 task.updated_at = now
+                if task.state in _NON_TERMINAL_TASK_STATES:
+                    _mark_agent_work_due(
+                        state_model,
+                        agent_id=task.owner_agent_id,
+                        now=now,
+                    )
                 return state_model
             state_model.tasks[task_id] = AgentTask(
                 id=task_id,
@@ -393,11 +414,14 @@ class TeamStateRepository:
                 title=title,
                 description=description,
                 created_by_agent_id=created_by_agent_id,
+                created_by_actor=created_by_actor,
                 parent_task_id=parent_task_id,
                 dependency_task_ids=dependency_task_ids or [],
                 created_at=now,
                 updated_at=now,
             )
+            if state in _NON_TERMINAL_TASK_STATES:
+                _mark_agent_work_due(state_model, agent_id=owner_agent_id, now=now)
             return state_model
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -430,6 +454,12 @@ class TeamStateRepository:
             if dependency_task_ids is not None:
                 task.dependency_task_ids = dependency_task_ids
             task.updated_at = utc_now()
+            if task.state in _NON_TERMINAL_TASK_STATES:
+                _mark_agent_work_due(
+                    state_model,
+                    agent_id=task.owner_agent_id,
+                    now=task.updated_at,
+                )
             return state_model
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -1385,87 +1415,117 @@ class TeamStateRepository:
 
             progress = False
             projects_to_recalc: set[str] = set()
-            for update in _list_of_mappings(normalized_action.get("task_updates"), "task_updates"):
-                task_id = _required_text(update.get("task_id"), "task_id")
-                task = _require_present(state_model.tasks, task_id, "task")
-                is_owner = task.owner_agent_id == agent.id
-                raw_state = _optional_text(update.get("state"))
-                priority = update.get("priority")
-                title = _optional_text(update.get("title"))
-                description = _optional_text(update.get("description"))
-                has_owner_only_edit = (
-                    raw_state is not None
-                    or priority is not None
-                    or title is not None
-                    or description is not None
-                )
-                has_dependency_edit = "dependency_task_ids" in update
-                # State, priority, title, and description remain owner-only.
-                if has_owner_only_edit and not is_owner:
-                    result["errors"].append(f"agent {agent.id} cannot update task {task_id}")
-                    continue
-                new_dependency_task_ids: list[str] | None = None
-                if has_dependency_edit:
-                    graph_permitted = (
-                        is_owner
-                        or _supervises(state_model, agent.id, task.owner_agent_id)
-                        or _is_project_lead_for(state_model, agent.id, task.project_id)
-                        or _is_team_manager(state_model, agent)
-                    )
-                    if not graph_permitted:
-                        result["errors"].append(
-                            f"agent {agent.id} is not permitted to edit the task graph "
-                            f"for task {task_id}"
-                        )
-                        continue
-                    new_dependency_task_ids = _string_list(
-                        update.get("dependency_task_ids"), "dependency_task_ids"
-                    )
-                    graph_error = _task_graph_edit_error(
-                        state_model,
-                        task_id=task.id,
-                        project_id=task.project_id,
-                        parent_task_id=task.parent_task_id,
-                        dependency_task_ids=new_dependency_task_ids,
-                    )
-                    if graph_error is not None:
-                        result["errors"].append(graph_error)
-                        continue
-                changed = False
-                if raw_state is not None:
-                    task.state = TeamTaskState(raw_state)
-                    projects_to_recalc.add(task.project_id)
-                    changed = True
-                if priority is not None:
-                    task.priority = int(priority)
-                    changed = True
-                if title is not None:
-                    task.title = title
-                    changed = True
-                if description is not None:
-                    task.description = description
-                    changed = True
-                if new_dependency_task_ids is not None:
-                    task.dependency_task_ids = new_dependency_task_ids
-                    changed = True
-                if changed:
-                    task.updated_at = utc_now()
-                    progress = True
-                    result["updated_task_ids"].append(task.id)
-
-            for creation in _list_of_mappings(
-                normalized_action.get("task_creations"), "task_creations"
+            for index, update in enumerate(
+                _list_of_mappings(normalized_action.get("task_updates"), "task_updates")
             ):
-                created_id = _apply_task_creation(
+                try:
+                    task_id = _required_text(update.get("task_id"), "task_id")
+                    task = _require_present(state_model.tasks, task_id, "task")
+                    is_owner = task.owner_agent_id == agent.id
+                    raw_state = _optional_text(update.get("state"))
+                    priority = update.get("priority")
+                    title = _optional_text(update.get("title"))
+                    description = _optional_text(update.get("description"))
+                    has_owner_only_edit = (
+                        raw_state is not None
+                        or priority is not None
+                        or title is not None
+                        or description is not None
+                    )
+                    has_dependency_edit = "dependency_task_ids" in update
+                    # State, priority, title, and description remain owner-only.
+                    if has_owner_only_edit and not is_owner:
+                        result["errors"].append(f"agent {agent.id} cannot update task {task_id}")
+                        continue
+                    new_dependency_task_ids: list[str] | None = None
+                    if has_dependency_edit:
+                        graph_permitted = (
+                            is_owner
+                            or _supervises(state_model, agent.id, task.owner_agent_id)
+                            or _is_project_lead_for(state_model, agent.id, task.project_id)
+                            or _is_team_manager(state_model, agent)
+                        )
+                        if not graph_permitted:
+                            result["errors"].append(
+                                f"agent {agent.id} is not permitted to edit the task graph "
+                                f"for task {task_id}"
+                            )
+                            continue
+                        new_dependency_task_ids = _string_list(
+                            update.get("dependency_task_ids"), "dependency_task_ids"
+                        )
+                        graph_error = _task_graph_edit_error(
+                            state_model,
+                            task_id=task.id,
+                            project_id=task.project_id,
+                            parent_task_id=task.parent_task_id,
+                            dependency_task_ids=new_dependency_task_ids,
+                        )
+                        if graph_error is not None:
+                            result["errors"].append(graph_error)
+                            continue
+                    changed = False
+                    if raw_state is not None:
+                        task.state = TeamTaskState(raw_state)
+                        projects_to_recalc.add(task.project_id)
+                        changed = True
+                    if priority is not None:
+                        task.priority = int(priority)
+                        changed = True
+                    if title is not None:
+                        task.title = title
+                        changed = True
+                    if description is not None:
+                        task.description = description
+                        changed = True
+                    if new_dependency_task_ids is not None:
+                        task.dependency_task_ids = new_dependency_task_ids
+                        changed = True
+                    if changed:
+                        task.updated_at = utc_now()
+                        progress = True
+                        result["updated_task_ids"].append(task.id)
+                except ValueError as exc:
+                    _append_action_item_error(result, "task_updates", index, exc)
+
+            task_creation_plans: list[_TaskCreationPlan] = []
+            reserved_task_ids: set[str] = set()
+            for index, creation in enumerate(
+                _list_of_mappings(normalized_action.get("task_creations"), "task_creations")
+            ):
+                try:
+                    plan = _plan_task_creation(
+                        state_model,
+                        actor=agent,
+                        creation=creation,
+                        result=result,
+                        reserved_task_ids=reserved_task_ids,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "task_creations", index, exc)
+                    continue
+                if plan is None:
+                    continue
+                reserved_task_ids.add(plan.task_id)
+                task_creation_plans.append(plan)
+
+            graph_errors = _task_creation_batch_graph_errors(
+                state_model,
+                task_creation_plans,
+            )
+            for plan in task_creation_plans:
+                graph_error = graph_errors.get(plan.task_id)
+                if graph_error is not None:
+                    result["errors"].append(graph_error)
+                    continue
+                created_id = _apply_task_creation_plan(
                     state_model,
+                    plan=plan,
                     actor=agent,
-                    creation=creation,
-                    result=result,
                 )
-                if created_id is not None:
-                    result["created_task_ids"].append(created_id)
-                    projects_to_recalc.add(state_model.tasks[created_id].project_id)
-                    progress = True
+                result["created_task_ids"].append(created_id)
+                projects_to_recalc.add(state_model.tasks[created_id].project_id)
+                progress = True
 
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
                 recipient_id = (
@@ -1521,33 +1581,36 @@ class TeamStateRepository:
                 result["created_inbox_item_ids"].append(item.id)
                 progress = True
 
-            for status_request in _list_of_mappings(
-                normalized_action.get("status_requests"), "status_requests"
+            for index, status_request in enumerate(
+                _list_of_mappings(normalized_action.get("status_requests"), "status_requests")
             ):
-                recipient_id = _required_text(
-                    status_request.get("recipient_agent_id"), "recipient_agent_id"
-                )
-                if not _is_direct_subordinate(agent, recipient_id):
-                    result["errors"].append(
-                        f"agent {agent.id} can only request status from a direct subordinate"
+                try:
+                    recipient_id = _required_text(
+                        status_request.get("recipient_agent_id"), "recipient_agent_id"
                     )
-                    continue
-                inbox_id = f"inbox-{uuid4().hex}"
-                item = AgentInboxItem(
-                    id=inbox_id,
-                    recipient_agent_id=recipient_id,
-                    sender_agent_id=agent.id,
-                    task_id=_optional_text(status_request.get("task_id")),
-                    item_type=TeamInboxItemType.STATUS_REQUEST,
-                    payload={
-                        key: value
-                        for key, value in status_request.items()
-                        if key not in {"recipient_agent_id", "task_id"}
-                    },
-                )
-                state_model.inbox[item.id] = item
-                result["created_status_request_ids"].append(item.id)
-                progress = True
+                    if not _is_direct_subordinate(agent, recipient_id):
+                        result["errors"].append(
+                            f"agent {agent.id} can only request status from a direct subordinate"
+                        )
+                        continue
+                    inbox_id = f"inbox-{uuid4().hex}"
+                    item = AgentInboxItem(
+                        id=inbox_id,
+                        recipient_agent_id=recipient_id,
+                        sender_agent_id=agent.id,
+                        task_id=_optional_text(status_request.get("task_id")),
+                        item_type=TeamInboxItemType.STATUS_REQUEST,
+                        payload={
+                            key: value
+                            for key, value in status_request.items()
+                            if key not in {"recipient_agent_id", "task_id"}
+                        },
+                    )
+                    state_model.inbox[item.id] = item
+                    result["created_status_request_ids"].append(item.id)
+                    progress = True
+                except ValueError as exc:
+                    _append_action_item_error(result, "status_requests", index, exc)
 
             for escalation in _list_of_mappings(
                 normalized_action.get("operator_escalations"), "operator_escalations"
@@ -1560,123 +1623,156 @@ class TeamStateRepository:
                 ):
                     progress = True
 
-            for deliverable_payload in _list_of_mappings(
-                normalized_action.get("deliverables"), "deliverables"
+            for index, deliverable_payload in enumerate(
+                _list_of_mappings(normalized_action.get("deliverables"), "deliverables")
             ):
-                task_id = _required_text(deliverable_payload.get("task_id"), "task_id")
-                task = _require_present(state_model.tasks, task_id, "task")
-                if task.owner_agent_id != agent.id:
-                    result["errors"].append(f"agent {agent.id} cannot deliver task {task_id}")
-                    continue
-                deliverable_id = _optional_text(deliverable_payload.get("id")) or f"deliverable-{uuid4().hex}"
-                artifact_refs = _string_list(deliverable_payload.get("artifact_refs"), "artifact_refs")
-                artifact_space_ref = _optional_text(deliverable_payload.get("artifact_space_ref"))
-                if artifact_space_ref:
-                    artifact_refs = _append_unique(artifact_refs, artifact_space_ref)
-                deliverable = Deliverable(
-                    id=deliverable_id,
-                    task_id=task_id,
-                    producer_agent_id=agent.id,
-                    summary=_required_text(deliverable_payload.get("summary"), "summary"),
-                    artifact_refs=artifact_refs,
-                    state=TeamRecordState.PENDING,
-                )
-                state_model.deliverables[deliverable.id] = deliverable
-                task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
-                task.state = TeamTaskState.WAITING_FOR_REVIEW
-                task.updated_at = utc_now()
-                projects_to_recalc.add(task.project_id)
-                result["created_deliverable_ids"].append(deliverable.id)
-                if agent.reports_to_agent_id is not None:
-                    inbox_id = f"inbox-{uuid4().hex}"
-                    state_model.inbox[inbox_id] = AgentInboxItem(
-                        id=inbox_id,
-                        recipient_agent_id=agent.reports_to_agent_id,
-                        sender_agent_id=agent.id,
+                try:
+                    task_id = _required_text(deliverable_payload.get("task_id"), "task_id")
+                    task = _require_present(state_model.tasks, task_id, "task")
+                    if task.owner_agent_id != agent.id:
+                        result["errors"].append(f"agent {agent.id} cannot deliver task {task_id}")
+                        continue
+                    deliverable_id = _optional_text(deliverable_payload.get("id")) or f"deliverable-{uuid4().hex}"
+                    artifact_refs = _string_list(deliverable_payload.get("artifact_refs"), "artifact_refs")
+                    artifact_space_ref = _optional_text(deliverable_payload.get("artifact_space_ref"))
+                    if artifact_space_ref:
+                        artifact_refs = _append_unique(artifact_refs, artifact_space_ref)
+                    deliverable = Deliverable(
+                        id=deliverable_id,
                         task_id=task_id,
-                        item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
-                        payload={"deliverable_id": deliverable.id, "summary": deliverable.summary},
+                        producer_agent_id=agent.id,
+                        summary=_required_text(deliverable_payload.get("summary"), "summary"),
+                        artifact_refs=artifact_refs,
+                        state=TeamRecordState.PENDING,
                     )
-                    result["created_inbox_item_ids"].append(inbox_id)
-                progress = True
+                    state_model.deliverables[deliverable.id] = deliverable
+                    task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
+                    task.state = TeamTaskState.WAITING_FOR_REVIEW
+                    task.updated_at = utc_now()
+                    projects_to_recalc.add(task.project_id)
+                    result["created_deliverable_ids"].append(deliverable.id)
+                    if agent.reports_to_agent_id is not None:
+                        inbox_id = f"inbox-{uuid4().hex}"
+                        state_model.inbox[inbox_id] = AgentInboxItem(
+                            id=inbox_id,
+                            recipient_agent_id=agent.reports_to_agent_id,
+                            sender_agent_id=agent.id,
+                            task_id=task_id,
+                            item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+                            payload={"deliverable_id": deliverable.id, "summary": deliverable.summary},
+                        )
+                        result["created_inbox_item_ids"].append(inbox_id)
+                    progress = True
+                except ValueError as exc:
+                    _append_action_item_error(result, "deliverables", index, exc)
 
-            for review_request in _list_of_mappings(
-                normalized_action.get("review_requests"), "review_requests"
+            for index, review_request in enumerate(
+                _list_of_mappings(normalized_action.get("review_requests"), "review_requests")
             ):
-                created_id = _apply_review_request(
-                    state_model,
-                    actor=agent,
-                    request=review_request,
-                    result=result,
-                )
+                try:
+                    created_id = _apply_review_request(
+                        state_model,
+                        actor=agent,
+                        request=review_request,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "review_requests", index, exc)
+                    continue
                 if created_id is not None:
                     result["created_review_request_ids"].append(created_id)
                     progress = True
 
-            for decision in _list_of_mappings(
-                normalized_action.get("review_decisions"), "review_decisions"
+            for index, decision in enumerate(
+                _list_of_mappings(normalized_action.get("review_decisions"), "review_decisions")
             ):
-                decided_id = _apply_review_decision(
-                    state_model,
-                    actor=agent,
-                    decision=decision,
-                    result=result,
-                    projects_to_recalc=projects_to_recalc,
-                )
+                try:
+                    decided_id = _apply_review_decision(
+                        state_model,
+                        actor=agent,
+                        decision=decision,
+                        result=result,
+                        projects_to_recalc=projects_to_recalc,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "review_decisions", index, exc)
+                    continue
                 if decided_id is not None:
                     result["decided_review_request_ids"].append(decided_id)
                     progress = True
 
-            for goal_update in _list_of_mappings(
-                normalized_action.get("goal_updates"), "goal_updates"
+            for index, goal_update in enumerate(
+                _list_of_mappings(normalized_action.get("goal_updates"), "goal_updates")
             ):
-                updated_id = _apply_goal_update(
-                    state_model,
-                    actor=agent,
-                    update=goal_update,
-                    result=result,
-                    projects_to_recalc=projects_to_recalc,
-                )
+                try:
+                    updated_id = _apply_goal_update(
+                        state_model,
+                        actor=agent,
+                        update=goal_update,
+                        result=result,
+                        projects_to_recalc=projects_to_recalc,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "goal_updates", index, exc)
+                    continue
                 if updated_id is not None:
                     result["updated_goal_ids"].append(updated_id)
                     progress = True
 
-            for promotion in _list_of_mappings(
-                normalized_action.get("git_review_promotions"), "git_review_promotions"
-            ):
-                promotion_id = _apply_git_review_promotion(
-                    state_model,
-                    actor=agent,
-                    request=promotion,
-                    result=result,
+            for index, promotion in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("git_review_promotions"), "git_review_promotions"
                 )
+            ):
+                try:
+                    promotion_id = _apply_git_review_promotion(
+                        state_model,
+                        actor=agent,
+                        request=promotion,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "git_review_promotions", index, exc)
+                    continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
                     progress = True
 
-            for feature_update in _list_of_mappings(
-                normalized_action.get("git_feature_updates"), "git_feature_updates"
-            ):
-                promotion_id = _apply_git_feature_update(
-                    state_model,
-                    actor=agent,
-                    update=feature_update,
-                    result=result,
+            for index, feature_update in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("git_feature_updates"), "git_feature_updates"
                 )
+            ):
+                try:
+                    promotion_id = _apply_git_feature_update(
+                        state_model,
+                        actor=agent,
+                        update=feature_update,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "git_feature_updates", index, exc)
+                    continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
                     progress = True
 
-            for release_request in _list_of_mappings(
-                normalized_action.get("git_release_requests"), "git_release_requests"
-            ):
-                release_id = _apply_git_release_request(
-                    state_model,
-                    actor=agent,
-                    request=release_request,
-                    result=result,
-                    projects_to_recalc=projects_to_recalc,
+            for index, release_request in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("git_release_requests"), "git_release_requests"
                 )
+            ):
+                try:
+                    release_id = _apply_git_release_request(
+                        state_model,
+                        actor=agent,
+                        request=release_request,
+                        result=result,
+                        projects_to_recalc=projects_to_recalc,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "git_release_requests", index, exc)
+                    continue
                 if release_id is not None:
                     result["release_package_ids"].append(release_id)
                     progress = True
@@ -1699,43 +1795,53 @@ class TeamStateRepository:
                 "ephemeral_requests",
             )
             if ephemeral_requests:
-                _create_ephemeral_assignments(
-                    state_model,
-                    parent=agent,
-                    requests=ephemeral_requests,
-                    dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
-                    result=result,
-                )
-                progress = True
-
-            for acceptance in _list_of_mappings(
-                normalized_action.get("ephemeral_acceptances"),
-                "ephemeral_acceptances",
-            ):
-                assignment_id = _required_text(acceptance.get("assignment_id"), "assignment_id")
-                assignment = _require_present(
-                    state_model.ephemeral_assignments,
-                    assignment_id,
-                    "ephemeral assignment",
-                )
-                if assignment.parent_agent_id != agent.id:
-                    result["errors"].append(
-                        f"agent {agent.id} cannot accept ephemeral assignment {assignment_id}"
+                try:
+                    _create_ephemeral_assignments(
+                        state_model,
+                        parent=agent,
+                        requests=ephemeral_requests,
+                        dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
+                        result=result,
                     )
-                    continue
-                accepted = _bool_from_value(acceptance.get("accepted"), default=True)
-                _apply_ephemeral_acceptance(
-                    state_model,
-                    assignment=assignment,
-                    accepted=accepted,
-                    deliverable_id=_optional_text(acceptance.get("deliverable_id")),
-                    rejection_reason=_optional_text(acceptance.get("rejection_reason")),
+                    progress = True
+                except ValueError as exc:
+                    result["errors"].append(f"ephemeral_requests: {exc}")
+
+            for index, acceptance in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("ephemeral_acceptances"),
+                    "ephemeral_acceptances",
                 )
-                if accepted:
-                    result["accepted_ephemeral_assignment_ids"].append(assignment.id)
-                else:
-                    result["rejected_ephemeral_assignment_ids"].append(assignment.id)
-                progress = True
+            ):
+                try:
+                    assignment_id = _required_text(
+                        acceptance.get("assignment_id"), "assignment_id"
+                    )
+                    assignment = _require_present(
+                        state_model.ephemeral_assignments,
+                        assignment_id,
+                        "ephemeral assignment",
+                    )
+                    if assignment.parent_agent_id != agent.id:
+                        result["errors"].append(
+                            f"agent {agent.id} cannot accept ephemeral assignment {assignment_id}"
+                        )
+                        continue
+                    accepted = _bool_from_value(acceptance.get("accepted"), default=True)
+                    _apply_ephemeral_acceptance(
+                        state_model,
+                        assignment=assignment,
+                        accepted=accepted,
+                        deliverable_id=_optional_text(acceptance.get("deliverable_id")),
+                        rejection_reason=_optional_text(acceptance.get("rejection_reason")),
+                    )
+                    if accepted:
+                        result["accepted_ephemeral_assignment_ids"].append(assignment.id)
+                    else:
+                        result["rejected_ephemeral_assignment_ids"].append(assignment.id)
+                    progress = True
+                except ValueError as exc:
+                    _append_action_item_error(result, "ephemeral_acceptances", index, exc)
 
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, project_id)
@@ -1752,12 +1858,12 @@ class TeamStateRepository:
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
-            runtime.no_progress_count = 0 if progress and not result["errors"] else runtime.no_progress_count + 1
-            if progress and not result["errors"]:
+            runtime.no_progress_count = 0 if progress else runtime.no_progress_count + 1
+            if progress:
                 runtime.last_progress_at = utc_now()
             runtime.updated_at = utc_now()
-            result["success"] = not result["errors"]
-            result["applied"] = not result["errors"]
+            result["success"] = progress or not result["errors"]
+            result["applied"] = progress
             return state_model
 
         state = self.update(_mutate, expected_revision=expected_revision)
@@ -2056,6 +2162,27 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     return tasks
 
 
+def _mark_agent_work_due(
+    state: TeamState,
+    *,
+    agent_id: str,
+    now: datetime,
+) -> None:
+    runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
+    runtime.no_progress_count = 0
+    runtime.next_wake_at = None
+    runtime.updated_at = now
+
+
+def _append_action_item_error(
+    result: dict[str, Any],
+    field_name: str,
+    index: int,
+    error: ValueError,
+) -> None:
+    result["errors"].append(f"{field_name}[{index}]: {error}")
+
+
 def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
     items = [
         item
@@ -2148,13 +2275,14 @@ def _upward_recipient_error(
     return None
 
 
-def _apply_task_creation(
+def _plan_task_creation(
     state: TeamState,
     *,
     actor: PersistentAgent,
     creation: dict[str, Any],
     result: dict[str, Any],
-) -> str | None:
+    reserved_task_ids: set[str],
+) -> _TaskCreationPlan | None:
     owner_id = _required_text(creation.get("owner_agent_id"), "owner_agent_id")
     project_id = _required_text(creation.get("project_id"), "project_id")
     owner = state.agents.get(owner_id)
@@ -2209,41 +2337,159 @@ def _apply_task_creation(
             return None
     else:
         task_state = TeamTaskState.PENDING
-    task_id = _optional_text(creation.get("id")) or f"task-{uuid4().hex}"
-    if task_id in state.tasks:
+    explicit_task_id = _optional_text(creation.get("task_id"))
+    legacy_task_id = _optional_text(creation.get("id"))
+    if explicit_task_id is not None and legacy_task_id is not None and explicit_task_id != legacy_task_id:
+        result["errors"].append("task creation has conflicting task_id and id")
+        return None
+    task_id = explicit_task_id or legacy_task_id or f"task-{uuid4().hex}"
+    if task_id in state.tasks or task_id in reserved_task_ids:
         result["errors"].append(f"task {task_id} already exists")
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
     dependency_task_ids = _string_list(
         creation.get("dependency_task_ids"), "dependency_task_ids"
     )
-    graph_error = _task_graph_edit_error(
-        state,
-        task_id=None,
+    priority = creation.get("priority")
+    return _TaskCreationPlan(
+        task_id=task_id,
+        owner_id=owner_id,
         project_id=project_id,
+        task_state=task_state,
         parent_task_id=parent_task_id,
         dependency_task_ids=dependency_task_ids,
-    )
-    if graph_error is not None:
-        result["errors"].append(graph_error)
-        return None
-    priority = creation.get("priority")
-    now = utc_now()
-    state.tasks[task_id] = AgentTask(
-        id=task_id,
-        owner_agent_id=owner_id,
-        project_id=project_id,
         priority=int(priority) if priority is not None else 0,
-        state=task_state,
         title=_required_text(creation.get("title"), "title"),
         description=_required_text(creation.get("description"), "description"),
+    )
+
+
+def _apply_task_creation_plan(
+    state: TeamState,
+    *,
+    plan: _TaskCreationPlan,
+    actor: PersistentAgent,
+) -> str:
+    now = utc_now()
+    state.tasks[plan.task_id] = AgentTask(
+        id=plan.task_id,
+        owner_agent_id=plan.owner_id,
+        project_id=plan.project_id,
+        priority=plan.priority,
+        state=plan.task_state,
+        title=plan.title,
+        description=plan.description,
         created_by_agent_id=actor.id,
-        parent_task_id=parent_task_id,
-        dependency_task_ids=dependency_task_ids,
+        parent_task_id=plan.parent_task_id,
+        dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,
     )
-    return task_id
+    if plan.task_state in _NON_TERMINAL_TASK_STATES:
+        _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
+    return plan.task_id
+
+
+def _task_creation_batch_graph_errors(
+    state: TeamState,
+    plans: list[_TaskCreationPlan],
+) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    while True:
+        valid_plans = [plan for plan in plans if plan.task_id not in errors]
+        if not valid_plans:
+            return errors
+        task_projects = {task_id: task.project_id for task_id, task in state.tasks.items()}
+        parent_map = {
+            task_id: task.parent_task_id for task_id, task in state.tasks.items()
+        }
+        dependency_map = {
+            task_id: list(task.dependency_task_ids)
+            for task_id, task in state.tasks.items()
+        }
+        for plan in valid_plans:
+            task_projects[plan.task_id] = plan.project_id
+            parent_map[plan.task_id] = plan.parent_task_id
+            dependency_map[plan.task_id] = list(plan.dependency_task_ids)
+
+        next_errors: dict[str, str] = {}
+        for plan in valid_plans:
+            graph_error = _task_creation_plan_graph_error(
+                plan,
+                task_projects=task_projects,
+                parent_map=parent_map,
+                dependency_map=dependency_map,
+            )
+            if graph_error is not None:
+                next_errors[plan.task_id] = graph_error
+        if not next_errors:
+            return errors
+        for task_id, graph_error in next_errors.items():
+            errors.setdefault(task_id, graph_error)
+
+
+def _task_creation_plan_graph_error(
+    plan: _TaskCreationPlan,
+    *,
+    task_projects: dict[str, str],
+    parent_map: dict[str, str | None],
+    dependency_map: dict[str, list[str]],
+) -> str | None:
+    if plan.parent_task_id == plan.task_id:
+        return "task cannot be its own parent"
+    if plan.task_id in plan.dependency_task_ids:
+        return "task cannot depend on itself"
+    if plan.parent_task_id is not None:
+        parent_project_id = task_projects.get(plan.parent_task_id)
+        if parent_project_id is None:
+            return f"task references missing parent {plan.parent_task_id}"
+        if parent_project_id != plan.project_id:
+            return f"task parent {plan.parent_task_id} belongs to project {parent_project_id}"
+    for dependency_id in plan.dependency_task_ids:
+        dependency_project_id = task_projects.get(dependency_id)
+        if dependency_project_id is None:
+            return f"task references missing dependency {dependency_id}"
+        if dependency_project_id != plan.project_id:
+            return (
+                f"task dependency {dependency_id} belongs to project "
+                f"{dependency_project_id}"
+            )
+    current = plan.parent_task_id
+    seen: set[str] = set()
+    while current is not None:
+        if current == plan.task_id:
+            return f"task parent cycle includes {plan.task_id}"
+        if current in seen:
+            break
+        seen.add(current)
+        current = parent_map.get(current)
+    for dependency_id in plan.dependency_task_ids:
+        if _dependency_path_exists(
+            dependency_map,
+            start_task_id=dependency_id,
+            target_task_id=plan.task_id,
+        ):
+            return f"task dependency cycle includes {plan.task_id}"
+    return None
+
+
+def _dependency_path_exists(
+    dependency_map: dict[str, list[str]],
+    *,
+    start_task_id: str,
+    target_task_id: str,
+) -> bool:
+    stack = [start_task_id]
+    seen: set[str] = set()
+    while stack:
+        task_id = stack.pop()
+        if task_id == target_task_id:
+            return True
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        stack.extend(dependency_map.get(task_id, []))
+    return False
 
 
 def _apply_operator_escalation(

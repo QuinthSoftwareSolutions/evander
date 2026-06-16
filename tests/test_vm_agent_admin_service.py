@@ -1208,6 +1208,18 @@ def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
     assert deep_summaries[0].dispatch_id == "dispatch-1"
 
 
+def test_libvirt_create_vm_output_ip_parser() -> None:
+    from agent_sandbox.vm.provider import _extract_setup_guest_ipv4
+
+    assert (
+        _extract_setup_guest_ipv4(
+            "==> wait_for_ip\nGuest IPv4 detected: 192.168.250.161\n==> wait_for_ssh"
+        )
+        == "192.168.250.161"
+    )
+    assert _extract_setup_guest_ipv4("VM launched without DHCP output") is None
+
+
 def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -221,6 +221,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
+        created_by_agent_id = _optional(payload, "created_by_agent_id")
         state = repository.create_or_reprioritize_task(
             task_id=_required(payload, "id", "task_id"),
             owner_agent_id=_required(payload, "owner_agent_id"),
@@ -228,7 +229,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             priority=_required_int(payload, "priority"),
             title=_required(payload, "title"),
             description=_required(payload, "description"),
-            created_by_agent_id=_required(payload, "created_by_agent_id"),
+            created_by_agent_id=created_by_agent_id,
+            created_by_actor=(
+                None
+                if created_by_agent_id is not None
+                else _operator_actor_from_request(context.auth, request)
+            ),
             state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
             parent_task_id=_optional(payload, "parent_task_id"),
             set_parent_task_id="parent_task_id" in payload,
@@ -552,6 +558,26 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _operator_actor_from_request(auth: Any | None, request: Request) -> str:
+    session: Mapping[str, Any] | None = None
+    read_session = getattr(auth, "read_session", None)
+    if callable(read_session):
+        raw_session = read_session(request)
+        if isinstance(raw_session, Mapping):
+            session = raw_session
+    if session is None:
+        require = getattr(auth, "require", None)
+        if callable(require):
+            raw_session = require(request)
+            if isinstance(raw_session, Mapping):
+                session = raw_session
+    for key in ("login", "preferred_username", "username", "name", "sub"):
+        value = str((session or {}).get(key) or "").strip()
+        if value:
+            return f"operator:{value}"
+    return "operator"
 
 
 def _optional_present_text(payload: Mapping[str, Any], field_name: str) -> str | None:

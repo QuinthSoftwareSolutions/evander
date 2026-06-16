@@ -23,6 +23,28 @@ material. Newer entries are added incrementally as changes land.
   status groups read as sections instead of nested cards, and made filtered
   single-status deliverables expand to the available workspace width.
 
+## 2026-06-16 - Team Add-on Task Wake UX
+
+- Reset a persistent Team agent's no-progress throttle when an operator creates
+  or updates non-terminal work for that agent, so adding a task in the Teams UI
+  is enough to make the next wake cycle pick it up.
+- Let operator-created Team tasks be attributed to the Admin operator instead
+  of forcing the UI to choose an agent as "Created by."
+- Treat malformed entries inside Team agent action lists as per-item errors
+  instead of aborting `effect:team:apply-agent-action`, so valid delegation
+  items in the same action still apply.
+- Let a Team agent create a batch of tasks whose dependency graph references
+  sibling tasks in the same action, then validate the combined graph before
+  applying it. `task_creations` now accepts `task_id` as the preferred task
+  identifier field, with `id` retained as a compatibility alias. Runtime
+  attention now also hides an old failed action once a later successful retry
+  for the same agent dispatch exists.
+- Seed `team-action.schema.json` and `team-action.example.json` into Team agent
+  sessions before their first Team wake, so agents have a local action contract
+  instead of guessing the artifact shape from prose. Team wakes also persist and
+  reuse a last-known VM IP for the seed copy, so schema seeding does not depend
+  on a fresh libvirt lookup when a running agent is already reachable.
+
 ## 2026-06-16 - Team Runtime Pack Materialization
 
 - Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema

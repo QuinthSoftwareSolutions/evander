@@ -361,6 +361,7 @@ function collectTimelineEntries(state) {
         timestamp: task.created_at || null,
         timestamp_source: "created_at",
         actor_agent_id: task.created_by_agent_id,
+        actor_subject: task.created_by_agent_id || task.created_by_actor || null,
         related_agent_ids: relatedAgents,
         team_id: teamId,
         project_id: task.project_id,
@@ -766,6 +767,7 @@ function timelineEntry(entry) {
   return {
     ...entry,
     timestamp_missing: entry.timestamp_missing ?? entry.timestamp == null,
+    actor_subject: entry.actor_subject || entry.actor_agent_id || null,
     related_agent_ids: unique(entry.related_agent_ids || []),
   };
 }
@@ -1250,7 +1252,8 @@ function applyMutation(state, pathname, payload) {
       state: payload.state || "pending",
       title: payload.title,
       description: payload.description,
-      created_by_agent_id: payload.created_by_agent_id,
+      created_by_agent_id: payload.created_by_agent_id || null,
+      created_by_actor: payload.created_by_agent_id ? null : "operator:admin",
       deliverable_ids: [],
       created_at: "2026-06-09T00:00:00Z",
       updated_at: "2026-06-09T00:00:00Z",
@@ -1413,7 +1416,6 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await taskForm.locator('[name="priority"]').fill("5");
   await taskForm.locator('[name="title"]').fill("Build backend");
   await taskForm.locator('[name="description"]').fill("Implement backend work.");
-  await taskForm.locator('[name="created_by_agent_id"]').selectOption("lead");
   await taskForm.getByRole("button", { name: "Create task" }).click();
   await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
 

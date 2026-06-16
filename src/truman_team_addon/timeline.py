@@ -29,6 +29,7 @@ class TimelineEntry(TeamModel):
     timestamp_source: str
     timestamp_missing: bool = False
     actor_agent_id: str | None = None
+    actor_subject: str | None = None
     related_agent_ids: list[str] = Field(default_factory=list)
     team_id: str | None = None
     project_id: str | None = None
@@ -102,8 +103,9 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
         project = state.projects.get(task.project_id)
         team_id = project.team_id if project is not None else None
         parent = state.tasks.get(task.parent_task_id) if task.parent_task_id is not None else None
+        creator_agent_id = task.created_by_agent_id
         related = _unique_agent_ids(
-            [task.owner_agent_id, task.created_by_agent_id]
+            [task.owner_agent_id, creator_agent_id]
             + ([parent.owner_agent_id] if parent is not None else [])
         )
         entries.append(
@@ -113,7 +115,8 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
                 category="created",
                 timestamp=task.created_at,
                 timestamp_source="created_at",
-                actor_agent_id=task.created_by_agent_id,
+                actor_agent_id=creator_agent_id,
+                actor_subject=creator_agent_id or task.created_by_actor,
                 related_agent_ids=related,
                 team_id=team_id,
                 project_id=task.project_id,
@@ -491,6 +494,7 @@ def _entry(
     timestamp: datetime | None,
     timestamp_source: str,
     actor_agent_id: str | None = None,
+    actor_subject: str | None = None,
     related_agent_ids: Sequence[str] | None = None,
     team_id: str | None = None,
     project_id: str | None = None,
@@ -516,6 +520,7 @@ def _entry(
         timestamp_source=timestamp_source,
         timestamp_missing=effective_timestamp_missing,
         actor_agent_id=actor_agent_id,
+        actor_subject=actor_subject or actor_agent_id,
         related_agent_ids=_unique_agent_ids(list(related_agent_ids or [])),
         team_id=team_id,
         project_id=project_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -74,24 +75,44 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
 
     def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
         context = self._context()
-        vm_copy_files = getattr(context.vm_file_copier, "vm_copy_files", None)
-        if not callable(vm_copy_files):
-            raise RuntimeError("effect:agent:copy-files vm_file_copier is not available")
         vm_name, session_id = resolve_vm_target(
             context, payload, effect_type="effect:agent:copy-files"
         )
         files = self._normalize_file_entries(payload.get("files"))
-        result = vm_copy_files(
-            target=vm_name,
-            files=files,
-            vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
-        )
+        vm_user = normalize_optional_string(payload.get("vm_user")) or "agent"
+        explicit_vm_ip = normalize_optional_string(payload.get("vm_ip"))
+        if explicit_vm_ip:
+            direct_payload = dict(payload)
+            direct_payload.update(
+                {
+                    "target": vm_name,
+                    "vm_ip": explicit_vm_ip,
+                    "vm_user": vm_user,
+                    "files": files,
+                }
+            )
+            direct_provider = VmCopyFilesEffectProvider()
+            direct_provider.initialize(
+                self.effect_definition,
+                replace(context, admin_service=None, vm_file_copier=None),
+            )
+            result = direct_provider.execute(resolved_config=direct_payload)
+        else:
+            vm_copy_files = getattr(context.vm_file_copier, "vm_copy_files", None)
+            if not callable(vm_copy_files):
+                raise RuntimeError("effect:agent:copy-files vm_file_copier is not available")
+            result = vm_copy_files(
+                target=vm_name,
+                files=files,
+                vm_user=vm_user,
+            )
         return {
             "success": bool(result.get("success", False)),
             "message": str(result.get("message") or ""),
             "session_id": session_id,
             "execution_backend": execution_backend,
             "vm_name": str(result.get("vm_name") or vm_name),
+            "vm_ip": normalize_optional_string(result.get("vm_ip")) or explicit_vm_ip,
             "copied_count": int(result.get("copied_count") or 0),
             "copied_paths": list(result.get("copied_paths") or []),
         }

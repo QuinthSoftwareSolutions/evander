@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
@@ -236,12 +237,64 @@ class FakeMetadataUpdater:
         return {"success": True}
 
 
+class FakeSessionStore(FakeMetadataUpdater):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sessions = {
+            "session-backend": SimpleNamespace(
+                session_id="session-backend",
+                vm_id="vm-backend",
+                vm_provider="libvirt",
+                directory_path="root",
+                metadata={},
+            )
+        }
+
+    def read_all_sessions(self) -> dict[str, object]:
+        return self.sessions
+
+    def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
+        super().session_update_metadata(**kwargs)
+        target = str(kwargs["target"])
+        metadata = kwargs["metadata"]
+        session = self.sessions[target]
+        session.metadata = _deep_merge(dict(session.metadata), metadata)
+        return {"success": True, "metadata": session.metadata}
+
+
+class FakeFileCopier:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def vm_copy_files(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        files = list(kwargs.get("files") or [])
+        return {
+            "success": True,
+            "vm_name": kwargs.get("target"),
+            "copied_count": len(files),
+            "copied_paths": [file["destination_path"] for file in files],
+        }
+
+
 class FakeArtifactReader:
     def __init__(self, content: str) -> None:
         self.content = content
 
     def read_session_artifact_text(self, **_: object) -> dict[str, object]:
         return {"content": self.content}
+
+
+def _deep_merge(base: dict[str, object], update: object) -> dict[str, object]:
+    if not isinstance(update, dict):
+        return base
+    merged = dict(base)
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateRepository:
@@ -440,7 +493,8 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     _seed_team(tmp_path)
     resumer = FakeResumer()
-    metadata_updater = FakeMetadataUpdater()
+    session_store = FakeSessionStore()
+    file_copier = FakeFileCopier()
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
@@ -451,7 +505,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
             agent_resumer=resumer,
-            session_metadata_updater=metadata_updater,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
         ),
     )
 
@@ -459,10 +515,32 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
 
     assert result["success"] is True
     assert result["leased_count"] == 1
+    assert len(file_copier.calls) == 1
+    copied_files = file_copier.calls[0]["files"]
+    assert [file["destination_path"] for file in copied_files] == [
+        "/artifacts/team-action.schema.json",
+        "/artifacts/team-action.example.json",
+    ]
+    schema = json.loads(str(copied_files[0]["content"]))
+    assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
+    assert "task_id" in schema["properties"]["task_creations"]["items"]["properties"]
+    assert "instructions" in schema["properties"]["review_requests"]["items"]["properties"]
+    assert schema["properties"]["review_decisions"]["items"]["properties"]["state"]["enum"] == [
+        "accepted",
+        "rejected",
+        "blocked",
+    ]
+    example = json.loads(str(copied_files[1]["content"]))
+    assert example["schema_version"] == 3
+    assert example["review_requests"][0]["instructions"]
+    assert example["review_decisions"][0]["state"] == "accepted"
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     prompt = str(resumer.calls[0]["prompt"])
     assert "team-action.json" in prompt
+    assert "team-action.schema.json" in prompt
+    assert "team-action.example.json" in prompt
     assert "Do not accept or reject someone else's task with task_updates" in prompt
     assert "Use review_decisions only for review requests assigned to you" in prompt
     for field_name in (
@@ -484,7 +562,104 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         assert field_name in prompt
     assert "do not start tasks" in prompt.lower()
     assert "creating child tasks via task_creations with parent_task_id" in prompt
-    assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
+        "seeded": True,
+        "schema_version": 3,
+        "schema_path": "/artifacts/team-action.schema.json",
+        "example_path": "/artifacts/team-action.example.json",
+        "action_artifact_path": "/artifacts/team-action.json",
+        "copied_paths": [
+            "/artifacts/team-action.schema.json",
+            "/artifacts/team-action.example.json",
+        ],
+    }
+    assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_skips_already_seeded_action_contract(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 3,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            }
+        }
+    }
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["action_contract"]["seeded"] is False
+    assert result["dispatches"][0]["action_contract"]["reason"] == "already_seeded"
+    assert file_copier.calls == []
+    assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
+
+
+def test_wake_due_agents_provider_reseeds_stale_action_contract(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 2,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            }
+        }
+    }
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
+    assert result["dispatches"][0]["action_contract"]["schema_version"] == 3
+    assert len(file_copier.calls) == 1
+    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"][
+        "schema_version"
+    ] == 3
 
 
 def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
@@ -492,7 +667,7 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
 ) -> None:
     _seed_team(tmp_path)
     resumer = FakeResumer({"success": False, "message": "vm not ready"})
-    metadata_updater = FakeMetadataUpdater()
+    session_store = FakeSessionStore()
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
@@ -503,7 +678,9 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
             agent_resumer=resumer,
-            session_metadata_updater=metadata_updater,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
         ),
     )
 
@@ -519,7 +696,8 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     assert runtime.wake_leased_until is None
     assert runtime.no_progress_count == 1
     assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
-    assert metadata_updater.calls == []
+    assert len(session_store.calls) == 1
+    assert "action_contract" in session_store.calls[0]["metadata"]["team_addon"]
 
 
 def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:

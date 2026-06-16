@@ -250,7 +250,8 @@ class AgentTask(TeamModel):
     state: TeamTaskState = TeamTaskState.PENDING
     title: str
     description: str
-    created_by_agent_id: str
+    created_by_agent_id: str | None = None
+    created_by_actor: str | None = None
     parent_task_id: str | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
@@ -263,14 +264,13 @@ class AgentTask(TeamModel):
         "project_id",
         "title",
         "description",
-        "created_by_agent_id",
         mode="before",
     )
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("parent_task_id", mode="before")
+    @field_validator("created_by_agent_id", "created_by_actor", "parent_task_id", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -287,6 +287,8 @@ class AgentTask(TeamModel):
 
     @model_validator(mode="after")
     def _validate_self_links(self) -> "AgentTask":
+        if self.created_by_agent_id is None and self.created_by_actor is None:
+            raise ValueError("task creator is required")
         if self.parent_task_id == self.id:
             raise ValueError("task cannot be its own parent")
         if self.id in self.dependency_task_ids:
@@ -788,7 +790,10 @@ class TeamState(TeamModel):
                 errors.append(f"task {task.id} references missing project {task.project_id}")
             elif owner is not None and owner.team_id != project.team_id:
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
-            if task.created_by_agent_id not in self.agents:
+            if (
+                task.created_by_agent_id is not None
+                and task.created_by_agent_id not in self.agents
+            ):
                 errors.append(f"task {task.id} references missing creator {task.created_by_agent_id}")
             for deliverable_id in task.deliverable_ids:
                 deliverable = self.deliverables.get(deliverable_id)
@@ -1326,8 +1331,20 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
 
 def _failed_action_rows(state: TeamState) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    successful_action_keys = [
+        (record.agent_id, record.dispatch_id, record.created_at)
+        for record in state.action_records.values()
+        if record.success
+    ]
     for record in sorted(state.action_records.values(), key=lambda entry: (entry.created_at, entry.id)):
         if record.success:
+            continue
+        if any(
+            agent_id == record.agent_id
+            and dispatch_id == record.dispatch_id
+            and created_at > record.created_at
+            for agent_id, dispatch_id, created_at in successful_action_keys
+        ):
             continue
         rows.append(
             _runtime_row(

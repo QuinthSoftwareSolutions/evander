@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from truman_team_addon.models import (
+    AgentRuntime,
     AgentStatus,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
@@ -628,6 +629,56 @@ def test_apply_agent_action_allows_self_and_subordinate_task_creation(tmp_path: 
     assert state.tasks["task-sub"].owner_agent_id == "backend"
 
 
+def test_apply_agent_action_task_creation_batch_allows_sibling_dependencies(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_creations": [
+                {
+                    "task_id": "task-scaffold",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Scaffold",
+                    "description": "Create the project scaffold.",
+                },
+                {
+                    "task_id": "task-netcode",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 2,
+                    "title": "Netcode",
+                    "description": "Build the authoritative loop.",
+                    "dependency_task_ids": ["task-scaffold"],
+                },
+                {
+                    "task_id": "task-review",
+                    "owner_agent_id": "worker",
+                    "project_id": "project",
+                    "priority": 3,
+                    "title": "Review",
+                    "description": "Review the completed slice.",
+                    "dependency_task_ids": ["task-netcode"],
+                },
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["errors"] == []
+    assert result["created_task_ids"] == [
+        "task-scaffold",
+        "task-netcode",
+        "task-review",
+    ]
+    assert state.tasks["task-netcode"].dependency_task_ids == ["task-scaffold"]
+    assert state.tasks["task-review"].dependency_task_ids == ["task-netcode"]
+
+
 def test_apply_agent_action_project_lead_can_target_project_hierarchy(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
@@ -675,6 +726,42 @@ def test_apply_agent_action_manager_can_assign_project_leads(tmp_path: Path) -> 
     assert result["success"] is True
     assert state.tasks["task-lead"].owner_agent_id == "lead"
     assert state.tasks["task-lead"].created_by_agent_id == "manager"
+
+
+def test_apply_agent_action_item_errors_do_not_abort_valid_task_creation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "manager",
+            "task_updates": [{"state": "finished"}],
+            "task_creations": [
+                {
+                    "id": "task-lead",
+                    "owner_agent_id": "lead",
+                    "project_id": "project",
+                    "priority": 0,
+                    "title": "Lead directive",
+                    "description": "Manager assigns the project lead.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    assert result["created_task_ids"] == ["task-lead"]
+    assert result["updated_task_ids"] == []
+    assert result["errors"] == [
+        "task_updates[0]: task_id must be a non-empty string"
+    ]
+    assert state.tasks["task-lead"].owner_agent_id == "lead"
+    assert state.agent_runtimes["lead"].no_progress_count == 0
+    action_record = next(iter(state.action_records.values()))
+    assert action_record.success is False
+    assert action_record.error == "task_updates[0]: task_id must be a non-empty string"
 
 
 def test_apply_agent_action_rejects_unrelated_agent_task_creation(tmp_path: Path) -> None:
@@ -912,6 +999,55 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
 
     assert result["success"] is True
     assert state.agent_runtimes["backend"].no_progress_count == 0
+
+
+def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _throttle_manager(state):
+        state.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=10,
+        )
+        return state
+
+    repo.update(_throttle_manager)
+
+    state = repo.create_or_reprioritize_task(
+        task_id="manager-delegate-prototype",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Delegate prototype",
+        description="Create a project-lead task for the prototype.",
+        created_by_agent_id="manager",
+    )
+
+    runtime = state.agent_runtimes["manager"]
+    assert runtime.no_progress_count == 0
+    assert runtime.next_wake_at is None
+
+    _state, leases = repo.lease_due_agents(max_no_progress_count=3)
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+
+
+def test_operator_task_creation_can_use_operator_actor(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state = repo.create_or_reprioritize_task(
+        task_id="manager-delegate-prototype",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Delegate prototype",
+        description="Create a project-lead task for the prototype.",
+        created_by_actor="operator:jonathan",
+    )
+
+    task = state.tasks["manager-delegate-prototype"]
+    assert task.created_by_agent_id is None
+    assert task.created_by_actor == "operator:jonathan"
 
 
 def _set_operator_target(repo: TeamStateRepository, target: str) -> None:
@@ -2032,6 +2168,72 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
     assert result["created_task_ids"] == []
     assert any("belongs to project" in error for error in result["errors"])
     assert "child" not in state.tasks
+
+
+def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "a",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "A",
+                    "description": "First task.",
+                    "dependency_task_ids": ["b"],
+                },
+                {
+                    "id": "b",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 2,
+                    "title": "B",
+                    "description": "Second task.",
+                    "dependency_task_ids": ["a"],
+                },
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("dependency cycle" in error for error in result["errors"])
+    assert "a" not in state.tasks
+    assert "b" not in state.tasks
+
+
+def test_apply_agent_action_task_creation_rejects_conflicting_task_id_alias(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "task_id": "canonical",
+                    "id": "legacy",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "title": "Conflicting ids",
+                    "description": "Both id forms disagree.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("conflicting task_id and id" in error for error in result["errors"])
+    assert "canonical" not in state.tasks
+    assert "legacy" not in state.tasks
 
 
 def test_apply_agent_action_owner_edits_dependencies(tmp_path: Path) -> None:
