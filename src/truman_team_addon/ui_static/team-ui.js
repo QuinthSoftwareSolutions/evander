@@ -160,6 +160,7 @@ const fieldTooltips = {
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
+  "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
@@ -3160,6 +3161,7 @@ function payloadForForm(form, data = formData(form)) {
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
+      created_by_agent_id: text(data.created_by_agent_id),
     };
     if (text(data.state)) {
       payload.state = text(data.state);

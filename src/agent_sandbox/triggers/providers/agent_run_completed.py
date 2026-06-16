@@ -75,12 +75,15 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
                 previous.get("last_emitted_dispatch_id")
             )
 
+            has_current_update = current_updated_at is not None
             state_transition_completed = (
-                previous_state == "running"
+                has_current_update
+                and previous_state == "running"
                 and (previous_updated_at is None or current_updated_at > previous_updated_at)
             )
             idle_dispatch_completed = (
-                previous_state == "idle"
+                has_current_update
+                and previous_state == "idle"
                 and current_dispatch_id is not None
                 and previous_dispatch_id is not None
                 and current_dispatch_id != previous_dispatch_id
@@ -88,7 +91,7 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
             )
             should_emit = (
                 current_state == "idle"
-                and current_updated_at is not None
+                and has_current_update
                 and (state_transition_completed or idle_dispatch_completed)
                 and not self._already_emitted_completion(
                     current_updated_at=current_updated_at,

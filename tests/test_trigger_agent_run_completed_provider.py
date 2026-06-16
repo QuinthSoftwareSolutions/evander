@@ -130,6 +130,45 @@ def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: 
     }
 
 
+def test_agent_run_completed_ignores_missing_idle_timestamp_after_seen_running(
+    tmp_path: Path,
+) -> None:
+    admin_service = _AdminServiceStub(
+        responses=[
+            [
+                VmSummary(
+                    vm_name="lab-vm-1",
+                    session_ids=["session-1"],
+                    labels={"workflow": "issue-worker", "agent_role": "issue"},
+                    directory_paths=["root/team-a"],
+                    libvirt_state="running",
+                    ip_address="192.0.2.15",
+                    agent_state="running",
+                    last_state_update_at=datetime(2026, 4, 5, 11, 59, tzinfo=UTC),
+                )
+            ],
+            [
+                VmSummary(
+                    vm_name="lab-vm-1",
+                    session_ids=["session-1"],
+                    labels={"workflow": "issue-worker", "agent_role": "issue"},
+                    directory_paths=["root/team-a"],
+                    libvirt_state="running",
+                    ip_address="192.0.2.15",
+                    agent_state="idle",
+                    last_state_update_at=None,
+                )
+            ],
+        ],
+        calls=[],
+    )
+    provider = AgentRunCompletedTriggerProvider()
+    provider.initialize(_trigger_definition(), _runtime_context(tmp_path, admin_service))
+
+    assert provider.poll() == []
+    assert provider.poll() == []
+
+
 def test_agent_run_completed_emits_distinct_idle_dispatches_for_same_vm(
     tmp_path: Path,
 ) -> None:

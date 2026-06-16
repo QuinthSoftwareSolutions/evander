@@ -368,7 +368,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "refreshSelects({ includeEditForm = false } = {})" in script.text
     assert "elements.editForm?.contains(select)" in script.text
     assert "gitToBareRepo" in script.text
+    assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
+    assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
 

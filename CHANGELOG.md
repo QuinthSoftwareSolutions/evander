@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Review Regression Fixes
+
+- Ignored agent-run completion comparisons when VM state summaries are missing
+  a usable `last_state_update_at`, avoiding trigger poll crashes on stale or
+  incomplete idle summaries.
+- Sent the Team Add-on create-task form's selected creator agent in the API
+  payload, keeping task and timeline attribution aligned with the visible form.
+
 ## 2026-06-16 - Team Add-on Failed Action Resolution
 
 - Resolved failed-action runtime attention rows after any later successful action
