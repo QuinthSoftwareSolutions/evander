@@ -14,8 +14,9 @@ material. Newer entries are added incrementally as changes land.
   metadata into `model-usage.db` with stable request deduplication and no
   prompt or response content.
 - Fixed Claude transcript backfill for libvirt Team agents by scanning
-  VM-local transcripts via the session's last-known VM IP, and made transcript
-  rows supersede duplicate Anthropic relay rows for the same session.
+  VM-local transcripts via the session's last-known VM IP with the configured
+  VM SSH key and agent-sandbox known-hosts alias, and made transcript rows
+  supersede duplicate Anthropic relay rows only for the same provider request.
 - Made Team cost loading non-blocking so the Team page renders state and
   templates immediately while cost counters fill in asynchronously.
 - Added an operator-configurable lifetime Team max-cost guard that marks

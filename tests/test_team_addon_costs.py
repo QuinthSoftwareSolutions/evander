@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -90,6 +91,7 @@ def _usage_event(
     input_tokens: int = 1_000_000,
     output_tokens: int = 0,
     occurred_at: datetime | None = None,
+    request_id: str | None = None,
 ) -> ModelInferenceUsageEvent:
     total_tokens = input_tokens + output_tokens
     return ModelInferenceUsageEvent(
@@ -112,6 +114,7 @@ def _usage_event(
         },
         session_id=session_id,
         agent_harness="codex",
+        request_id=request_id,
     )
 
 
@@ -317,11 +320,13 @@ def test_claude_transcript_backfill_reads_libvirt_vm_sources_and_supersedes_rela
             provider="anthropic",
             model="claude-sonnet-4-6",
             input_tokens=1_000_000,
+            request_id="req-remote-1",
         )
     )
 
     def fake_scan(source):
         assert source.remote_host == "192.168.250.10"
+        assert source.remote_host_alias == "backend-vm"
         return [
             costs_module._RemoteClaudeTranscriptEntry(
                 kind="file",
@@ -335,7 +340,9 @@ def test_claude_transcript_backfill_reads_libvirt_vm_sources_and_supersedes_rela
                     {
                         "sessionId": "claude-thread",
                         "requestId": "req-remote-1",
-                        "timestamp": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
+                        "timestamp": datetime(
+                            2026, 6, 16, 12, 0, tzinfo=UTC
+                        ).isoformat(),
                         "message": {
                             "id": "msg-remote-1",
                             "model": "claude-sonnet-4-6",
@@ -371,6 +378,145 @@ def test_claude_transcript_backfill_reads_libvirt_vm_sources_and_supersedes_rela
     assert payload["team_costs"]["team"]["source_counts"] == {"transcript": 1}
     assert payload["project_costs"]["project"]["source_counts"] == {"transcript": 1}
     assert payload["team_costs"]["team"]["estimated_cost"] < 0.01
+
+
+def test_claude_transcript_backfill_keeps_relay_rows_for_unbackfilled_requests(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root/team",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            model="claude-sonnet-4-6",
+            vm_provider="libvirt",
+            vm_id="backend-vm",
+            metadata={
+                "agent_provider": "claude",
+                "last_known_vm_ip": "192.168.250.10",
+            },
+        )
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "relay-anthropic-matched",
+            session_id="session-backend",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1_000_000,
+            request_id="req-remote-1",
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "relay-anthropic-unbackfilled",
+            session_id="session-backend",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1_000_000,
+            request_id="req-remote-2",
+        )
+    )
+
+    def fake_scan(source):
+        assert source.remote_host == "192.168.250.10"
+        assert source.remote_host_alias == "backend-vm"
+        return [
+            costs_module._RemoteClaudeTranscriptEntry(
+                kind="file",
+                path="/home/agent/.claude/projects/-home-agent/thread.jsonl",
+            ),
+            costs_module._RemoteClaudeTranscriptEntry(
+                kind="record",
+                path="/home/agent/.claude/projects/-home-agent/thread.jsonl",
+                line_number=3,
+                payload=json.dumps(
+                    {
+                        "sessionId": "claude-thread",
+                        "requestId": "req-remote-1",
+                        "timestamp": datetime(
+                            2026, 6, 16, 12, 0, tzinfo=UTC
+                        ).isoformat(),
+                        "message": {
+                            "id": "msg-remote-1",
+                            "model": "claude-sonnet-4-6",
+                            "usage": {
+                                "input_tokens": 1000,
+                                "output_tokens": 100,
+                            },
+                        },
+                    }
+                ),
+            ),
+        ]
+
+    monkeypatch.setattr(costs_module, "_scan_remote_claude_transcripts", fake_scan)
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        session_repository=sessions,
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=True)
+
+    team_cost = payload["team_costs"]["team"]
+    project_cost = payload["project_costs"]["project"]
+    assert team_cost["source_counts"] == {"relay": 1, "transcript": 1}
+    assert project_cost["source_counts"] == {"relay": 1, "transcript": 1}
+    assert team_cost["events_count"] == 2
+    assert team_cost["input_tokens"] == 1_001_000
+
+
+def test_remote_claude_transcript_scan_uses_configured_vm_ssh_options(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("private key", encoding="utf-8")
+    known_hosts = tmp_path / "agent-sandbox-known_hosts"
+    monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", str(private_key))
+    monkeypatch.setenv("AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE", str(known_hosts))
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(costs_module.subprocess, "run", fake_run)
+
+    entries = costs_module._scan_remote_claude_transcripts(
+        costs_module.ClaudeTranscriptSource(
+            session_id="session-backend",
+            agent_id="backend",
+            team_id="team",
+            project_id="project",
+            session_manifest=None,
+            remote_host="192.168.250.10",
+            remote_host_alias="backend-vm",
+        )
+    )
+
+    assert entries == []
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[0] == "ssh"
+    assert "-i" in cmd
+    assert cmd[cmd.index("-i") + 1] == str(private_key)
+    assert "BatchMode=yes" in cmd
+    assert "IdentitiesOnly=yes" in cmd
+    assert f"UserKnownHostsFile={known_hosts}" in cmd
+    assert "HostKeyAlias=backend-vm" in cmd
+    assert "CheckHostIP=no" in cmd
+    assert "agent@192.168.250.10" in cmd
+    assert known_hosts.exists()
 
 
 def test_claude_transcript_backfill_includes_ephemeral_assignment_sources(

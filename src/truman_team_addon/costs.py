@@ -247,6 +247,7 @@ class ClaudeTranscriptSource:
     agent_home: Path | None = None
     session_manifest: Any | None = None
     remote_host: str | None = None
+    remote_host_alias: str | None = None
     remote_user: str = "agent"
     remote_agent_home: str = DEFAULT_REMOTE_AGENT_HOME
 
@@ -742,12 +743,7 @@ def _scan_remote_claude_transcripts(
     completed = subprocess.run(
         [
             "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+            *_remote_transcript_ssh_options(source),
             destination,
             remote_command,
         ],
@@ -899,6 +895,7 @@ def _append_claude_transcript_sources(
                         agent_home=None,
                         session_manifest=session_manifest,
                         remote_host=remote_host,
+                        remote_host_alias=_session_remote_host_alias(session_manifest),
                         remote_user="agent",
                         remote_agent_home=DEFAULT_REMOTE_AGENT_HOME,
                     )
@@ -1236,24 +1233,59 @@ def _dedupe_cost_events(
         for event in events
         if _usage_source(event) != "transcript" or _event_has_billable_tokens(event)
     ]
-    anthropic_transcript_sessions = {
-        event.session_id
+    anthropic_transcript_request_keys = {
+        key
         for event in materialized
-        if event.session_id
-        and _usage_source(event) == "transcript"
-        and _optional_text(event.provider) == "anthropic"
+        if (key := _anthropic_transcript_request_key(event)) is not None
     }
-    if not anthropic_transcript_sessions:
+    if not anthropic_transcript_request_keys:
         return materialized
     return [
         event
         for event in materialized
         if not (
-            event.session_id in anthropic_transcript_sessions
-            and _usage_source(event) != "transcript"
+            _usage_source(event) != "transcript"
             and _optional_text(event.provider) == "anthropic"
+            and _event_request_key(event) in anthropic_transcript_request_keys
         )
     ]
+
+
+def _anthropic_transcript_request_key(
+    event: ModelInferenceUsageEvent,
+) -> tuple[str, str] | None:
+    if _usage_source(event) != "transcript":
+        return None
+    if _optional_text(event.provider) != "anthropic":
+        return None
+    return _event_request_key(event)
+
+
+def _event_request_key(event: ModelInferenceUsageEvent) -> tuple[str, str] | None:
+    session_id = _optional_text(event.session_id)
+    request_id = _first_text(
+        event.request_id,
+        _raw_metadata_text(
+            event.raw_usage_metadata, "response_metadata", "provider_request_id"
+        ),
+        _raw_metadata_text(event.raw_usage_metadata, "response_metadata", "request_id"),
+        _raw_metadata_text(
+            event.raw_usage_metadata, "request_metadata", "provider_request_id"
+        ),
+        _raw_metadata_text(event.raw_usage_metadata, "request_metadata", "request_id"),
+    )
+    if session_id is None or request_id is None:
+        return None
+    return (session_id, request_id)
+
+
+def _raw_metadata_text(
+    raw_usage_metadata: Mapping[str, Any], section: str, key: str
+) -> str | None:
+    payload = raw_usage_metadata.get(section)
+    if not isinstance(payload, Mapping):
+        return None
+    return _optional_text(payload.get(key))
 
 
 def _event_has_billable_tokens(event: ModelInferenceUsageEvent) -> bool:
@@ -1334,6 +1366,23 @@ def _session_remote_host(session_manifest: Any | None) -> str | None:
     )
 
 
+def _session_remote_host_alias(session_manifest: Any | None) -> str | None:
+    metadata = getattr(session_manifest, "metadata", None)
+    team_addon = metadata.get("team_addon") if isinstance(metadata, Mapping) else None
+    alias = _first_text(
+        getattr(session_manifest, "vm_id", None),
+        getattr(session_manifest, "vm_provider_id", None),
+        _mapping_text(metadata, "vm_id"),
+        _mapping_text(metadata, "vm_name"),
+        _mapping_text(metadata, "target_name"),
+        _mapping_text(team_addon, "vm_id"),
+        _mapping_text(team_addon, "vm_name"),
+    )
+    if alias is None or alias.startswith("-") or not _SSH_HOST_RE.fullmatch(alias):
+        return None
+    return alias
+
+
 def _mapping_text(value: Any, key: str) -> str | None:
     if not isinstance(value, Mapping):
         return None
@@ -1407,6 +1456,107 @@ def _ssh_destination(user: str | None, host: str | None) -> str | None:
     if normalized_host.startswith("-") or not _SSH_HOST_RE.fullmatch(normalized_host):
         return None
     return f"{normalized_user}@{normalized_host}"
+
+
+def _remote_transcript_ssh_options(source: ClaudeTranscriptSource) -> list[str]:
+    options = [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+    ]
+    private_key_path = _resolve_private_key_path()
+    if private_key_path is not None:
+        options.extend(
+            [
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                str(private_key_path),
+            ]
+        )
+    elif os.environ.get("SSH_PRIVATE_KEY_PATH", "").strip():
+        raise RuntimeError(
+            f"configured SSH private key not found: {os.environ['SSH_PRIVATE_KEY_PATH']}"
+        )
+
+    known_hosts_path = _known_hosts_path()
+    options.extend(["-o", f"UserKnownHostsFile={known_hosts_path}"])
+
+    alias = _optional_text(source.remote_host_alias)
+    if alias and not alias.startswith("-") and _SSH_HOST_RE.fullmatch(alias):
+        options.extend(
+            [
+                "-o",
+                f"HostKeyAlias={alias}",
+                "-o",
+                "CheckHostIP=no",
+            ]
+        )
+    return options
+
+
+def _resolve_private_key_path() -> Path | None:
+    configured = os.environ.get("SSH_PRIVATE_KEY_PATH", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_file() else None
+
+    home = _caller_home()
+    for candidate in (home / ".ssh" / "id_ed25519", home / ".ssh" / "id_rsa"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _known_hosts_path() -> Path:
+    configured = os.environ.get("AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+    else:
+        path = _caller_home() / ".ssh" / "agent-sandbox-known_hosts"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return path
+    except OSError:
+        fallback = (
+            Path("/tmp")
+            / f"agent-sandbox-known_hosts-{os.environ.get('SUDO_USER') or os.environ.get('USER') or 'agent'}"
+        )
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        fallback.touch(exist_ok=True)
+        try:
+            fallback.chmod(0o600)
+        except OSError:
+            pass
+        return fallback
+
+
+def _caller_home() -> Path:
+    caller_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    caller_home = os.environ.get("HOME", "")
+    if caller_user:
+        try:
+            passwd_entry = subprocess.run(
+                ["getent", "passwd", caller_user],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            passwd_entry = None
+        if passwd_entry and passwd_entry.returncode == 0:
+            fields = (passwd_entry.stdout or "").strip().split(":")
+            if len(fields) >= 6 and fields[5]:
+                caller_home = fields[5]
+    return Path(caller_home or Path.home())
 
 
 def _decimal_to_float(value: Decimal | None) -> float | None:
