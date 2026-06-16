@@ -212,6 +212,7 @@ class DidwwSipBridgeConfig(BaseModel):
     voice_query_poll_interval_seconds: float = Field(default=1.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
+    goodbye_idle_hangup_seconds: float = Field(default=0.0, ge=0)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
     backchannel_phrases: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_BACKCHANNEL_PHRASES)
@@ -2116,6 +2117,10 @@ class DidwwSipBridgeService:
         idle_prompt_task: asyncio.Task[None] | None = None
         idle_prompt_sent_this_period = False
         idle_generation = 0
+        goodbye_idle_task: asyncio.Task[None] | None = None
+        goodbye_idle_pending = False
+        goodbye_idle_wait_logged = False
+        goodbye_idle_generation = 0
         loop = asyncio.get_running_loop()
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
 
@@ -2302,18 +2307,43 @@ class DidwwSipBridgeService:
             if active_idle:
                 await realtime.cancel_response(active_response_id)
 
+        def cancel_goodbye_idle_timer(*, reason: str) -> bool:
+            nonlocal goodbye_idle_generation, goodbye_idle_pending
+            nonlocal goodbye_idle_task, goodbye_idle_wait_logged
+            task = goodbye_idle_task
+            was_pending = goodbye_idle_pending
+            goodbye_idle_generation += 1
+            goodbye_idle_pending = False
+            goodbye_idle_wait_logged = False
+            goodbye_idle_task = None
+            task_cancelled = task is not None and not task.done()
+            if task_cancelled:
+                task.cancel()
+            if task_cancelled or was_pending:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.goodbye_idle.cancelled",
+                    metadata={
+                        "reason": reason,
+                        "timer_cancelled": task_cancelled,
+                    },
+                )
+            return task_cancelled
+
         async def perform_end_call(reason: str | None, call_id: str | None) -> None:
-            nonlocal end_call_completed
+            nonlocal end_call_completed, goodbye_idle_pending
             if end_call_completed:
                 return
+            goodbye_idle_pending = False
             record = self.store.get(voice_session_id)
             if record is None or record.status in {"ended", "failed"}:
                 end_call_completed = True
                 stop_event.set()
-                await realtime.send_tool_output(
-                    call_id=call_id or "",
-                    output={"status": "ended"},
-                )
+                if call_id:
+                    await realtime.send_tool_output(
+                        call_id=call_id,
+                        output={"status": "ended"},
+                    )
                 return
             self._append_debug_event(
                 voice_session_id,
@@ -2347,9 +2377,94 @@ class DidwwSipBridgeService:
             finally:
                 end_call_completed = True
                 stop_event.set()
-            await realtime.send_tool_output(
-                call_id=call_id or "",
-                output={"status": "ended"},
+            if call_id:
+                await realtime.send_tool_output(
+                    call_id=call_id,
+                    output={"status": "ended"},
+                )
+
+        async def goodbye_idle_after_playback(generation: int, *, reason: str) -> None:
+            nonlocal goodbye_idle_wait_logged
+            try:
+                while (
+                    not stop_event.is_set()
+                    and generation == goodbye_idle_generation
+                    and goodbye_idle_pending
+                    and assistant_audio_active()
+                ):
+                    await asyncio.sleep(0.05)
+                if (
+                    stop_event.is_set()
+                    or generation != goodbye_idle_generation
+                    or not goodbye_idle_pending
+                ):
+                    return
+                if not goodbye_idle_wait_logged:
+                    goodbye_idle_wait_logged = True
+                    self._append_debug_event(
+                        voice_session_id,
+                        "bridge.goodbye_idle.waiting",
+                        metadata={
+                            "reason": reason,
+                            "timeout_ms": int(self.config.goodbye_idle_hangup_seconds * 1000),
+                            "assistant_audio_active": assistant_audio_active(),
+                            "response_active": response_active,
+                            "assistant_speaking": assistant_speaking,
+                            "caller_speech_active": caller_speech_active,
+                            "caller_turn_incomplete": caller_turn_incomplete,
+                            "pending_response_count": len(pending_responses),
+                        },
+                    )
+                await asyncio.sleep(self.config.goodbye_idle_hangup_seconds)
+                while (
+                    not stop_event.is_set()
+                    and generation == goodbye_idle_generation
+                    and goodbye_idle_pending
+                ):
+                    if safe_to_end_call():
+                        self._append_debug_event(
+                            voice_session_id,
+                            "bridge.goodbye_idle.executing",
+                            metadata={
+                                "reason": reason,
+                                "timeout_ms": int(
+                                    self.config.goodbye_idle_hangup_seconds * 1000
+                                ),
+                            },
+                        )
+                        await perform_end_call(reason, None)
+                        self._append_debug_event(
+                            voice_session_id,
+                            "bridge.goodbye_idle.completed",
+                            metadata={
+                                "reason": reason,
+                                "timeout_ms": int(
+                                    self.config.goodbye_idle_hangup_seconds * 1000
+                                ),
+                            },
+                        )
+                        return
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                raise
+
+        def schedule_goodbye_idle_after_playback(*, reason: str) -> None:
+            nonlocal goodbye_idle_task, goodbye_idle_pending, goodbye_idle_wait_logged
+            if self.config.goodbye_idle_hangup_seconds <= 0:
+                return
+            cancel_goodbye_idle_timer(reason=reason)
+            goodbye_idle_pending = True
+            goodbye_idle_wait_logged = False
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.goodbye_idle.scheduled",
+                metadata={
+                    "reason": reason,
+                    "timeout_ms": int(self.config.goodbye_idle_hangup_seconds * 1000),
+                },
+            )
+            goodbye_idle_task = asyncio.create_task(
+                goodbye_idle_after_playback(goodbye_idle_generation, reason=reason)
             )
 
         async def wait_for_end_call() -> None:
@@ -2398,6 +2513,7 @@ class DidwwSipBridgeService:
             end_call_requested = True
             end_call_call_id = function_call.call_id
             end_call_reason = reason
+            cancel_goodbye_idle_timer(reason="end_call_requested")
             self._append_debug_event(
                 voice_session_id,
                 "bridge.end_call.requested",
@@ -2446,6 +2562,7 @@ class DidwwSipBridgeService:
                     stop_event.is_set()
                     or generation != idle_generation
                     or idle_prompt_sent_this_period
+                    or goodbye_idle_pending
                     or caller_speech_active
                     or response_active
                     or assistant_speaking
@@ -2464,6 +2581,8 @@ class DidwwSipBridgeService:
         def schedule_idle_prompt_after_playback(*, reason: str) -> None:
             nonlocal idle_prompt_task
             if idle_prompt_sent_this_period:
+                return
+            if goodbye_idle_pending:
                 return
             if not audio_response_started_at and last_assistant_audio_at is None:
                 return
@@ -2582,6 +2701,7 @@ class DidwwSipBridgeService:
             nonlocal caller_speech_active, caller_speech_started_at, caller_turn_incomplete
             nonlocal caller_speech_started_during_assistant
             await cancel_idle_prompt(reason="caller_speech_started", reset_period=True)
+            cancel_goodbye_idle_timer(reason="caller_speech_started")
             current_caller_utterance_id += 1
             caller_speech_active = True
             caller_turn_incomplete = True
@@ -2622,6 +2742,7 @@ class DidwwSipBridgeService:
             supersede_keys: set[str] | None = None,
         ) -> None:
             nonlocal last_response_request, response_active
+            cancel_goodbye_idle_timer(reason=reason)
             request = BridgeResponseRequest(instructions=instructions, reason=reason, key=key)
             async with response_lock:
                 if request.key != _IDLE_PROMPT_RESPONSE_KEY:
@@ -3041,6 +3162,7 @@ class DidwwSipBridgeService:
                         origin_queries_by_id=origin_queries_by_id,
                         request_response=request_bridge_response,
                         discard_response_keys=discard_bridge_response_keys,
+                        cancel_goodbye_idle_timer=cancel_goodbye_idle_timer,
                     )
                     continue
                 audio_delta = _realtime_audio_delta(event)
@@ -3085,6 +3207,12 @@ class DidwwSipBridgeService:
                             ),
                             metadata=_realtime_transcript_metadata(event, transcript_text),
                         )
+                        if speaker == "assistant" and _is_goodbye_transcript(transcript_text):
+                            await cancel_idle_prompt(
+                                reason="assistant_goodbye",
+                                reset_period=False,
+                            )
+                            schedule_goodbye_idle_after_playback(reason="assistant_goodbye")
                     if event_type == "conversation.item.input_audio_transcription.completed":
                         await mark_caller_turn_completed(transcript_text)
                 text_delta = _realtime_text_delta(event)
@@ -3149,6 +3277,8 @@ class DidwwSipBridgeService:
                 idle_prompt_task.cancel()
             if outbound_sender_task is not None:
                 outbound_sender_task.cancel()
+            if goodbye_idle_task is not None:
+                goodbye_idle_task.cancel()
             if end_call_task is not None:
                 if end_call_completed:
                     await asyncio.gather(end_call_task, return_exceptions=True)
@@ -3162,6 +3292,8 @@ class DidwwSipBridgeService:
                 await asyncio.gather(idle_prompt_task, return_exceptions=True)
             if outbound_sender_task is not None:
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
+            if goodbye_idle_task is not None:
+                await asyncio.gather(goodbye_idle_task, return_exceptions=True)
             if end_call_task is not None and not end_call_completed:
                 await asyncio.gather(end_call_task, return_exceptions=True)
             await asyncio.gather(*barge_delay_tasks, return_exceptions=True)
@@ -3181,6 +3313,7 @@ class DidwwSipBridgeService:
         origin_queries_by_id: dict[str, OriginQueryState] | None = None,
         request_response: Callable[..., Awaitable[None]] | None = None,
         discard_response_keys: Callable[..., Awaitable[int]] | None = None,
+        cancel_goodbye_idle_timer: Callable[..., bool] | None = None,
     ) -> None:
         if request_response is None:
             async def request_response(
@@ -3363,6 +3496,8 @@ class DidwwSipBridgeService:
         query_id = str(query.get("query_id") or "").strip()
         if delegated_queries is not None and query_id:
             delegated_queries[query_key] = query_id
+        if cancel_goodbye_idle_timer is not None:
+            cancel_goodbye_idle_timer(reason="origin_query_created")
         self._append_debug_event(
             voice_session_id,
             "origin_query.created",
@@ -3904,6 +4039,9 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0
         ),
         barge_in_delay_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", 700),
+        goodbye_idle_hangup_seconds=_env_float(
+            "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
+        ),
         backchannel_max_words=_env_int("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", 3),
         backchannel_phrases=_env_list(
             "DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES",
@@ -4267,6 +4405,23 @@ def _is_origin_query_hold_ack(transcript_text: object) -> bool:
         "no thanks i will wait",
     }
     return normalized in hold_ack_phrases
+
+
+def _is_goodbye_transcript(transcript_text: object) -> bool:
+    normalized = _normalize_backchannel_phrase(transcript_text)
+    if not normalized:
+        return False
+    closing_phrases = (
+        "goodbye",
+        "good bye",
+        "bye",
+        "bye for now",
+        "have a good day",
+        "thanks for calling",
+        "thank you for calling",
+        "talk to you soon",
+    )
+    return any(phrase in normalized for phrase in closing_phrases)
 
 
 def _is_origin_query_response_key(key: object) -> bool:
