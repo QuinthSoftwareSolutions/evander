@@ -1489,7 +1489,38 @@ def _persistent_action_schema() -> dict[str, Any]:
                     },
                 },
             },
-            "git_review_promotions": {"type": "array", "default": [], "items": {"type": "object"}},
+            "git_review_promotions": {
+                "type": "array",
+                "description": (
+                    "Publish a durable Team review branch. Use assignment_id for "
+                    "completed ephemeral assignments, or deliverable_id with "
+                    "source_branch/commit_sha for persistent-agent deliverables."
+                ),
+                "default": [],
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["assignment_id"],
+                            "properties": {
+                                "assignment_id": {"type": "string", "minLength": 1},
+                                "deliverable_id": text_or_null,
+                            },
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["deliverable_id"],
+                            "properties": {
+                                "deliverable_id": {"type": "string", "minLength": 1},
+                                "source_branch": text_or_null,
+                                "commit_sha": text_or_null,
+                            },
+                        },
+                    ]
+                },
+            },
             "git_feature_updates": {"type": "array", "default": [], "items": {"type": "object"}},
             "git_release_requests": {"type": "array", "default": [], "items": {"type": "object"}},
             "ephemeral_requests": {"type": "array", "default": [], "items": {"type": "object"}},
@@ -1553,7 +1584,12 @@ def _persistent_action_example() -> dict[str, Any]:
             }
         ],
         "goal_updates": [],
-        "git_review_promotions": [],
+        "git_review_promotions": [
+            {
+                "deliverable_id": "deliverable-id",
+                "commit_sha": "commit-sha-or-use-source_branch",
+            }
+        ],
         "git_feature_updates": [],
         "git_release_requests": [],
         "ephemeral_requests": [],

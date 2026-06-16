@@ -557,10 +557,17 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "rejected",
         "blocked",
     ]
+    review_promotion_shapes = schema["properties"]["git_review_promotions"]["items"]["oneOf"]
+    assert review_promotion_shapes[0]["required"] == ["assignment_id"]
+    assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
+    assert "commit_sha" in review_promotion_shapes[1]["properties"]
+    assert "source_branch" in review_promotion_shapes[1]["properties"]
     example = json.loads(str(copied_files[1]["content"]))
     assert example["schema_version"] == 3
     assert example["review_requests"][0]["instructions"]
     assert example["review_decisions"][0]["state"] == "accepted"
+    assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
+    assert "commit_sha" in example["git_review_promotions"][0]
     assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
