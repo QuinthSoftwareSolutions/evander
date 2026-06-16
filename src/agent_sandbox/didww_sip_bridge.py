@@ -121,6 +121,15 @@ _CALLER_TURN_COMPLETION_INSTRUCTIONS = (
     "Briefly acknowledge or answer the caller's latest turn. "
     "Do not use or mention the queued lookup result yet."
 )
+_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX = (
+    "bridge:interrupted_assistant_resume"
+)
+_INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS = (
+    "Continue the assistant response that was interrupted. "
+    "Do not restart it, do not acknowledge the interruption, and do not switch to a new "
+    "caller turn."
+)
+_INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS = 0.25
 _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
     "Start with a natural transition. If the conversation has moved on, start with a soft "
     "callback such as 'Quick callback to your earlier question -' or "
@@ -2116,6 +2125,10 @@ class DidwwSipBridgeService:
         caller_speech_started_at: float | None = None
         caller_speech_started_during_assistant = False
         barge_cancelled_utterance_id: int | None = None
+        barge_cancelled_response_id: str | None = None
+        barge_cancelled_audio_truncated = False
+        barge_cancel_recovery_requested = False
+        barge_cancel_recovery_task: asyncio.Task[None] | None = None
         barge_delay_tasks: set[asyncio.Task[None]] = set()
         end_call_requested = False
         end_call_completed = False
@@ -2617,6 +2630,94 @@ class DidwwSipBridgeService:
                 idle_prompt_after_playback(idle_generation, reason=reason)
             )
 
+        def cancel_barge_cancel_recovery_timer() -> bool:
+            nonlocal barge_cancel_recovery_task
+            task = barge_cancel_recovery_task
+            barge_cancel_recovery_task = None
+            if task is not None and not task.done():
+                task.cancel()
+                return True
+            return False
+
+        def mark_barge_cancel_followup_requested(*, cancel_timer: bool = True) -> None:
+            nonlocal barge_cancel_recovery_requested
+            barge_cancel_recovery_requested = True
+            if cancel_timer:
+                cancel_barge_cancel_recovery_timer()
+
+        async def request_barge_cancel_recovery(
+            *,
+            reason: str,
+            utterance_id: int,
+        ) -> None:
+            nonlocal barge_cancel_recovery_task
+            task = asyncio.current_task()
+            try:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interrupted_assistant_recovery.started",
+                    metadata={
+                        "reason": reason,
+                        "utterance_id": utterance_id,
+                    },
+                )
+                await asyncio.sleep(_INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS)
+                if stop_event.is_set():
+                    return
+                if barge_cancelled_utterance_id != utterance_id:
+                    return
+                if barge_cancel_recovery_requested:
+                    return
+                if caller_speech_active:
+                    return
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interrupted_assistant_recovery.requesting",
+                    metadata={
+                        "reason": reason,
+                        "utterance_id": utterance_id,
+                        "response_active": response_active,
+                        "assistant_speaking": assistant_speaking,
+                    },
+                )
+                mark_barge_cancel_followup_requested(cancel_timer=False)
+                await request_bridge_response(
+                    _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+                    reason=reason,
+                    key=(
+                        f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:{utterance_id}"
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            finally:
+                if barge_cancel_recovery_task is task:
+                    barge_cancel_recovery_task = None
+
+        def schedule_barge_cancel_recovery(*, reason: str) -> None:
+            nonlocal barge_cancel_recovery_task
+            if barge_cancel_recovery_requested or barge_cancel_recovery_task is not None:
+                return
+            if barge_cancelled_utterance_id != current_caller_utterance_id:
+                return
+            if caller_speech_active:
+                return
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.interrupted_assistant_recovery.scheduled",
+                metadata={
+                    "reason": reason,
+                    "utterance_id": current_caller_utterance_id,
+                    "due_in_seconds": _INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS,
+                },
+            )
+            barge_cancel_recovery_task = asyncio.create_task(
+                request_barge_cancel_recovery(
+                    reason="interruption_recovery",
+                    utterance_id=current_caller_utterance_id,
+                )
+            )
+
         async def send_barge_in_cancel(
             *,
             reason: str,
@@ -2624,9 +2725,15 @@ class DidwwSipBridgeService:
             transcript_text: str | None = None,
         ) -> None:
             nonlocal barge_cancelled_utterance_id
+            nonlocal barge_cancelled_response_id, barge_cancelled_audio_truncated
+            nonlocal barge_cancel_recovery_requested
             if barge_cancelled_utterance_id == utterance_id:
                 return
             barge_cancelled_utterance_id = utterance_id
+            barge_cancelled_response_id = None
+            barge_cancelled_audio_truncated = False
+            barge_cancel_recovery_requested = False
+            cancel_barge_cancel_recovery_timer()
             elapsed_ms = int(
                 max(
                     0.0,
@@ -2641,6 +2748,7 @@ class DidwwSipBridgeService:
             cancel_response_id = (
                 active_response_id if active_response_id and response_active else None
             )
+            barge_cancelled_response_id = cancel_response_id
             dropped_frames = drain_outbound_audio_queue()
             await restart_outbound_sender_after_cancel()
             self._append_debug_event(
@@ -2651,11 +2759,14 @@ class DidwwSipBridgeService:
                     "response_id": active_response_id,
                     "response_active": response_active,
                     "cancel_response_id": cancel_response_id,
+                    "cancel_response_truncated": barge_cancelled_audio_truncated,
+                    "cancel_recovery_requested": barge_cancel_recovery_requested,
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
                     "dropped_audio_frames": dropped_frames,
                     "truncate_item_id": truncate_item_id,
                     "truncate_audio_end_ms": truncate_audio_end_ms,
+                    "cancelled_response_id": barge_cancelled_response_id,
                     "transcript_snippet": _debug_snippet(transcript_text),
                 },
             )
@@ -2685,6 +2796,7 @@ class DidwwSipBridgeService:
                     audio_end_ms=truncate_audio_end_ms,
                 )
                 truncated_audio_items.add(truncate_item_id)
+                barge_cancelled_audio_truncated = True
                 self._append_debug_event(
                     voice_session_id,
                     "assistant_audio_truncated",
@@ -2759,6 +2871,7 @@ class DidwwSipBridgeService:
         async def handle_speech_stopped() -> None:
             nonlocal caller_speech_active
             caller_speech_active = False
+            schedule_barge_cancel_recovery(reason="caller_speech_stopped")
 
         async def request_bridge_response(
             instructions: str | None = None,
@@ -2981,6 +3094,16 @@ class DidwwSipBridgeService:
                         "transcript_snippet": _debug_snippet(transcript_text),
                     },
                 )
+                if barge_cancelled_utterance_id == current_caller_utterance_id:
+                    mark_barge_cancel_followup_requested()
+                    await request_bridge_response(
+                        _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+                        reason="backchannel_resume",
+                        key=(
+                            f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:"
+                            f"{current_caller_utterance_id}"
+                        ),
+                    )
                 if (
                     blocked_origin_response_index is not None
                     and not response_active
@@ -2989,6 +3112,8 @@ class DidwwSipBridgeService:
                     await mark_response_done_and_flush()
                 return
             caller_speech_started_during_assistant = False
+            if barge_cancelled_utterance_id == current_caller_utterance_id:
+                mark_barge_cancel_followup_requested()
             request_instructions = (
                 _CALLER_TURN_COMPLETION_INSTRUCTIONS
                 if blocked_origin_response_index is not None
@@ -3260,7 +3385,9 @@ class DidwwSipBridgeService:
                 if event_type == "response.cancelled":
                     mark_audio_finished(event, reason="response.cancelled")
                     mark_response_inactive(event)
-                    await mark_response_done_and_flush()
+                    flushed_response = await mark_response_done_and_flush()
+                    if not flushed_response:
+                        schedule_barge_cancel_recovery(reason="response_cancelled")
                 if event_type == "error":
                     error = event.get("error") if isinstance(event.get("error"), dict) else event
                     self._append_debug_event(
