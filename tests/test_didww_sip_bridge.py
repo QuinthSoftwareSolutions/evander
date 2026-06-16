@@ -18,6 +18,9 @@ import agent_sandbox.didww_sip_bridge as didww_sip_bridge
 from agent_sandbox.didww_sip_bridge import (
     AsteriskAriClient,
     AsteriskCallHandles,
+    DidwwAudioQualityEvent,
+    DidwwAudioQualityMetrics,
+    DidwwAudioQualityWindow,
     DidwwBridgeCallRecord,
     DidwwBridgeStore,
     DidwwSipBridgeConfig,
@@ -287,6 +290,104 @@ def test_inbound_bridge_store_creates_idempotent_redacted_records(tmp_path: Path
     payload_json = json.dumps(record.response_payload(), sort_keys=True)
     assert "+15550000100" not in payload_json
     assert "+15550000200" not in payload_json
+
+
+def test_bridge_store_persists_audio_quality_and_indexes_by_call_id(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = PhoneCallStartRequest.model_validate(_phone_payload())
+
+    record, created = store.create_call(payload)
+
+    assert created is True
+    metrics = DidwwAudioQualityMetrics(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        direction=record.direction,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        rtp_port=49100,
+        route_id="route-1",
+        asterisk_pjsip_endpoint="didww",
+        carrier="+15551234567 Carrier",
+        region="us-east-1",
+        inbound_packets=2,
+        inbound_bytes=160,
+        inbound_samples=160,
+        outbound_packets=3,
+        outbound_bytes=240,
+        outbound_samples=240,
+        lost_packets=1,
+        late_packets=1,
+        out_of_order_packets=1,
+        duplicate_packets=1,
+        malformed_packets=1,
+        decode_errors=1,
+        jitter_ms=12.5,
+        queue_depth_max=4,
+        windows=[
+            DidwwAudioQualityWindow(
+                inbound_packets=index,
+                outbound_packets=index + 1,
+                queue_depth_max=index,
+            )
+            for index in range(20)
+        ],
+        anomaly_events=[
+            DidwwAudioQualityEvent(
+                event_type=f"audio.{index}",
+                message=f"carrier +15551234567 {index}",
+                metadata={"ordinal": index},
+            )
+            for index in range(70)
+        ],
+    )
+
+    updated = store.update_audio_quality(record.voice_session_id, metrics)
+    assert updated.audio_quality is not None
+    assert updated.audio_quality.voice_session_id == record.voice_session_id
+    assert len(updated.audio_quality.windows) <= 16
+    assert len(updated.audio_quality.anomaly_events) <= 64
+
+    reloaded_store = DidwwBridgeStore(tmp_path / "bridge.json")
+    reloaded = reloaded_store.get_by_call_id(record.call_id)
+
+    assert reloaded is not None
+    assert reloaded.call_id == record.call_id
+    assert reloaded.audio_quality is not None
+    assert reloaded.audio_quality.model_dump(mode="json") == updated.audio_quality.model_dump(
+        mode="json"
+    )
+    assert reloaded.response_payload()["audio_quality"] == updated.audio_quality.model_dump(
+        mode="json"
+    )
+    response_json = json.dumps(reloaded.response_payload(), sort_keys=True)
+    assert "+15551234567" not in response_json
+
+
+def test_bridge_store_reads_legacy_call_records_without_audio_quality(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    raw = json.loads((tmp_path / "bridge.json").read_text(encoding="utf-8"))
+    raw["calls"][record.voice_session_id].pop("audio_quality", None)
+    (tmp_path / "bridge.json").write_text(
+        json.dumps(raw, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    legacy_store = DidwwBridgeStore(tmp_path / "bridge.json")
+    loaded = legacy_store.get(record.voice_session_id)
+
+    assert loaded is not None
+    assert loaded.audio_quality is None
+    assert loaded.response_payload()["audio_quality"] is None
+    assert legacy_store.get_by_call_id(record.call_id) is not None
 
 
 def test_debug_events_are_exposed_without_changing_transcript_events(

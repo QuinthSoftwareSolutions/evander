@@ -150,6 +150,9 @@ _DEFAULT_BACKCHANNEL_PHRASES = (
     "thank you",
 )
 
+_AUDIO_QUALITY_WINDOW_LIMIT = 16
+_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT = 64
+
 
 def _end_call_tool_definition() -> dict[str, Any]:
     return {
@@ -377,6 +380,142 @@ class DidwwBridgeDebugEvent(BaseModel):
         return text or None
 
 
+class DidwwAudioQualityEvent(BaseModel):
+    occurred_at: datetime = Field(default_factory=utc_now)
+    event_type: str = Field(min_length=1)
+    severity: Literal["info", "warning", "error"] = "info"
+    message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_event_type(cls, value: object) -> object:
+        text = str(value or "").strip()
+        return text or None
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_severity(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or "info"
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def normalize_message(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _debug_snippet(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_metadata(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return {}
+        return _sanitize_debug_metadata(value)
+
+
+class DidwwAudioQualityWindow(BaseModel):
+    started_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime = Field(default_factory=utc_now)
+    inbound_packets: int = Field(default=0, ge=0)
+    inbound_bytes: int = Field(default=0, ge=0)
+    inbound_samples: int = Field(default=0, ge=0)
+    outbound_packets: int = Field(default=0, ge=0)
+    outbound_bytes: int = Field(default=0, ge=0)
+    outbound_samples: int = Field(default=0, ge=0)
+    lost_packets: int = Field(default=0, ge=0)
+    late_packets: int = Field(default=0, ge=0)
+    out_of_order_packets: int = Field(default=0, ge=0)
+    duplicate_packets: int = Field(default=0, ge=0)
+    malformed_packets: int = Field(default=0, ge=0)
+    decode_errors: int = Field(default=0, ge=0)
+    jitter_ms: float = Field(default=0.0, ge=0.0)
+    queue_depth_max: int = Field(default=0, ge=0)
+
+
+class DidwwAudioQualityMetrics(BaseModel):
+    voice_session_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+    direction: Literal["outbound", "inbound"] = "outbound"
+    started_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    media_format: str = Field(min_length=1)
+    rtp_payload_type: int = Field(ge=0, le=127)
+    sample_rate_hz: int = Field(ge=1)
+    frame_duration_ms: int = Field(ge=1)
+    rtp_port: int | None = Field(default=None, ge=1, le=65535)
+    route_id: str | None = None
+    asterisk_pjsip_endpoint: str | None = None
+    carrier: str | None = None
+    region: str | None = None
+    inbound_packets: int = Field(default=0, ge=0)
+    inbound_bytes: int = Field(default=0, ge=0)
+    inbound_samples: int = Field(default=0, ge=0)
+    outbound_packets: int = Field(default=0, ge=0)
+    outbound_bytes: int = Field(default=0, ge=0)
+    outbound_samples: int = Field(default=0, ge=0)
+    lost_packets: int = Field(default=0, ge=0)
+    late_packets: int = Field(default=0, ge=0)
+    out_of_order_packets: int = Field(default=0, ge=0)
+    duplicate_packets: int = Field(default=0, ge=0)
+    malformed_packets: int = Field(default=0, ge=0)
+    decode_errors: int = Field(default=0, ge=0)
+    jitter_ms: float = Field(default=0.0, ge=0.0)
+    queue_depth_max: int = Field(default=0, ge=0)
+    windows: list[DidwwAudioQualityWindow] = Field(default_factory=list)
+    anomaly_events: list[DidwwAudioQualityEvent] = Field(default_factory=list)
+
+    @field_validator(
+        "voice_session_id",
+        "call_id",
+        "route_id",
+        "asterisk_pjsip_endpoint",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def normalize_direction(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @field_validator("media_format", mode="before")
+    @classmethod
+    def normalize_media_format(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @field_validator("carrier", "region", mode="before")
+    @classmethod
+    def normalize_location_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _debug_snippet(value)
+
+    @field_validator("windows", "anomaly_events", mode="before")
+    @classmethod
+    def normalize_sequence_fields(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, set):
+            return list(value)
+        if not isinstance(value, list):
+            return []
+        return value
+
+    @model_validator(mode="after")
+    def bound_collections(self) -> DidwwAudioQualityMetrics:
+        self.windows = list(self.windows[-_AUDIO_QUALITY_WINDOW_LIMIT:])
+        self.anomaly_events = list(self.anomaly_events[-_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT:])
+        return self
+
+
 class DidwwBridgeCallRecord(BaseModel):
     voice_session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -397,6 +536,7 @@ class DidwwBridgeCallRecord(BaseModel):
     ari_bridge_id: str | None = None
     ari_external_media_channel_id: str | None = None
     rtp_port: int | None = None
+    audio_quality: DidwwAudioQualityMetrics | None = None
     transcript_events: list[VoiceTranscriptEvent] = Field(default_factory=list)
     debug_events: list[DidwwBridgeDebugEvent] = Field(default_factory=list)
     transcript: str | None = None
@@ -449,6 +589,9 @@ class DidwwBridgeCallRecord(BaseModel):
             "debug_events": [
                 event.model_dump(mode="json") for event in self.debug_events
             ],
+            "audio_quality": self.audio_quality.model_dump(mode="json")
+            if self.audio_quality is not None
+            else None,
             "transcript": self.transcript,
             "summary": self.summary,
             "decisions": list(self.decisions),
@@ -554,6 +697,20 @@ class DidwwBridgeStore:
             return None
         return DidwwBridgeCallRecord.model_validate(raw)
 
+    def get_by_call_id(self, call_id: str) -> DidwwBridgeCallRecord | None:
+        normalized = str(call_id or "").strip()
+        if not normalized:
+            return None
+        with self._lock:
+            calls = list(_mapping(self._read_raw(), "calls").values())
+        for raw in calls:
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("call_id") or "").strip() != normalized:
+                continue
+            return DidwwBridgeCallRecord.model_validate(raw)
+        return None
+
     def attach_asterisk(
         self,
         voice_session_id: str,
@@ -584,6 +741,22 @@ class DidwwBridgeStore:
                 record.error = str(error)
             if record.status in {"ended", "failed"} and record.ended_at is None:
                 record.ended_at = datetime.now(UTC)
+
+        return self._mutate(voice_session_id, mutate)
+
+    def update_audio_quality(
+        self,
+        voice_session_id: str,
+        metrics: DidwwAudioQualityMetrics | dict[str, Any],
+    ) -> DidwwBridgeCallRecord:
+        normalized_metrics = (
+            metrics
+            if isinstance(metrics, DidwwAudioQualityMetrics)
+            else DidwwAudioQualityMetrics.model_validate(metrics)
+        )
+
+        def mutate(record: DidwwBridgeCallRecord) -> None:
+            record.audio_quality = normalized_metrics
 
         return self._mutate(voice_session_id, mutate)
 
