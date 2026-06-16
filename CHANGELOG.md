@@ -15,6 +15,9 @@ material. Newer entries are added incrementally as changes land.
 - Added a service-configurable `DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD`
   knob so operators can tighten or loosen the fuzzy match cutoff without code
   changes.
+- Queued an interruption recovery response when a classified backchannel arrives
+  after assistant audio has already been canceled, avoiding dead air while the
+  caller keeps the floor.
 
 ## 2026-06-16 - DIDWW Origin Query Patience
 
