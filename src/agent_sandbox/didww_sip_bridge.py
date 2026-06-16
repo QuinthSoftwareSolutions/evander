@@ -10,8 +10,10 @@ import logging
 import os
 import re
 import struct
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,6 +105,8 @@ _ORIGIN_QUERY_ACK_GRACE_SECONDS = 2.0
 _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
 _BRIDGE_IDLE_PROMPT_MAX_PER_CALL = 2
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
+_AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT = 256
+_AUDIO_QUALITY_FRAME_GAP_TOLERANCE = 1.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
 _END_CALL_TOOL_NAME = "end_call"
@@ -1552,6 +1556,406 @@ class OutboundAudioFrame:
     content_index: int = 0
 
 
+@dataclass
+class DidwwAudioQualityTracker:
+    voice_session_id: str
+    call_id: str
+    direction: Literal["outbound", "inbound"] = "outbound"
+    media_format: str = "alaw"
+    rtp_payload_type: int = 8
+    sample_rate_hz: int = 8000
+    frame_duration_ms: int = 20
+    rtp_port: int | None = None
+    route_id: str | None = None
+    asterisk_pjsip_endpoint: str | None = None
+    carrier: str | None = None
+    region: str | None = None
+    started_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    inbound_packets: int = 0
+    inbound_bytes: int = 0
+    inbound_samples: int = 0
+    outbound_packets: int = 0
+    outbound_bytes: int = 0
+    outbound_samples: int = 0
+    lost_packets: int = 0
+    late_packets: int = 0
+    out_of_order_packets: int = 0
+    duplicate_packets: int = 0
+    malformed_packets: int = 0
+    decode_errors: int = 0
+    jitter_ms: float = 0.0
+    queue_depth_max: int = 0
+    windows: list[DidwwAudioQualityWindow] = field(default_factory=list)
+    anomaly_events: list[DidwwAudioQualityEvent] = field(default_factory=list)
+    _window: DidwwAudioQualityWindow = field(default_factory=DidwwAudioQualityWindow, init=False, repr=False)
+    _last_inbound_monotonic: float | None = field(default=None, init=False, repr=False)
+    _last_inbound_timestamp: int | None = field(default=None, init=False, repr=False)
+    _last_outbound_monotonic: float | None = field(default=None, init=False, repr=False)
+    _highest_sequence: int | None = field(default=None, init=False, repr=False)
+    _recent_missing_sequences: deque[int] = field(default_factory=deque, init=False, repr=False)
+    _recent_missing_sequence_set: set[int] = field(default_factory=set, init=False, repr=False)
+    _recent_seen_sequences: deque[int] = field(default_factory=deque, init=False, repr=False)
+    _recent_seen_sequence_set: set[int] = field(default_factory=set, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.direction = str(self.direction or "outbound").strip().lower() or "outbound"
+        self.media_format = str(self.media_format or "alaw").strip().lower() or "alaw"
+        self.voice_session_id = str(self.voice_session_id or "").strip()
+        self.call_id = str(self.call_id or "").strip()
+        if self.route_id is not None:
+            self.route_id = str(self.route_id).strip() or None
+        if self.asterisk_pjsip_endpoint is not None:
+            self.asterisk_pjsip_endpoint = (
+                str(self.asterisk_pjsip_endpoint).strip() or None
+            )
+        self.carrier = _debug_snippet(self.carrier)
+        self.region = _debug_snippet(self.region)
+        self._window.started_at = self.started_at
+        self._window.ended_at = self.started_at
+
+    def record_malformed_packet(
+        self,
+        *,
+        reason: str | None = None,
+        payload_length: int | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.malformed_packets += 1
+        self._window.malformed_packets += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "rtp.packet.malformed",
+            severity="warning",
+            message=reason or "Malformed RTP packet",
+            metadata={"payload_length": payload_length} if payload_length is not None else None,
+            occurred_at=occurred_at,
+        )
+
+    def record_inbound_packet(
+        self,
+        packet: RtpPacket,
+        *,
+        payload_bytes: int | None = None,
+        queue_depth: int | None = None,
+        received_at_monotonic: float | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        payload_bytes = len(packet.payload) if payload_bytes is None else max(0, payload_bytes)
+        payload_samples = self._payload_samples(payload_bytes)
+        now_monotonic = time.monotonic() if received_at_monotonic is None else received_at_monotonic
+        now_utc = occurred_at or utc_now()
+        sequence = packet.sequence & 0xFFFF
+        extended_sequence = self._unwrap_sequence(sequence)
+        if packet.payload_type != self.rtp_payload_type:
+            self._append_event(
+                "rtp.packet.payload_type_mismatch",
+                severity="warning",
+                message=(
+                    f"expected payload type {self.rtp_payload_type}, "
+                    f"received {packet.payload_type}"
+                ),
+                metadata={
+                    "expected_payload_type": self.rtp_payload_type,
+                    "observed_payload_type": packet.payload_type,
+                },
+                occurred_at=now_utc,
+            )
+        if self._highest_sequence is None:
+            self._highest_sequence = extended_sequence
+        elif extended_sequence > self._highest_sequence:
+            missing = extended_sequence - self._highest_sequence - 1
+            if missing > 0:
+                self.lost_packets += missing
+                self._window.lost_packets += missing
+                for missing_sequence in range(self._highest_sequence + 1, extended_sequence):
+                    self._remember_missing(missing_sequence)
+                self._append_event(
+                    "rtp.packet.loss",
+                    severity="warning",
+                    message=f"missed {missing} RTP packet(s)",
+                    metadata={
+                        "from_sequence": self._highest_sequence & 0xFFFF,
+                        "to_sequence": sequence,
+                        "lost_packets": missing,
+                    },
+                    occurred_at=now_utc,
+                )
+            self._highest_sequence = extended_sequence
+        elif extended_sequence in self._recent_missing_sequence_set:
+            self.late_packets += 1
+            self._window.late_packets += 1
+            self._forget_missing(extended_sequence)
+            self._append_event(
+                "rtp.packet.late",
+                severity="info",
+                message="Late RTP packet arrived after a gap",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+        elif extended_sequence in self._recent_seen_sequence_set:
+            self.duplicate_packets += 1
+            self._window.duplicate_packets += 1
+            self._append_event(
+                "rtp.packet.duplicate",
+                severity="info",
+                message="Duplicate RTP packet received",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+        elif self._highest_sequence is not None and extended_sequence < self._highest_sequence:
+            self.out_of_order_packets += 1
+            self._window.out_of_order_packets += 1
+            self._append_event(
+                "rtp.packet.out_of_order",
+                severity="info",
+                message="Out-of-order RTP packet received",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+
+        self.inbound_packets += 1
+        self.inbound_bytes += payload_bytes
+        self.inbound_samples += payload_samples
+        self._window.inbound_packets += 1
+        self._window.inbound_bytes += payload_bytes
+        self._window.inbound_samples += payload_samples
+        self._window.ended_at = now_utc
+        self._record_jitter(packet.timestamp, now_monotonic, now_utc)
+        if self._last_inbound_monotonic is not None:
+            interarrival = now_monotonic - self._last_inbound_monotonic
+            expected = self.frame_duration_ms / 1000.0
+            if interarrival > expected * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE:
+                self._append_event(
+                    "rtp.frame_gap",
+                    severity="warning",
+                    message="Inbound RTP inter-arrival gap exceeded frame duration",
+                    metadata={
+                        "gap_ms": round(interarrival * 1000.0, 3),
+                        "expected_frame_duration_ms": self.frame_duration_ms,
+                    },
+                    occurred_at=now_utc,
+                )
+        self._last_inbound_monotonic = now_monotonic
+        self._last_inbound_timestamp = packet.timestamp & 0xFFFFFFFF
+        if queue_depth is not None:
+            self.record_queue_depth(queue_depth, occurred_at=now_utc)
+        self._remember_seen(extended_sequence)
+        self._touch(now_utc)
+
+    def record_outbound_packet(
+        self,
+        *,
+        samples_sent: int,
+        payload_bytes: int,
+        rtp_timestamp: int | None = None,
+        send_gap_seconds: float | None = None,
+        sent_at_monotonic: float | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        now_monotonic = time.monotonic() if sent_at_monotonic is None else sent_at_monotonic
+        now_utc = occurred_at or utc_now()
+        self.outbound_packets += 1
+        self.outbound_bytes += max(0, payload_bytes)
+        self.outbound_samples += max(0, samples_sent)
+        self._window.outbound_packets += 1
+        self._window.outbound_bytes += max(0, payload_bytes)
+        self._window.outbound_samples += max(0, samples_sent)
+        self._window.ended_at = now_utc
+        gap = send_gap_seconds
+        if gap is None and self._last_outbound_monotonic is not None:
+            gap = now_monotonic - self._last_outbound_monotonic
+        if gap is not None:
+            expected = self.frame_duration_ms / 1000.0
+            if gap > expected * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE:
+                self._append_event(
+                    "rtp.frame_gap",
+                    severity="warning",
+                    message="Outbound RTP send gap exceeded frame duration",
+                    metadata={
+                        "gap_ms": round(gap * 1000.0, 3),
+                        "expected_frame_duration_ms": self.frame_duration_ms,
+                        "rtp_timestamp": rtp_timestamp,
+                    },
+                    occurred_at=now_utc,
+                )
+        self._last_outbound_monotonic = now_monotonic
+        self._touch(now_utc)
+
+    def record_decode_error(
+        self,
+        *,
+        reason: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.decode_errors += 1
+        self._window.decode_errors += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "realtime.audio_delta.decode_error",
+            severity="error",
+            message=reason or "Failed to decode audio delta",
+            occurred_at=occurred_at,
+        )
+
+    def record_queue_depth(
+        self,
+        queue_depth: int,
+        *,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        if queue_depth < 0:
+            return
+        if queue_depth > self.queue_depth_max:
+            self.queue_depth_max = queue_depth
+            self._window.queue_depth_max = max(self._window.queue_depth_max, queue_depth)
+        self._touch(occurred_at)
+        self._window.ended_at = occurred_at or utc_now()
+        if queue_depth > self._queue_depth_warning_threshold():
+            self._append_event(
+                "rtp.queue_overrun",
+                severity="warning",
+                message="RTP receive queue depth exceeded the warning threshold",
+                metadata={
+                    "queue_depth": queue_depth,
+                    "warning_threshold": self._queue_depth_warning_threshold(),
+                },
+                occurred_at=occurred_at,
+            )
+
+    def snapshot(self, *, occurred_at: datetime | None = None) -> DidwwAudioQualityMetrics:
+        now = occurred_at or utc_now()
+        self.updated_at = now
+        self._window.ended_at = now
+        window = self._window.model_copy(deep=True)
+        self.windows = [window]
+        return DidwwAudioQualityMetrics(
+            voice_session_id=self.voice_session_id,
+            call_id=self.call_id,
+            direction=self.direction,
+            started_at=self.started_at,
+            updated_at=now,
+            media_format=self.media_format,
+            rtp_payload_type=self.rtp_payload_type,
+            sample_rate_hz=self.sample_rate_hz,
+            frame_duration_ms=self.frame_duration_ms,
+            rtp_port=self.rtp_port,
+            route_id=self.route_id,
+            asterisk_pjsip_endpoint=self.asterisk_pjsip_endpoint,
+            carrier=self.carrier,
+            region=self.region,
+            inbound_packets=self.inbound_packets,
+            inbound_bytes=self.inbound_bytes,
+            inbound_samples=self.inbound_samples,
+            outbound_packets=self.outbound_packets,
+            outbound_bytes=self.outbound_bytes,
+            outbound_samples=self.outbound_samples,
+            lost_packets=self.lost_packets,
+            late_packets=self.late_packets,
+            out_of_order_packets=self.out_of_order_packets,
+            duplicate_packets=self.duplicate_packets,
+            malformed_packets=self.malformed_packets,
+            decode_errors=self.decode_errors,
+            jitter_ms=self.jitter_ms,
+            queue_depth_max=self.queue_depth_max,
+            windows=[window],
+            anomaly_events=[event.model_copy(deep=True) for event in self.anomaly_events],
+        )
+
+    def _payload_samples(self, payload_bytes: int) -> int:
+        if payload_bytes <= 0:
+            return 0
+        bytes_per_sample = _rtp_bytes_per_sample(self.media_format)
+        return max(1, (payload_bytes + bytes_per_sample - 1) // bytes_per_sample)
+
+    def _record_jitter(
+        self,
+        timestamp: int,
+        now_monotonic: float,
+        occurred_at: datetime,
+    ) -> None:
+        if self._last_inbound_monotonic is None or self._last_inbound_timestamp is None:
+            return
+        arrival_delta = now_monotonic - self._last_inbound_monotonic
+        timestamp_delta = self._unwrap_timestamp(timestamp, self._last_inbound_timestamp)
+        transit_delta = arrival_delta - (timestamp_delta / self.sample_rate_hz)
+        jitter_seconds = self.jitter_ms / 1000.0
+        jitter_seconds += (abs(transit_delta) - jitter_seconds) / 16.0
+        self.jitter_ms = max(0.0, jitter_seconds * 1000.0)
+        self._touch(occurred_at)
+
+    def _unwrap_sequence(self, sequence: int) -> int:
+        sequence &= 0xFFFF
+        if self._highest_sequence is None:
+            return sequence
+        base = self._highest_sequence
+        candidate = (base & ~0xFFFF) | sequence
+        if candidate - base > 0x7FFF:
+            candidate -= 0x10000
+        elif base - candidate > 0x7FFF:
+            candidate += 0x10000
+        return candidate
+
+    def _unwrap_timestamp(self, timestamp: int, previous_timestamp: int) -> int:
+        timestamp &= 0xFFFFFFFF
+        previous_timestamp &= 0xFFFFFFFF
+        candidate = timestamp
+        if candidate - previous_timestamp > 0x7FFFFFFF:
+            candidate -= 0x100000000
+        elif previous_timestamp - candidate > 0x7FFFFFFF:
+            candidate += 0x100000000
+        return candidate
+
+    def _remember_missing(self, sequence: int) -> None:
+        self._recent_missing_sequences.append(sequence)
+        self._recent_missing_sequence_set.add(sequence)
+        while len(self._recent_missing_sequences) > _AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT:
+            stale = self._recent_missing_sequences.popleft()
+            self._recent_missing_sequence_set.discard(stale)
+
+    def _forget_missing(self, sequence: int) -> None:
+        if sequence not in self._recent_missing_sequence_set:
+            return
+        self._recent_missing_sequence_set.discard(sequence)
+        try:
+            self._recent_missing_sequences.remove(sequence)
+        except ValueError:
+            pass
+
+    def _remember_seen(self, sequence: int) -> None:
+        self._recent_seen_sequences.append(sequence)
+        self._recent_seen_sequence_set.add(sequence)
+        while len(self._recent_seen_sequences) > _AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT:
+            stale = self._recent_seen_sequences.popleft()
+            self._recent_seen_sequence_set.discard(stale)
+
+    def _append_event(
+        self,
+        event_type: str,
+        *,
+        severity: Literal["info", "warning", "error"] = "info",
+        message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.anomaly_events.append(
+            DidwwAudioQualityEvent(
+                event_type=event_type,
+                severity=severity,
+                message=message,
+                metadata=metadata or {},
+                occurred_at=occurred_at or utc_now(),
+            )
+        )
+        self.anomaly_events = self.anomaly_events[-_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT:]
+
+    def _touch(self, occurred_at: datetime | None = None) -> None:
+        self.updated_at = occurred_at or utc_now()
+
+    def _queue_depth_warning_threshold(self) -> int:
+        return max(8, int(round(self.frame_duration_ms * 2)))
+
+
 class VoiceMediaControllerClient:
     def __init__(
         self,
@@ -1713,22 +2117,52 @@ class RtpDatagramProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         self.endpoint.remote_addr = addr
+        now_utc = utc_now()
+        now_monotonic = time.monotonic()
         try:
             packet = RtpPacket.parse(data)
-        except ValueError:
+        except ValueError as exc:
+            if self.endpoint.tracker is not None:
+                self.endpoint.tracker.record_malformed_packet(
+                    reason=str(exc),
+                    payload_length=len(data),
+                    occurred_at=now_utc,
+                )
             return
-        self.endpoint.incoming.put_nowait(packet.payload)
+        if self.endpoint.tracker is not None:
+            self.endpoint.tracker.record_inbound_packet(
+                packet,
+                payload_bytes=len(packet.payload),
+                queue_depth=self.endpoint.incoming.qsize() + 1,
+                received_at_monotonic=now_monotonic,
+                occurred_at=now_utc,
+            )
+        try:
+            self.endpoint.incoming.put_nowait(packet.payload)
+        except asyncio.QueueFull:
+            if self.endpoint.tracker is not None:
+                self.endpoint.tracker.record_queue_depth(
+                    self.endpoint.incoming.qsize(),
+                    occurred_at=now_utc,
+                )
 
 
 class RtpUdpEndpoint:
-    def __init__(self, config: DidwwSipBridgeConfig) -> None:
+    def __init__(
+        self,
+        config: DidwwSipBridgeConfig,
+        *,
+        tracker: DidwwAudioQualityTracker | None = None,
+    ) -> None:
         self.config = config
         self.incoming: asyncio.Queue[bytes] = asyncio.Queue()
         self.transport: asyncio.DatagramTransport | None = None
         self.remote_addr: tuple[str, int] | None = None
         self.port: int | None = None
+        self.tracker = tracker
         self._sequence = 1
         self._timestamp = 0
+        self._last_send_monotonic: float | None = None
 
     async def start(self) -> RtpUdpEndpoint:
         loop = asyncio.get_running_loop()
@@ -1760,6 +2194,7 @@ class RtpUdpEndpoint:
     ) -> int:
         if not payload or self.transport is None or self.remote_addr is None:
             return 0
+        loop = asyncio.get_running_loop()
         samples_per_frame = int(self.config.sample_rate_hz * self.config.frame_duration_ms / 1000)
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
         payload_bytes_per_frame = max(1, samples_per_frame * bytes_per_sample)
@@ -1777,8 +2212,23 @@ class RtpUdpEndpoint:
                 payload=chunk,
             )
             self.transport.sendto(packet.serialize(), self.remote_addr)
-            self._sequence = (self._sequence + 1) & 0xFFFF
+            now_monotonic = loop.time()
             samples_sent = max(1, (len(chunk) + bytes_per_sample - 1) // bytes_per_sample)
+            if self.tracker is not None:
+                self.tracker.record_outbound_packet(
+                    samples_sent=samples_sent,
+                    payload_bytes=len(chunk),
+                    rtp_timestamp=self._timestamp,
+                    send_gap_seconds=(
+                        None
+                        if self._last_send_monotonic is None
+                        else now_monotonic - self._last_send_monotonic
+                    ),
+                    sent_at_monotonic=now_monotonic,
+                    occurred_at=utc_now(),
+                )
+            self._last_send_monotonic = now_monotonic
+            self._sequence = (self._sequence + 1) & 0xFFFF
             self._timestamp = (self._timestamp + samples_sent) & 0xFFFFFFFF
             total_samples_sent += samples_sent
             if on_samples_sent is not None:

@@ -25,6 +25,7 @@ from agent_sandbox.didww_sip_bridge import (
     DidwwBridgeStore,
     DidwwSipBridgeConfig,
     DidwwSipBridgeService,
+    DidwwAudioQualityTracker,
     InboundPhoneCallStartRequest,
     OpenAIRealtimeSession,
     PhoneCallStartRequest,
@@ -718,9 +719,115 @@ def test_rtp_packet_roundtrip() -> None:
     assert parsed.payload == b"\x01\x02\x03\x04"
 
 
+def test_audio_quality_tracker_handles_sequence_wrap_loss_late_and_duplicates() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-1",
+        call_id="call-1",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    payload = b"\x55" * 160
+
+    tracker.record_inbound_packet(RtpPacket(65534, 1000, 1, 8, payload), received_at_monotonic=0.0)
+    tracker.record_inbound_packet(RtpPacket(65535, 1160, 1, 8, payload), received_at_monotonic=0.02)
+    tracker.record_inbound_packet(RtpPacket(0, 1320, 1, 8, payload), received_at_monotonic=0.04)
+    tracker.record_inbound_packet(RtpPacket(2, 1480, 1, 8, payload), received_at_monotonic=0.06)
+    tracker.record_inbound_packet(RtpPacket(1, 1640, 1, 8, payload), received_at_monotonic=0.08)
+    tracker.record_inbound_packet(RtpPacket(2, 1800, 1, 8, payload), received_at_monotonic=0.10)
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.inbound_packets == 6
+    assert snapshot.lost_packets == 1
+    assert snapshot.late_packets == 1
+    assert snapshot.duplicate_packets == 1
+    assert snapshot.out_of_order_packets == 0
+    assert snapshot.queue_depth_max == 0
+    assert snapshot.windows[0].inbound_packets == 6
+    assert snapshot.anomaly_events
+
+
+def test_audio_quality_tracker_marks_out_of_order_frame_gaps_and_malformed_packets() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-2",
+        call_id="call-2",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    payload = b"\x55" * 160
+
+    tracker.record_inbound_packet(RtpPacket(5, 1000, 1, 8, payload), received_at_monotonic=0.0)
+    tracker.record_inbound_packet(RtpPacket(3, 1160, 1, 8, payload), received_at_monotonic=0.01)
+    tracker.record_malformed_packet(reason="RTP packet is too short", payload_length=8)
+    tracker.record_inbound_packet(RtpPacket(6, 1320, 1, 8, payload), received_at_monotonic=0.08)
+    tracker.record_queue_depth(9)
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.out_of_order_packets == 1
+    assert snapshot.malformed_packets == 1
+    assert snapshot.queue_depth_max == 9
+    assert snapshot.jitter_ms > 0
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    assert "rtp.packet.out_of_order" in event_types
+    assert "rtp.packet.malformed" in event_types
+    assert "rtp.frame_gap" in event_types
+
+
+def test_rtp_datagram_protocol_tracks_malformed_and_payload_type_mismatch_without_dropping_payload(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-3",
+        call_id="call-3",
+        media_format="alaw",
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
+    protocol = didww_sip_bridge.RtpDatagramProtocol(endpoint)
+    received: list[bytes] = []
+
+    class FakeTransport:
+        def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+            received.append(data)
+
+    endpoint.transport = FakeTransport()  # type: ignore[assignment]
+    endpoint.remote_addr = ("127.0.0.1", 49999)
+
+    malformed = b"\x80\x08\x00"
+    protocol.datagram_received(malformed, ("127.0.0.1", 60000))
+
+    packet = RtpPacket(sequence=1, timestamp=0, ssrc=1, payload_type=0, payload=b"\x55" * 160)
+    protocol.datagram_received(packet.serialize(), ("127.0.0.1", 60000))
+
+    assert len(received) == 0
+    assert asyncio.run(endpoint.recv_payload()) == b"\x55" * 160
+    snapshot = tracker.snapshot()
+    assert snapshot.malformed_packets == 1
+    assert snapshot.inbound_packets == 1
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    assert "rtp.packet.malformed" in event_types
+    assert "rtp.packet.payload_type_mismatch" in event_types
+
+
 def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    endpoint = RtpUdpEndpoint(config)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-4",
+        call_id="call-4",
+        media_format=config.media_format,
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
     endpoint.remote_addr = ("127.0.0.1", 49999)
     sent: list[tuple[bytes, tuple[str, int]]] = []
 
@@ -752,6 +859,8 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
         samples_per_frame * 2,
     ]
     assert endpoint._timestamp == (samples_per_frame * 2) + 80
+    assert tracker.outbound_packets == 3
+    assert tracker.outbound_samples == (samples_per_frame * 2) + 80
 
 
 def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path) -> None:
