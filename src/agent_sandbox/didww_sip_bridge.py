@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import struct
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -104,6 +106,8 @@ _ORIGIN_QUERY_ACK_GRACE_SECONDS = 2.0
 _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
 _BRIDGE_IDLE_PROMPT_MAX_PER_CALL = 2
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
+_AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT = 256
+_AUDIO_QUALITY_FRAME_GAP_TOLERANCE = 1.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
 _END_CALL_TOOL_NAME = "end_call"
@@ -122,6 +126,16 @@ _CALLER_TURN_COMPLETION_INSTRUCTIONS = (
     "Briefly acknowledge or answer the caller's latest turn. "
     "Do not use or mention the queued lookup result yet."
 )
+_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX = (
+    "bridge:interrupted_assistant_resume"
+)
+_INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS = (
+    "Continue the assistant response that was interrupted. "
+    "Do not restart it, do not acknowledge the interruption, and do not switch to a new "
+    "caller turn."
+)
+_INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS = 0.25
+_INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS = 1.0
 _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
     "Start with a natural transition. If the conversation has moved on, start with a soft "
     "callback such as 'Quick callback to your earlier question -' or "
@@ -141,8 +155,13 @@ _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS = (
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
     "okay",
+    "yep",
+    "yup",
+    "right",
+    "sure",
     "uh-huh",
     "mhm",
+    "mm-hmm",
     "yeah",
     "yes",
     "good",
@@ -150,6 +169,9 @@ _DEFAULT_BACKCHANNEL_PHRASES = (
     "thanks",
     "thank you",
 )
+
+_AUDIO_QUALITY_WINDOW_LIMIT = 16
+_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT = 64
 
 
 def _end_call_tool_definition() -> dict[str, Any]:
@@ -223,6 +245,7 @@ class DidwwSipBridgeConfig(BaseModel):
     barge_in_fade_ms: int = Field(default=120, ge=0, le=500)
     goodbye_idle_hangup_seconds: float = Field(default=0.0, ge=0)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
+    backchannel_fuzzy_threshold: float = Field(default=0.84, ge=0.0, le=1.0)
     backchannel_phrases: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_BACKCHANNEL_PHRASES)
     )
@@ -379,6 +402,146 @@ class DidwwBridgeDebugEvent(BaseModel):
         return text or None
 
 
+class DidwwAudioQualityEvent(BaseModel):
+    occurred_at: datetime = Field(default_factory=utc_now)
+    event_type: str = Field(min_length=1)
+    severity: Literal["info", "warning", "error"] = "info"
+    message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_event_type(cls, value: object) -> object:
+        text = str(value or "").strip()
+        return text or None
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_severity(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or "info"
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def normalize_message(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _debug_snippet(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_metadata(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return {}
+        return _sanitize_debug_metadata(value)
+
+
+class DidwwAudioQualityWindow(BaseModel):
+    started_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime = Field(default_factory=utc_now)
+    inbound_packets: int = Field(default=0, ge=0)
+    inbound_bytes: int = Field(default=0, ge=0)
+    inbound_samples: int = Field(default=0, ge=0)
+    outbound_packets: int = Field(default=0, ge=0)
+    outbound_bytes: int = Field(default=0, ge=0)
+    outbound_samples: int = Field(default=0, ge=0)
+    lost_packets: int = Field(default=0, ge=0)
+    late_packets: int = Field(default=0, ge=0)
+    out_of_order_packets: int = Field(default=0, ge=0)
+    duplicate_packets: int = Field(default=0, ge=0)
+    malformed_packets: int = Field(default=0, ge=0)
+    decode_errors: int = Field(default=0, ge=0)
+    buffer_underruns: int = Field(default=0, ge=0)
+    buffer_overruns: int = Field(default=0, ge=0)
+    jitter_ms: float = Field(default=0.0, ge=0.0)
+    queue_depth_max: int = Field(default=0, ge=0)
+
+
+class DidwwAudioQualityMetrics(BaseModel):
+    voice_session_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+    direction: Literal["outbound", "inbound"] = "outbound"
+    started_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    media_format: str = Field(min_length=1)
+    rtp_payload_type: int = Field(ge=0, le=127)
+    sample_rate_hz: int = Field(ge=1)
+    frame_duration_ms: int = Field(ge=1)
+    rtp_port: int | None = Field(default=None, ge=1, le=65535)
+    route_id: str | None = None
+    asterisk_pjsip_endpoint: str | None = None
+    carrier: str | None = None
+    region: str | None = None
+    inbound_packets: int = Field(default=0, ge=0)
+    inbound_bytes: int = Field(default=0, ge=0)
+    inbound_samples: int = Field(default=0, ge=0)
+    outbound_packets: int = Field(default=0, ge=0)
+    outbound_bytes: int = Field(default=0, ge=0)
+    outbound_samples: int = Field(default=0, ge=0)
+    lost_packets: int = Field(default=0, ge=0)
+    late_packets: int = Field(default=0, ge=0)
+    out_of_order_packets: int = Field(default=0, ge=0)
+    duplicate_packets: int = Field(default=0, ge=0)
+    malformed_packets: int = Field(default=0, ge=0)
+    decode_errors: int = Field(default=0, ge=0)
+    buffer_underruns: int = Field(default=0, ge=0)
+    buffer_overruns: int = Field(default=0, ge=0)
+    jitter_ms: float = Field(default=0.0, ge=0.0)
+    queue_depth_max: int = Field(default=0, ge=0)
+    windows: list[DidwwAudioQualityWindow] = Field(default_factory=list)
+    anomaly_events: list[DidwwAudioQualityEvent] = Field(default_factory=list)
+
+    @field_validator(
+        "voice_session_id",
+        "call_id",
+        "route_id",
+        "asterisk_pjsip_endpoint",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def normalize_direction(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @field_validator("media_format", mode="before")
+    @classmethod
+    def normalize_media_format(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @field_validator("carrier", "region", mode="before")
+    @classmethod
+    def normalize_location_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _debug_snippet(value)
+
+    @field_validator("windows", "anomaly_events", mode="before")
+    @classmethod
+    def normalize_sequence_fields(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, set):
+            return list(value)
+        if not isinstance(value, list):
+            return []
+        return value
+
+    @model_validator(mode="after")
+    def bound_collections(self) -> DidwwAudioQualityMetrics:
+        self.windows = list(self.windows[-_AUDIO_QUALITY_WINDOW_LIMIT:])
+        self.anomaly_events = list(self.anomaly_events[-_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT:])
+        return self
+
+
 class DidwwBridgeCallRecord(BaseModel):
     voice_session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -399,6 +562,7 @@ class DidwwBridgeCallRecord(BaseModel):
     ari_bridge_id: str | None = None
     ari_external_media_channel_id: str | None = None
     rtp_port: int | None = None
+    audio_quality: DidwwAudioQualityMetrics | None = None
     transcript_events: list[VoiceTranscriptEvent] = Field(default_factory=list)
     debug_events: list[DidwwBridgeDebugEvent] = Field(default_factory=list)
     transcript: str | None = None
@@ -451,6 +615,9 @@ class DidwwBridgeCallRecord(BaseModel):
             "debug_events": [
                 event.model_dump(mode="json") for event in self.debug_events
             ],
+            "audio_quality": self.audio_quality.model_dump(mode="json")
+            if self.audio_quality is not None
+            else None,
             "transcript": self.transcript,
             "summary": self.summary,
             "decisions": list(self.decisions),
@@ -556,6 +723,20 @@ class DidwwBridgeStore:
             return None
         return DidwwBridgeCallRecord.model_validate(raw)
 
+    def get_by_call_id(self, call_id: str) -> DidwwBridgeCallRecord | None:
+        normalized = str(call_id or "").strip()
+        if not normalized:
+            return None
+        with self._lock:
+            calls = list(_mapping(self._read_raw(), "calls").values())
+        for raw in calls:
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("call_id") or "").strip() != normalized:
+                continue
+            return DidwwBridgeCallRecord.model_validate(raw)
+        return None
+
     def attach_asterisk(
         self,
         voice_session_id: str,
@@ -586,6 +767,22 @@ class DidwwBridgeStore:
                 record.error = str(error)
             if record.status in {"ended", "failed"} and record.ended_at is None:
                 record.ended_at = datetime.now(UTC)
+
+        return self._mutate(voice_session_id, mutate)
+
+    def update_audio_quality(
+        self,
+        voice_session_id: str,
+        metrics: DidwwAudioQualityMetrics | dict[str, Any],
+    ) -> DidwwBridgeCallRecord:
+        normalized_metrics = (
+            metrics
+            if isinstance(metrics, DidwwAudioQualityMetrics)
+            else DidwwAudioQualityMetrics.model_validate(metrics)
+        )
+
+        def mutate(record: DidwwBridgeCallRecord) -> None:
+            record.audio_quality = normalized_metrics
 
         return self._mutate(voice_session_id, mutate)
 
@@ -1478,6 +1675,434 @@ class OutboundAudioFrame:
     content_index: int = 0
 
 
+@dataclass
+class DidwwAudioQualityTracker:
+    voice_session_id: str
+    call_id: str
+    direction: Literal["outbound", "inbound"] = "outbound"
+    media_format: str = "alaw"
+    rtp_payload_type: int = 8
+    sample_rate_hz: int = 8000
+    frame_duration_ms: int = 20
+    rtp_port: int | None = None
+    route_id: str | None = None
+    asterisk_pjsip_endpoint: str | None = None
+    carrier: str | None = None
+    region: str | None = None
+    started_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    inbound_packets: int = 0
+    inbound_bytes: int = 0
+    inbound_samples: int = 0
+    outbound_packets: int = 0
+    outbound_bytes: int = 0
+    outbound_samples: int = 0
+    lost_packets: int = 0
+    late_packets: int = 0
+    out_of_order_packets: int = 0
+    duplicate_packets: int = 0
+    malformed_packets: int = 0
+    decode_errors: int = 0
+    buffer_underruns: int = 0
+    buffer_overruns: int = 0
+    jitter_ms: float = 0.0
+    queue_depth_max: int = 0
+    windows: list[DidwwAudioQualityWindow] = field(default_factory=list)
+    anomaly_events: list[DidwwAudioQualityEvent] = field(default_factory=list)
+    _window: DidwwAudioQualityWindow = field(default_factory=DidwwAudioQualityWindow, init=False, repr=False)
+    _last_inbound_monotonic: float | None = field(default=None, init=False, repr=False)
+    _last_inbound_timestamp: int | None = field(default=None, init=False, repr=False)
+    _last_outbound_monotonic: float | None = field(default=None, init=False, repr=False)
+    _highest_sequence: int | None = field(default=None, init=False, repr=False)
+    _recent_missing_sequences: deque[int] = field(default_factory=deque, init=False, repr=False)
+    _recent_missing_sequence_set: set[int] = field(default_factory=set, init=False, repr=False)
+    _recent_seen_sequences: deque[int] = field(default_factory=deque, init=False, repr=False)
+    _recent_seen_sequence_set: set[int] = field(default_factory=set, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.direction = str(self.direction or "outbound").strip().lower() or "outbound"
+        self.media_format = str(self.media_format or "alaw").strip().lower() or "alaw"
+        self.voice_session_id = str(self.voice_session_id or "").strip()
+        self.call_id = str(self.call_id or "").strip()
+        if self.route_id is not None:
+            self.route_id = str(self.route_id).strip() or None
+        if self.asterisk_pjsip_endpoint is not None:
+            self.asterisk_pjsip_endpoint = (
+                str(self.asterisk_pjsip_endpoint).strip() or None
+            )
+        self.carrier = _debug_snippet(self.carrier)
+        self.region = _debug_snippet(self.region)
+        self._window.started_at = self.started_at
+        self._window.ended_at = self.started_at
+
+    def record_malformed_packet(
+        self,
+        *,
+        reason: str | None = None,
+        payload_length: int | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.malformed_packets += 1
+        self._window.malformed_packets += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "rtp.packet.malformed",
+            severity="warning",
+            message=reason or "Malformed RTP packet",
+            metadata={"payload_length": payload_length} if payload_length is not None else None,
+            occurred_at=occurred_at,
+        )
+
+    def record_inbound_packet(
+        self,
+        packet: RtpPacket,
+        *,
+        payload_bytes: int | None = None,
+        queue_depth: int | None = None,
+        received_at_monotonic: float | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        payload_bytes = len(packet.payload) if payload_bytes is None else max(0, payload_bytes)
+        payload_samples = self._payload_samples(payload_bytes)
+        now_monotonic = time.monotonic() if received_at_monotonic is None else received_at_monotonic
+        now_utc = occurred_at or utc_now()
+        sequence = packet.sequence & 0xFFFF
+        extended_sequence = self._unwrap_sequence(sequence)
+        if packet.payload_type != self.rtp_payload_type:
+            self._append_event(
+                "rtp.packet.payload_type_mismatch",
+                severity="warning",
+                message=(
+                    f"expected payload type {self.rtp_payload_type}, "
+                    f"received {packet.payload_type}"
+                ),
+                metadata={
+                    "expected_payload_type": self.rtp_payload_type,
+                    "observed_payload_type": packet.payload_type,
+                },
+                occurred_at=now_utc,
+            )
+        if self._highest_sequence is None:
+            self._highest_sequence = extended_sequence
+        elif extended_sequence > self._highest_sequence:
+            missing = extended_sequence - self._highest_sequence - 1
+            if missing > 0:
+                self.lost_packets += missing
+                self._window.lost_packets += missing
+                for missing_sequence in range(self._highest_sequence + 1, extended_sequence):
+                    self._remember_missing(missing_sequence)
+                self._append_event(
+                    "rtp.packet.loss",
+                    severity="warning",
+                    message=f"missed {missing} RTP packet(s)",
+                    metadata={
+                        "from_sequence": self._highest_sequence & 0xFFFF,
+                        "to_sequence": sequence,
+                        "lost_packets": missing,
+                    },
+                    occurred_at=now_utc,
+                )
+            self._highest_sequence = extended_sequence
+        elif extended_sequence in self._recent_missing_sequence_set:
+            self.late_packets += 1
+            self._window.late_packets += 1
+            self._forget_missing(extended_sequence)
+            self._append_event(
+                "rtp.packet.late",
+                severity="info",
+                message="Late RTP packet arrived after a gap",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+        elif extended_sequence in self._recent_seen_sequence_set:
+            self.duplicate_packets += 1
+            self._window.duplicate_packets += 1
+            self._append_event(
+                "rtp.packet.duplicate",
+                severity="info",
+                message="Duplicate RTP packet received",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+        elif self._highest_sequence is not None and extended_sequence < self._highest_sequence:
+            self.out_of_order_packets += 1
+            self._window.out_of_order_packets += 1
+            self._append_event(
+                "rtp.packet.out_of_order",
+                severity="info",
+                message="Out-of-order RTP packet received",
+                metadata={"sequence": sequence},
+                occurred_at=now_utc,
+            )
+
+        self.inbound_packets += 1
+        self.inbound_bytes += payload_bytes
+        self.inbound_samples += payload_samples
+        self._window.inbound_packets += 1
+        self._window.inbound_bytes += payload_bytes
+        self._window.inbound_samples += payload_samples
+        self._window.ended_at = now_utc
+        self._record_jitter(packet.timestamp, now_monotonic, now_utc)
+        if self._last_inbound_monotonic is not None:
+            interarrival = now_monotonic - self._last_inbound_monotonic
+            expected = self.frame_duration_ms / 1000.0
+            if interarrival > expected * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE:
+                self._append_event(
+                    "rtp.frame_gap",
+                    severity="warning",
+                    message="Inbound RTP inter-arrival gap exceeded frame duration",
+                    metadata={
+                        "gap_ms": round(interarrival * 1000.0, 3),
+                        "expected_frame_duration_ms": self.frame_duration_ms,
+                    },
+                    occurred_at=now_utc,
+                )
+        self._last_inbound_monotonic = now_monotonic
+        self._last_inbound_timestamp = packet.timestamp & 0xFFFFFFFF
+        if queue_depth is not None:
+            self.record_queue_depth(queue_depth, occurred_at=now_utc)
+        self._remember_seen(extended_sequence)
+        self._touch(now_utc)
+
+    def record_outbound_packet(
+        self,
+        *,
+        samples_sent: int,
+        payload_bytes: int,
+        rtp_timestamp: int | None = None,
+        send_gap_seconds: float | None = None,
+        sent_at_monotonic: float | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        now_monotonic = time.monotonic() if sent_at_monotonic is None else sent_at_monotonic
+        now_utc = occurred_at or utc_now()
+        self.outbound_packets += 1
+        self.outbound_bytes += max(0, payload_bytes)
+        self.outbound_samples += max(0, samples_sent)
+        self._window.outbound_packets += 1
+        self._window.outbound_bytes += max(0, payload_bytes)
+        self._window.outbound_samples += max(0, samples_sent)
+        self._window.ended_at = now_utc
+        gap = send_gap_seconds
+        if gap is None and self._last_outbound_monotonic is not None:
+            gap = now_monotonic - self._last_outbound_monotonic
+        if gap is not None:
+            expected = self.frame_duration_ms / 1000.0
+            if gap > expected * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE:
+                self._append_event(
+                    "rtp.frame_gap",
+                    severity="warning",
+                    message="Outbound RTP send gap exceeded frame duration",
+                    metadata={
+                        "gap_ms": round(gap * 1000.0, 3),
+                        "expected_frame_duration_ms": self.frame_duration_ms,
+                        "rtp_timestamp": rtp_timestamp,
+                    },
+                    occurred_at=now_utc,
+                )
+        self._last_outbound_monotonic = now_monotonic
+        self._touch(now_utc)
+
+    def record_decode_error(
+        self,
+        *,
+        reason: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.decode_errors += 1
+        self._window.decode_errors += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "realtime.audio_delta.decode_error",
+            severity="error",
+            message=reason or "Failed to decode audio delta",
+            occurred_at=occurred_at,
+        )
+
+    def record_queue_depth(
+        self,
+        queue_depth: int,
+        *,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        if queue_depth < 0:
+            return
+        if queue_depth > self.queue_depth_max:
+            self.queue_depth_max = queue_depth
+            self._window.queue_depth_max = max(self._window.queue_depth_max, queue_depth)
+        self._touch(occurred_at)
+        self._window.ended_at = occurred_at or utc_now()
+        if queue_depth > self._queue_depth_warning_threshold():
+            self.buffer_overruns += 1
+            self._window.buffer_overruns += 1
+            self._append_event(
+                "rtp.queue_overrun",
+                severity="warning",
+                message="RTP receive queue depth exceeded the warning threshold",
+                metadata={
+                    "queue_depth": queue_depth,
+                    "warning_threshold": self._queue_depth_warning_threshold(),
+                },
+                occurred_at=occurred_at,
+            )
+
+    def record_buffer_underrun(
+        self,
+        *,
+        wait_ms: float,
+        queue_name: str = "outbound_audio",
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.buffer_underruns += 1
+        self._window.buffer_underruns += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "rtp.buffer_underrun",
+            severity="warning",
+            message="Audio sender waited for queued audio longer than the frame-gap threshold",
+            metadata={
+                "queue": queue_name,
+                "wait_ms": round(max(0.0, wait_ms), 3),
+                "expected_frame_duration_ms": self.frame_duration_ms,
+            },
+            occurred_at=occurred_at,
+        )
+
+    def snapshot(self, *, occurred_at: datetime | None = None) -> DidwwAudioQualityMetrics:
+        now = occurred_at or utc_now()
+        self.updated_at = now
+        self._window.ended_at = now
+        window = self._window.model_copy(deep=True)
+        self.windows = [window]
+        return DidwwAudioQualityMetrics(
+            voice_session_id=self.voice_session_id,
+            call_id=self.call_id,
+            direction=self.direction,
+            started_at=self.started_at,
+            updated_at=now,
+            media_format=self.media_format,
+            rtp_payload_type=self.rtp_payload_type,
+            sample_rate_hz=self.sample_rate_hz,
+            frame_duration_ms=self.frame_duration_ms,
+            rtp_port=self.rtp_port,
+            route_id=self.route_id,
+            asterisk_pjsip_endpoint=self.asterisk_pjsip_endpoint,
+            carrier=self.carrier,
+            region=self.region,
+            inbound_packets=self.inbound_packets,
+            inbound_bytes=self.inbound_bytes,
+            inbound_samples=self.inbound_samples,
+            outbound_packets=self.outbound_packets,
+            outbound_bytes=self.outbound_bytes,
+            outbound_samples=self.outbound_samples,
+            lost_packets=self.lost_packets,
+            late_packets=self.late_packets,
+            out_of_order_packets=self.out_of_order_packets,
+            duplicate_packets=self.duplicate_packets,
+            malformed_packets=self.malformed_packets,
+            decode_errors=self.decode_errors,
+            buffer_underruns=self.buffer_underruns,
+            buffer_overruns=self.buffer_overruns,
+            jitter_ms=self.jitter_ms,
+            queue_depth_max=self.queue_depth_max,
+            windows=[window],
+            anomaly_events=[event.model_copy(deep=True) for event in self.anomaly_events],
+        )
+
+    def _payload_samples(self, payload_bytes: int) -> int:
+        if payload_bytes <= 0:
+            return 0
+        bytes_per_sample = _rtp_bytes_per_sample(self.media_format)
+        return max(1, (payload_bytes + bytes_per_sample - 1) // bytes_per_sample)
+
+    def _record_jitter(
+        self,
+        timestamp: int,
+        now_monotonic: float,
+        occurred_at: datetime,
+    ) -> None:
+        if self._last_inbound_monotonic is None or self._last_inbound_timestamp is None:
+            return
+        arrival_delta = now_monotonic - self._last_inbound_monotonic
+        timestamp_delta = self._unwrap_timestamp(timestamp, self._last_inbound_timestamp)
+        transit_delta = arrival_delta - (timestamp_delta / self.sample_rate_hz)
+        jitter_seconds = self.jitter_ms / 1000.0
+        jitter_seconds += (abs(transit_delta) - jitter_seconds) / 16.0
+        self.jitter_ms = max(0.0, jitter_seconds * 1000.0)
+        self._touch(occurred_at)
+
+    def _unwrap_sequence(self, sequence: int) -> int:
+        sequence &= 0xFFFF
+        if self._highest_sequence is None:
+            return sequence
+        base = self._highest_sequence
+        candidate = (base & ~0xFFFF) | sequence
+        if candidate - base > 0x7FFF:
+            candidate -= 0x10000
+        elif base - candidate > 0x7FFF:
+            candidate += 0x10000
+        return candidate
+
+    def _unwrap_timestamp(self, timestamp: int, previous_timestamp: int) -> int:
+        timestamp &= 0xFFFFFFFF
+        previous_timestamp &= 0xFFFFFFFF
+        candidate = timestamp
+        if candidate - previous_timestamp > 0x7FFFFFFF:
+            candidate -= 0x100000000
+        elif previous_timestamp - candidate > 0x7FFFFFFF:
+            candidate += 0x100000000
+        return candidate
+
+    def _remember_missing(self, sequence: int) -> None:
+        self._recent_missing_sequences.append(sequence)
+        self._recent_missing_sequence_set.add(sequence)
+        while len(self._recent_missing_sequences) > _AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT:
+            stale = self._recent_missing_sequences.popleft()
+            self._recent_missing_sequence_set.discard(stale)
+
+    def _forget_missing(self, sequence: int) -> None:
+        if sequence not in self._recent_missing_sequence_set:
+            return
+        self._recent_missing_sequence_set.discard(sequence)
+        try:
+            self._recent_missing_sequences.remove(sequence)
+        except ValueError:
+            pass
+
+    def _remember_seen(self, sequence: int) -> None:
+        self._recent_seen_sequences.append(sequence)
+        self._recent_seen_sequence_set.add(sequence)
+        while len(self._recent_seen_sequences) > _AUDIO_QUALITY_RECENT_SEQUENCE_LIMIT:
+            stale = self._recent_seen_sequences.popleft()
+            self._recent_seen_sequence_set.discard(stale)
+
+    def _append_event(
+        self,
+        event_type: str,
+        *,
+        severity: Literal["info", "warning", "error"] = "info",
+        message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.anomaly_events.append(
+            DidwwAudioQualityEvent(
+                event_type=event_type,
+                severity=severity,
+                message=message,
+                metadata=metadata or {},
+                occurred_at=occurred_at or utc_now(),
+            )
+        )
+        self.anomaly_events = self.anomaly_events[-_AUDIO_QUALITY_ANOMALY_EVENT_LIMIT:]
+
+    def _touch(self, occurred_at: datetime | None = None) -> None:
+        self.updated_at = occurred_at or utc_now()
+
+    def _queue_depth_warning_threshold(self) -> int:
+        return max(8, int(round(self.frame_duration_ms * 2)))
+
+
 class VoiceMediaControllerClient:
     def __init__(
         self,
@@ -1639,22 +2264,62 @@ class RtpDatagramProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         self.endpoint.remote_addr = addr
+        now_utc = utc_now()
+        now_monotonic = time.monotonic()
         try:
             packet = RtpPacket.parse(data)
-        except ValueError:
+        except ValueError as exc:
+            if self.endpoint.tracker is not None:
+                try:
+                    self.endpoint.tracker.record_malformed_packet(
+                        reason=str(exc),
+                        payload_length=len(data),
+                        occurred_at=now_utc,
+                    )
+                except Exception:
+                    logger.exception("didww_bridge_audio_quality_record_failed")
             return
-        self.endpoint.incoming.put_nowait(packet.payload)
+        try:
+            self.endpoint.incoming.put_nowait(packet.payload)
+        except asyncio.QueueFull:
+            if self.endpoint.tracker is not None:
+                try:
+                    self.endpoint.tracker.record_queue_depth(
+                        self.endpoint.incoming.qsize(),
+                        occurred_at=now_utc,
+                    )
+                except Exception:
+                    logger.exception("didww_bridge_audio_quality_record_failed")
+            return
+        if self.endpoint.tracker is not None:
+            try:
+                self.endpoint.tracker.record_inbound_packet(
+                    packet,
+                    payload_bytes=len(packet.payload),
+                    queue_depth=self.endpoint.incoming.qsize(),
+                    received_at_monotonic=now_monotonic,
+                    occurred_at=now_utc,
+                )
+            except Exception:
+                logger.exception("didww_bridge_audio_quality_record_failed")
 
 
 class RtpUdpEndpoint:
-    def __init__(self, config: DidwwSipBridgeConfig) -> None:
+    def __init__(
+        self,
+        config: DidwwSipBridgeConfig,
+        *,
+        tracker: DidwwAudioQualityTracker | None = None,
+    ) -> None:
         self.config = config
         self.incoming: asyncio.Queue[bytes] = asyncio.Queue()
         self.transport: asyncio.DatagramTransport | None = None
         self.remote_addr: tuple[str, int] | None = None
         self.port: int | None = None
+        self.tracker = tracker
         self._sequence = 1
         self._timestamp = 0
+        self._last_send_monotonic: float | None = None
 
     async def start(self) -> RtpUdpEndpoint:
         loop = asyncio.get_running_loop()
@@ -1686,6 +2351,7 @@ class RtpUdpEndpoint:
     ) -> int:
         if not payload or self.transport is None or self.remote_addr is None:
             return 0
+        loop = asyncio.get_running_loop()
         samples_per_frame = int(self.config.sample_rate_hz * self.config.frame_duration_ms / 1000)
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
         payload_bytes_per_frame = max(1, samples_per_frame * bytes_per_sample)
@@ -1703,8 +2369,23 @@ class RtpUdpEndpoint:
                 payload=chunk,
             )
             self.transport.sendto(packet.serialize(), self.remote_addr)
-            self._sequence = (self._sequence + 1) & 0xFFFF
+            now_monotonic = loop.time()
             samples_sent = max(1, (len(chunk) + bytes_per_sample - 1) // bytes_per_sample)
+            if self.tracker is not None:
+                self.tracker.record_outbound_packet(
+                    samples_sent=samples_sent,
+                    payload_bytes=len(chunk),
+                    rtp_timestamp=self._timestamp,
+                    send_gap_seconds=(
+                        None
+                        if self._last_send_monotonic is None
+                        else now_monotonic - self._last_send_monotonic
+                    ),
+                    sent_at_monotonic=now_monotonic,
+                    occurred_at=utc_now(),
+                )
+            self._last_send_monotonic = now_monotonic
+            self._sequence = (self._sequence + 1) & 0xFFFF
             self._timestamp = (self._timestamp + samples_sent) & 0xFFFFFFFF
             total_samples_sent += samples_sent
             if on_samples_sent is not None:
@@ -1717,6 +2398,16 @@ class RtpUdpEndpoint:
         if self.transport is not None:
             self.transport.close()
             self.transport = None
+
+
+@dataclass(frozen=True)
+class _AudioQualityTrackerAttachment:
+    voice_session_id: str
+    tracker: Any
+    created_tracker: bool
+    had_rtp_tracker: bool
+    previous_rtp_tracker: Any
+    assigned_rtp_tracker: bool
 
 
 class DidwwSipBridgeService:
@@ -1747,6 +2438,7 @@ class DidwwSipBridgeService:
         self.start_background_tasks = start_background_tasks
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._audio_quality_trackers: dict[str, Any] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_calls)
 
     def create_app(self) -> Starlette:
@@ -1792,9 +2484,33 @@ class DidwwSipBridgeService:
             if auth_error is not None:
                 return auth_error
             voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+            await service._flush_audio_quality_tracker(voice_session_id)
             record = service.store.get(voice_session_id)
             if record is None:
                 return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+            return JSONResponse(record.response_payload())
+
+        async def get_voice_session_audio_quality(request: Request) -> JSONResponse:
+            auth_error = service._auth_error(request)
+            if auth_error is not None:
+                return auth_error
+            voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
+            await service._flush_audio_quality_tracker(voice_session_id)
+            record = service.store.get(voice_session_id)
+            if record is None:
+                return JSONResponse({"error": "Unknown voice session"}, status_code=404)
+            return JSONResponse(record.response_payload())
+
+        async def get_phone_call_audio_quality(request: Request) -> JSONResponse:
+            auth_error = service._auth_error(request)
+            if auth_error is not None:
+                return auth_error
+            call_id = str(request.path_params.get("call_id") or "").strip()
+            record = service.store.get_by_call_id(call_id)
+            if record is None:
+                return JSONResponse({"error": "Unknown phone call"}, status_code=404)
+            await service._flush_audio_quality_tracker(record.voice_session_id)
+            record = service.store.get(record.voice_session_id) or record
             return JSONResponse(record.response_payload())
 
         async def hangup_voice_session(request: Request) -> JSONResponse:
@@ -1833,6 +2549,16 @@ class DidwwSipBridgeService:
                 Route("/phone-calls", start_phone_call, methods=["POST"]),
                 Route("/voice-sessions/{voice_session_id}", get_voice_session, methods=["GET"]),
                 Route(
+                    "/voice-sessions/{voice_session_id}/audio-quality",
+                    get_voice_session_audio_quality,
+                    methods=["GET"],
+                ),
+                Route(
+                    "/phone-calls/{call_id}/audio-quality",
+                    get_phone_call_audio_quality,
+                    methods=["GET"],
+                ),
+                Route(
                     "/voice-sessions/{voice_session_id}/hangup",
                     hangup_voice_session,
                     methods=["POST"],
@@ -1854,6 +2580,130 @@ class DidwwSipBridgeService:
                 logger.exception("didww_bridge_background_task_failed")
 
         task.add_done_callback(discard)
+
+    async def _flush_audio_quality_tracker(self, voice_session_id: str) -> None:
+        normalized_voice_session_id = str(voice_session_id or "").strip()
+        if not normalized_voice_session_id:
+            return
+        tracker = self._audio_quality_trackers.get(normalized_voice_session_id)
+        if tracker is None:
+            return
+        flush = getattr(tracker, "flush", None)
+        if not callable(flush):
+            snapshot = getattr(tracker, "snapshot", None)
+            if not callable(snapshot):
+                return
+
+            def flush() -> DidwwBridgeCallRecord:
+                return self.store.update_audio_quality(
+                    normalized_voice_session_id,
+                    snapshot(),
+                )
+
+        try:
+            result = flush()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            logger.exception(
+                "didww_bridge_audio_quality_flush_failed voice_session_id=%s",
+                normalized_voice_session_id,
+            )
+
+    def _create_audio_quality_tracker(
+        self,
+        record: DidwwBridgeCallRecord,
+        rtp: RtpUdpEndpoint,
+    ) -> DidwwAudioQualityTracker:
+        return DidwwAudioQualityTracker(
+            voice_session_id=record.voice_session_id,
+            call_id=record.call_id,
+            direction=record.direction,
+            media_format=self.config.media_format,
+            rtp_payload_type=self.config.rtp_payload_type,
+            sample_rate_hz=self.config.sample_rate_hz,
+            frame_duration_ms=self.config.frame_duration_ms,
+            rtp_port=getattr(rtp, "port", None) or record.rtp_port,
+            route_id=record.route_id,
+            asterisk_pjsip_endpoint=self.config.asterisk_pjsip_endpoint,
+            carrier=_audio_quality_tag(record, "carrier"),
+            region=_audio_quality_tag(record, "region"),
+        )
+
+    def _attach_audio_quality_tracker(
+        self,
+        voice_session_id: str,
+        rtp: RtpUdpEndpoint,
+    ) -> _AudioQualityTrackerAttachment | None:
+        normalized_voice_session_id = str(voice_session_id or "").strip()
+        if not normalized_voice_session_id:
+            return None
+        tracker = self._audio_quality_trackers.get(normalized_voice_session_id)
+        created_tracker = False
+        if tracker is None:
+            record = self.store.get(normalized_voice_session_id)
+            if record is None:
+                return None
+            tracker = self._create_audio_quality_tracker(record, rtp)
+            self._audio_quality_trackers[normalized_voice_session_id] = tracker
+            created_tracker = True
+
+        if getattr(tracker, "rtp_port", None) is None:
+            rtp_port = getattr(rtp, "port", None)
+            if rtp_port is not None:
+                try:
+                    setattr(tracker, "rtp_port", rtp_port)
+                except Exception:
+                    logger.exception(
+                        "didww_bridge_audio_quality_port_attach_failed voice_session_id=%s",
+                        normalized_voice_session_id,
+                    )
+
+        had_rtp_tracker = hasattr(rtp, "tracker")
+        previous_rtp_tracker = getattr(rtp, "tracker", None)
+        assigned_rtp_tracker = False
+        if previous_rtp_tracker is not tracker:
+            try:
+                setattr(rtp, "tracker", tracker)
+                assigned_rtp_tracker = True
+            except Exception:
+                logger.exception(
+                    "didww_bridge_audio_quality_attach_failed voice_session_id=%s",
+                    normalized_voice_session_id,
+                )
+        return _AudioQualityTrackerAttachment(
+            voice_session_id=normalized_voice_session_id,
+            tracker=tracker,
+            created_tracker=created_tracker,
+            had_rtp_tracker=had_rtp_tracker,
+            previous_rtp_tracker=previous_rtp_tracker,
+            assigned_rtp_tracker=assigned_rtp_tracker,
+        )
+
+    async def _release_audio_quality_tracker(
+        self,
+        attachment: _AudioQualityTrackerAttachment,
+        rtp: RtpUdpEndpoint,
+    ) -> None:
+        await self._flush_audio_quality_tracker(attachment.voice_session_id)
+        if (
+            attachment.created_tracker
+            and self._audio_quality_trackers.get(attachment.voice_session_id)
+            is attachment.tracker
+        ):
+            self._audio_quality_trackers.pop(attachment.voice_session_id, None)
+        if not attachment.assigned_rtp_tracker:
+            return
+        try:
+            if attachment.had_rtp_tracker:
+                setattr(rtp, "tracker", attachment.previous_rtp_tracker)
+            else:
+                delattr(rtp, "tracker")
+        except Exception:
+            logger.exception(
+                "didww_bridge_audio_quality_detach_failed voice_session_id=%s",
+                attachment.voice_session_id,
+            )
 
     def _inbound_gateway_client(self) -> VoiceMediaControllerClient:
         return VoiceMediaControllerClient(
@@ -1986,10 +2836,15 @@ class DidwwSipBridgeService:
     ) -> None:
         async with self._semaphore:
             rtp = self.rtp_endpoint_factory()
+            tracker_attachment: _AudioQualityTrackerAttachment | None = None
             try:
                 await rtp.start()
                 if rtp.port is None:
                     raise RuntimeError("RTP endpoint did not bind a port")
+                tracker_attachment = self._attach_audio_quality_tracker(
+                    record.voice_session_id,
+                    rtp,
+                )
                 external_host = f"{self.config.external_media_host}:{rtp.port}"
                 async with self.realtime_factory(payload.projection, payload.realtime) as realtime:
                     media_controller = VoiceMediaControllerClient.from_realtime(
@@ -2040,6 +2895,8 @@ class DidwwSipBridgeService:
                 )
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
             finally:
+                if tracker_attachment is not None:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
                 rtp.close()
                 latest = self.store.get(record.voice_session_id)
                 if latest is not None:
@@ -2049,10 +2906,15 @@ class DidwwSipBridgeService:
     async def run_call(self, record: DidwwBridgeCallRecord, payload: PhoneCallStartRequest) -> None:
         async with self._semaphore:
             rtp = self.rtp_endpoint_factory()
+            tracker_attachment: _AudioQualityTrackerAttachment | None = None
             try:
                 await rtp.start()
                 if rtp.port is None:
                     raise RuntimeError("RTP endpoint did not bind a port")
+                tracker_attachment = self._attach_audio_quality_tracker(
+                    record.voice_session_id,
+                    rtp,
+                )
                 external_host = f"{self.config.external_media_host}:{rtp.port}"
                 async with self.realtime_factory(payload.projection, payload.realtime) as realtime:
                     media_controller = VoiceMediaControllerClient.from_realtime(
@@ -2100,6 +2962,8 @@ class DidwwSipBridgeService:
                 logger.exception("didww_bridge_call_failed voice_session_id=%s", record.voice_session_id)
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
             finally:
+                if tracker_attachment is not None:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
                 rtp.close()
                 latest = self.store.get(record.voice_session_id)
                 if latest is not None:
@@ -2115,6 +2979,7 @@ class DidwwSipBridgeService:
         ari_events: Any | None = None,
     ) -> None:
         stop_event = asyncio.Event()
+        tracker_attachment = self._attach_audio_quality_tracker(voice_session_id, rtp)
         tasks = [
             asyncio.create_task(self._rtp_to_realtime(rtp, realtime, stop_event)),
             asyncio.create_task(
@@ -2156,6 +3021,11 @@ class DidwwSipBridgeService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if tracker_attachment is not None:
+                if tracker_attachment.created_tracker:
+                    await self._release_audio_quality_tracker(tracker_attachment, rtp)
+                else:
+                    await self._flush_audio_quality_tracker(voice_session_id)
 
     async def _rtp_to_realtime(
         self,
@@ -2211,6 +3081,11 @@ class DidwwSipBridgeService:
         caller_speech_started_at: float | None = None
         caller_speech_started_during_assistant = False
         barge_cancelled_utterance_id: int | None = None
+        barge_cancelled_response_id: str | None = None
+        barge_cancelled_audio_truncated = False
+        barge_cancel_recovery_requested = False
+        barge_cancel_recovery_task: asyncio.Task[None] | None = None
+        interruption_recovery_cancel_requested_key: str | None = None
         barge_delay_tasks: set[asyncio.Task[None]] = set()
         end_call_requested = False
         end_call_completed = False
@@ -2277,7 +3152,20 @@ class DidwwSipBridgeService:
         async def send_outbound_audio() -> None:
             nonlocal outbound_sender_active, last_assistant_audio_at
             while True:
+                wait_started = loop.time()
                 frame = await outbound_audio_queue.get()
+                waited_seconds = loop.time() - wait_started
+                tracker = self._audio_quality_trackers.get(voice_session_id)
+                if (
+                    tracker is not None
+                    and last_assistant_audio_at is not None
+                    and any(key not in audio_response_finished for key in audio_response_started_at)
+                    and waited_seconds
+                    > (self.config.frame_duration_ms / 1000.0)
+                    * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE
+                    and hasattr(tracker, "record_buffer_underrun")
+                ):
+                    tracker.record_buffer_underrun(wait_ms=waited_seconds * 1000.0)
                 outbound_sender_active = True
                 try:
                     if rtp_send_supports_sample_callback:
@@ -2624,6 +3512,7 @@ class DidwwSipBridgeService:
             end_call_call_id = function_call.call_id
             end_call_reason = reason
             cancel_goodbye_idle_timer(reason="end_call_requested")
+            cancel_barge_cancel_recovery_timer()
             self._append_debug_event(
                 voice_session_id,
                 "bridge.end_call.requested",
@@ -2712,6 +3601,149 @@ class DidwwSipBridgeService:
                 idle_prompt_after_playback(idle_generation, reason=reason)
             )
 
+        def cancel_barge_cancel_recovery_timer() -> bool:
+            nonlocal barge_cancel_recovery_task
+            task = barge_cancel_recovery_task
+            barge_cancel_recovery_task = None
+            if task is asyncio.current_task():
+                return False
+            if task is not None and not task.done():
+                task.cancel()
+                return True
+            return False
+
+        def mark_barge_cancel_followup_requested(*, cancel_timer: bool = True) -> None:
+            nonlocal barge_cancel_recovery_requested
+            barge_cancel_recovery_requested = True
+            if cancel_timer:
+                cancel_barge_cancel_recovery_timer()
+
+        async def cancel_active_interruption_recovery(
+            *,
+            reason: str,
+            utterance_id: int,
+            transcript_text: str | None = None,
+        ) -> bool:
+            nonlocal interruption_recovery_cancel_requested_key
+            async with response_lock:
+                request = last_response_request
+                if (
+                    not response_active
+                    or request is None
+                    or not _is_interrupted_assistant_resume_response_key(request.key)
+                ):
+                    return False
+                interruption_recovery_cancel_requested_key = request.key
+                cancel_response_id = active_response_id
+                queued_count = len(pending_responses)
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.interruption_recovery.cancel_requested",
+                metadata={
+                    "reason": reason,
+                    "utterance_id": utterance_id,
+                    "request_key": interruption_recovery_cancel_requested_key,
+                    "response_id": cancel_response_id,
+                    "queued_count": queued_count,
+                    "transcript_snippet": _debug_snippet(transcript_text),
+                },
+            )
+            await realtime.cancel_response(cancel_response_id)
+            return True
+
+        async def request_barge_cancel_recovery(
+            *,
+            reason: str,
+            utterance_id: int,
+        ) -> None:
+            nonlocal barge_cancel_recovery_task, barge_cancel_recovery_requested
+            task = asyncio.current_task()
+            recovery_started_at = loop.time()
+            try:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interruption_recovery.started",
+                    metadata={
+                        "reason": reason,
+                        "utterance_id": utterance_id,
+                    },
+                )
+                await asyncio.sleep(_INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS)
+                while not stop_event.is_set() and caller_turn_incomplete:
+                    elapsed = loop.time() - recovery_started_at
+                    remaining = (
+                        _INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS
+                        - elapsed
+                    )
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.05, remaining))
+                if stop_event.is_set():
+                    return
+                if barge_cancelled_utterance_id != utterance_id:
+                    return
+                async with response_lock:
+                    if (
+                        barge_cancel_recovery_requested
+                        or caller_speech_active
+                        or response_active
+                        or assistant_speaking
+                        or pending_responses
+                        or last_response_request is not None
+                        or end_call_requested
+                    ):
+                        return
+                    barge_cancel_recovery_requested = True
+                    queued_count = len(pending_responses)
+                    active_state = response_active
+                    assistant_state = assistant_speaking
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interruption_recovery.requested",
+                    metadata={
+                        "reason": reason,
+                        "utterance_id": utterance_id,
+                        "response_active": active_state,
+                        "assistant_speaking": assistant_state,
+                        "queued_count": queued_count,
+                        "caller_turn_incomplete": caller_turn_incomplete,
+                    },
+                )
+                await request_bridge_response(
+                    _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+                    reason=reason,
+                    key=_interrupted_assistant_resume_response_key(utterance_id),
+                )
+            except asyncio.CancelledError:
+                raise
+            finally:
+                if barge_cancel_recovery_task is task:
+                    barge_cancel_recovery_task = None
+
+        def schedule_barge_cancel_recovery(*, reason: str) -> None:
+            nonlocal barge_cancel_recovery_task
+            if barge_cancel_recovery_requested or barge_cancel_recovery_task is not None:
+                return
+            if barge_cancelled_utterance_id != current_caller_utterance_id:
+                return
+            if caller_speech_active:
+                return
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.interruption_recovery.scheduled",
+                metadata={
+                    "reason": reason,
+                    "utterance_id": current_caller_utterance_id,
+                    "due_in_seconds": _INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS,
+                },
+            )
+            barge_cancel_recovery_task = asyncio.create_task(
+                request_barge_cancel_recovery(
+                    reason="interruption_recovery",
+                    utterance_id=current_caller_utterance_id,
+                )
+            )
+
         async def send_barge_in_cancel(
             *,
             reason: str,
@@ -2719,9 +3751,15 @@ class DidwwSipBridgeService:
             transcript_text: str | None = None,
         ) -> None:
             nonlocal barge_cancelled_utterance_id, barge_fade_active, barge_fade_task
+            nonlocal barge_cancelled_response_id, barge_cancelled_audio_truncated
+            nonlocal barge_cancel_recovery_requested
             if barge_cancelled_utterance_id == utterance_id:
                 return
             barge_cancelled_utterance_id = utterance_id
+            barge_cancelled_response_id = None
+            barge_cancelled_audio_truncated = False
+            barge_cancel_recovery_requested = False
+            cancel_barge_cancel_recovery_timer()
             elapsed_ms = int(
                 max(
                     0.0,
@@ -2736,6 +3774,7 @@ class DidwwSipBridgeService:
             cancel_response_id = (
                 active_response_id if active_response_id and response_active else None
             )
+            barge_cancelled_response_id = cancel_response_id
             dropped_frames = drain_outbound_audio_queue()
             dropped_audio_bytes = sum(len(frame.payload) for frame in dropped_frames)
             fade_payload = _build_barge_in_fade_payload(
@@ -2772,6 +3811,8 @@ class DidwwSipBridgeService:
                     "response_id": active_response_id,
                     "response_active": response_active,
                     "cancel_response_id": cancel_response_id,
+                    "cancel_response_truncated": barge_cancelled_audio_truncated,
+                    "cancel_recovery_requested": barge_cancel_recovery_requested,
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
                     "dropped_audio_frames": len(dropped_frames),
@@ -2781,6 +3822,7 @@ class DidwwSipBridgeService:
                     "fade_audio_bytes": len(fade_payload),
                     "truncate_item_id": truncate_item_id,
                     "truncate_audio_end_ms": truncate_audio_end_ms,
+                    "cancelled_response_id": barge_cancelled_response_id,
                     "transcript_snippet": _debug_snippet(transcript_text),
                 },
             )
@@ -2810,6 +3852,7 @@ class DidwwSipBridgeService:
                     audio_end_ms=truncate_audio_end_ms,
                 )
                 truncated_audio_items.add(truncate_item_id)
+                barge_cancelled_audio_truncated = True
                 self._append_debug_event(
                     voice_session_id,
                     "assistant_audio_truncated",
@@ -2853,6 +3896,7 @@ class DidwwSipBridgeService:
             nonlocal caller_speech_started_during_assistant
             await cancel_idle_prompt(reason="caller_speech_started", reset_period=True)
             cancel_goodbye_idle_timer(reason="caller_speech_started")
+            cancel_barge_cancel_recovery_timer()
             current_caller_utterance_id += 1
             caller_speech_active = True
             caller_turn_incomplete = True
@@ -2884,6 +3928,7 @@ class DidwwSipBridgeService:
         async def handle_speech_stopped() -> None:
             nonlocal caller_speech_active
             caller_speech_active = False
+            schedule_barge_cancel_recovery(reason="caller_speech_stopped")
 
         async def request_bridge_response(
             instructions: str | None = None,
@@ -2894,6 +3939,7 @@ class DidwwSipBridgeService:
         ) -> None:
             nonlocal last_response_request, response_active
             cancel_goodbye_idle_timer(reason=reason)
+            cancel_barge_cancel_recovery_timer()
             request = BridgeResponseRequest(instructions=instructions, reason=reason, key=key)
             async with response_lock:
                 if request.key != _IDLE_PROMPT_RESPONSE_KEY:
@@ -3020,6 +4066,7 @@ class DidwwSipBridgeService:
                 transcript_text,
                 phrases=self.config.backchannel_phrases,
                 max_words=self.config.backchannel_max_words,
+                fuzzy_threshold=self.config.backchannel_fuzzy_threshold,
             )
             if origin_query_turn_active() and _is_origin_query_hold_ack(transcript_text):
                 caller_speech_started_during_assistant = False
@@ -3105,6 +4152,15 @@ class DidwwSipBridgeService:
                         "transcript_snippet": _debug_snippet(transcript_text),
                     },
                 )
+                if barge_cancelled_utterance_id == current_caller_utterance_id:
+                    mark_barge_cancel_followup_requested()
+                    await request_bridge_response(
+                        _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+                        reason="backchannel_resume",
+                        key=_interrupted_assistant_resume_response_key(
+                            current_caller_utterance_id
+                        ),
+                    )
                 if (
                     blocked_origin_response_index is not None
                     and not response_active
@@ -3113,6 +4169,20 @@ class DidwwSipBridgeService:
                     await mark_response_done_and_flush()
                 return
             caller_speech_started_during_assistant = False
+            resume_response_key = _interrupted_assistant_resume_response_key(
+                current_caller_utterance_id
+            )
+            if barge_cancelled_utterance_id == current_caller_utterance_id:
+                mark_barge_cancel_followup_requested()
+                await discard_bridge_response_keys(
+                    {resume_response_key},
+                    reason="substantive_transcript",
+                )
+                await cancel_active_interruption_recovery(
+                    reason="substantive_transcript",
+                    utterance_id=current_caller_utterance_id,
+                    transcript_text=transcript_text,
+                )
             request_instructions = (
                 _CALLER_TURN_COMPLETION_INSTRUCTIONS
                 if blocked_origin_response_index is not None
@@ -3139,10 +4209,33 @@ class DidwwSipBridgeService:
 
         async def mark_response_created(event: dict[str, Any]) -> None:
             nonlocal active_response_id, assistant_speaking, response_active
+            cancel_barge_cancel_recovery_timer()
             async with response_lock:
                 active_response_id = _realtime_response_id(event) or active_response_id
                 assistant_speaking = True
                 response_active = True
+                cancel_recovery_key = (
+                    interruption_recovery_cancel_requested_key
+                    if (
+                        interruption_recovery_cancel_requested_key
+                        and last_response_request is not None
+                        and last_response_request.key
+                        == interruption_recovery_cancel_requested_key
+                    )
+                    else None
+                )
+                cancel_response_id = active_response_id
+            if cancel_recovery_key:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interruption_recovery.cancel_retried",
+                    metadata={
+                        "reason": "response_created",
+                        "request_key": cancel_recovery_key,
+                        "response_id": cancel_response_id,
+                    },
+                )
+                await realtime.cancel_response(cancel_response_id)
 
         async def mark_assistant_speaking() -> None:
             nonlocal assistant_speaking
@@ -3151,10 +4244,17 @@ class DidwwSipBridgeService:
 
         async def mark_response_done_and_flush() -> bool:
             nonlocal assistant_speaking, last_response_request, response_active
+            nonlocal interruption_recovery_cancel_requested_key
             request: BridgeResponseRequest | None = None
             async with response_lock:
                 assistant_speaking = False
                 response_active = False
+                if (
+                    interruption_recovery_cancel_requested_key
+                    and last_response_request is not None
+                    and last_response_request.key == interruption_recovery_cancel_requested_key
+                ):
+                    interruption_recovery_cancel_requested_key = None
                 last_response_request = None
                 if not pending_responses:
                     return False
@@ -3320,14 +4420,24 @@ class DidwwSipBridgeService:
                 if audio_delta:
                     await mark_assistant_speaking()
                     mark_audio_delta(event)
+                    try:
+                        decoded_audio_delta = base64.b64decode(audio_delta)
+                    except Exception as exc:
+                        tracker = self._audio_quality_trackers.get(voice_session_id)
+                        if tracker is not None and hasattr(tracker, "record_decode_error"):
+                            tracker.record_decode_error(reason=str(exc))
+                        raise
                     await outbound_audio_queue.put(
                         OutboundAudioFrame(
-                            payload=base64.b64decode(audio_delta),
+                            payload=decoded_audio_delta,
                             response_id=_realtime_response_id(event),
                             item_id=_realtime_item_id(event),
                             content_index=_realtime_content_index(event),
                         )
                     )
+                    tracker = self._audio_quality_trackers.get(voice_session_id)
+                    if tracker is not None and hasattr(tracker, "record_queue_depth"):
+                        tracker.record_queue_depth(outbound_audio_queue.qsize())
                     await asyncio.sleep(0)
                     continue
                 if _realtime_audio_done(event):
@@ -3384,7 +4494,9 @@ class DidwwSipBridgeService:
                 if event_type == "response.cancelled":
                     mark_audio_finished(event, reason="response.cancelled")
                     mark_response_inactive(event)
-                    await mark_response_done_and_flush()
+                    flushed_response = await mark_response_done_and_flush()
+                    if not flushed_response:
+                        schedule_barge_cancel_recovery(reason="response_cancelled")
                 if event_type == "error":
                     error = event.get("error") if isinstance(event.get("error"), dict) else event
                     self._append_debug_event(
@@ -3413,6 +4525,20 @@ class DidwwSipBridgeService:
                         isinstance(error, dict)
                         and error.get("code") == "response_cancel_not_active"
                     ):
+                        cancel_requested_key = interruption_recovery_cancel_requested_key
+                        if cancel_requested_key:
+                            flushed_response = await mark_response_done_and_flush()
+                            self._append_debug_event(
+                                voice_session_id,
+                                "bridge.interruption_recovery.cancel_not_active",
+                                metadata={
+                                    "reason": "response_cancel_not_active",
+                                    "request_key": cancel_requested_key,
+                                    "flushed_response": flushed_response,
+                                    **_realtime_error_metadata(event),
+                                },
+                            )
+                            continue
                         self._append_debug_event(
                             voice_session_id,
                             "response_cancel_not_active_ignored",
@@ -3432,6 +4558,7 @@ class DidwwSipBridgeService:
                 outbound_sender_task.cancel()
             if goodbye_idle_task is not None:
                 goodbye_idle_task.cancel()
+            cancel_barge_cancel_recovery_timer()
             if end_call_task is not None:
                 if end_call_completed:
                     await asyncio.gather(end_call_task, return_exceptions=True)
@@ -3449,6 +4576,8 @@ class DidwwSipBridgeService:
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
             if goodbye_idle_task is not None:
                 await asyncio.gather(goodbye_idle_task, return_exceptions=True)
+            if barge_cancel_recovery_task is not None:
+                await asyncio.gather(barge_cancel_recovery_task, return_exceptions=True)
             if end_call_task is not None and not end_call_completed:
                 await asyncio.gather(end_call_task, return_exceptions=True)
             await asyncio.gather(*barge_delay_tasks, return_exceptions=True)
@@ -4282,6 +5411,10 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
             "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
         ),
         backchannel_max_words=_env_int("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", 3),
+        backchannel_fuzzy_threshold=_env_float(
+            "DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD",
+            0.84,
+        ),
         backchannel_phrases=_env_list(
             "DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES",
             list(_DEFAULT_BACKCHANNEL_PHRASES),
@@ -4594,11 +5727,32 @@ def _word_count(value: object) -> int:
     return len(normalized.split())
 
 
+def _backchannel_similarity(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    left_len = len(left)
+    right_len = len(right)
+    previous = list(range(right_len + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            insertion = current[right_index - 1] + 1
+            deletion = previous[right_index] + 1
+            substitution = previous[right_index - 1] + (left_char != right_char)
+            current.append(min(insertion, deletion, substitution))
+        previous = current
+    distance = previous[right_len]
+    return 1.0 - (distance / float(left_len + right_len))
+
+
 def _is_backchannel_transcript(
     transcript_text: object,
     *,
     phrases: list[str],
     max_words: int,
+    fuzzy_threshold: float = 0.84,
 ) -> bool:
     normalized = _normalize_backchannel_phrase(transcript_text)
     if not normalized or _word_count(normalized) > max_words:
@@ -4610,7 +5764,12 @@ def _is_backchannel_transcript(
     }
     if normalized in normalized_phrases:
         return True
-    return all(word in normalized_phrases for word in normalized.split())
+    if all(word in normalized_phrases for word in normalized.split()):
+        return True
+    return any(
+        _backchannel_similarity(normalized, phrase) >= fuzzy_threshold
+        for phrase in normalized_phrases
+    )
 
 
 def _is_origin_query_hold_ack(transcript_text: object) -> bool:
@@ -4672,6 +5831,14 @@ def _is_goodbye_transcript(transcript_text: object) -> bool:
 
 def _is_origin_query_response_key(key: object) -> bool:
     return str(key or "").startswith("query:")
+
+
+def _interrupted_assistant_resume_response_key(utterance_id: int) -> str:
+    return f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:{utterance_id}"
+
+
+def _is_interrupted_assistant_resume_response_key(key: object) -> bool:
+    return str(key or "").startswith(f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:")
 
 
 def _origin_query_response_key(query_id: str, kind: str) -> str:
@@ -5255,6 +6422,27 @@ def _mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
         value = {}
         payload[key] = value
     return value
+
+
+def _audio_quality_tag(record: DidwwBridgeCallRecord, key: str) -> str | None:
+    normalized_key = str(key or "").strip()
+    if not normalized_key:
+        return None
+    for candidate in (
+        record.metadata,
+        record.contact,
+        record.realtime,
+        record.projection,
+    ):
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get(normalized_key)
+        nested_metadata = candidate.get("metadata")
+        if value is None and isinstance(nested_metadata, dict):
+            value = nested_metadata.get(normalized_key)
+        if value is not None:
+            return _debug_snippet(value)
+    return None
 
 
 def _optional_text(value: object) -> str | None:

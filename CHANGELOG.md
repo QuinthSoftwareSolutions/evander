@@ -17,6 +17,28 @@ material. Newer entries are added incrementally as changes land.
 - Documented the fade window in the DIDWW bridge operations guide, configuration reference, and
   sample env file so operators can distinguish a taper from a hard cut.
 
+## 2026-06-16 - DIDWW Audio Quality Diagnostics
+
+- Refreshed call-id audio-quality diagnostics after active tracker flushes and
+  attached RTP trackers before call startup media begins so early packets and
+  malformed RTP are included in persisted quality metrics.
+
+## 2026-06-16 - DIDWW Backchannel Fuzzy Matching
+
+- Added conservative fuzzy matching for short DIDWW backchannel transcripts so
+  minor ASR corruption like `yea`, `yeh`, `okey`, or `thank yiu` still classifies
+  as a backchannel when the full phrase stays within the configured word limit.
+- Extended the default backchannel phrase list with common short affirmations
+  such as `right`, `yep`, `yup`, `sure`, and `mm-hmm`.
+- Added a service-configurable `DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD`
+  knob so operators can tighten or loosen the fuzzy match cutoff without code
+  changes.
+- Queued an interruption recovery response when a classified backchannel arrives
+  after assistant audio has already been canceled, avoiding dead air while the
+  caller keeps the floor.
+- Deferred interruption recovery while a caller transcript is still pending so
+  slow substantive ASR results answer the caller instead of resuming over them.
+
 ## 2026-06-16 - DIDWW Origin Query Patience
 
 - Kept DIDWW origin-agent queries polling until the backend timeout after the
