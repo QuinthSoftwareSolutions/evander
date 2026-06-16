@@ -9,6 +9,7 @@ from agent_sandbox.model_usage.pricing import load_model_pricing_catalog_payload
 from agent_sandbox.model_usage.store import ModelUsageStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+import truman_team_addon.costs as costs_module
 from truman_team_addon.costs import TeamCostService
 from truman_team_addon.models import EphemeralAssignment
 from truman_team_addon.repository import TeamStateRepository
@@ -151,6 +152,48 @@ def test_team_costs_count_team_roles_and_project_confident_usage(tmp_path: Path)
     assert payload["unattributed_costs"]["events_count"] == 3
 
 
+def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    repo.update_team(
+        team_id="team",
+        max_cost_usd="2.50",
+        set_max_cost_usd=True,
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(_usage_event("manager", session_id="session-manager"))
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    team_cost = payload["team_costs"]["team"]
+    assert team_cost["estimated_cost"] == 1.0
+    assert team_cost["max_cost_usd"] == 2.5
+    assert team_cost["remaining_cost_usd"] == 1.5
+    assert team_cost["cost_limit_reached"] is False
+    assert team_cost["cost_limit_basis"] == "lifetime"
+
+    repo.update_team(
+        team_id="team",
+        max_cost_usd="1.00",
+        set_max_cost_usd=True,
+    )
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    team_cost = payload["team_costs"]["team"]
+    assert team_cost["remaining_cost_usd"] == 0.0
+    assert team_cost["cost_limit_reached"] is True
+
+
 def test_claude_transcript_backfill_imports_usage_without_content_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -242,6 +285,92 @@ def test_claude_transcript_backfill_imports_usage_without_content_and_is_idempot
     assert second_payload["backfill"]["duplicate_records"] == 1
     assert second_payload["team_costs"]["team"]["source_counts"] == {"transcript": 1}
     assert second_payload["project_costs"]["project"]["source_counts"] == {"transcript": 1}
+
+
+def test_claude_transcript_backfill_reads_libvirt_vm_sources_and_supersedes_relay_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            directory_path="root/team",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            model="claude-sonnet-4-6",
+            vm_provider="libvirt",
+            vm_id="backend-vm",
+            metadata={
+                "agent_provider": "claude",
+                "last_known_vm_ip": "192.168.250.10",
+            },
+        )
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "relay-anthropic",
+            session_id="session-backend",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1_000_000,
+        )
+    )
+
+    def fake_scan(source):
+        assert source.remote_host == "192.168.250.10"
+        return [
+            costs_module._RemoteClaudeTranscriptEntry(
+                kind="file",
+                path="/home/agent/.claude/projects/-home-agent/thread.jsonl",
+            ),
+            costs_module._RemoteClaudeTranscriptEntry(
+                kind="record",
+                path="/home/agent/.claude/projects/-home-agent/thread.jsonl",
+                line_number=3,
+                payload=json.dumps(
+                    {
+                        "sessionId": "claude-thread",
+                        "requestId": "req-remote-1",
+                        "timestamp": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
+                        "message": {
+                            "id": "msg-remote-1",
+                            "model": "claude-sonnet-4-6",
+                            "usage": {
+                                "input_tokens": 1000,
+                                "cache_read_input_tokens": 200,
+                                "output_tokens": 100,
+                            },
+                        },
+                    }
+                ),
+            ),
+        ]
+
+    monkeypatch.setattr(costs_module, "_scan_remote_claude_transcripts", fake_scan)
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        session_repository=sessions,
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=True)
+
+    event = store.get_event("claude-transcript:req-remote-1")
+    assert event is not None
+    assert event.session_id == "session-backend"
+    assert event.raw_usage_metadata["request_metadata"]["source"] == "claude_transcript_backfill"
+    assert payload["backfill"]["sources_checked"] == 1
+    assert payload["backfill"]["sources_missing"] == 0
+    assert payload["backfill"]["files_scanned"] == 1
+    assert payload["backfill"]["records_imported"] == 1
+    assert payload["team_costs"]["team"]["source_counts"] == {"transcript": 1}
+    assert payload["project_costs"]["project"]["source_counts"] == {"transcript": 1}
+    assert payload["team_costs"]["team"]["estimated_cost"] < 0.01
 
 
 def test_claude_transcript_backfill_includes_ephemeral_assignment_sources(

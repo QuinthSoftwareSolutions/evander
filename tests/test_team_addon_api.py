@@ -378,6 +378,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'fetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderProjectCostCounter" in script.text
+    assert "max_cost_usd" in script.text
+    assert "cost_limit_reached" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -393,6 +395,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text
+
+    html = enabled.get("/addons/team-addon/")
+    assert html.status_code == 200
+    assert 'name="max_cost_usd"' in html.text
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
@@ -1017,6 +1023,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
             "operator_communication_target_id": "ops-channel",
+            "max_cost_usd": 10.5,
         },
     )
     assert response.status_code == 201
@@ -1024,16 +1031,25 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         response.json()["teams"]["team"]["operator_communication_target_id"]
         == "ops-channel"
     )
+    assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"operator_communication_target_id": "ops-channel-2"},
+        json={"operator_communication_target_id": "ops-channel-2", "max_cost_usd": 12.25},
     )
     assert response.status_code == 200
     assert (
         response.json()["teams"]["team"]["operator_communication_target_id"]
         == "ops-channel-2"
     )
+    assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={"max_cost_usd": None},
+    )
+    assert response.status_code == 200
+    assert response.json()["teams"]["team"]["max_cost_usd"] is None
 
     response = client.post(
         "/api/addons/team-addon/projects",

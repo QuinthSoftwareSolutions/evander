@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
+import subprocess
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -28,6 +31,202 @@ CLAUDE_TRANSCRIPT_ROOTS_ENV = "AGENT_SANDBOX_CLAUDE_TRANSCRIPT_ROOTS"
 WORKER_ROOT_ENV = "AGENT_SANDBOX_WORKER_ROOT"
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 TRANSCRIPT_SOURCE_NAME = "claude_transcript_backfill"
+DEFAULT_REMOTE_AGENT_HOME = "/home/agent"
+REMOTE_TRANSCRIPT_SCAN_TIMEOUT_SECONDS = 20
+SSH_CONNECT_TIMEOUT_SECONDS = 5
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+_REMOTE_CLAUDE_TRANSCRIPT_SCAN_SCRIPT = r"""
+import json
+import sys
+from pathlib import Path
+
+
+def optional_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def optional_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def first_text(*values):
+    for value in values:
+        text = optional_text(value)
+        if text is not None:
+            return text
+    return None
+
+
+def sanitized_usage(usage):
+    if not isinstance(usage, dict):
+        return {}
+    allowed_scalar_keys = {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "service_tier",
+    }
+    sanitized = {}
+    for key in allowed_scalar_keys:
+        value = usage.get(key)
+        if value is None:
+            continue
+        if key == "service_tier":
+            text = optional_text(value)
+            if text:
+                sanitized[key] = text
+            continue
+        number = optional_int(value)
+        if number is not None:
+            sanitized[key] = number
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, dict):
+        cache_payload = {}
+        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"):
+            number = optional_int(cache_creation.get(key))
+            if number is not None:
+                cache_payload[key] = number
+        if cache_payload:
+            sanitized["cache_creation"] = cache_payload
+    return sanitized
+
+
+def usage_contains_billable_tokens(usage):
+    if not usage:
+        return False
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        number = optional_int(usage.get(key))
+        if number is not None and number > 0:
+            return True
+    cache_creation = usage.get("cache_creation")
+    if not isinstance(cache_creation, dict):
+        return False
+    return any(
+        number is not None and number > 0
+        for number in (
+            optional_int(cache_creation.get(key))
+            for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+        )
+    )
+
+
+agent_home = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/home/agent")
+roots = [agent_home / ".claude" / "projects", agent_home / ".claude" / "sessions"]
+paths = []
+for root in roots:
+    if not root.is_dir():
+        continue
+    try:
+        paths.extend(path for path in root.rglob("*.jsonl") if path.is_file())
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "__team_cost_marker": "error",
+                    "path": str(root),
+                    "error": str(exc),
+                },
+                separators=(",", ":"),
+            )
+        )
+
+deduped_paths = sorted(set(paths), key=lambda item: (item.stat().st_mtime, str(item)))
+for path in deduped_paths:
+    print(
+        json.dumps(
+            {"__team_cost_marker": "file", "path": str(path)},
+            separators=(",", ":"),
+        )
+    )
+    try:
+        handle = path.open("r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "__team_cost_marker": "error",
+                    "path": str(path),
+                    "error": str(exc),
+                },
+                separators=(",", ":"),
+            )
+        )
+        continue
+    with handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            try:
+                event = json.loads(raw_line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            message = event.get("message")
+            message_payload = message if isinstance(message, dict) else event
+            usage = message_payload.get("usage")
+            if not isinstance(usage, dict):
+                usage = event.get("usage")
+            usage_payload = sanitized_usage(usage)
+            if not usage_contains_billable_tokens(usage_payload):
+                continue
+            model = first_text(message_payload.get("model"), event.get("model"))
+            print(
+                json.dumps(
+                    {
+                        "__team_cost_marker": "record",
+                        "__source_path": str(path),
+                        "__line_number": line_number,
+                        "sessionId": first_text(
+                            event.get("sessionId"),
+                            event.get("session_id"),
+                            event.get("conversation_id"),
+                        ),
+                        "requestId": first_text(
+                            event.get("requestId"),
+                            event.get("request_id"),
+                            event.get("requestID"),
+                            message_payload.get("request_id"),
+                            message_payload.get("requestId"),
+                        ),
+                        "timestamp": first_text(
+                            event.get("timestamp"),
+                            event.get("created_at"),
+                            message_payload.get("created_at"),
+                        ),
+                        "uuid": first_text(event.get("uuid")),
+                        "id": first_text(event.get("id")),
+                        "model": model,
+                        "message": {
+                            "id": first_text(
+                                message_payload.get("id"),
+                                event.get("message_id"),
+                            ),
+                            "model": model,
+                            "usage": usage_payload,
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+            )
+"""
 
 
 @dataclass(frozen=True)
@@ -45,8 +244,24 @@ class ClaudeTranscriptSource:
     agent_id: str | None
     team_id: str | None
     project_id: str | None
-    agent_home: Path
+    agent_home: Path | None = None
     session_manifest: Any | None = None
+    remote_host: str | None = None
+    remote_user: str = "agent"
+    remote_agent_home: str = DEFAULT_REMOTE_AGENT_HOME
+
+    @property
+    def is_remote(self) -> bool:
+        return bool(self.remote_host)
+
+
+@dataclass(frozen=True)
+class _RemoteClaudeTranscriptEntry:
+    kind: str
+    path: str
+    line_number: int | None = None
+    payload: str | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -62,7 +277,7 @@ class ClaudeTranscriptBackfillResult:
 
     @property
     def coverage_status(self) -> str:
-        if self.sources_missing or self.errors:
+        if self.sources_checked == 0 or self.sources_missing or self.errors:
             return "partial"
         return "complete"
 
@@ -100,7 +315,7 @@ class TeamCostService:
         backfill_result = (
             self.backfill_claude_transcripts() if backfill_transcripts else None
         )
-        events = self.usage_store.list_events()
+        events = _dedupe_cost_events(self.usage_store.list_events())
         catalog = self._load_pricing_catalog()
 
         team_buckets: dict[str, dict[str, Any]] = {}
@@ -134,6 +349,10 @@ class TeamCostService:
 
             _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
 
+        for team_id, team in self.state.teams.items():
+            if team_id not in team_buckets and team.max_cost_usd is not None:
+                team_buckets[team_id] = _new_bucket(team_id=team_id)
+
         for team_id, team_bucket in team_buckets.items():
             team_bucket["team_id"] = team_id
             team_bucket["project_costs"] = {
@@ -159,7 +378,10 @@ class TeamCostService:
             "coverage_status": "partial" if coverage_reasons else "complete",
             "coverage_reasons": sorted(coverage_reasons),
             "team_costs": {
-                team_id: _finalize_bucket(bucket)
+                team_id: _finalize_team_bucket(
+                    bucket,
+                    team=self.state.teams.get(team_id),
+                )
                 for team_id, bucket in sorted(team_buckets.items())
             },
             "project_costs": {
@@ -285,6 +507,16 @@ class TeamCostService:
         get = getattr(self.session_repository, "get", None)
         if callable(get):
             return get(session_id)
+        read_all_sessions = getattr(self.session_repository, "read_all_sessions", None)
+        if callable(read_all_sessions):
+            sessions = read_all_sessions()
+            if isinstance(sessions, Mapping):
+                return sessions.get(session_id)
+        read_all = getattr(self.session_repository, "read_all", None)
+        if callable(read_all):
+            sessions = read_all()
+            if isinstance(sessions, Mapping):
+                return sessions.get(session_id)
         return None
 
 
@@ -296,6 +528,9 @@ def backfill_claude_transcript_usage(
     result = ClaudeTranscriptBackfillResult()
     for source in sources:
         result.sources_checked += 1
+        if source.is_remote:
+            _backfill_remote_claude_transcripts(store, source, result)
+            continue
         if not source.agent_home or not _has_claude_transcripts(source.agent_home):
             result.sources_missing += 1
             continue
@@ -437,6 +672,134 @@ def _event_from_claude_transcript_line(
     )
 
 
+def _backfill_remote_claude_transcripts(
+    store: ModelUsageStore,
+    source: ClaudeTranscriptSource,
+    result: ClaudeTranscriptBackfillResult,
+) -> None:
+    files_seen = 0
+    try:
+        entries = _scan_remote_claude_transcripts(source)
+    except Exception as exc:
+        result.errors.append(
+            {
+                "session_id": source.session_id,
+                "remote_host": source.remote_host,
+                "error": f"{exc.__class__.__name__}: {exc}",
+            }
+        )
+        return
+
+    for entry in entries:
+        if entry.kind == "file":
+            files_seen += 1
+            result.files_scanned += 1
+            continue
+        if entry.kind == "error":
+            result.errors.append(
+                {
+                    "session_id": source.session_id,
+                    "remote_host": source.remote_host,
+                    "path": entry.path,
+                    "error": entry.error or "remote transcript scan failed",
+                }
+            )
+            continue
+        if entry.kind != "record" or entry.payload is None:
+            result.records_skipped += 1
+            continue
+        imported = _event_from_claude_transcript_line(
+            entry.payload,
+            source=source,
+            path=Path(entry.path),
+            line_number=entry.line_number or 0,
+        )
+        if imported is None:
+            result.records_skipped += 1
+            continue
+        result.records_seen += 1
+        if store.get_event(imported.event_id) is not None:
+            result.duplicate_records += 1
+            continue
+        store.upsert_event(imported)
+        result.records_imported += 1
+
+    if files_seen == 0:
+        result.sources_missing += 1
+
+
+def _scan_remote_claude_transcripts(
+    source: ClaudeTranscriptSource,
+) -> list[_RemoteClaudeTranscriptEntry]:
+    destination = _ssh_destination(source.remote_user, source.remote_host)
+    if destination is None:
+        raise ValueError(f"invalid remote transcript host {source.remote_host!r}")
+    remote_home = _optional_text(source.remote_agent_home) or DEFAULT_REMOTE_AGENT_HOME
+    remote_command = (
+        f"python3 -c {shlex.quote(_REMOTE_CLAUDE_TRANSCRIPT_SCAN_SCRIPT)} "
+        f"{shlex.quote(remote_home)}"
+    )
+    completed = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+            destination,
+            remote_command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=REMOTE_TRANSCRIPT_SCAN_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        detail = stderr or stdout or f"ssh exited with status {completed.returncode}"
+        raise RuntimeError(detail)
+
+    entries: list[_RemoteClaudeTranscriptEntry] = []
+    for raw_line in completed.stdout.splitlines():
+        try:
+            payload = json.loads(raw_line)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        marker = _optional_text(payload.get("__team_cost_marker"))
+        if marker == "file":
+            path = _optional_text(payload.get("path"))
+            if path:
+                entries.append(_RemoteClaudeTranscriptEntry(kind="file", path=path))
+            continue
+        if marker == "error":
+            path = _optional_text(payload.get("path")) or "remote"
+            entries.append(
+                _RemoteClaudeTranscriptEntry(
+                    kind="error",
+                    path=path,
+                    error=_optional_text(payload.get("error")),
+                )
+            )
+            continue
+        if marker == "record":
+            path = _optional_text(payload.get("__source_path")) or "remote"
+            line_number = _optional_non_negative_int(payload.get("__line_number"))
+            entries.append(
+                _RemoteClaudeTranscriptEntry(
+                    kind="record",
+                    path=path,
+                    line_number=line_number,
+                    payload=json.dumps(payload, separators=(",", ":")),
+                )
+            )
+    return entries
+
+
 def _claude_transcript_event_id(
     *,
     request_id: str | None,
@@ -521,6 +884,26 @@ def _append_claude_transcript_sources(
     existing = [candidate for candidate in candidates if _has_claude_transcripts(candidate)]
     if not existing and not _is_claude_session(session_manifest):
         return
+    if not existing:
+        remote_host = _session_remote_host(session_manifest)
+        if remote_host:
+            key = (session_id, f"ssh://agent@{remote_host}{DEFAULT_REMOTE_AGENT_HOME}")
+            if key not in seen:
+                seen.add(key)
+                sources.append(
+                    ClaudeTranscriptSource(
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        team_id=team_id,
+                        project_id=project_id,
+                        agent_home=None,
+                        session_manifest=session_manifest,
+                        remote_host=remote_host,
+                        remote_user="agent",
+                        remote_agent_home=DEFAULT_REMOTE_AGENT_HOME,
+                    )
+                )
+            return
     if not existing:
         sources.append(
             ClaudeTranscriptSource(
@@ -623,12 +1006,16 @@ def _usage_contains_billable_tokens(usage: Mapping[str, Any]) -> bool:
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
     ):
-        if _optional_non_negative_int(usage.get(key)) is not None:
+        number = _optional_non_negative_int(usage.get(key))
+        if number is not None and number > 0:
             return True
     cache_creation = usage.get("cache_creation")
     return isinstance(cache_creation, Mapping) and any(
-        _optional_non_negative_int(cache_creation.get(key)) is not None
-        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+        number is not None and number > 0
+        for number in (
+            _optional_non_negative_int(cache_creation.get(key))
+            for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+        )
     )
 
 
@@ -820,8 +1207,67 @@ def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
     return finalized
 
 
+def _finalize_team_bucket(bucket: dict[str, Any], *, team: Any | None) -> dict[str, Any]:
+    finalized = _finalize_bucket(bucket)
+    max_cost = _optional_decimal(getattr(team, "max_cost_usd", None))
+    estimated = _optional_decimal(finalized.get("estimated_cost")) or Decimal("0")
+    finalized["max_cost_usd"] = _decimal_to_float(max_cost)
+    finalized["remaining_cost_usd"] = (
+        _decimal_to_float(max(max_cost - estimated, Decimal("0")))
+        if max_cost is not None
+        else None
+    )
+    finalized["cost_limit_reached"] = bool(
+        max_cost is not None and estimated >= max_cost
+    )
+    finalized["cost_limit_basis"] = "lifetime"
+    return finalized
+
+
 def _increment(counter: dict[str, int], key: str) -> None:
     counter[key] = int(counter.get(key, 0)) + 1
+
+
+def _dedupe_cost_events(
+    events: Iterable[ModelInferenceUsageEvent],
+) -> list[ModelInferenceUsageEvent]:
+    materialized = [
+        event
+        for event in events
+        if _usage_source(event) != "transcript" or _event_has_billable_tokens(event)
+    ]
+    anthropic_transcript_sessions = {
+        event.session_id
+        for event in materialized
+        if event.session_id
+        and _usage_source(event) == "transcript"
+        and _optional_text(event.provider) == "anthropic"
+    }
+    if not anthropic_transcript_sessions:
+        return materialized
+    return [
+        event
+        for event in materialized
+        if not (
+            event.session_id in anthropic_transcript_sessions
+            and _usage_source(event) != "transcript"
+            and _optional_text(event.provider) == "anthropic"
+        )
+    ]
+
+
+def _event_has_billable_tokens(event: ModelInferenceUsageEvent) -> bool:
+    for value in (
+        event.input_tokens,
+        event.output_tokens,
+        event.total_tokens,
+        extract_cached_input_tokens(event),
+        extract_cache_write_input_tokens(event).total,
+    ):
+        number = _optional_non_negative_int(value)
+        if number is not None and number > 0:
+            return True
+    return False
 
 
 def _usage_source(event: ModelInferenceUsageEvent) -> str:
@@ -878,6 +1324,22 @@ def _session_metadata_text(session_manifest: Any | None, key: str) -> str | None
     return _optional_text(getattr(session_manifest, key, None))
 
 
+def _session_remote_host(session_manifest: Any | None) -> str | None:
+    metadata = getattr(session_manifest, "metadata", None)
+    team_addon = metadata.get("team_addon") if isinstance(metadata, Mapping) else None
+    return _first_text(
+        _mapping_text(metadata, "last_known_vm_ip"),
+        _mapping_text(team_addon, "last_known_vm_ip"),
+        getattr(session_manifest, "last_known_vm_ip", None),
+    )
+
+
+def _mapping_text(value: Any, key: str) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    return _optional_text(value.get(key))
+
+
 def _file_mtime(path: Path) -> datetime:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
@@ -923,6 +1385,28 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return Decimal(text)
+    except Exception:
+        return None
+
+
+def _ssh_destination(user: str | None, host: str | None) -> str | None:
+    normalized_user = _optional_text(user) or "agent"
+    normalized_host = _optional_text(host)
+    if normalized_host is None:
+        return None
+    if normalized_user.startswith("-") or not _SSH_USER_RE.fullmatch(normalized_user):
+        return None
+    if normalized_host.startswith("-") or not _SSH_HOST_RE.fullmatch(normalized_host):
+        return None
+    return f"{normalized_user}@{normalized_host}"
 
 
 def _decimal_to_float(value: Decimal | None) -> float | None:

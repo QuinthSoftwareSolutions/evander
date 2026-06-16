@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -168,6 +169,7 @@ class TeamStateRepository:
         manager_display_name: str | None = None,
         manager_role: str = "manager",
         operator_communication_target_id: str | None = None,
+        max_cost_usd: object | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
@@ -188,6 +190,7 @@ class TeamStateRepository:
                 name=name,
                 manager_agent_id=manager.id,
                 operator_communication_target_id=operator_communication_target_id,
+                max_cost_usd=max_cost_usd,
                 created_at=now,
                 updated_at=now,
             )
@@ -202,6 +205,8 @@ class TeamStateRepository:
         name: str | None = None,
         operator_communication_target_id: str | None = None,
         set_operator_communication_target_id: bool = False,
+        max_cost_usd: object | None = None,
+        set_max_cost_usd: bool = False,
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -211,6 +216,8 @@ class TeamStateRepository:
                 team.name = name
             if set_operator_communication_target_id:
                 team.operator_communication_target_id = operator_communication_target_id
+            if set_max_cost_usd:
+                team.max_cost_usd = _optional_cost_limit(max_cost_usd)
             if archived is not None:
                 team.archived = archived
                 if archived:
@@ -715,6 +722,9 @@ class TeamStateRepository:
         operator_communication_target_id = _optional_text(
             team_input.get("operator_communication_target_id")
         )
+        max_cost_usd = (
+            team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
+        )
         project_id = _required_text(project_input.get("id"), "project.id")
         project_name = _required_text(project_input.get("name"), "project.name")
         git = _project_git_config(project_input.get("git"))
@@ -797,6 +807,7 @@ class TeamStateRepository:
                 name=team_name,
                 manager_agent_id=manager.id,
                 operator_communication_target_id=operator_communication_target_id,
+                max_cost_usd=max_cost_usd,
                 created_at=now,
                 updated_at=now,
             )
@@ -1364,12 +1375,14 @@ class TeamStateRepository:
         team_id: str | None = None,
         project_id: str | None = None,
         agent_id: str | None = None,
+        blocked_team_ids: set[str] | None = None,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_team_id = _optional_text(team_id)
         normalized_project_id = _optional_text(project_id)
         normalized_agent_id = _optional_text(agent_id)
         normalized_limit = max(0, int(limit))
+        blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -1379,6 +1392,8 @@ class TeamStateRepository:
                 if agent.status != AgentStatus.ACTIVE:
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
+                    continue
+                if agent.team_id in blocked_teams:
                     continue
                 if normalized_project_id is not None and agent.project_id != normalized_project_id:
                     continue
@@ -2284,6 +2299,19 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_cost_limit(value: object) -> Decimal | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        amount = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise ValueError("max_cost_usd must be a non-negative decimal") from None
+    if amount < 0:
+        raise ValueError("max_cost_usd must be a non-negative decimal")
+    return amount
 
 
 def _ensure_utc(value: datetime) -> datetime:

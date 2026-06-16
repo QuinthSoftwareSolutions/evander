@@ -128,6 +128,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
@@ -142,6 +143,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 payload, "operator_communication_target_id"
             ),
             set_operator_communication_target_id="operator_communication_target_id" in payload,
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+            set_max_cost_usd="max_cost_usd" in payload,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )

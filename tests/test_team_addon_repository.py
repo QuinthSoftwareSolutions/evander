@@ -175,6 +175,8 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         name="Renamed Team",
         operator_communication_target_id=None,
         set_operator_communication_target_id=True,
+        max_cost_usd="123.45",
+        set_max_cost_usd=True,
         archived=True,
         expected_revision=4,
     )
@@ -183,6 +185,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert state.revision == 5
     assert team.name == "Renamed Team"
     assert team.operator_communication_target_id is None
+    assert str(team.max_cost_usd) == "123.45"
     assert team.archived is True
     assert {agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED} == {
         "backend",
@@ -232,6 +235,24 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert worker.status is AgentStatus.PAUSED
     assert state.agents["backend"].subordinate_agent_ids == []
     assert state.agents["lead"].subordinate_agent_ids == ["backend", "worker"]
+
+    state = repo.update_team(
+        team_id="team",
+        max_cost_usd=None,
+        set_max_cost_usd=True,
+    )
+    assert state.teams["team"].max_cost_usd is None
+
+    try:
+        repo.update_team(
+            team_id="team",
+            max_cost_usd="-1",
+            set_max_cost_usd=True,
+        )
+    except ValueError as exc:
+        assert "max_cost_usd" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("negative team max cost should be rejected")
 
 
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:

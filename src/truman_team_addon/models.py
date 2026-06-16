@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from agent_sandbox.models import utc_now
 from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
@@ -100,6 +108,7 @@ class Team(TeamModel):
     name: str
     manager_agent_id: str
     operator_communication_target_id: str | None = None
+    max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
     project_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -114,6 +123,24 @@ class Team(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("max_cost_usd", mode="before")
+    @classmethod
+    def _optional_cost_limit(cls, value: object) -> Decimal | None:
+        text = _optional_text(value)
+        if text is None:
+            return None
+        try:
+            amount = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise ValueError("max_cost_usd must be a non-negative decimal") from None
+        if amount < 0:
+            raise ValueError("max_cost_usd must be a non-negative decimal")
+        return amount
+
+    @field_serializer("max_cost_usd", when_used="json")
+    def _serialize_max_cost_usd(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
 
     @field_validator("project_ids", mode="before")
     @classmethod

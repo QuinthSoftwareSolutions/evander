@@ -21,6 +21,7 @@ from agent_sandbox.workflow.contracts import register_node_output_schema
 from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
+from .costs import TeamCostService
 from .models import team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -76,6 +77,18 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        current_state = repo.read()
+        cost_guard_blocked_teams = _cost_guard_blocked_teams(
+            context,
+            state=current_state,
+            team_id=_optional_text(payload.get("team_id")),
+            project_id=_optional_text(payload.get("project_id")),
+            agent_id=_optional_text(payload.get("agent_id")),
+        )
+        blocked_team_ids = {
+            _required_text(record["team_id"], "team_id")
+            for record in cost_guard_blocked_teams
+        }
         state, leases = repo.lease_due_agents(
             team_id=_optional_text(payload.get("team_id")),
             project_id=_optional_text(payload.get("project_id")),
@@ -87,6 +100,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 payload.get("max_no_progress_count"),
                 default=3,
             ),
+            blocked_team_ids=blocked_team_ids,
         )
         action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
@@ -167,6 +181,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
+            "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
+            "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
         }
 
@@ -1621,6 +1637,106 @@ def _mirror_session_metadata(
     )
 
 
+def _cost_guard_blocked_teams(
+    context: Any,
+    *,
+    state: Any,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+) -> list[dict[str, Any]]:
+    candidate_team_ids = _cost_guard_candidate_team_ids(
+        state,
+        team_id=team_id,
+        project_id=project_id,
+        agent_id=agent_id,
+    )
+    limited_team_ids = {
+        candidate_team_id
+        for candidate_team_id in candidate_team_ids
+        if _number_or_none(getattr(state.teams.get(candidate_team_id), "max_cost_usd", None))
+        is not None
+    }
+    if not limited_team_ids:
+        return []
+
+    service = TeamCostService(
+        runtime_dir=_runtime_dir(context),
+        state=state,
+        session_repository=_session_repository_from_context(context),
+    )
+    cost_payload = service.costs_payload(backfill_transcripts=True)
+    team_costs = cost_payload.get("team_costs")
+    team_costs = team_costs if isinstance(team_costs, Mapping) else {}
+
+    blocked: list[dict[str, Any]] = []
+    for blocked_team_id in sorted(limited_team_ids):
+        team = state.teams.get(blocked_team_id)
+        if team is None:
+            continue
+        cost = team_costs.get(blocked_team_id)
+        cost = cost if isinstance(cost, Mapping) else {}
+        max_cost = _number_or_none(cost.get("max_cost_usd"))
+        if max_cost is None:
+            max_cost = _number_or_none(getattr(team, "max_cost_usd", None))
+        if max_cost is None:
+            continue
+        estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        limit_reached = bool(cost.get("cost_limit_reached"))
+        if not limit_reached:
+            limit_reached = estimated_cost >= max_cost
+        if not limit_reached:
+            continue
+        blocked.append(
+            {
+                "team_id": blocked_team_id,
+                "team_name": getattr(team, "name", blocked_team_id),
+                "estimated_cost": estimated_cost,
+                "max_cost_usd": max_cost,
+                "remaining_cost_usd": _number_or_none(cost.get("remaining_cost_usd")),
+                "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",
+                "coverage_status": cost.get("coverage_status"),
+                "coverage_reasons": list(cost.get("coverage_reasons") or []),
+            }
+        )
+    return blocked
+
+
+def _cost_guard_candidate_team_ids(
+    state: Any,
+    *,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+) -> set[str]:
+    candidate_team_ids = set(state.teams)
+    if team_id is not None:
+        candidate_team_ids &= {team_id}
+    if project_id is not None:
+        project = state.projects.get(project_id)
+        candidate_team_ids &= {project.team_id} if project is not None else set()
+    if agent_id is not None:
+        agent = state.agents.get(agent_id)
+        candidate_team_ids &= {agent.team_id} if agent is not None else set()
+    return candidate_team_ids
+
+
+def _session_repository_from_context(context: Any) -> Any | None:
+    repository = getattr(context, "session_lookup", None)
+    if repository is not None:
+        return repository
+    repository = getattr(context, "session_repository", None)
+    if repository is not None:
+        return repository
+    runtime = getattr(context, "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    if repository is not None:
+        return repository
+    service = getattr(context, "admin_service", None)
+    service_runtime = getattr(service, "runtime", None)
+    return getattr(service_runtime, "session_repository", None)
+
+
 def _record_wake_failure(
     repo: TeamStateRepository,
     *,
@@ -2101,6 +2217,20 @@ def _optional_int(value: object, *, default: int | None) -> int | None:
     if isinstance(value, bool):
         raise ValueError("integer value is required")
     return int(value)
+
+
+def _number_or_none(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def _number_or_zero(value: object) -> float:
+    return _number_or_none(value) or 0.0
 
 
 def _optional_bool(value: object, *, default: bool) -> bool:

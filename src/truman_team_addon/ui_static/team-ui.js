@@ -27,6 +27,7 @@ let templates = [];
 let timelineState = emptyTimelineState();
 let timelineLoading = false;
 let timelineRequestId = 0;
+let costsRequestId = 0;
 let showArchived = false;
 
 const runtimeFilterChoices = [
@@ -110,6 +111,7 @@ const fieldTooltips = {
   "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
+  "setup-template-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
   "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
@@ -133,6 +135,7 @@ const fieldTooltips = {
   "create-team-form:manager_display_name": "Optional display name. If blank, the agent ID is shown.",
   "create-team-form:manager_role": "Role label for the manager. Keep this as manager unless you have a specific routing convention.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
+  "create-team-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
 
   "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
@@ -204,6 +207,7 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
+  "edit:team:max_cost_usd": "Set or clear the lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
@@ -684,27 +688,13 @@ async function loadState({ preserveForms = false } = {}) {
   setStatus("Loading team state.", "loading");
   timelineLoading = true;
   try {
-    const costsPromise = fetch(`${API_BASE}/costs`, {
-      headers: { Accept: "application/json" },
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(await responseText(response));
-        }
-        return response.json();
-      })
-      .catch((error) => ({
-        ...emptyCostState(),
-        error: error instanceof Error ? error.message : "Cost data failed to load.",
-      }));
-    const [stateResponse, templatesResponse, costsPayload] = await Promise.all([
+    const [stateResponse, templatesResponse] = await Promise.all([
       fetch(`${API_BASE}/state`, {
         headers: { Accept: "application/json" },
       }),
       fetch(`${API_BASE}/templates`, {
         headers: { Accept: "application/json" },
       }),
-      costsPromise,
     ]);
     if (!stateResponse.ok) {
       throw new Error(await responseText(stateResponse));
@@ -714,7 +704,6 @@ async function loadState({ preserveForms = false } = {}) {
     }
     state = normalizeState(await stateResponse.json());
     templates = normalizeTemplates(await templatesResponse.json());
-    costState = normalizeCosts(costsPayload);
     render();
     if (drafts) {
       restoreFormDrafts(drafts);
@@ -722,10 +711,42 @@ async function loadState({ preserveForms = false } = {}) {
       renderTemplatePreview();
     }
     setStatus(`Loaded revision ${state.revision}.`, "ok");
+    void loadCosts();
     void loadTimeline();
   } catch (error) {
     timelineLoading = false;
     setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
+  }
+}
+
+async function loadCosts() {
+  const requestId = ++costsRequestId;
+  try {
+    const response = await fetch(`${API_BASE}/costs`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== costsRequestId) {
+      return;
+    }
+    const drafts = captureFormDrafts();
+    costState = normalizeCosts(payload);
+    render();
+    restoreFormDrafts(drafts);
+  } catch (error) {
+    if (requestId !== costsRequestId) {
+      return;
+    }
+    const drafts = captureFormDrafts();
+    costState = normalizeCosts({
+      ...emptyCostState(),
+      error: error instanceof Error ? error.message : "Cost data failed to load.",
+    });
+    render();
+    restoreFormDrafts(drafts);
   }
 }
 
@@ -876,11 +897,20 @@ function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
   const coverageStatus = text(cost.coverage_status || costState.coverage_status);
   const unpriced = numberOrZero(cost.unpriced_events_count);
   const events = numberOrZero(cost.events_count);
+  const limitReached = Boolean(cost.cost_limit_reached);
   const className =
-    coverageStatus === "complete" && !unpriced
+    coverageStatus === "complete" && !unpriced && !limitReached
       ? "cost-counter"
       : "cost-counter cost-counter--warning";
   const parts = [];
+  const maxCost = numberOrNull(cost.max_cost_usd);
+  if (maxCost !== null) {
+    parts.push(
+      limitReached
+        ? `limit reached ${formatUsd(maxCost)}`
+        : `${formatUsd(cost.remaining_cost_usd)} remaining`,
+    );
+  }
   if (events) {
     parts.push(`${events} event${events === 1 ? "" : "s"}`);
   }
@@ -3220,6 +3250,10 @@ function payloadForForm(form, data = formData(form)) {
     if (operatorTarget) {
       payload.team.operator_communication_target_id = operatorTarget;
     }
+    const maxCost = numberOrNull(data.max_cost_usd);
+    if (maxCost !== null) {
+      payload.team.max_cost_usd = maxCost;
+    }
     const git = gitConfigForForm(data);
     if (git) {
       payload.project.git = git;
@@ -3241,6 +3275,10 @@ function payloadForForm(form, data = formData(form)) {
     const operatorTarget = text(data.operator_communication_target_id);
     if (operatorTarget) {
       payload.operator_communication_target_id = operatorTarget;
+    }
+    const maxCost = numberOrNull(data.max_cost_usd);
+    if (maxCost !== null) {
+      payload.max_cost_usd = maxCost;
     }
     return payload;
   }
@@ -3505,6 +3543,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${numberField("Max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -3579,6 +3618,7 @@ function editPayloadForForm(type, form) {
     return {
       name: text(data.name),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
+      max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -3632,8 +3672,8 @@ function textField(label, name, value, { required = false, placeholder = "" } = 
   return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" value="${escapeAttr(value)}"${required ? " required" : ""}${placeholder ? ` placeholder="${escapeAttr(placeholder)}"` : ""} /></label>`;
 }
 
-function numberField(label, name, value, { min = null, required = false } = {}) {
-  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${required ? " required" : ""} /></label>`;
+function numberField(label, name, value, { min = null, step = null, required = false } = {}) {
+  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${step !== null ? ` step="${escapeAttr(step)}"` : ""}${required ? " required" : ""} /></label>`;
 }
 
 function textareaField(label, name, value, { rows = 3, required = false, placeholder = "" } = {}) {
@@ -3890,6 +3930,15 @@ function agentLabel(agent) {
 function numberOrZero(value) {
   const parsed = Number.parseInt(text(value), 10);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function numberOrNull(value) {
+  const raw = text(value);
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function splitList(value) {

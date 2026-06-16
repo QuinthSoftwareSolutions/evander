@@ -182,6 +182,12 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-wake-due-agents"][
         "failed_project_repo_preparations"
     ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "cost_guard_blocked_team_ids"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "cost_guard_blocked_teams"
+    ] == {"type": "array"}
     assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
         "type": ["string", "null"]
     }
@@ -609,6 +615,42 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         ],
     }
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_team(
+        team_id="team",
+        max_cost_usd=0,
+        set_max_cost_usd=True,
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["dispatches"] == []
+    assert resumer.calls == []
+    assert result["cost_guard_blocked_team_ids"] == ["team"]
+    assert result["cost_guard_blocked_teams"][0]["team_id"] == "team"
+    assert result["cost_guard_blocked_teams"][0]["max_cost_usd"] == 0.0
+    assert result["cost_guard_blocked_teams"][0]["estimated_cost"] == 0.0
 
 
 def test_wake_due_agents_provider_prepares_project_repo_when_configured(

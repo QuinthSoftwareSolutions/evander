@@ -13,6 +13,14 @@ material. Newer entries are added incrementally as changes land.
 - Added Claude transcript usage backfill for Team agents, importing usage-only
   metadata into `model-usage.db` with stable request deduplication and no
   prompt or response content.
+- Fixed Claude transcript backfill for libvirt Team agents by scanning
+  VM-local transcripts via the session's last-known VM IP, and made transcript
+  rows supersede duplicate Anthropic relay rows for the same session.
+- Made Team cost loading non-blocking so the Team page renders state and
+  templates immediately while cost counters fill in asynchronously.
+- Added an operator-configurable lifetime Team max-cost guard that marks
+  over-budget teams in cost payloads and prevents future Team wake dispatches
+  once the limit is reached.
 - Improved relay metering coverage by preserving provider request IDs and
   keeping streaming usage-recording failures warning-only.
 - Omitted absent provider request IDs from relay usage metadata instead of
