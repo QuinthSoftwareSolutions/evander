@@ -310,7 +310,7 @@ def _action_entries(state: TeamState) -> list[TimelineEntry]:
                 project_id=project_id,
                 action_record_id=record.id,
                 status="succeeded" if record.success else "failed",
-                attention_needed=not record.success,
+                attention_needed=not record.success and record.dismissed_at is None,
                 summary=_action_summary(record),
             )
         )

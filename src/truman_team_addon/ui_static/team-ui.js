@@ -336,6 +336,16 @@ function bindForms() {
 
 function bindRecordEditing() {
   document.addEventListener("click", (event) => {
+    const dismissActionButton = event.target.closest("[data-dismiss-action-id]");
+    if (dismissActionButton) {
+      event.preventDefault();
+      void dismissActionRecordAttention(
+        dismissActionButton,
+        dismissActionButton.dataset.dismissActionId,
+      );
+      return;
+    }
+
     const closeTarget = event.target.closest("[data-edit-close]");
     if (closeTarget) {
       if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
@@ -908,6 +918,18 @@ function renderRuntimeAttentionRow(row) {
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
   const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
+  const actions =
+    row.kind === "failed_action_record" && row.action_record_id
+      ? `
+        <div class="record-actions runtime-attention-actions">
+          <button
+            type="button"
+            class="record-action"
+            data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
+          >Dismiss</button>
+        </div>
+      `
+      : "";
   return `
     <li class="record-item runtime-item runtime-attention-item runtime-severity-${escapeHtml(row.severity || "info")}">
       <div class="record-line">
@@ -922,6 +944,7 @@ function renderRuntimeAttentionRow(row) {
           : ""
       }
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+      ${actions}
     </li>
   `;
 }
@@ -2960,6 +2983,57 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     } finally {
       setFormBusy(form, false);
     }
+}
+
+async function dismissActionRecordAttention(button, actionRecordId) {
+  if (!actionRecordId) {
+    setStatus("No action record selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Dismissing failed action.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/action-records/${encodeURIComponent(actionRecordId)}/dismiss`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+          dismissed_by: "operator",
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; review and dismiss again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Dismissed failed action ${actionRecordId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Dismiss failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
 }
 
 function endpointForForm(form, data) {

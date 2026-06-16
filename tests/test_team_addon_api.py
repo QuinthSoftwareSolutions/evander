@@ -370,6 +370,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "gitToBareRepo" in script.text
     assert "fieldTooltips" in script.text
     assert "decorateFieldTooltips" in script.text
+    assert "data-dismiss-action-id" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -434,6 +435,34 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["failed_ephemeral_assignment"]["state"] == "failed"
     assert attention["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    client = _client(tmp_path)
+    revision = client.get("/api/addons/team-addon/state").json()["revision"]
+
+    response = client.post(
+        "/api/addons/team-addon/action-records/action-1/dismiss",
+        json={
+            "dismissed_by": "operator",
+            "dismissed_reason": "Superseded by follow-up wake.",
+            "expected_revision": revision,
+        },
+    )
+
+    assert response.status_code == 200
+    state = response.json()
+    record = state["action_records"]["action-1"]
+    assert record["success"] is False
+    assert record["dismissed_by"] == "operator"
+    assert record["dismissed_reason"] == "Superseded by follow-up wake."
+    assert record["dismissed_at"]
+    assert all(
+        row["kind"] != "failed_action_record"
+        for row in state["runtime_operations"]["attention"]
+    )
 
 
 def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None:

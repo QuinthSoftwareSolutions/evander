@@ -799,11 +799,21 @@ def test_runtime_attention_hides_failed_action_after_later_success() -> None:
     state.action_records["action-2"] = AgentActionRecord(
         id="action-2",
         agent_id="ui",
-        dispatch_id="dispatch-ui",
+        dispatch_id="dispatch-ui-follow-up",
         action={"kind": "build"},
         success=True,
         created_at=state.action_records["action-1"].created_at + timedelta(seconds=1),
     )
+
+    payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert all(row["kind"] != "failed_action_record" for row in payload["attention"])
+
+
+def test_runtime_attention_hides_dismissed_failed_action() -> None:
+    state = _state_with_runtime_operations()
+    state.action_records["action-1"].dismissed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    state.action_records["action-1"].dismissed_by = "operator"
 
     payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
 

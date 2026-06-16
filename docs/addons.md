@@ -233,6 +233,11 @@ The view includes these entry families:
 - git promotion requested and result entries
 - release package created entries, plus published or blocked state entries
 
+Runtime attention hides failed action records after a later successful action
+from the same agent. Operators can also dismiss a failed-action attention card;
+this sets dismissal metadata on the action record for audit instead of deleting
+the record.
+
 Entries sort chronologically ascending when they have a timestamp. Entries with
 missing timestamps sort after dated entries, with stable secondary ordering by
 category, type, and id. In the UI, missing timestamps render as `Timestamp

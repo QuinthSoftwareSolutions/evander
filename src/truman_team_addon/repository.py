@@ -133,6 +133,31 @@ class TeamStateRepository:
 
         return self.store.update_object(_update)  # type: ignore[return-value]
 
+    def dismiss_action_record_attention(
+        self,
+        *,
+        action_record_id: str,
+        dismissed_by: str | None = None,
+        dismissed_reason: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            record = _require_present(
+                state.action_records,
+                _required_text(action_record_id, "action_record_id"),
+                "action record",
+            )
+            if record.success:
+                raise ValueError(
+                    f"action record {record.id} is successful and does not need dismissal"
+                )
+            record.dismissed_at = utc_now()
+            record.dismissed_by = _optional_text(dismissed_by) or "operator"
+            record.dismissed_reason = _optional_text(dismissed_reason)
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def create_team(
         self,
         *,

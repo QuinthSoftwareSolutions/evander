@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Add-on Failed Action Resolution
+
+- Resolved failed-action runtime attention rows after any later successful action
+  from the same agent, avoiding permanently sticky critical cards after a failed
+  dispatch has closed.
+- Added operator dismissal for failed-action runtime attention cards while
+  preserving the action record for audit.
+
 ## 2026-06-16 - Team Add-on Review Action Guidance
 
 - Clarified the Team agent wake prompt and seeded action contract so agents use

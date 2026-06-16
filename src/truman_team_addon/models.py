@@ -458,13 +458,16 @@ class AgentActionRecord(TeamModel):
     success: bool = True
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
+    dismissed_at: datetime | None = None
+    dismissed_by: str | None = None
+    dismissed_reason: str | None = None
 
     @field_validator("id", "agent_id", "dispatch_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("error", mode="before")
+    @field_validator("error", "dismissed_by", "dismissed_reason", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1332,18 +1335,19 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
 def _failed_action_rows(state: TeamState) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     successful_action_keys = [
-        (record.agent_id, record.dispatch_id, record.created_at)
+        (record.agent_id, record.created_at)
         for record in state.action_records.values()
         if record.success
     ]
     for record in sorted(state.action_records.values(), key=lambda entry: (entry.created_at, entry.id)):
         if record.success:
             continue
+        if record.dismissed_at is not None:
+            continue
         if any(
             agent_id == record.agent_id
-            and dispatch_id == record.dispatch_id
             and created_at > record.created_at
-            for agent_id, dispatch_id, created_at in successful_action_keys
+            for agent_id, created_at in successful_action_keys
         ):
             continue
         rows.append(

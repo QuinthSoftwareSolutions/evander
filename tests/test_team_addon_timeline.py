@@ -359,6 +359,26 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     assert all(entry["team_id"] == "beta-team" for entry in beta_view["entries"])
 
 
+def test_derive_team_timeline_keeps_dismissed_failed_action_out_of_attention() -> None:
+    state = _timeline_state()
+    state.action_records["alpha-action"].dismissed_at = _dt(1, 14)
+    state.action_records["alpha-action"].dismissed_by = "operator"
+
+    attention_view = derive_team_timeline(state, attention_needed=True)
+    all_entries = derive_team_timeline(state)
+    action_entry = next(
+        entry
+        for entry in all_entries["entries"]
+        if entry["id"] == "action:alpha-action:created"
+    )
+
+    assert action_entry["status"] == "failed"
+    assert action_entry["attention_needed"] is False
+    assert "action:alpha-action:created" not in [
+        entry["id"] for entry in attention_view["entries"]
+    ]
+
+
 def test_derive_team_timeline_normalizes_naive_timestamps_for_sorting() -> None:
     state = _timeline_state()
     review = state.review_requests["alpha-review"]

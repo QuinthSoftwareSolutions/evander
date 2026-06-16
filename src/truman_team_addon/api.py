@@ -304,6 +304,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def dismiss_action_record(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.dismiss_action_record_attention(
+            action_record_id=request.path_params["action_record_id"],
+            dismissed_by=_optional(payload, "dismissed_by"),
+            dismissed_reason=_optional(payload, "dismissed_reason"),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         criteria = [
@@ -448,6 +458,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route(
             "/review-requests/{review_request_id}/decision",
             _with_errors(decide_review_request),
+            methods=["POST"],
+        ),
+        Route(
+            "/action-records/{action_record_id}/dismiss",
+            _with_errors(dismiss_action_record),
             methods=["POST"],
         ),
         Route("/review-profiles", _with_errors(create_review_profile), methods=["POST"]),
