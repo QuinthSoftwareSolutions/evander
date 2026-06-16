@@ -249,7 +249,6 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
 
 def test_list_unread_discord_messages_does_not_apply_read_reactions(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -380,7 +379,6 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
-    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",

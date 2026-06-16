@@ -317,6 +317,7 @@ _WORKFLOW_GENERATION_COOLDOWN_SECONDS = 10.0
 _CONTAINER_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
+_CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT = 100
 ISSUE_STATES: tuple[str, ...] = (
     "New",
     "Approved",
@@ -9342,6 +9343,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                         metadata={
                             "effect_type": str(record.effect_type or ""),
                             "dispatch_id": dispatch_id,
+                            "resume_thread_id": resume_thread_id,
                             "operator_steering": "interrupt_and_resume",
                             "interrupted_execution_id": current_execution_id,
                             **(
@@ -10372,6 +10374,34 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if not lines:
             return ""
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _container_execution_stored_thread_id(execution: Any) -> str | None:
+        metadata = getattr(execution, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            return None
+
+        candidates = [
+            metadata.get("thread_id"),
+            metadata.get("agent_thread_id"),
+            metadata.get("resume_thread_id"),
+        ]
+        for nested_key in ("outputs", "result", "container_worker"):
+            nested = metadata.get(nested_key)
+            if isinstance(nested, Mapping):
+                candidates.extend(
+                    [
+                        nested.get("thread_id"),
+                        nested.get("agent_thread_id"),
+                        nested.get("resume_thread_id"),
+                    ]
+                )
+
+        for candidate in candidates:
+            thread_id = str(candidate or "").strip()
+            if thread_id and not thread_id.startswith("dispatch-"):
+                return thread_id
+        return None
 
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
@@ -12629,11 +12659,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         grouped_records: dict[str, list[Any]] = {}
         unthreaded_chunks: list[tuple[tuple[datetime, str], str]] = []
         for execution in sorted_records:
-            try:
-                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
-            except Exception as exc:
-                raw_text = f"[log unavailable: {exc}]"
-            thread_id = self._container_log_thread_id(raw_text)
+            raw_text = ""
+            thread_id = self._container_execution_stored_thread_id(execution)
+            if thread_id is None:
+                try:
+                    raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
+                except Exception as exc:
+                    raw_text = f"[log unavailable: {exc}]"
+                thread_id = self._container_log_thread_id(raw_text)
             if thread_id is None:
                 header_parts = [
                     "thread=unthreaded",
@@ -12694,8 +12727,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         grouped_records: dict[str, list[Any]] = {}
         unthreaded_groups: list[tuple[tuple[datetime, str], str | None, list[Any], str | None]] = []
         for execution in sorted_records:
-            raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
-            thread_id = self._container_log_thread_id(raw_text)
+            raw_text = None
+            thread_id = self._container_execution_stored_thread_id(execution)
+            if thread_id is None:
+                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
+                thread_id = self._container_log_thread_id(raw_text)
             if thread_id is None:
                 unthreaded_groups.append(
                     (
@@ -12720,6 +12756,59 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             )
         return sorted([*threaded_groups, *unthreaded_groups], key=lambda item: item[0])
+
+    def _container_thread_window_chunks(
+        self,
+        worker_backend: Any,
+        execution_records: list[Any],
+        *,
+        target_lines: int,
+    ) -> tuple[list[str], bool]:
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        chunks: list[str] = []
+        grouped_records: dict[str, list[Any]] = {}
+        thread_chunk_indexes: dict[str, int] = {}
+        dirty_thread_ids: set[str] = set()
+        line_count = 0
+        truncated_after = False
+        for index, execution in enumerate(sorted_records):
+            raw_text = None
+            thread_id = self._container_execution_stored_thread_id(execution)
+            if thread_id is None:
+                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
+                thread_id = self._container_log_thread_id(raw_text)
+            if thread_id is not None:
+                records = grouped_records.setdefault(thread_id, [])
+                records.append(execution)
+                chunk_index = thread_chunk_indexes.get(thread_id)
+                if chunk_index is not None:
+                    dirty_thread_ids.add(thread_id)
+                    continue
+                thread_chunk_indexes[thread_id] = len(chunks)
+            else:
+                records = [execution]
+            chunk = self._container_thread_group_chunk(
+                worker_backend,
+                thread_id=thread_id,
+                records=records,
+                raw_text=raw_text,
+            )
+            chunks.append(chunk)
+            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
+            if line_count >= target_lines:
+                truncated_after = index < len(sorted_records) - 1
+                break
+        for thread_id in dirty_thread_ids:
+            chunk_index = thread_chunk_indexes.get(thread_id)
+            if chunk_index is None:
+                continue
+            chunks[chunk_index] = self._container_thread_group_chunk(
+                worker_backend,
+                thread_id=thread_id,
+                records=grouped_records[thread_id],
+                raw_text=None,
+            )
+        return chunks, truncated_after
 
     def _container_thread_group_chunk(
         self,
@@ -12770,20 +12859,30 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         target_lines = max(1, int(limit)) + max(0, int(offset)) + 1
         line_count = 0
         truncated_after = False
-        groups = self._container_thread_groups(worker_backend, execution_records)
-        for index, (_sort_key, thread_id, records, raw_text) in enumerate(groups):
-            chunk = self._container_thread_group_chunk(
+        if (
+            not normalized_query
+            and len(execution_records) > _CONTAINER_THREAD_FULL_GROUP_RECORD_LIMIT
+        ):
+            chunks, truncated_after = self._container_thread_window_chunks(
                 worker_backend,
-                thread_id=thread_id,
-                records=records,
-                raw_text=raw_text,
+                execution_records,
+                target_lines=target_lines,
             )
-            chunks.append(chunk)
-            if not normalized_query:
-                line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
-                if line_count >= target_lines:
-                    truncated_after = index < len(groups) - 1
-                    break
+        else:
+            groups = self._container_thread_groups(worker_backend, execution_records)
+            for index, (_sort_key, thread_id, records, raw_text) in enumerate(groups):
+                chunk = self._container_thread_group_chunk(
+                    worker_backend,
+                    thread_id=thread_id,
+                    records=records,
+                    raw_text=raw_text,
+                )
+                chunks.append(chunk)
+                if not normalized_query:
+                    line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
+                    if line_count >= target_lines:
+                        truncated_after = index < len(groups) - 1
+                        break
         page = _log_page_from_start(
             self._join_container_log_chunks(chunks),
             limit=limit,

@@ -84,6 +84,8 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
         'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
     )
     assert "if line.strip() not in {" in script
+    assert "repair_missing_session_env_fi" in script
+    assert 'line == line.lstrip() and stripped.startswith("export ")' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
     assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
@@ -192,6 +194,9 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert '"type": "http"' in script
     assert '"tools": ["*"]' in script
     assert 'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"' in script
+    assert "repair_missing_profile_fi" in script
+    assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script
+    assert 'line == line.lstrip() and stripped.startswith("export ")' in script
     assert "claude --version" in script
 
 

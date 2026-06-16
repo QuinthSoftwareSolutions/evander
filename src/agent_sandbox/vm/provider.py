@@ -81,6 +81,21 @@ def _libvirt_base_image_from_manifest_metadata(manifest: SessionManifest | Any |
     return normalized_image_ref or None
 
 
+def _agent_provider_from_manifest_metadata(manifest: SessionManifest | Any | None) -> str:
+    metadata = getattr(manifest, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(metadata.get("agent_provider") or metadata.get("agent_harness") or "").strip()
+
+
+def _default_model_for_explicit_agent_provider(agent_provider: str) -> str | None:
+    if agent_provider != "claude":
+        return None
+    from agent_sandbox.effects.providers.agent_session import default_agent_model_for_provider
+
+    return default_agent_model_for_provider(agent_provider)
+
+
 def _append_setup_vm_selection_args(
     setup_args: list[str],
     *,
@@ -969,9 +984,19 @@ def _libvirt_create_vm(
         )
     manifest.vm_provider = provider or "libvirt"
     manifest.vm_provider_id = resolved_vm_name
+    agent_provider = _agent_provider_from_manifest_metadata(manifest)
     normalized_model = (model or "").strip() or None
     if normalized_model is not None:
         manifest.model = normalized_model
+    elif agent_provider:
+        provider_default_model = _default_model_for_explicit_agent_provider(agent_provider)
+        if provider_default_model is not None:
+            manifest.model = provider_default_model
+        else:
+            try:
+                manifest.model = deps.resolve_agent_model_for_session(manifest)
+            except ValueError:
+                manifest.model = None
     else:
         try:
             manifest.model = deps.resolve_agent_model_for_session(manifest)
@@ -986,11 +1011,6 @@ def _libvirt_create_vm(
     run_env.update(vm_defaults.guest_environment())
     if manifest.model:
         run_env["AGENT_MODEL"] = manifest.model
-    agent_provider = ""
-    if isinstance(manifest.metadata, Mapping):
-        agent_provider = str(
-            manifest.metadata.get("agent_provider") or manifest.metadata.get("agent_harness") or ""
-        ).strip()
     if agent_provider:
         run_env["AGENT_PROVIDER"] = agent_provider
     managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)

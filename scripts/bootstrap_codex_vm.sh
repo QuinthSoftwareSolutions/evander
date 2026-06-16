@@ -319,6 +319,29 @@ if target.exists():
 else:
     lines = []
 
+def repair_missing_session_env_fi(profile_lines):
+    out = []
+    changed = False
+    in_session_env = False
+    indent = ""
+    for line in profile_lines:
+        stripped = line.strip()
+        if in_session_env and stripped == "fi":
+            in_session_env = False
+        elif in_session_env and line == line.lstrip() and stripped.startswith("export "):
+            out.append(f"{indent}fi")
+            changed = True
+            in_session_env = False
+        out.append(line)
+        if stripped in {
+            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            'if [ -f "$HOME/.claude/settings.json" ]; then',
+        }:
+            in_session_env = True
+            indent = line[: len(line) - len(line.lstrip())]
+    return out if changed else profile_lines
+
+lines = repair_missing_session_env_fi(lines)
 filtered = [
     line
     for line in lines

@@ -8,6 +8,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.messaging.discord_ingest import build_discord_ingest_worker
 from agent_sandbox.models import SessionManifest, ToolName
 
@@ -22,6 +26,20 @@ def ensure_directory(worker, directory_path: str) -> None:
         except ValueError:
             service.create(parent=current, name=segment)
         current = next_path
+
+
+def write_root_communication_targets(worker, targets: list[dict[str, object]]) -> None:
+    worker.runtime.directories.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(worker.config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
+
+
+def write_trigger_config(project_dir: Path, triggers: list[dict[str, object]]) -> None:
+    trigger_config_path = project_dir / "config" / "trigger-orchestrator" / "config.json"
+    trigger_config_path.parent.mkdir(parents=True, exist_ok=True)
+    trigger_config_path.write_text(json.dumps({"triggers": triggers}), encoding="utf-8")
 
 
 def test_build_discord_ingest_worker_uses_worker_config_and_normalizes_directories(
@@ -97,6 +115,87 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
 
     assert result.directories_polled == 1
     assert result.sessions_seen == 1
+
+
+def test_discord_ingest_worker_polls_session_communication_targets(tmp_path: Path) -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
+    worker = build_discord_ingest_worker(config, project_dir=tmp_path)
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "discord-inbox",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            directory_path="root",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["discord-inbox"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[tuple[str, list[str]]] = []
+
+    def record_poll(directory_path: str, *, channel_ids: list[str]) -> None:
+        calls.append((directory_path, channel_ids))
+
+    worker._poll_directory = record_poll  # type: ignore[method-assign]
+
+    result = worker.run_once()
+
+    assert calls == [("root", ["234567890123456789"])]
+    assert result.directories_polled == 1
+    assert result.sessions_seen == 1
+
+
+def test_discord_ingest_worker_polls_communication_trigger_targets_without_active_sessions(
+    tmp_path: Path,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "communication-message-trigger",
+                "display_name": "Communication message",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["discord-inbox"],
+                "directory_path": "root",
+            }
+        ],
+    )
+    config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
+    worker = build_discord_ingest_worker(config, project_dir=tmp_path)
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "discord-inbox",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    calls: list[tuple[str, list[str]]] = []
+
+    def record_poll(directory_path: str, *, channel_ids: list[str]) -> None:
+        calls.append((directory_path, channel_ids))
+
+    worker._poll_directory = record_poll  # type: ignore[method-assign]
+
+    result = worker.run_once()
+
+    assert calls == [("root", ["234567890123456789"])]
+    assert result.directories_polled == 1
+    assert result.sessions_seen == 0
 
 
 def test_discord_ingest_worker_run_once_with_lock_uses_configured_lock_path(

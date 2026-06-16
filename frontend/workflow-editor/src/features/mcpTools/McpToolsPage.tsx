@@ -267,6 +267,9 @@ export function McpToolsPage() {
                   </span>
                 </div>
                 <div className="feature-list-meta">{item.value}</div>
+                <div className="feature-list-meta mcp-tool-policy-description">
+                  {item.description || "No description available."}
+                </div>
                 <div className="feature-list-meta">
                   {localOverride ? "Local rule" : "Inherited/default policy"}
                 </div>

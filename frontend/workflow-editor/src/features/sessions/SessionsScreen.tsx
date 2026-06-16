@@ -163,6 +163,7 @@ type SessionDetailResponse = {
 type CatalogOption = {
   value: string;
   label: string;
+  description?: string;
 };
 
 type SessionCatalogResponse = {
@@ -390,6 +391,8 @@ function parseNullablePositiveInteger(value: string, label: string): number | nu
 }
 
 function describeTool(tool: ToolOption): string {
+  const catalogDescription = tool.description?.trim();
+  if (catalogDescription) return catalogDescription;
   return TOOL_DESCRIPTIONS[tool.value] ?? `${tool.label} tool. ${TOOL_DESCRIPTION_FALLBACK}`;
 }
 

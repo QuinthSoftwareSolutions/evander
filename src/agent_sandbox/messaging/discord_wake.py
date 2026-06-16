@@ -11,6 +11,7 @@ from pathlib import Path
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import DiscordWakeWorkerGlobalConfig, GatewayConfig
+from agent_sandbox.models import DirectoryPath, SessionManifest, ToolName
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import (
@@ -78,8 +79,10 @@ class DiscordWakeWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> DiscordWakeCycleResult:
-        configured_directories = list(self.worker_config.directories)
-        if not configured_directories:
+        now = datetime.now(UTC)
+        active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
+        directories = self._directories_to_scan(active_sessions)
+        if not directories:
             return DiscordWakeCycleResult(
                 channels_polled=0,
                 pending_channels=0,
@@ -92,8 +95,11 @@ class DiscordWakeWorker:
             )
         channels_polled = 0
         pending_channels = 0
-        for directory_path in configured_directories:
-            channel_bindings = self._collect_discord_channel_mappings(directory_path=directory_path)
+        for directory_path in directories:
+            channel_bindings = self._collect_discord_channel_mappings(
+                directory_path=directory_path,
+                active_sessions=active_sessions,
+            )
             for channel_id, bindings in sorted(channel_bindings.items()):
                 channels_polled += 1
                 if self._discord_channel_has_unread_bindings(
@@ -133,25 +139,40 @@ class DiscordWakeWorker:
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Discord wake worker cycle failed")
 
+    def _directories_to_scan(self, active_sessions: list[SessionManifest]) -> list[str]:
+        if self.worker_config.directories:
+            return list(self.worker_config.directories)
+        return sorted(
+            {
+                DirectoryPath(segments=session.directory_path).as_posix()
+                for session in active_sessions
+            }
+        )
+
     def _collect_discord_channel_mappings(
-        self, *, directory_path: str
+        self,
+        *,
+        directory_path: str,
+        active_sessions: list[SessionManifest],
     ) -> dict[str, list[SessionWakeBinding]]:
         policy_config = getattr(self.runtime, "policy_config", None)
         if policy_config is None:
             return {}
-        now = datetime.now(UTC)
         mapped: dict[str, list[SessionWakeBinding]] = {}
-        for session in self.runtime.session_repository.list_active_sessions(now=now):
+        for session in active_sessions:
             if not directory_is_within_scope(session.directory_path, directory_path):
                 continue
-            for channel_id in policy_config.discord_inbox_channel_ids_for_session_id(
-                session.session_id
+            if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
+                continue
+            for channel_id in policy_config.resolved_discord_channel_ids_for_session(
+                session,
+                capability="read",
             ):
                 mapped.setdefault(channel_id, []).append(
                     SessionWakeBinding(
                         session_id=session.session_id,
                         vm_id=session.vm_id,
-                        source="discord_inbox_routes",
+                        source="session_discord_allowlist",
                         directory_path=session.directory_path,
                     )
                 )

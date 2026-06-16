@@ -5,6 +5,61 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-15 - Agents Thread Log Loading
+
+- Bounded the initial Agents page thread-log load for container worker sessions
+  with large execution histories, avoiding a worker log probe for every past
+  execution before the first page can render.
+- Rebuilt grouped large-history thread chunks after resumed executions are
+  associated with the same stored thread id, so fallback logs and header counts
+  match the grouped history.
+- Reused stored container thread ids from execution metadata where available and
+  recorded resume thread ids on new container prompt executions.
+
+## 2026-06-15 - Sessions Metadata Editor Layout
+
+- Tightened the Sessions metadata key/value editor into aligned row cards,
+  reduced oversized JSON snippet fields, removed redundant unchanged-value
+  previews, and switched metadata row removal to the shared icon button style.
+
+## 2026-06-15 - Discord Inbound Target Discovery
+
+- Removed the separate Discord inbox route policy surface; Discord ingest now
+  discovers channels from active session Discord allowlists and read-capable
+  `trigger:communication:new-message` Discord targets.
+- Updated Discord wake to resume sessions from unread inbox messages on each
+  active session's read-capable Discord allowlist.
+- Clarified that the Team Add-on operator communication target remains an
+  outbound escalation destination, not an inbound wake subscription.
+
+## 2026-06-15 - Agent Prompt Log Recovery
+
+- Recovered Codex final messages from guest session JSONL when a libvirt VM run
+  log only captured the shell preamble and session id.
+- Repaired malformed guest profile session-env and Claude settings blocks before
+  resume and during provider bootstrap so future prompts do not start with shell
+  syntax errors.
+
+## 2026-06-15 - Create Agent Model Override
+
+- Added a Create Agent model field that stores an explicit session model for VM
+  and container agents, including Claude model overrides.
+- Resolved omitted VM Claude create models to the Claude provider default instead
+  of the directory Codex default.
+
+## 2026-06-15 - Team Add-on Archive Consistency
+
+- Hid archived teams, agents, projects, and review profiles from Team Add-on
+  entity views by default, with an explicit Show archived toggle to reveal them.
+- Archived all persistent agents belonging to a team when that team is archived.
+
+## 2026-06-15 - MCP Tool Descriptions
+
+- Added descriptions for every MCP tool in the Admin Web tool option payloads,
+  including `approval_submit` and `approval_check`.
+- Showed tool descriptions directly in each MCP Tools directory-policy list row
+  so operators can scan policy impact without opening every tool.
+
 ## 2026-06-15 - Session Artifact Staging Tool
 
 - Added a `stage_artifact` MCP tool that lets agents copy files or directories

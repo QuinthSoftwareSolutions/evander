@@ -26,6 +26,7 @@ let templates = [];
 let timelineState = emptyTimelineState();
 let timelineLoading = false;
 let timelineRequestId = 0;
+let showArchived = false;
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -72,6 +73,7 @@ const elements = {
   timelineTypeFilter: document.querySelector("#timeline-type-filter"),
   timelineStatusFilter: document.querySelector("#timeline-status-filter"),
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
+  showArchivedToggle: document.querySelector("#show-archived-toggle"),
   refreshButton: document.querySelector("#refresh-button"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
@@ -201,7 +203,7 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
-  "edit:team:archived": "Archived teams stay in state but are hidden from active hierarchy views.",
+  "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
@@ -240,6 +242,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindExistingAgentPickers();
   bindRuntimeFilters();
   bindDeliveryFilters();
+  bindArchivedVisibilityToggle();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplatePreview();
   });
@@ -693,6 +696,7 @@ function normalizeTemplates(payload) {
 
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
+  updateArchivedVisibilityToggle();
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
@@ -760,22 +764,24 @@ function renderReviewDeliveryWorkspace() {
 
 function renderSummary() {
   const teams = values(state.teams);
-  const activeTeams = teams.filter((team) => !team.archived);
+  const visibleTeams = teams.filter(isVisibleTeam);
   const projects = values(state.projects);
-  const agents = values(state.agents).filter((agent) => agent.status !== "archived");
+  const visibleProjects = projects.filter(isVisibleProject);
+  const visibleAgents = values(state.agents).filter(isVisibleAgent);
   const tasks = values(state.tasks);
   const deliverables = values(state.deliverables);
   const reviews = values(state.review_requests);
   const reviewProfiles = values(state.review_profiles);
+  const visibleReviewProfiles = reviewProfiles.filter(isVisibleReviewProfile);
   const ephemeral = values(state.ephemeral_assignments);
 
   const metrics = [
-    ["Teams", teams.length],
-    ["Projects", projects.filter((project) => project.status !== "archived").length],
-    ["Agents", agents.length],
+    ["Teams", visibleTeams.length],
+    ["Projects", visibleProjects.length],
+    ["Agents", visibleAgents.length],
     ["Open tasks", tasks.filter((task) => !terminalTaskStates.has(task.state)).length],
     ["Pending reviews", reviews.filter((review) => !terminalRecordStates.has(review.state)).length],
-    ["Review profiles", reviewProfiles.filter((profile) => !profile.archived).length],
+    ["Review profiles", visibleReviewProfiles.length],
     ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
   ];
 
@@ -787,10 +793,68 @@ function renderSummary() {
     .concat(
       !teams.length
         ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
-        : !activeTeams.length
+        : !visibleTeams.length
           ? `<p class="empty-state summary-empty-state">No active team.</p>`
           : "",
     );
+}
+
+function bindArchivedVisibilityToggle() {
+  elements.showArchivedToggle?.addEventListener("change", () => {
+    const drafts = captureFormDrafts();
+    showArchived = Boolean(elements.showArchivedToggle?.checked);
+    render();
+    restoreFormDrafts(drafts);
+  });
+}
+
+function updateArchivedVisibilityToggle() {
+  if (elements.showArchivedToggle) {
+    elements.showArchivedToggle.checked = showArchived;
+  }
+}
+
+function isArchivedTeam(team) {
+  return Boolean(team?.archived);
+}
+
+function isArchivedProject(project) {
+  return text(project?.status) === "archived";
+}
+
+function isArchivedAgent(agent) {
+  return agentStatus(agent) === "archived";
+}
+
+function isArchivedReviewProfile(profile) {
+  return Boolean(profile?.archived);
+}
+
+function isVisibleTeam(team) {
+  return showArchived || !isArchivedTeam(team);
+}
+
+function isVisibleProject(project) {
+  return showArchived || !isArchivedProject(project);
+}
+
+function isVisibleAgent(agent) {
+  return showArchived || !isArchivedAgent(agent);
+}
+
+function isVisibleReviewProfile(profile) {
+  return showArchived || !isArchivedReviewProfile(profile);
+}
+
+function isVisibleRuntimeRow(row) {
+  if (showArchived) {
+    return true;
+  }
+  const team = row.team_id ? state.teams[row.team_id] : null;
+  const project = row.project_id ? state.projects[row.project_id] : null;
+  const agentId = text(row.agent_id || row.id);
+  const agent = agentId ? state.agents[agentId] : null;
+  return !isArchivedTeam(team) && !isArchivedProject(project) && !isArchivedAgent(agent);
 }
 
 function runtimeSortRows(left, right) {
@@ -811,7 +875,7 @@ function runtimeSeverityRank(severity) {
 }
 
 function runtimeAgentsForFilter(agents) {
-  return [...agents].sort(byId);
+  return [...agents].filter(isVisibleRuntimeRow).sort(byId);
 }
 
 function dueLeasedAgentsForFilter(agents) {
@@ -978,7 +1042,8 @@ function renderRuntimeOperations() {
 
   const agents = runtimeAgentsForFilter(runtime.agents || []);
   const dueLeasedAgents = dueLeasedAgentsForFilter(runtime.agents || []);
-  const attention = runtimeAttentionForFilter(runtime.attention || [], runtimeFilter);
+  const visibleRuntimeAttention = (runtime.attention || []).filter(isVisibleRuntimeRow);
+  const attention = runtimeAttentionForFilter(visibleRuntimeAttention, runtimeFilter);
   const allAttention = [...(runtime.attention || [])].sort(runtimeSortRows);
   const attentionCount = allAttention.length;
   const visibleAttentionCount = attention.length;
@@ -1071,17 +1136,17 @@ function renderRuntimeSection({ title, count, emptyMessage, body }) {
 
 function renderHierarchy() {
   const teams = values(state.teams);
-  const activeTeams = teams.filter((team) => !team.archived);
+  const visibleTeams = teams.filter(isVisibleTeam);
   if (!teams.length) {
     elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
     return;
   }
-  if (!activeTeams.length) {
+  if (!visibleTeams.length) {
     elements.hierarchyView.innerHTML = `<p class="empty-state">No active team.</p>`;
     return;
   }
 
-  elements.hierarchyView.innerHTML = activeTeams
+  elements.hierarchyView.innerHTML = visibleTeams
     .map((team) => {
       const hierarchy = teamHierarchyGraph(team);
       return `
@@ -1191,9 +1256,14 @@ function renderHierarchyNode(node) {
 }
 
 function renderAgents() {
-  const agents = values(state.agents).sort(byId);
-  if (!agents.length) {
+  const allAgents = values(state.agents).sort(byId);
+  const agents = allAgents.filter(isVisibleAgent);
+  if (!allAgents.length) {
     elements.agentsView.innerHTML = `<p class="empty-state">No agents registered.</p>`;
+    return;
+  }
+  if (!agents.length) {
+    elements.agentsView.innerHTML = `<p class="empty-state">No visible agents.</p>`;
     return;
   }
   elements.agentsView.innerHTML = `
@@ -1444,6 +1514,9 @@ function teamHierarchyGraph(team) {
         });
         return;
       }
+      if (!showArchived && isArchivedAgent(child)) {
+        return;
+      }
       const childNode = buildNode(childId, { path: nextPath, parentId: agentId });
       if (childNode) {
         children.push(childNode);
@@ -1464,18 +1537,18 @@ function teamHierarchyGraph(team) {
   const orphanRoots = [];
   if (managerId) {
     const manager = state.agents?.[managerId];
-    if (manager && text(manager.team_id) === teamId) {
-      const root = buildNode(managerId, { path: new Set(), parentId: null });
-      if (root) {
-        roots.push(root);
-      }
-    } else {
+    if (!manager || text(manager.team_id) !== teamId) {
       roots.push({
         kind: "missing-manager",
         id: managerId,
         teamId,
         label: `Missing manager ${managerId}`,
       });
+    } else if (showArchived || !isArchivedAgent(manager)) {
+      const root = buildNode(managerId, { path: new Set(), parentId: null });
+      if (root) {
+        roots.push(root);
+      }
     }
   } else {
     roots.push({
@@ -1487,6 +1560,9 @@ function teamHierarchyGraph(team) {
   }
 
   teamAgents.forEach((agent) => {
+    if (!showArchived && isArchivedAgent(agent)) {
+      return;
+    }
     if (!seen.has(agent.id) && agent.id !== managerId) {
       const root = buildNode(agent.id, { path: new Set(), parentId: null });
       if (root) {
@@ -1558,9 +1634,14 @@ function inboxItemDetail(item) {
 }
 
 function renderProjects() {
-  const projects = values(state.projects).sort(byId);
-  if (!projects.length) {
+  const allProjects = values(state.projects).sort(byId);
+  const projects = allProjects.filter(isVisibleProject);
+  if (!allProjects.length) {
     elements.projectsView.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+    return;
+  }
+  if (!projects.length) {
+    elements.projectsView.innerHTML = `<p class="empty-state">No visible projects.</p>`;
     return;
   }
 
@@ -1884,9 +1965,14 @@ function renderReviewProfiles() {
   if (!elements.reviewProfilesView) {
     return;
   }
-  const profiles = values(state.review_profiles).sort(byId);
-  if (!profiles.length) {
+  const allProfiles = values(state.review_profiles).sort(byId);
+  const profiles = allProfiles.filter(isVisibleReviewProfile);
+  if (!allProfiles.length) {
     elements.reviewProfilesView.innerHTML = `<p class="empty-state">No review profiles.</p>`;
+    return;
+  }
+  if (!profiles.length) {
+    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No visible review profiles.</p>`;
     return;
   }
   elements.reviewProfilesView.innerHTML = `
@@ -2340,6 +2426,7 @@ function buildReviewDeliveryRows() {
         effectiveStatus,
       };
     })
+    .filter((row) => showArchived || (!isArchivedTeam(row.team) && !isArchivedProject(row.project)))
     .sort(compareReviewDeliveryRows);
 }
 
@@ -2731,16 +2818,16 @@ function refreshSelects({ includeEditForm = false } = {}) {
 }
 
 function buildSelectOptionSets() {
-  const teams = values(state.teams).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
-  const projects = values(state.projects).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
-  const agents = values(state.agents).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
+  const teams = values(state.teams).filter(isVisibleTeam).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
+  const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
+  const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
     .sort(byId)
     .map((review) => [review.id, `${review.id} - ${review.state}`]);
   const reviewProfiles = values(state.review_profiles)
-    .filter((profile) => !profile.archived)
+    .filter(isVisibleReviewProfile)
     .sort(byId)
     .map((profile) => [profile.id, `${profile.name} (${profile.id})`]);
   const releasePackages = values(state.release_packages)

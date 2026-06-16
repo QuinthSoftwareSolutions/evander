@@ -5681,6 +5681,11 @@ select {
   align-items: end;
 }
 
+.string-list-selector-row.structured-input-map-row {
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(14rem, 1.2fr) auto;
+  align-items: start;
+}
+
 .structured-input-field {
   margin-bottom: 0;
 }
@@ -5729,11 +5734,28 @@ select {
 
 .structured-input-json-row {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.65rem;
+  padding: 0.72rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 8px;
+  background: rgba(248, 250, 248, 0.64);
 }
 
 .structured-input-json-value textarea {
-  min-height: 180px;
+  min-height: 7.25rem;
+}
+
+.structured-input-json-row .structured-input-field {
+  min-width: 0;
+}
+
+.structured-input-json-row .inline-actions {
+  justify-content: flex-end;
+  padding-top: 1.65rem;
+}
+
+.structured-input-json-row .admin-icon-button {
+  border-radius: 999px;
 }
 
 .structured-input-preview {
@@ -5743,6 +5765,12 @@ select {
   border: 1px solid rgba(93, 75, 48, 0.12);
   border-radius: 10px;
   background: rgba(248, 250, 248, 0.76);
+}
+
+.structured-input-json-row-preview {
+  padding: 0.45rem 0.6rem;
+  border-style: dashed;
+  background: rgba(241, 246, 243, 0.68);
 }
 
 .structured-input-preview > summary {
@@ -6630,6 +6658,15 @@ select {
 
 .mcp-tool-policy-list-item .feature-list-meta {
   overflow-wrap: anywhere;
+}
+
+.mcp-tool-policy-description {
+  color: rgba(47, 68, 82, 0.84);
+  line-height: 1.35;
+}
+
+:root[data-theme="dark"] .mcp-tool-policy-description {
+  color: rgba(211, 226, 235, 0.82);
 }
 
 .mcp-tool-policy-editor {
@@ -8626,6 +8663,15 @@ button.mobile-record-card:focus-visible,
     align-items: stretch;
   }
 
+  .string-list-selector-row.structured-input-map-row {
+    grid-template-columns: 1fr;
+  }
+
+  .structured-input-json-row .inline-actions {
+    justify-content: flex-start;
+    padding-top: 0;
+  }
+
   .admin-topbar,
   .workflow-topbar,
   .feature-toolbar,
@@ -9824,6 +9870,7 @@ button.mobile-record-card:focus-visible,
 
 :root[data-theme="dark"] .structured-input-option-row,
 :root[data-theme="dark"] .structured-input-unknown-row,
+:root[data-theme="dark"] .structured-input-json-row,
 :root[data-theme="dark"] .structured-input-preview {
   border-color: rgba(124, 142, 154, 0.2);
   background: rgba(16, 28, 36, 0.82);

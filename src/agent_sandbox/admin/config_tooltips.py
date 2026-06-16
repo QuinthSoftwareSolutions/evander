@@ -14,10 +14,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Channel IDs that the host Discord bot may poll for operator commands in addition to any "
         "session-specific Discord channel allowlists."
     ),
-    "discord_inbox_routes": (
-        "Directory-scoped mapping from watched Discord channel IDs to target session IDs for "
-        "always-on inbox delivery."
-    ),
     "discord_operator_user_allowlist": (
         "Trusted Discord operator user IDs. Commands from these users are accepted even when they "
         "arrive outside a session's channel allowlist."

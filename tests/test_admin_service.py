@@ -4296,6 +4296,10 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
     assert 'candidates+=("codex-heartbeat")' in remote_script
     assert 'LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in remote_script
     assert 'LEGACY_LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in remote_script
+    assert 'agent_home / ".config" / "agent-sandbox" / "codex" / "sessions"' in remote_script
+    assert 'matches = re.findall(r"(?im)^session id:' in remote_script
+    assert 'payload_type == "task_complete"' in remote_script
+    assert 'payload.get("last_agent_message")' in remote_script
     assert "agent-admin@192.168.122.11" in " ".join(str(part) for part in captured["cmd"])
 
 
@@ -4714,6 +4718,94 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
     ]
 
 
+def test_get_admin_agent_log_page_container_session_threads_use_stored_thread_ids(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-stored-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-stored-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-stored-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-stored-1",
+            session_id="session-stored-threads",
+            worker_job_id="job-stored-1",
+            worker_url="http://worker.test",
+            target_name="target-stored-threads",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+            metadata={"thread_id": "thread-stored"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-stored-2",
+            session_id="session-stored-threads",
+            worker_job_id="job-stored-2",
+            worker_url="http://worker.test",
+            target_name="target-stored-threads",
+            started_at=datetime(2026, 5, 18, 8, 30, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+            metadata={"resume_thread_id": "thread-stored"},
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                raise AssertionError("stored thread ids should avoid raw log probes")
+            if mode == "session" and target == "exec-stored-1":
+                return "stored thread transcript\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-stored-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"].count("thread=thread-stored") == 1
+    assert "executions=2" in page["text"]
+    assert "stored thread transcript" in page["text"]
+    assert fake_backend.calls == [("exec-stored-1", 0, "session")]
+
+
 def test_get_admin_agent_log_page_container_session_threads_falls_back_to_execution_logs(
     tmp_path: Path,
     monkeypatch,
@@ -4892,6 +4984,170 @@ def test_get_admin_agent_log_page_container_session_threads_fetches_offset_windo
         ("exec-thread-window", 0, "raw"),
         ("exec-thread-window", 0, "session"),
     ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_lazily_reads_large_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-large-history",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-large-history",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-large-history",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(150):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-large-{index:03d}",
+                session_id="session-thread-large-history",
+                worker_job_id=f"job-large-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-large-history",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+                + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if target != "exec-large-000":
+                raise AssertionError(f"large thread page should not probe {target}")
+            if mode == "raw":
+                return "session id: thread-large-000\nraw log\n"
+            if mode == "session":
+                return "\n".join(f"large thread line {line}" for line in range(1, 360)) + "\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-large-history",
+        backend="container_worker_vm",
+        view="threads",
+        limit=300,
+    )
+
+    assert page["view"] == "threads"
+    assert page["has_more_before"] is True
+    assert page["total_lines"] is None
+    assert "thread=thread-large-000" in page["text"]
+    assert "large thread line 1" in page["text"]
+    assert fake_backend.calls == [
+        ("exec-large-000", 0, "raw"),
+        ("exec-large-000", 0, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_large_history_rebuilds_grouped_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-large-fallback",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-large-fallback",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-large-fallback",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for index in range(150):
+        thread_metadata_key = "thread_id" if index == 0 else "resume_thread_id"
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"exec-large-fallback-{index:03d}",
+                session_id="session-thread-large-fallback",
+                worker_job_id=f"job-large-fallback-{index:03d}",
+                worker_url="http://worker.test",
+                target_name="target-thread-large-fallback",
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
+                + timedelta(minutes=index),
+                last_status="removed",
+                directory_path="root",
+                metadata={thread_metadata_key: "thread-large-fallback"},
+            )
+        )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                raise AssertionError("stored thread ids should avoid raw log probes")
+            if mode == "session":
+                return ""
+            if mode == "execution":
+                return f"fallback body for {target}\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-large-fallback",
+        backend="container_worker_vm",
+        view="threads",
+        limit=400,
+    )
+
+    assert page["view"] == "threads"
+    assert "thread=thread-large-fallback" in page["text"]
+    assert "executions=150" in page["text"]
+    assert "fallback body for exec-large-fallback-000" in page["text"]
+    assert "fallback body for exec-large-fallback-149" in page["text"]
+    assert ("exec-large-fallback-149", 0, "execution") in fake_backend.calls
+    assert all(mode != "raw" for _target, _lines, mode in fake_backend.calls)
 
 
 def test_get_admin_agent_log_page_container_session_threads_searches_full_transcript(
@@ -11683,9 +11939,11 @@ def test_effect_agent_create_passes_selected_provider_and_libvirt_base_image_as_
     setup_env = captured["env"]
     assert setup_env is not None
     assert setup_env["AGENT_PROVIDER"] == "claude"
+    assert setup_env["AGENT_MODEL"] == "claude-sonnet-4-6"
     assert setup_env["LIBVIRT_BASE_IMAGE"] == "dotnet-agent.qcow2"
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
+    assert manifest.model == "claude-sonnet-4-6"
     assert manifest.metadata["libvirt_vm_template"] == {
         "image_ref": "dotnet-agent.qcow2",
         "template_alias": "dotnet",

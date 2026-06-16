@@ -510,6 +510,9 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert '\' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &' in script_text
     assert '. "${AGENT_HOME}/.profile"' not in script_text
     assert '. "$HOME/.profile" >/dev/null 2>&1 || true' in script_text
+    assert "repair_agent_profile_session_env" in script_text
+    assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script_text
+    assert 'line == line.lstrip() and stripped.startswith("export ")' in script_text
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text

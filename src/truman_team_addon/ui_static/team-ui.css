@@ -1119,6 +1119,18 @@ form {
   width: auto;
 }
 
+.archived-toggle {
+  min-height: 2.2rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .edit-modal[hidden] {
   display: none;
 }

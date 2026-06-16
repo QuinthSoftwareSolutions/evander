@@ -20,8 +20,14 @@ class _PolicyConfigStub:
     def __init__(self, routes_by_session: dict[str, list[str]]) -> None:
         self.routes_by_session = routes_by_session
 
-    def discord_inbox_channel_ids_for_session_id(self, session_id: str) -> list[str]:
-        return list(self.routes_by_session.get(session_id, []))
+    def resolved_discord_channel_ids_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        capability: str,
+    ) -> list[str]:
+        assert capability == "read"
+        return list(self.routes_by_session.get(session.session_id, []))
 
 
 class _DiscordInboxServiceStub:
@@ -160,7 +166,8 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(
             session_id="session-a",
             vm_id="vm-a",
             directory_path="root/team-a",
-            allowed_tools=[ToolName.APPROVAL_CHECK],
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["channel-1"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -169,7 +176,7 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(
         {("session-a", "channel-1"): True}
     )
 
-    dispatched: list[str] = []
+    dispatched: list[tuple[str, str]] = []
     monkeypatch.setattr(
         "agent_sandbox.messaging.discord_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
@@ -177,7 +184,8 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(
         worker.dispatcher,
         "resume_binding",
         lambda binding, **kwargs: (
-            dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched")
+            dispatched.append((binding.session_id, binding.source))
+            or SimpleNamespace(status="dispatched")
         ),
     )
 
@@ -185,4 +193,58 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(
 
     assert result.channels_polled == 1
     assert result.pending_channels == 1
-    assert dispatched == ["session-a"]
+    assert dispatched == [("session-a", "session_discord_allowlist")]
+
+
+def test_discord_wake_worker_discovers_session_directories_without_configured_routes(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
+    worker = build_discord_wake_worker(config, project_dir=tmp_path)
+    worker.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    worker.runtime.policy_config = _PolicyConfigStub({"session-a": ["channel-1"]})
+    worker.runtime.discord_inbox_service = _DiscordInboxServiceStub(
+        {("session-a", "channel-1"): False}
+    )
+
+    result = worker.run_once()
+
+    assert result.channels_polled == 1
+    assert result.pending_channels == 0
+
+
+def test_discord_wake_worker_requires_discord_get_commands_for_session_allowlist(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={"directories": ["root/team-a"], "jitter_seconds": 0.0},
+    )
+    worker.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            discord_channel_allowlist=["channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    worker.runtime.policy_config = _PolicyConfigStub({"session-a": ["channel-1"]})
+    worker.runtime.discord_inbox_service = _DiscordInboxServiceStub(
+        {("session-a", "channel-1"): True}
+    )
+
+    result = worker.run_once()
+
+    assert result.channels_polled == 0
+    assert result.pending_channels == 0

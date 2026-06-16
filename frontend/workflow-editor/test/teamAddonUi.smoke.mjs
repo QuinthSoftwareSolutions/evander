@@ -1631,6 +1631,72 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.match(orgChartState, /\bworker\b/);
 });
 
+test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.teams.team.archived = true;
+  initialState.projects.project.status = "archived";
+  initialState.review_profiles = {
+    profile: {
+      id: "profile",
+      team_id: "team",
+      project_id: "project",
+      name: "Archived profile",
+      description: "Hidden by default.",
+      applicable_roles: ["backend"],
+      criteria: [],
+      archived: true,
+    },
+  };
+  for (const agent of Object.values(initialState.agents)) {
+    agent.status = "archived";
+  }
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByText("Loaded revision 8.").waitFor({ state: "visible" });
+  await page.locator("#hierarchy-view").getByText("No active team.").waitFor({
+    state: "visible",
+  });
+  await page.locator("#agents-view").getByText("No visible agents.").waitFor({
+    state: "visible",
+  });
+  await page.locator("#projects-view").getByText("No visible projects.").waitFor({
+    state: "visible",
+  });
+  await page.locator("#review-profiles-view").getByText("No visible review profiles.").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator(".hierarchy-team").count(), 0);
+  assert.equal(await page.locator("#agents-view .agent-item").count(), 0);
+  assert.equal(await page.locator("#projects-view .project-block").count(), 0);
+
+  await page.locator("#show-archived-toggle").check();
+  const teamCard = page.locator(".hierarchy-team", { hasText: "Team" });
+  await teamCard.waitFor({ state: "visible" });
+  await teamCard.locator(".record-actions .state-pill.archived", { hasText: "archived" }).waitFor({
+    state: "visible",
+  });
+  await teamCard.locator(".hierarchy-node-card", { hasText: "Ops Manager" }).waitFor({
+    state: "visible",
+  });
+  await teamCard.locator(".hierarchy-node-card", { hasText: "Backend Worker" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#agents-view .agent-item", { hasText: "Ops Manager" }).waitFor({
+    state: "visible",
+  });
+  const projectCard = page.locator("#projects-view .project-block", { hasText: "Project" });
+  await projectCard.locator(".state-pill.archived", { hasText: "archived" }).waitFor({
+    state: "visible",
+  });
+  const profileRow = page.locator("#review-profiles-view .record-item", {
+    hasText: "Archived profile",
+  });
+  await profileRow.locator(".state-pill", { hasText: "archived" }).waitFor({
+    state: "visible",
+  });
+});
+
 test("team add-on UI renders hierarchy warnings for missing and cyclical references", async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededMalformedHierarchyState(),
