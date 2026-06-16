@@ -189,6 +189,7 @@ class DidwwSipBridgeConfig(BaseModel):
     request_timeout_seconds: float = Field(default=15.0, gt=0)
     max_concurrent_calls: int = Field(default=4, ge=1)
     voice_query_poll_interval_seconds: float = Field(default=1.0, gt=0)
+    voice_query_caller_patience_seconds: float = Field(default=18.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
@@ -3730,6 +3731,9 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         max_concurrent_calls=_env_int("DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS", 4),
         voice_query_poll_interval_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS", 1.0
+        ),
+        voice_query_caller_patience_seconds=_env_float(
+            "DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS", 18.0
         ),
         voice_query_timeout_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0

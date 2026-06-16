@@ -819,6 +819,27 @@ def test_realtime_config_defaults_and_env_overrides(
     assert load_config(tmp_path).openai_realtime_input_noise_reduction_type == "disabled"
 
 
+def test_voice_query_config_defaults_and_env_overrides(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
+
+    assert config.voice_query_poll_interval_seconds == 1.0
+    assert config.voice_query_caller_patience_seconds == 18.0
+    assert config.voice_query_timeout_seconds == 90.0
+
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS", "0.25")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS", "12.5")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", "31")
+
+    loaded = load_config(tmp_path)
+
+    assert loaded.voice_query_poll_interval_seconds == 0.25
+    assert loaded.voice_query_caller_patience_seconds == 12.5
+    assert loaded.voice_query_timeout_seconds == 31.0
+
+
 def test_realtime_config_rejects_invalid_modes_and_ranges(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         DidwwSipBridgeConfig(
