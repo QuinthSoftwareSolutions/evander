@@ -2107,6 +2107,12 @@ class DidwwSipBridgeService:
         caller_speech_started_during_assistant = False
         barge_cancelled_utterance_id: int | None = None
         barge_delay_tasks: set[asyncio.Task[None]] = set()
+        end_call_requested = False
+        end_call_completed = False
+        end_call_task: asyncio.Task[None] | None = None
+        end_call_call_id: str | None = None
+        end_call_reason: str | None = None
+        end_call_wait_logged = False
         idle_prompt_task: asyncio.Task[None] | None = None
         idle_prompt_sent_this_period = False
         idle_generation = 0
@@ -2214,6 +2220,16 @@ class DidwwSipBridgeService:
         def interruptible_assistant_turn_active() -> bool:
             return assistant_audio_active() or response_active or assistant_speaking
 
+        def safe_to_end_call() -> bool:
+            return not (
+                assistant_audio_active()
+                or response_active
+                or assistant_speaking
+                or caller_speech_active
+                or caller_turn_incomplete
+                or pending_responses
+            )
+
         def origin_query_turn_active() -> bool:
             if any(state.status == "pending" for state in origin_queries_by_id.values()):
                 return True
@@ -2285,6 +2301,125 @@ class DidwwSipBridgeService:
                 )
             if active_idle:
                 await realtime.cancel_response(active_response_id)
+
+        async def perform_end_call(reason: str | None, call_id: str | None) -> None:
+            nonlocal end_call_completed
+            if end_call_completed:
+                return
+            record = self.store.get(voice_session_id)
+            if record is None or record.status in {"ended", "failed"}:
+                end_call_completed = True
+                stop_event.set()
+                await realtime.send_tool_output(
+                    call_id=call_id or "",
+                    output={"status": "ended"},
+                )
+                return
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.end_call.executing",
+                metadata={
+                    "reason": reason or "unknown",
+                    "realtime_call_id": call_id,
+                    "assistant_audio_active": assistant_audio_active(),
+                    "response_active": response_active,
+                    "assistant_speaking": assistant_speaking,
+                    "caller_speech_active": caller_speech_active,
+                    "caller_turn_incomplete": caller_turn_incomplete,
+                    "pending_response_count": len(pending_responses),
+                },
+            )
+            try:
+                await self._cleanup_asterisk(record)
+                self.store.complete(
+                    voice_session_id,
+                    status="ended",
+                    summary="Call ended by voice agent.",
+                )
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.end_call.completed",
+                    metadata={
+                        "reason": reason or "unknown",
+                        "realtime_call_id": call_id,
+                    },
+                )
+            finally:
+                end_call_completed = True
+                stop_event.set()
+            await realtime.send_tool_output(
+                call_id=call_id or "",
+                output={"status": "ended"},
+            )
+
+        async def wait_for_end_call() -> None:
+            nonlocal end_call_wait_logged
+            try:
+                while not stop_event.is_set():
+                    if end_call_completed:
+                        return
+                    if safe_to_end_call():
+                        await perform_end_call(end_call_reason, end_call_call_id)
+                        return
+                    if not end_call_wait_logged:
+                        end_call_wait_logged = True
+                        self._append_debug_event(
+                            voice_session_id,
+                            "bridge.end_call.waiting",
+                            metadata={
+                                "reason": end_call_reason or "unknown",
+                                "realtime_call_id": end_call_call_id,
+                                "assistant_audio_active": assistant_audio_active(),
+                                "response_active": response_active,
+                                "assistant_speaking": assistant_speaking,
+                                "caller_speech_active": caller_speech_active,
+                                "caller_turn_incomplete": caller_turn_incomplete,
+                                "pending_response_count": len(pending_responses),
+                            },
+                        )
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                raise
+
+        async def request_end_call(function_call: RealtimeFunctionCall) -> None:
+            nonlocal end_call_requested, end_call_task, end_call_call_id, end_call_reason
+            reason = str(function_call.arguments.get("reason") or "").strip() or None
+            if end_call_requested:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.end_call.duplicate",
+                    metadata={
+                        "reason": reason or "unknown",
+                        "realtime_call_id": function_call.call_id,
+                        "pending_realtime_call_id": end_call_call_id,
+                    },
+                )
+                return
+            end_call_requested = True
+            end_call_call_id = function_call.call_id
+            end_call_reason = reason
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.end_call.requested",
+                metadata={
+                    "reason": reason or "unknown",
+                    "realtime_call_id": function_call.call_id,
+                },
+            )
+            timer_cancelled = cancel_idle_prompt_timer()
+            async with response_lock:
+                removed_idle = discard_pending_response_key(_IDLE_PROMPT_RESPONSE_KEY)
+            if timer_cancelled or removed_idle:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.idle_prompt.cancelled",
+                    metadata={
+                        "reason": "end_call_requested",
+                        "timer_cancelled": timer_cancelled,
+                        "removed_queued_count": removed_idle,
+                    },
+                )
+            end_call_task = asyncio.create_task(wait_for_end_call())
 
         async def idle_prompt_after_playback(generation: int, *, reason: str) -> None:
             nonlocal idle_prompt_sent_this_period
@@ -2891,6 +3026,9 @@ class DidwwSipBridgeService:
                     await handle_speech_stopped()
                 function_call = _realtime_function_call(event)
                 if function_call is not None:
+                    if function_call.name == _END_CALL_TOOL_NAME:
+                        await request_end_call(function_call)
+                        continue
                     await self._handle_realtime_function_call(
                         voice_session_id,
                         function_call,
@@ -2962,7 +3100,7 @@ class DidwwSipBridgeService:
                     mark_audio_finished(event, reason="response.done")
                     mark_response_inactive(event)
                     flushed_response = await mark_response_done_and_flush()
-                    if not flushed_response:
+                    if not flushed_response and not end_call_requested:
                         schedule_idle_prompt_after_playback(reason="response_done")
                 if event_type == "response.cancelled":
                     mark_audio_finished(event, reason="response.cancelled")
@@ -3011,6 +3149,11 @@ class DidwwSipBridgeService:
                 idle_prompt_task.cancel()
             if outbound_sender_task is not None:
                 outbound_sender_task.cancel()
+            if end_call_task is not None:
+                if end_call_completed:
+                    await asyncio.gather(end_call_task, return_exceptions=True)
+                else:
+                    end_call_task.cancel()
             for task in barge_delay_tasks:
                 task.cancel()
             for task in query_tasks:
@@ -3019,6 +3162,8 @@ class DidwwSipBridgeService:
                 await asyncio.gather(idle_prompt_task, return_exceptions=True)
             if outbound_sender_task is not None:
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
+            if end_call_task is not None and not end_call_completed:
+                await asyncio.gather(end_call_task, return_exceptions=True)
             await asyncio.gather(*barge_delay_tasks, return_exceptions=True)
             await asyncio.gather(*query_tasks, return_exceptions=True)
 
