@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Agents Page Execution Status Badges
+
+- Changed the Agents page status badge and Status filter to use actual agent
+  execution state instead of VM power state, while showing VM or worker state
+  as separate target metadata in the list and selected-agent details.
+
 ## 2026-06-16 - Team Add-on Cost Counter
 
 - Added a Team Add-on cost API and UI counters that show lifetime team-level

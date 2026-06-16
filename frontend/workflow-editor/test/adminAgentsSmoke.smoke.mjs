@@ -61,6 +61,9 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         host: {
           image: "runner:latest",
           image_alias: "default",
+          last_status: "running",
+          execution_count: 1,
+          active_execution_count: 1,
         },
         capabilities: {
           start: false,
@@ -84,7 +87,15 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
         finished_at: null,
         updated_at: "2026-05-18T10:01:00Z",
         host: {
-          state: "running",
+          power_state: "running",
+          libvirt_state: "running",
+          agent: {
+            state: "running",
+            pid: 4242,
+            dispatch_id: "dispatch-1",
+            repo_names: ["repo-one"],
+            preferred_repo_name: "repo-one",
+          },
           labels: {
             "vm-type": "issue",
           },
@@ -143,6 +154,38 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
               metadata: {},
             },
           ],
+        },
+      },
+      {
+        agent_id: "agent-3",
+        backend: "libvirt_vm",
+        target_name: "Online idle VM",
+        session_id: "session-3",
+        directory_path: "root/team",
+        status: "running",
+        started_at: "2026-05-18T09:50:00Z",
+        finished_at: null,
+        updated_at: "2026-05-18T09:58:00Z",
+        host: {
+          power_state: "running",
+          libvirt_state: "running",
+          agent: {
+            state: "idle",
+            pid: null,
+            dispatch_id: null,
+            repo_names: [],
+            preferred_repo_name: null,
+          },
+        },
+        capabilities: {
+          start: false,
+          shutdown: true,
+          resume: true,
+          enable_disable: true,
+          kill: true,
+          logs: false,
+          stop: false,
+          destroy: false,
         },
       },
     ],
@@ -370,6 +413,9 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  assert.match(await page.locator(".agent-list-item.selected .status-pill").innerText(), /^running$/i);
+  assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM: Running/);
+  assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^running$/i);
   await assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM template dotnet \/ dotnet-agent\.qcow2/);
   await assert.match(await page.locator(".agent-list-item.selected").innerText(), /Prompt queue: 2 records \/ 4 prompts/);
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
@@ -381,12 +427,34 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".feature-content").innerText(), /effect-agent-enqueue-prompt-2/);
   await assert.match(await page.locator(".agent-inline-label").filter({ hasText: "vm-type" }).innerText(), /issue/);
   assert.equal(await page.locator(".panel-header h3").filter({ hasText: /^Labels$/ }).count(), 0);
+
+  const idleVmItem = page.locator(".agent-list-item").filter({ hasText: "Online idle VM" });
+  await assert.doesNotReject(() => idleVmItem.waitFor({ state: "visible", timeout: 5000 }));
+  assert.match(await idleVmItem.locator(".status-pill").innerText(), /^idle$/i);
+  assert.match(await idleVmItem.innerText(), /VM: Running/);
+  await idleVmItem.click();
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Online idle VM" }).waitFor({ state: "visible" }));
+  assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^idle$/i);
+
+  await page.locator(".agents-filter-grid label").filter({ hasText: "Status" }).locator("select").selectOption("active");
+  await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Container worker" }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".agent-list-item").filter({ hasText: "Online idle VM" }).count(), 0);
+
   const steeringButton = page.getByRole("button", { name: "Operator steering" });
   await assert.doesNotReject(() => steeringButton.waitFor({ state: "visible", timeout: 5000 }));
 
   await assert.match(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
     /Container image runner:latest \(default\)/,
+  );
+  assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).locator(".status-pill").innerText(),
+    /^running$/i,
+  );
+  await assert.match(
+    await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
+    /Worker: 1 active, latest Running/,
   );
   await page.getByRole("button", { name: /Container worker/ }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Container image/i);
