@@ -2504,6 +2504,21 @@ def test_inbound_phone_bridge_result_updates_voice_session_without_auto_reconcil
         json={
             "call_id": "inbound-bridge-5",
             "status": "ended",
+            "audio_quality": {
+                "voice_session_id": voice_session_id,
+                "call_id": "inbound-bridge-5",
+                "direction": "inbound",
+                "started_at": "2026-06-16T12:00:00Z",
+                "updated_at": "2026-06-16T12:00:05Z",
+                "media_format": "alaw",
+                "rtp_payload_type": 8,
+                "sample_rate_hz": 8000,
+                "frame_duration_ms": 20,
+                "metadata": {
+                    "api_key": "bridge-secret",
+                    "phone_number": "+15550000200",
+                },
+            },
             "transcript_events": [
                 {
                     "sequence": 1,
@@ -2530,6 +2545,8 @@ def test_inbound_phone_bridge_result_updates_voice_session_without_auto_reconcil
     assert record is not None
     assert record.status == "ended"
     assert record.bridge_session_id == "inbound-bridge-5"
+    assert record.bridge_metadata["audio_quality"]["metadata"]["api_key"] == "<redacted>"
+    assert record.bridge_metadata["audio_quality"]["metadata"]["phone_number"] == "<redacted>"
     assert record.transcript == (
         "caller: Can ops confirm the deployment?\n"
         "assistant: Ops will check the deployment window."

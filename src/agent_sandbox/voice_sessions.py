@@ -1303,7 +1303,7 @@ def voice_phone_call_started_payload(record: VoiceSessionRecord) -> dict[str, An
 
 
 def voice_phone_call_result_payload(record: VoiceSessionRecord) -> dict[str, Any]:
-    return {
+    payload = {
         "request_id": record.request_id,
         "call_id": record.bridge_session_id or record.voice_session_id,
         "voice_session_id": record.voice_session_id,
@@ -1326,6 +1326,10 @@ def voice_phone_call_result_payload(record: VoiceSessionRecord) -> dict[str, Any
         },
         "error": record.error,
     }
+    bridge_audio_quality = record.bridge_metadata.get("audio_quality")
+    if isinstance(bridge_audio_quality, dict):
+        payload["audio_quality"] = sanitize_voice_metadata(bridge_audio_quality)
+    return payload
 
 
 def build_reconciliation_prompt(
