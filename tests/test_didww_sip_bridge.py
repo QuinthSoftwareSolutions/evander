@@ -881,6 +881,27 @@ def test_realtime_config_defaults_and_env_overrides(
     assert load_config(tmp_path).openai_realtime_input_noise_reduction_type == "disabled"
 
 
+def test_voice_query_config_defaults_and_env_overrides(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
+
+    assert config.voice_query_poll_interval_seconds == 1.0
+    assert config.voice_query_caller_patience_seconds == 18.0
+    assert config.voice_query_timeout_seconds == 90.0
+
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS", "0.25")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS", "12.5")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", "31")
+
+    loaded = load_config(tmp_path)
+
+    assert loaded.voice_query_poll_interval_seconds == 0.25
+    assert loaded.voice_query_caller_patience_seconds == 12.5
+    assert loaded.voice_query_timeout_seconds == 31.0
+
+
 def test_realtime_config_rejects_invalid_modes_and_ranges(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         DidwwSipBridgeConfig(
@@ -1802,7 +1823,139 @@ def test_realtime_tool_response_cancels_pending_idle_prompt(
     assert realtime.responses == [
         didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     ]
+    answer_text = didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS.lower()
+    assert "earlier question" in answer_text
+    assert (
+        "quick callback to your earlier question" in answer_text
+        or "heard back on the earlier question" in answer_text
+    )
+    assert "origin agent" not in answer_text
+    assert "originating agent" not in answer_text
+    assert "internal handoff" not in answer_text
     assert didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS not in realtime.responses
+
+
+def test_realtime_pending_origin_query_uses_waiting_idle_prompt(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ORIGIN_QUERY_ACK_GRACE_SECONDS", 0.005)
+    monkeypatch.setattr(didww_sip_bridge, "_BRIDGE_IDLE_PROMPT_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(didww_sip_bridge, "_ASSISTANT_PLAYBACK_DRAIN_SECONDS", 0.005)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.responses: list[str | None] = []
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "delta": base64.b64encode(b"\x01" * 160).decode("ascii"),
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "query_origin_agent",
+                        "arguments": json.dumps({"question": "What changed?"}),
+                    },
+                },
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.001)
+            return {}
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            if instructions == didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS:
+                self.events.extend(
+                    [
+                        {"type": "response.created", "response": {"id": "hold-1"}},
+                        {
+                            "type": "response.output_audio.delta",
+                            "response_id": "hold-1",
+                            "delta": base64.b64encode(b"\x02" * 160).decode("ascii"),
+                        },
+                        {
+                            "type": "response.output_audio.done",
+                            "response_id": "hold-1",
+                        },
+                        {"type": "response.done", "response": {"id": "hold-1"}},
+                    ]
+                )
+            elif instructions == didww_sip_bridge._ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS:
+                stop_event.set()
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            return None
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            return None
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            return None
+
+    class FakeController:
+        configured = True
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "query_id": "voice-query-1",
+                "status": "pending",
+            }
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            await asyncio.sleep(0.01)
+            return {"query_id": query_id, "status": "pending"}
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        try:
+            await asyncio.wait_for(
+                service._realtime_to_rtp(  # type: ignore[arg-type]
+                    record.voice_session_id,
+                    FakeRtp(),  # type: ignore[arg-type]
+                    realtime,  # type: ignore[arg-type]
+                    FakeController(),  # type: ignore[arg-type]
+                    stop_event,
+                ),
+                timeout=1,
+            )
+        except TimeoutError:
+            pass
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    prompt_responses = [response for response in realtime.responses if response is not None]
+    assert prompt_responses == [
+        didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS,
+        didww_sip_bridge._ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS,
+    ]
 
 
 def test_realtime_idle_prompt_does_not_repeat_without_new_caller_speech(
@@ -1892,6 +2045,107 @@ def test_realtime_idle_prompt_does_not_repeat_without_new_caller_speech(
     realtime = asyncio.run(run())
 
     assert realtime.responses == [didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS]
+
+
+def test_realtime_idle_prompt_is_bounded_across_speech_resets(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_BRIDGE_IDLE_PROMPT_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(didww_sip_bridge, "_ASSISTANT_PLAYBACK_DRAIN_SECONDS", 0.005)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.responses: list[str | None] = []
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "seed-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "seed-1",
+                    "delta": base64.b64encode(b"\x03" * 160).decode("ascii"),
+                },
+                {"type": "response.output_audio.done", "response_id": "seed-1"},
+                {"type": "response.done", "response": {"id": "seed-1"}},
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.001)
+            return {}
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            if instructions != didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS:
+                return
+            cycle_index = sum(
+                1
+                for prompt in self.responses
+                if prompt == didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS
+            )
+            self.events.extend(
+                [
+                    {"type": "response.created", "response": {"id": f"idle-{cycle_index}"}},
+                    {
+                        "type": "response.output_audio.delta",
+                        "response_id": f"idle-{cycle_index}",
+                        "delta": base64.b64encode(b"\x04" * 160).decode("ascii"),
+                    },
+                    {
+                        "type": "response.output_audio.done",
+                        "response_id": f"idle-{cycle_index}",
+                    },
+                    {"type": "response.done", "response": {"id": f"idle-{cycle_index}"}},
+                    {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                    {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 180},
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "transcript": f"reset {cycle_index}",
+                    },
+                    {
+                        "type": "response.done",
+                        "response": {"id": f"cycle-{cycle_index}"},
+                    },
+                ]
+            )
+            if cycle_index == 2:
+                stop_event.set()
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            return None
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.responses.count(didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS) == 2
 
 
 def test_realtime_end_call_waits_for_rtp_drain_before_hangup(
@@ -4659,13 +4913,17 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
         "output": {"status": "pending", "query_id": "voice-query-1"},
     }
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
-    assert "projected calling task" not in str(realtime.responses[0]).lower()
-    assert "interesting fact" not in str(realtime.responses[0]).lower()
-    assert "look that up" in str(realtime.responses[0]).lower()
-    assert "something relevant" in str(realtime.responses[0]).lower()
-    assert "unrelated filler" in str(realtime.responses[0]).lower()
-    assert "origin agent" not in str(realtime.responses[0]).lower()
-    assert "originating agent" not in str(realtime.responses[0]).lower()
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "projected calling task" not in response_text
+    assert "interesting fact" not in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -4769,6 +5027,15 @@ def test_origin_query_hold_ack_does_not_queue_extra_response(
     realtime = asyncio.run(run())
 
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     assert didww_sip_bridge._is_origin_query_hold_ack("No, I'll wait.")
     assert didww_sip_bridge._is_origin_query_hold_ack("Yes, please.")
     assert not didww_sip_bridge._is_origin_query_hold_ack("Please continue with the topic.")
@@ -5426,6 +5693,240 @@ def test_empty_origin_query_with_incomplete_startup_requests_keyed_call_objectiv
     ]
 
 
+def test_origin_query_caller_patience_keeps_query_pending_for_reuse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ORIGIN_QUERY_ACK_GRACE_SECONDS", 0.05)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.injected: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+            self.tool_outputs: list[dict[str, object]] = []
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+    class FakeController:
+        configured = True
+
+        def __init__(self) -> None:
+            self.create_query_calls: list[dict[str, Any]] = []
+            self.get_query_calls = 0
+            self.mark_timeout_calls = 0
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            self.create_query_calls.append(kwargs)
+            return {"query_id": "voice-query-1", "status": "pending"}
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.get_query_calls += 1
+            return {"query_id": query_id, "status": "pending"}
+
+        async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.mark_timeout_calls += 1
+            return {
+                "query_id": query_id,
+                "status": "timeout",
+                "error": "Timed out while calling +15551234567 for help.",
+            }
+
+    async def run() -> tuple[FakeRealtime, FakeController, float, dict[str, didww_sip_bridge.OriginQueryState], dict[str, didww_sip_bridge.OriginQueryState]]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={
+                    "voice_query_poll_interval_seconds": 0.01,
+                    "voice_query_caller_patience_seconds": 0.03,
+                    "voice_query_timeout_seconds": 1.0,
+                }
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        query_tasks: set[asyncio.Task[None]] = set()
+        origin_queries_by_question: dict[str, didww_sip_bridge.OriginQueryState] = {}
+        origin_queries_by_id: dict[str, didww_sip_bridge.OriginQueryState] = {}
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-1",
+                name="query_origin_agent",
+                arguments={"question": "What changed?"},
+            ),
+            realtime,  # type: ignore[arg-type]
+            controller,  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            origin_queries_by_question=origin_queries_by_question,
+            origin_queries_by_id=origin_queries_by_id,
+        )
+        while not realtime.responses and loop.time() - started_at < 0.5:
+            await asyncio.sleep(0.005)
+        elapsed = loop.time() - started_at
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-2",
+                name="query_origin_agent",
+                arguments={"question": "What changed?"},
+            ),
+            realtime,  # type: ignore[arg-type]
+            controller,  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            origin_queries_by_question=origin_queries_by_question,
+            origin_queries_by_id=origin_queries_by_id,
+        )
+        while loop.time() - started_at < 0.12:
+            await asyncio.sleep(0.005)
+        for task in query_tasks:
+            task.cancel()
+        await asyncio.gather(*query_tasks, return_exceptions=True)
+        return realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id
+
+    realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id = asyncio.run(
+        run()
+    )
+
+    assert elapsed < 1.0
+    assert controller.create_query_calls[0]["deadline_seconds"] == 1
+    assert controller.mark_timeout_calls == 0
+    assert realtime.tool_outputs == [
+        {
+            "call_id": "tool-call-1",
+            "output": {"status": "pending", "query_id": "voice-query-1"},
+        },
+        {
+            "call_id": "tool-call-2",
+            "output": {
+                "status": "pending",
+                "query_id": "voice-query-1",
+                "deduplicated": True,
+            },
+        },
+    ]
+    assert realtime.injected == []
+    assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS]
+    assert "handoff" not in str(realtime.responses[0]).lower()
+    assert len(origin_queries_by_question) == 1
+    assert len(origin_queries_by_id) == 1
+
+
+def test_origin_query_answer_after_caller_patience_is_injected_before_backend_timeout(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.injected: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeController:
+        def __init__(self) -> None:
+            self.started_at = 0.0
+            self.get_query_calls = 0
+            self.mark_timeout_calls = 0
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.get_query_calls += 1
+            if asyncio.get_running_loop().time() - self.started_at >= 0.05:
+                return {
+                    "query_id": query_id,
+                    "status": "answered",
+                    "answer": "The package is ready.",
+                }
+            return {"query_id": query_id, "status": "pending"}
+
+        async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.mark_timeout_calls += 1
+            return {"query_id": query_id, "status": "timeout"}
+
+    async def run() -> tuple[FakeRealtime, FakeController]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={
+                    "voice_query_poll_interval_seconds": 0.01,
+                    "voice_query_caller_patience_seconds": 0.02,
+                    "voice_query_timeout_seconds": 0.2,
+                }
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        controller.started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(
+            service._poll_origin_query_result(  # type: ignore[arg-type]
+                record.voice_session_id,
+                "voice-query-late-answer",
+                controller,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                asyncio.Event(),
+            ),
+            timeout=1,
+        )
+        return realtime, controller
+
+    realtime, controller = asyncio.run(run())
+
+    assert controller.mark_timeout_calls == 0
+    assert controller.get_query_calls >= 2
+    assert realtime.injected == [
+        {
+            "query_id": "voice-query-late-answer",
+            "status": "answered",
+            "answer": "The package is ready.",
+        }
+    ]
+    assert realtime.responses == [
+        didww_sip_bridge._ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS,
+        didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS,
+    ]
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "origin_query.caller_patience_expired" in event_types
+    assert "origin_query.answered" in event_types
+    requested_reasons = [
+        event.metadata["reason"]
+        for event in latest.debug_events
+        if event.event_type == "origin_query.response_requested"
+    ]
+    assert requested_reasons == ["caller_patience_expired", "query_result"]
+
+
 def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
@@ -5484,8 +5985,9 @@ def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     realtime = asyncio.run(run())
 
     assert realtime.injected[0]["status"] == "timeout"
-    assert "lookup did not finish in time" in str(realtime.responses[0])
-    assert "origin agent" not in str(realtime.responses[0]).lower()
+    assert "cannot pull that up right now" in str(realtime.responses[0])
+    assert "take a message" in str(realtime.responses[0])
+    assert "handoff" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -5607,6 +6109,15 @@ def test_realtime_function_calls_wait_for_response_done_and_dedupe_queries(
         },
     ]
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     latest = store.get("voice-1")
     assert latest is not None
     assert len(latest.transcript_events) == 1
