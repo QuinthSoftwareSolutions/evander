@@ -27,6 +27,7 @@ from .models import (
     TeamTaskState,
     team_state_payload,
 )
+from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
@@ -104,6 +105,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "filters": filters,
         }
         return JSONResponse(payload)
+
+    async def get_costs(request: Request) -> JSONResponse:
+        state = repository.read()
+        backfill = _query_bool(request, "backfill")
+        service = TeamCostService(
+            runtime_dir=context.runtime_dir,
+            state=state,
+            session_repository=_session_repository_from_context(context),
+        )
+        return JSONResponse(service.costs_payload(backfill_transcripts=backfill is not False))
 
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -445,6 +456,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         Route("/timeline", _with_errors(get_timeline), methods=["GET"]),
+        Route("/costs", _with_errors(get_costs), methods=["GET"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
@@ -510,6 +522,15 @@ def _with_errors(handler):
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     return _wrapped
+
+
+def _session_repository_from_context(context: AddonContext) -> Any | None:
+    service = getattr(context, "service", None)
+    runtime = getattr(service, "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    if repository is not None:
+        return repository
+    return getattr(service, "session_repository", None)
 
 
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:

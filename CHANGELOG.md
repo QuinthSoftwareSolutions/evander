@@ -5,11 +5,33 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Add-on Cost Counter
+
+- Added a Team Add-on cost API and UI counters that show lifetime team-level
+  model cost totals first, with project breakdowns only when usage can be
+  confidently tied to a project agent or project-scoped session.
+- Added Claude transcript usage backfill for Team agents, importing usage-only
+  metadata into `model-usage.db` with stable request deduplication and no
+  prompt or response content.
+- Improved relay metering coverage by preserving provider request IDs and
+  keeping streaming usage-recording failures warning-only.
+
+## 2026-06-16 - Team Add-on Operator Directives
+
+- Added durable Team operator directives that turn out-of-band operator chat
+  requests into pending manager inbox items, waking the manager through the
+  normal Team runtime instead of requiring ad hoc `team-action.json` writes.
+- Exposed the directive path through the Team Admin API,
+  `effect:team:create-operator-directive`, and the manager-facing
+  `team_create_operator_directive` MCP tool.
+
 ## 2026-06-16 - Team Add-on Project Repo Wake Prep
 
 - Prepared configured Team project repositories during persistent-agent wakes
   through `effect:agent:clone-repo`, so agents receive a guest checkout path
   instead of trying to work against host-only repo paths.
+- Exposed Team wake repo-preparation results through `prepared_project_repos`
+  and `failed_project_repo_preparations` workflow outputs for run inspection.
 - Made the libvirt repo clone helper retry-safe when the guest checkout already
   exists, refreshing remotes/helpers without resetting or switching active work.
 

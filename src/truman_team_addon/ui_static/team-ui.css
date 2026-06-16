@@ -902,6 +902,49 @@ button.record-action:hover {
   overflow-wrap: anywhere;
 }
 
+.cost-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 0.45rem;
+  border: 1px solid rgba(36, 112, 75, 0.28);
+  border-radius: 6px;
+  padding: 0.34rem 0.5rem;
+  background: rgba(36, 112, 75, 0.08);
+  color: var(--green);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.cost-counter strong {
+  font-size: 0.95rem;
+  line-height: 1.1;
+}
+
+.cost-counter small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.cost-counter--warning {
+  border-color: rgba(154, 107, 19, 0.36);
+  background: rgba(154, 107, 19, 0.1);
+  color: var(--amber);
+}
+
+.cost-counter--compact {
+  margin-top: 0.35rem;
+  padding: 0.28rem 0.45rem;
+  font-size: 0.74rem;
+}
+
+.cost-counter--compact strong {
+  font-size: 0.86rem;
+}
+
 .projects-view {
   display: grid;
   gap: 0.8rem;

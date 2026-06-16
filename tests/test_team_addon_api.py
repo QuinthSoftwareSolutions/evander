@@ -8,6 +8,8 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.store import ModelUsageStore
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -373,6 +375,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
+    assert 'fetch(`${API_BASE}/costs`' in script.text
+    assert "renderTeamCostCounter" in script.text
+    assert "renderProjectCostCounter" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -386,6 +391,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".record-actions" in stylesheet.text
     assert ".field-tooltip" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
+    assert ".cost-counter" in stylesheet.text
+    assert ".cost-counter--warning" in stylesheet.text
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
@@ -437,6 +444,42 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["failed_ephemeral_assignment"]["state"] == "failed"
     assert attention["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="usage-1",
+            occurred_at=datetime(2026, 6, 16, 12, 0, tzinfo=UTC),
+            provider="openai",
+            provider_endpoint_identifier="responses",
+            model="gpt-5.2-codex",
+            input_tokens=1000,
+            output_tokens=500,
+            total_tokens=1500,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "total_tokens": 1500,
+                }
+            },
+            session_id="session-backend",
+        )
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/costs?backfill=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["team_costs"]["team"]["events_count"] == 1
+    assert payload["project_costs"]["project"]["events_count"] == 1
+    assert payload["project_costs"]["project"]["estimated_cost"] is not None
 
 
 def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) -> None:

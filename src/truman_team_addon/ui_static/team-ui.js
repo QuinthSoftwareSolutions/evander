@@ -20,6 +20,7 @@ const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
 let state = emptyState();
+let costState = emptyCostState();
 let runtimeFilter = null;
 let runtimeFilterTouched = false;
 let templates = [];
@@ -288,6 +289,23 @@ function emptyTimelineState() {
     filters: {},
     timestampless_count: 0,
     entries: [],
+  };
+}
+
+function emptyCostState() {
+  return {
+    generated_at: null,
+    coverage_status: "partial",
+    coverage_reasons: ["costs_not_loaded"],
+    team_costs: {},
+    project_costs: {},
+    unattributed_costs: null,
+    source_counts: {},
+    events_count: 0,
+    priced_events_count: 0,
+    unpriced_events_count: 0,
+    backfill: null,
+    error: null,
   };
 }
 
@@ -666,13 +684,27 @@ async function loadState({ preserveForms = false } = {}) {
   setStatus("Loading team state.", "loading");
   timelineLoading = true;
   try {
-    const [stateResponse, templatesResponse] = await Promise.all([
+    const costsPromise = fetch(`${API_BASE}/costs`, {
+      headers: { Accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseText(response));
+        }
+        return response.json();
+      })
+      .catch((error) => ({
+        ...emptyCostState(),
+        error: error instanceof Error ? error.message : "Cost data failed to load.",
+      }));
+    const [stateResponse, templatesResponse, costsPayload] = await Promise.all([
       fetch(`${API_BASE}/state`, {
         headers: { Accept: "application/json" },
       }),
       fetch(`${API_BASE}/templates`, {
         headers: { Accept: "application/json" },
       }),
+      costsPromise,
     ]);
     if (!stateResponse.ok) {
       throw new Error(await responseText(stateResponse));
@@ -682,6 +714,7 @@ async function loadState({ preserveForms = false } = {}) {
     }
     state = normalizeState(await stateResponse.json());
     templates = normalizeTemplates(await templatesResponse.json());
+    costState = normalizeCosts(costsPayload);
     render();
     if (drafts) {
       restoreFormDrafts(drafts);
@@ -702,6 +735,10 @@ function normalizeState(payload) {
 
 function normalizeTemplates(payload) {
   return Array.isArray(payload?.templates) ? payload.templates : [];
+}
+
+function normalizeCosts(payload) {
+  return { ...emptyCostState(), ...(payload || {}) };
 }
 
 function render() {
@@ -805,8 +842,102 @@ function renderSummary() {
         ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
         : !visibleTeams.length
           ? `<p class="empty-state summary-empty-state">No active team.</p>`
-          : "",
+      : "",
     );
+}
+
+function renderTeamCostCounter(teamId) {
+  const cost = costState.team_costs?.[teamId];
+  if (!cost) {
+    return costState.error
+      ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
+      : "";
+  }
+  return renderCostCounter(cost, { label: "Team cost", compact: false });
+}
+
+function renderProjectCostCounter(projectId) {
+  const cost = costState.project_costs?.[projectId];
+  if (!cost) {
+    return "";
+  }
+  return renderCostCounter(cost, { label: "Project cost", compact: true });
+}
+
+function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
+  if (!cost) {
+    return `
+      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}">
+        <strong>${escapeHtml(label || "Cost")}</strong>
+        <span>${escapeHtml(error || "unavailable")}</span>
+      </div>
+    `;
+  }
+  const coverageStatus = text(cost.coverage_status || costState.coverage_status);
+  const unpriced = numberOrZero(cost.unpriced_events_count);
+  const events = numberOrZero(cost.events_count);
+  const className =
+    coverageStatus === "complete" && !unpriced
+      ? "cost-counter"
+      : "cost-counter cost-counter--warning";
+  const parts = [];
+  if (events) {
+    parts.push(`${events} event${events === 1 ? "" : "s"}`);
+  }
+  if (unpriced) {
+    parts.push(`${unpriced} unpriced`);
+  }
+  const sourceSummary = costSourceSummary(cost.source_counts || {});
+  if (sourceSummary) {
+    parts.push(sourceSummary);
+  }
+  return `
+    <div class="${className}${compact ? " cost-counter--compact" : ""}">
+      <span>${escapeHtml(label || "Cost")}</span>
+      <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
+    </div>
+  `;
+}
+
+function costSourceSummary(sourceCounts) {
+  const entries = Object.entries(sourceCounts || {})
+    .filter(([, count]) => numberOrZero(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) {
+    return "";
+  }
+  return entries
+    .map(([source, count]) => `${source}:${numberOrZero(count)}`)
+    .join(", ");
+}
+
+function formatUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return "$0.00";
+  }
+  if (Math.abs(amount) >= 1000) {
+    return amount.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    });
+  }
+  if (Math.abs(amount) >= 10) {
+    return amount.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+  return amount.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  });
 }
 
 function bindArchivedVisibilityToggle() {
@@ -1178,6 +1309,7 @@ function renderHierarchy() {
               <div>
                 <p class="section-label">${escapeHtml(team.id)}</p>
                 <h3>${escapeHtml(team.name)}</h3>
+                ${renderTeamCostCounter(team.id)}
               </div>
               <div class="record-actions">
                 ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
@@ -1683,6 +1815,7 @@ function renderProjects() {
               <div>
                 <strong>${escapeHtml(project.name)}</strong>
                 <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+                ${renderProjectCostCounter(project.id)}
                 ${renderProjectGit(project.git)}
               </div>
               <div class="record-actions">
@@ -2528,6 +2661,7 @@ function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
         <div>
           <p class="section-label">Team</p>
           <h3>${teamLabel}</h3>
+          ${teamGroup.team ? renderTeamCostCounter(teamGroup.team.id) : ""}
         </div>
         <span class="delivery-bucket-count">${visibleRowCount} deliverable${visibleRowCount === 1 ? "" : "s"}</span>
       </div>
@@ -2563,6 +2697,7 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
         <div>
           <p class="section-label">Project</p>
           <h4>${projectLabel}</h4>
+          ${project ? renderProjectCostCounter(project.id) : ""}
           ${project ? `<div class="meta-line">Team ${escapeHtml(project.team_id)}</div>` : ""}
         </div>
         <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>

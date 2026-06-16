@@ -1,0 +1,940 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from hashlib import sha256
+from pathlib import Path
+from typing import Any
+
+from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.pricing import (
+    ModelCostEstimate,
+    ModelPricingCatalog,
+    default_model_pricing_catalog,
+    estimate_model_usage_cost,
+    extract_cache_write_input_tokens,
+    extract_cached_input_tokens,
+)
+from agent_sandbox.model_usage.store import ModelUsageStore
+from agent_sandbox.models import utc_now
+
+from .models import EphemeralAssignment, PersistentAgent, TeamState
+
+CLAUDE_TRANSCRIPT_ROOTS_ENV = "AGENT_SANDBOX_CLAUDE_TRANSCRIPT_ROOTS"
+WORKER_ROOT_ENV = "AGENT_SANDBOX_WORKER_ROOT"
+DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
+TRANSCRIPT_SOURCE_NAME = "claude_transcript_backfill"
+
+
+@dataclass(frozen=True)
+class TeamCostAttribution:
+    team_id: str | None
+    project_id: str | None
+    agent_id: str | None
+    source: str
+    project_confident: bool
+
+
+@dataclass(frozen=True)
+class ClaudeTranscriptSource:
+    session_id: str
+    agent_id: str | None
+    team_id: str | None
+    project_id: str | None
+    agent_home: Path
+    session_manifest: Any | None = None
+
+
+@dataclass
+class ClaudeTranscriptBackfillResult:
+    sources_checked: int = 0
+    sources_missing: int = 0
+    files_scanned: int = 0
+    records_seen: int = 0
+    records_imported: int = 0
+    duplicate_records: int = 0
+    records_skipped: int = 0
+    errors: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def coverage_status(self) -> str:
+        if self.sources_missing or self.errors:
+            return "partial"
+        return "complete"
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "coverage_status": self.coverage_status,
+            "sources_checked": self.sources_checked,
+            "sources_missing": self.sources_missing,
+            "files_scanned": self.files_scanned,
+            "records_seen": self.records_seen,
+            "records_imported": self.records_imported,
+            "duplicate_records": self.duplicate_records,
+            "records_skipped": self.records_skipped,
+            "errors": list(self.errors),
+        }
+
+
+class TeamCostService:
+    def __init__(
+        self,
+        *,
+        runtime_dir: Path | str,
+        state: TeamState,
+        session_repository: Any | None = None,
+        usage_store: ModelUsageStore | None = None,
+        pricing_catalog: ModelPricingCatalog | None = None,
+    ) -> None:
+        self.runtime_dir = Path(runtime_dir)
+        self.state = state
+        self.session_repository = session_repository
+        self.usage_store = usage_store or ModelUsageStore(self.runtime_dir / "model-usage.db")
+        self._pricing_catalog = pricing_catalog
+
+    def costs_payload(self, *, backfill_transcripts: bool = True) -> dict[str, Any]:
+        backfill_result = (
+            self.backfill_claude_transcripts() if backfill_transcripts else None
+        )
+        events = self.usage_store.list_events()
+        catalog = self._load_pricing_catalog()
+
+        team_buckets: dict[str, dict[str, Any]] = {}
+        project_buckets: dict[str, dict[str, Any]] = {}
+        unattributed_bucket = _new_bucket()
+        root_bucket = _new_bucket()
+
+        for event in events:
+            estimate = estimate_model_usage_cost(event, catalog, currency="usd")
+            attribution = self._attribute_event(event)
+            source = _usage_source(event)
+
+            _add_event_to_bucket(root_bucket, event, estimate, source=source)
+            if attribution.team_id:
+                team_bucket = team_buckets.setdefault(attribution.team_id, _new_bucket())
+                _add_event_to_bucket(team_bucket, event, estimate, source=source)
+                if attribution.project_id and attribution.project_confident:
+                    project_bucket = project_buckets.setdefault(
+                        attribution.project_id,
+                        _new_bucket(team_id=attribution.team_id, project_id=attribution.project_id),
+                    )
+                    _add_event_to_bucket(project_bucket, event, estimate, source=source)
+                else:
+                    _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+                    team_unattributed = team_bucket.setdefault(
+                        "unattributed_costs",
+                        _new_bucket(team_id=attribution.team_id),
+                    )
+                    _add_event_to_bucket(team_unattributed, event, estimate, source=source)
+                continue
+
+            _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+
+        for team_id, team_bucket in team_buckets.items():
+            team_bucket["team_id"] = team_id
+            team_bucket["project_costs"] = {
+                project_id: _finalize_bucket(project_bucket)
+                for project_id, project_bucket in sorted(project_buckets.items())
+                if project_bucket.get("team_id") == team_id
+            }
+            if "unattributed_costs" in team_bucket:
+                team_bucket["unattributed_costs"] = _finalize_bucket(
+                    team_bucket["unattributed_costs"]
+                )
+            else:
+                team_bucket["unattributed_costs"] = _finalize_bucket(
+                    _new_bucket(team_id=team_id)
+                )
+
+        coverage_reasons = set(root_bucket.get("_coverage_reasons", set()))
+        if backfill_result is not None and backfill_result.coverage_status != "complete":
+            coverage_reasons.add("transcript_backfill_partial")
+
+        payload = {
+            "generated_at": utc_now().isoformat().replace("+00:00", "Z"),
+            "coverage_status": "partial" if coverage_reasons else "complete",
+            "coverage_reasons": sorted(coverage_reasons),
+            "team_costs": {
+                team_id: _finalize_bucket(bucket)
+                for team_id, bucket in sorted(team_buckets.items())
+            },
+            "project_costs": {
+                project_id: _finalize_bucket(bucket)
+                for project_id, bucket in sorted(project_buckets.items())
+            },
+            "unattributed_costs": _finalize_bucket(unattributed_bucket),
+            "source_counts": dict(sorted(root_bucket.get("source_counts", {}).items())),
+            "events_count": int(root_bucket.get("events_count", 0)),
+            "priced_events_count": int(root_bucket.get("priced_events_count", 0)),
+            "unpriced_events_count": int(root_bucket.get("unpriced_events_count", 0)),
+        }
+        if backfill_result is not None:
+            payload["backfill"] = backfill_result.model_dump()
+        return payload
+
+    def backfill_claude_transcripts(self) -> ClaudeTranscriptBackfillResult:
+        return backfill_claude_transcript_usage(
+            store=self.usage_store,
+            sources=self._claude_transcript_sources(),
+        )
+
+    def _load_pricing_catalog(self) -> ModelPricingCatalog | None:
+        if self._pricing_catalog is not None:
+            return self._pricing_catalog
+        try:
+            return default_model_pricing_catalog()
+        except Exception:
+            return None
+
+    def _attribute_event(self, event: ModelInferenceUsageEvent) -> TeamCostAttribution:
+        session_id = _optional_text(event.session_id)
+        dispatch_id = _optional_text(event.dispatch_id)
+
+        if session_id:
+            assignment = _ephemeral_assignment_for_session(self.state, session_id)
+            if assignment is not None:
+                agent = self.state.agents.get(assignment.parent_agent_id)
+                team_id = agent.team_id if agent is not None else None
+                return TeamCostAttribution(
+                    team_id=team_id,
+                    project_id=assignment.project_id,
+                    agent_id=assignment.parent_agent_id,
+                    source="ephemeral_session",
+                    project_confident=True,
+                )
+
+            agent = _agent_for_session(self.state, session_id)
+            if agent is not None:
+                return TeamCostAttribution(
+                    team_id=agent.team_id,
+                    project_id=agent.project_id,
+                    agent_id=agent.id,
+                    source="agent_session",
+                    project_confident=bool(agent.project_id),
+                )
+
+        if dispatch_id:
+            for record in self.state.action_records.values():
+                if record.dispatch_id != dispatch_id:
+                    continue
+                agent = self.state.agents.get(record.agent_id)
+                if agent is None:
+                    break
+                return TeamCostAttribution(
+                    team_id=agent.team_id,
+                    project_id=agent.project_id,
+                    agent_id=agent.id,
+                    source="dispatch_action_record",
+                    project_confident=bool(agent.project_id),
+                )
+
+        return TeamCostAttribution(
+            team_id=None,
+            project_id=None,
+            agent_id=None,
+            source="unattributed",
+            project_confident=False,
+        )
+
+    def _claude_transcript_sources(self) -> list[ClaudeTranscriptSource]:
+        sources: list[ClaudeTranscriptSource] = []
+        seen: set[tuple[str, str]] = set()
+        for agent in self.state.agents.values():
+            session_id = _optional_text(agent.session_id)
+            if session_id is None:
+                continue
+            session = self._session(session_id)
+            _append_claude_transcript_sources(
+                sources,
+                seen=seen,
+                runtime_dir=self.runtime_dir,
+                session_id=session_id,
+                session_manifest=session,
+                agent_id=agent.id,
+                team_id=agent.team_id,
+                project_id=agent.project_id,
+            )
+        for assignment in self.state.ephemeral_assignments.values():
+            session_id = _optional_text(assignment.session_id)
+            if session_id is None:
+                continue
+            parent = self.state.agents.get(assignment.parent_agent_id)
+            session = self._session(session_id) or assignment
+            _append_claude_transcript_sources(
+                sources,
+                seen=seen,
+                runtime_dir=self.runtime_dir,
+                session_id=session_id,
+                session_manifest=session,
+                agent_id=assignment.parent_agent_id,
+                team_id=parent.team_id if parent is not None else None,
+                project_id=assignment.project_id,
+            )
+        return sources
+
+    def _session(self, session_id: str) -> Any | None:
+        if self.session_repository is None:
+            return None
+        get_session = getattr(self.session_repository, "get_session", None)
+        if callable(get_session):
+            return get_session(session_id)
+        get = getattr(self.session_repository, "get", None)
+        if callable(get):
+            return get(session_id)
+        return None
+
+
+def backfill_claude_transcript_usage(
+    *,
+    store: ModelUsageStore,
+    sources: Iterable[ClaudeTranscriptSource],
+) -> ClaudeTranscriptBackfillResult:
+    result = ClaudeTranscriptBackfillResult()
+    for source in sources:
+        result.sources_checked += 1
+        if not source.agent_home or not _has_claude_transcripts(source.agent_home):
+            result.sources_missing += 1
+            continue
+        for path in _claude_transcript_paths(source.agent_home):
+            result.files_scanned += 1
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line_number, raw_line in enumerate(handle, start=1):
+                        imported = _event_from_claude_transcript_line(
+                            raw_line,
+                            source=source,
+                            path=path,
+                            line_number=line_number,
+                        )
+                        if imported is None:
+                            continue
+                        result.records_seen += 1
+                        if store.get_event(imported.event_id) is not None:
+                            result.duplicate_records += 1
+                            continue
+                        store.upsert_event(imported)
+                        result.records_imported += 1
+            except OSError as exc:
+                result.errors.append(
+                    {
+                        "path": str(path),
+                        "error": str(exc),
+                    }
+                )
+            except Exception as exc:
+                result.errors.append(
+                    {
+                        "path": str(path),
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                    }
+                )
+    return result
+
+
+def _event_from_claude_transcript_line(
+    raw_line: str,
+    *,
+    source: ClaudeTranscriptSource,
+    path: Path,
+    line_number: int,
+) -> ModelInferenceUsageEvent | None:
+    try:
+        event = json.loads(raw_line)
+    except ValueError:
+        return None
+    if not isinstance(event, dict):
+        return None
+
+    message = event.get("message")
+    message_payload = message if isinstance(message, dict) else event
+    usage = message_payload.get("usage")
+    if not isinstance(usage, dict):
+        usage = event.get("usage")
+    if not isinstance(usage, dict) or not _usage_contains_billable_tokens(usage):
+        return None
+
+    usage_payload = _sanitized_usage_payload(usage)
+    request_id = _first_text(
+        event.get("requestId"),
+        event.get("request_id"),
+        event.get("requestID"),
+        message_payload.get("request_id"),
+        message_payload.get("requestId"),
+    )
+    message_id = _first_text(message_payload.get("id"), event.get("message_id"))
+    transcript_session_id = _first_text(
+        event.get("sessionId"),
+        event.get("session_id"),
+        event.get("conversation_id"),
+        source.session_id,
+    )
+    event_id = _claude_transcript_event_id(
+        request_id=request_id,
+        message_id=message_id,
+        transcript_session_id=transcript_session_id,
+        event=event,
+        path=path,
+        line_number=line_number,
+    )
+    occurred_at = _optional_datetime(
+        event.get("timestamp"),
+        event.get("created_at"),
+        message_payload.get("created_at"),
+    )
+    input_tokens = _optional_non_negative_int(usage_payload.get("input_tokens"))
+    output_tokens = _optional_non_negative_int(usage_payload.get("output_tokens"))
+    total_tokens = _optional_non_negative_int(usage_payload.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    session = source.session_manifest
+    execution_backend = _session_metadata_text(session, "execution_backend")
+    directory_path = _first_text(getattr(session, "directory_path", None))
+    model = _first_text(
+        message_payload.get("model"),
+        event.get("model"),
+        getattr(session, "model", None),
+        _session_metadata_text(session, "model"),
+    )
+
+    return ModelInferenceUsageEvent(
+        event_id=event_id,
+        occurred_at=occurred_at or _file_mtime(path),
+        provider="anthropic",
+        provider_endpoint_identifier="messages",
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        request_status="success",
+        normalized_usage_status="available",
+        raw_usage_metadata={
+            "usage": usage_payload,
+            "request_metadata": {
+                "source": TRANSCRIPT_SOURCE_NAME,
+                "path": "claude_transcript",
+                "transcript_path": str(path),
+                "line_number": line_number,
+                "team_id": source.team_id,
+                "project_id": source.project_id,
+                "agent_id": source.agent_id,
+            },
+            "response_metadata": {
+                "source": TRANSCRIPT_SOURCE_NAME,
+                "message_id": message_id,
+                "provider_request_id": request_id,
+            },
+        },
+        session_id=source.session_id,
+        agent_harness="claude",
+        execution_backend=execution_backend,
+        directory_path=directory_path,
+        request_id=request_id,
+    )
+
+
+def _claude_transcript_event_id(
+    *,
+    request_id: str | None,
+    message_id: str | None,
+    transcript_session_id: str | None,
+    event: Mapping[str, Any],
+    path: Path,
+    line_number: int,
+) -> str:
+    if request_id:
+        return f"claude-transcript:{request_id}"
+    if message_id:
+        return f"claude-transcript:{message_id}"
+    uuid_value = _first_text(event.get("uuid"), event.get("id"))
+    if uuid_value:
+        return f"claude-transcript:{uuid_value}"
+    fingerprint = sha256(
+        json.dumps(
+            {
+                "session_id": transcript_session_id,
+                "timestamp": event.get("timestamp"),
+                "path": str(path),
+                "line_number": line_number,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"claude-transcript:{fingerprint}"
+
+
+def _agent_home_candidates(
+    *,
+    runtime_dir: Path,
+    session_id: str,
+    session_manifest: Any | None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    for value in _session_agent_home_values(session_manifest):
+        candidates.append(Path(value).expanduser())
+
+    for root in _configured_transcript_roots(runtime_dir):
+        candidates.extend(
+            [
+                root / session_id / "agent_home",
+                root / "sessions" / session_id / "agent_home",
+                root / session_id,
+            ]
+        )
+        if (root / ".claude").exists():
+            candidates.append(root)
+
+    candidates.append(DEFAULT_WORKER_ROOT / "sessions" / session_id / "agent_home")
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _append_claude_transcript_sources(
+    sources: list[ClaudeTranscriptSource],
+    *,
+    seen: set[tuple[str, str]],
+    runtime_dir: Path,
+    session_id: str,
+    session_manifest: Any | None,
+    agent_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+) -> None:
+    candidates = _agent_home_candidates(
+        runtime_dir=runtime_dir,
+        session_id=session_id,
+        session_manifest=session_manifest,
+    )
+    existing = [candidate for candidate in candidates if _has_claude_transcripts(candidate)]
+    if not existing and not _is_claude_session(session_manifest):
+        return
+    if not existing:
+        sources.append(
+            ClaudeTranscriptSource(
+                session_id=session_id,
+                agent_id=agent_id,
+                team_id=team_id,
+                project_id=project_id,
+                agent_home=candidates[0] if candidates else Path(),
+                session_manifest=session_manifest,
+            )
+        )
+        return
+    for agent_home in existing:
+        key = (session_id, str(agent_home))
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(
+            ClaudeTranscriptSource(
+                session_id=session_id,
+                agent_id=agent_id,
+                team_id=team_id,
+                project_id=project_id,
+                agent_home=agent_home,
+                session_manifest=session_manifest,
+            )
+        )
+
+
+def _session_agent_home_values(session_manifest: Any | None) -> list[str]:
+    metadata = getattr(session_manifest, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return []
+    values: list[str] = []
+    for key in (
+        "agent_home_path",
+        "claude_agent_home_path",
+        "transcript_agent_home_path",
+    ):
+        value = _optional_text(metadata.get(key))
+        if value:
+            values.append(value)
+    container_worker = metadata.get("container_worker")
+    if isinstance(container_worker, Mapping):
+        for key in ("agent_home_path", "host_agent_home_path"):
+            value = _optional_text(container_worker.get(key))
+            if value:
+                values.append(value)
+    return values
+
+
+def _configured_transcript_roots(runtime_dir: Path) -> list[Path]:
+    roots: list[Path] = []
+    configured = os.environ.get(CLAUDE_TRANSCRIPT_ROOTS_ENV, "")
+    for raw_entry in configured.split(os.pathsep):
+        entry = raw_entry.strip()
+        if entry:
+            roots.append(Path(entry).expanduser())
+    worker_root = os.environ.get(WORKER_ROOT_ENV, "").strip()
+    if worker_root:
+        roots.append(Path(worker_root).expanduser())
+    roots.extend(
+        [
+            runtime_dir / "claude-transcripts",
+            runtime_dir / "worker-sessions",
+        ]
+    )
+    return roots
+
+
+def _claude_transcript_paths(agent_home: Path) -> list[Path]:
+    roots = [
+        agent_home / ".claude" / "projects",
+        agent_home / ".claude" / "sessions",
+    ]
+    paths: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.jsonl"):
+                if path.is_file():
+                    paths[path] = None
+        except OSError:
+            continue
+    return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def _has_claude_transcripts(agent_home: Path) -> bool:
+    if not agent_home:
+        return False
+    return bool(_claude_transcript_paths(agent_home))
+
+
+def _usage_contains_billable_tokens(usage: Mapping[str, Any]) -> bool:
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        if _optional_non_negative_int(usage.get(key)) is not None:
+            return True
+    cache_creation = usage.get("cache_creation")
+    return isinstance(cache_creation, Mapping) and any(
+        _optional_non_negative_int(cache_creation.get(key)) is not None
+        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    )
+
+
+def _sanitized_usage_payload(usage: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_scalar_keys = {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "service_tier",
+    }
+    sanitized: dict[str, Any] = {}
+    for key in allowed_scalar_keys:
+        value = usage.get(key)
+        if value is None:
+            continue
+        if key == "service_tier":
+            text = _optional_text(value)
+            if text:
+                sanitized[key] = text
+            continue
+        number = _optional_non_negative_int(value)
+        if number is not None:
+            sanitized[key] = number
+
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, Mapping):
+        cache_payload: dict[str, int] = {}
+        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"):
+            number = _optional_non_negative_int(cache_creation.get(key))
+            if number is not None:
+                cache_payload[key] = number
+        if cache_payload:
+            sanitized["cache_creation"] = cache_payload
+    return sanitized
+
+
+def _new_bucket(*, team_id: str | None = None, project_id: str | None = None) -> dict[str, Any]:
+    bucket: dict[str, Any] = {
+        "currency": "usd",
+        "_estimated_cost": Decimal("0"),
+        "events_count": 0,
+        "priced_events_count": 0,
+        "unpriced_events_count": 0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "source_counts": {},
+        "provider_breakdown": {},
+        "model_breakdown": {},
+        "cost_status_counts": {},
+        "_coverage_reasons": set(),
+    }
+    if team_id is not None:
+        bucket["team_id"] = team_id
+    if project_id is not None:
+        bucket["project_id"] = project_id
+    return bucket
+
+
+def _add_event_to_bucket(
+    bucket: dict[str, Any],
+    event: ModelInferenceUsageEvent,
+    estimate: ModelCostEstimate,
+    *,
+    source: str,
+) -> None:
+    estimated_total = estimate.estimated_total
+    bucket["events_count"] += 1
+    if estimated_total is not None:
+        bucket["_estimated_cost"] += estimated_total
+        bucket["priced_events_count"] += 1
+    else:
+        bucket["unpriced_events_count"] += 1
+        bucket["_coverage_reasons"].add(estimate.status)
+    input_tokens = int(event.input_tokens or 0)
+    output_tokens = int(event.output_tokens or 0)
+    total_tokens = (
+        int(event.total_tokens)
+        if event.total_tokens is not None
+        else input_tokens + output_tokens
+    )
+    cached_input_tokens = int(extract_cached_input_tokens(event) or 0)
+    cache_write_tokens = extract_cache_write_input_tokens(event).total
+    bucket["input_tokens"] += input_tokens
+    bucket["cached_input_tokens"] += cached_input_tokens
+    bucket["cache_write_input_tokens"] += cache_write_tokens
+    bucket["output_tokens"] += output_tokens
+    bucket["total_tokens"] += total_tokens
+    _increment(bucket["source_counts"], source)
+    _increment(bucket["cost_status_counts"], estimate.status)
+
+    provider_key = _optional_text(event.provider) or "unknown"
+    model_key = f"{provider_key}/{_optional_text(event.model) or '<missing>'}"
+    _add_event_to_leaf(
+        bucket["provider_breakdown"].setdefault(provider_key, _new_leaf()),
+        event,
+        estimate,
+        source=source,
+    )
+    _add_event_to_leaf(
+        bucket["model_breakdown"].setdefault(model_key, _new_leaf()),
+        event,
+        estimate,
+        source=source,
+    )
+
+
+def _new_leaf() -> dict[str, Any]:
+    return {
+        "currency": "usd",
+        "_estimated_cost": Decimal("0"),
+        "events_count": 0,
+        "priced_events_count": 0,
+        "unpriced_events_count": 0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "source_counts": {},
+        "cost_status_counts": {},
+        "_coverage_reasons": set(),
+    }
+
+
+def _add_event_to_leaf(
+    leaf: dict[str, Any],
+    event: ModelInferenceUsageEvent,
+    estimate: ModelCostEstimate,
+    *,
+    source: str,
+) -> None:
+    estimated_total = estimate.estimated_total
+    leaf["events_count"] += 1
+    if estimated_total is not None:
+        leaf["_estimated_cost"] += estimated_total
+        leaf["priced_events_count"] += 1
+    else:
+        leaf["unpriced_events_count"] += 1
+        leaf["_coverage_reasons"].add(estimate.status)
+    input_tokens = int(event.input_tokens or 0)
+    output_tokens = int(event.output_tokens or 0)
+    leaf["input_tokens"] += input_tokens
+    leaf["cached_input_tokens"] += int(extract_cached_input_tokens(event) or 0)
+    leaf["cache_write_input_tokens"] += extract_cache_write_input_tokens(event).total
+    leaf["output_tokens"] += output_tokens
+    leaf["total_tokens"] += (
+        int(event.total_tokens)
+        if event.total_tokens is not None
+        else input_tokens + output_tokens
+    )
+    _increment(leaf["source_counts"], source)
+    _increment(leaf["cost_status_counts"], estimate.status)
+
+
+def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
+    coverage_reasons = set(bucket.get("_coverage_reasons", set()))
+    finalized: dict[str, Any] = {}
+    for key, value in bucket.items():
+        if key == "_coverage_reasons":
+            continue
+        if key == "_estimated_cost":
+            finalized["estimated_cost"] = _decimal_to_float(value)
+            continue
+        if key == "provider_breakdown":
+            finalized[key] = {
+                item_key: _finalize_bucket(item_value)
+                for item_key, item_value in sorted(value.items())
+            }
+            continue
+        if key == "model_breakdown":
+            finalized[key] = {
+                item_key: _finalize_bucket(item_value)
+                for item_key, item_value in sorted(value.items())
+            }
+            continue
+        if key in {"source_counts", "cost_status_counts"}:
+            finalized[key] = dict(sorted(value.items()))
+            continue
+        finalized[key] = value
+    finalized["coverage_status"] = "partial" if coverage_reasons else "complete"
+    finalized["coverage_reasons"] = sorted(coverage_reasons)
+    if "estimated_cost" not in finalized:
+        finalized["estimated_cost"] = 0.0
+    return finalized
+
+
+def _increment(counter: dict[str, int], key: str) -> None:
+    counter[key] = int(counter.get(key, 0)) + 1
+
+
+def _usage_source(event: ModelInferenceUsageEvent) -> str:
+    request_metadata = event.raw_usage_metadata.get("request_metadata")
+    if isinstance(request_metadata, Mapping):
+        source = _optional_text(request_metadata.get("source"))
+        if source == TRANSCRIPT_SOURCE_NAME:
+            return "transcript"
+    return "relay"
+
+
+def _agent_for_session(state: TeamState, session_id: str) -> PersistentAgent | None:
+    for agent in state.agents.values():
+        if agent.session_id == session_id:
+            return agent
+    return None
+
+
+def _ephemeral_assignment_for_session(
+    state: TeamState, session_id: str
+) -> EphemeralAssignment | None:
+    for assignment in state.ephemeral_assignments.values():
+        if assignment.session_id == session_id:
+            return assignment
+    return None
+
+
+def _is_claude_session(session_manifest: Any | None) -> bool:
+    if session_manifest is None:
+        return False
+    metadata = getattr(session_manifest, "metadata", None)
+    if isinstance(metadata, Mapping):
+        for key in ("agent_provider", "agent_harness", "model_provider"):
+            value = _optional_text(metadata.get(key))
+            if value and value.casefold() in {"claude", "anthropic"}:
+                return True
+        model = _optional_text(metadata.get("model"))
+        if model and model.casefold().startswith("claude"):
+            return True
+    for key in ("agent_provider", "agent_harness", "model_provider"):
+        value = _optional_text(getattr(session_manifest, key, None))
+        if value and value.casefold() in {"claude", "anthropic"}:
+            return True
+    model = _optional_text(getattr(session_manifest, "model", None))
+    return bool(model and model.casefold().startswith("claude"))
+
+
+def _session_metadata_text(session_manifest: Any | None, key: str) -> str | None:
+    metadata = getattr(session_manifest, "metadata", None)
+    if isinstance(metadata, Mapping):
+        value = _optional_text(metadata.get(key))
+        if value:
+            return value
+    return _optional_text(getattr(session_manifest, key, None))
+
+
+def _file_mtime(path: Path) -> datetime:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:
+        return utc_now()
+
+
+def _optional_datetime(*values: Any) -> datetime | None:
+    for value in values:
+        text = _optional_text(value)
+        if text is None:
+            continue
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    return None
+
+
+def _optional_non_negative_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        text = _optional_text(value)
+        if text is not None:
+            return text
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _decimal_to_float(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+__all__ = [
+    "CLAUDE_TRANSCRIPT_ROOTS_ENV",
+    "TeamCostService",
+    "ClaudeTranscriptBackfillResult",
+    "ClaudeTranscriptSource",
+    "backfill_claude_transcript_usage",
+]
