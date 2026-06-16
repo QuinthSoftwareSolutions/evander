@@ -1293,6 +1293,12 @@ overlays.
 | `DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS`, `DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS`, `DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS` | bridge env | Polling plus caller-facing patience and backend timeout behavior for async `query_origin_agent` delegation back to the originating session. `DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS` controls how long the caller waits before the bridge speaks a fallback; `DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS` remains the longer gateway/backend deadline. |
 | `DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS`, `DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS`, `DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD`, `DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES` | bridge env | Delayed bridge-controlled barge-in for DIDWW Realtime calls; short configured or fuzzily matched backchannels are transcribed but do not cancel assistant audio, and a canceled interruption can queue a resume response instead of waiting for idle prompt recovery. |
 
+The DIDWW SIP bridge always records bounded per-call audio-quality diagnostics in
+`runtime/didww-sip-bridge-store.json` and exposes them through
+`GET /voice-sessions/{voice_session_id}/audio-quality` and
+`GET /phone-calls/{call_id}/audio-quality`. These diagnostics are passive counters and timestamped
+events; there is no separate tuning knob and the bridge does not persist raw audio.
+
 ### Teams meeting media bridge service keys
 
 These keys live in the Windows-hosted Teams media bridge process environment and are consumed by the
