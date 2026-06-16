@@ -294,7 +294,10 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   "dependency_task_ids"?}`. State, priority, title, and description remain
   owner-only. Dependency edits may also be made by a supervising agent, the
   project lead, or the team manager, and use the same same-project and cycle
-  validation as task creation. Updated ids are returned in `updated_task_ids`.
+  validation as task creation. Do not use `task_updates` to accept or reject
+  another agent's delivered work; use `review_requests[]` and
+  `review_decisions[]` so the deliverable/task cascade is applied. Updated ids
+  are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
   Shape: `{"recipient_agent_id", "task_id"?, "question"?}`. The recipient must be
   a direct subordinate; otherwise the item is rejected. A `STATUS_REQUEST` inbox
@@ -323,7 +326,9 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   must be in the same team. When `review_profile_id` is provided, the profile
   must be active, in the same team, applicable to the deliverable's project, and
   applicable to the assigned reviewer's role when the profile lists roles.
-  Returned in `created_review_request_ids`.
+  Leads that want reviewer-agent sign-off create a review request for that
+  reviewer; reassigning an existing review request is not part of the agent
+  action protocol. Returned in `created_review_request_ids`.
 - `review_decisions[]` — decide a review. Shape: `{"review_request_id",
   "state", "findings"?, "criteria"?}` where `state` is `accepted`, `rejected`,
   or `blocked`, and `criteria[]` contains `{"criterion_id", "state",

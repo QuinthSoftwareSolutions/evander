@@ -463,6 +463,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     prompt = str(resumer.calls[0]["prompt"])
     assert "team-action.json" in prompt
+    assert "Do not accept or reject someone else's task with task_updates" in prompt
+    assert "Use review_decisions only for review requests assigned to you" in prompt
     for field_name in (
         "task_creations",
         "status_requests",

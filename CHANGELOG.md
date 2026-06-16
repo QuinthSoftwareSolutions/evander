@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Add-on Review Action Guidance
+
+- Clarified the Team agent wake prompt and seeded action contract so agents use
+  `review_requests` and `review_decisions` for deliverable acceptance instead of
+  trying to accept another agent's task through owner-only `task_updates`.
+
 ## 2026-06-16 - Agent Completion Dispatch Identity
 
 - Tracked `trigger:agent:run:completed` cursor emissions by dispatch id as well
