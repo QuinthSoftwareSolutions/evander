@@ -3222,7 +3222,6 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
                 {"type": "__sleep__", "seconds": 0.05},
                 {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
                 {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
-                {"type": "__sleep__", "seconds": 1.1},
             ]
             self.cancels: list[str | None] = []
             self.responses: list[str | None] = []
@@ -3235,8 +3234,7 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
                     await asyncio.sleep(float(event["seconds"]))
                     continue
                 return event
-            stop_event.set()
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.05)
             return {}
 
         async def cancel_response(self, response_id: str | None = None) -> None:
@@ -3305,6 +3303,120 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
         event.metadata.get("reason") == "interruption_recovery"
         or event.metadata.get("request_reason") == "interruption_recovery"
         for event in recovery_events
+    )
+
+
+def test_slow_substantive_transcript_after_cancel_suppresses_recovery_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x15" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "__sleep__", "seconds": 0.35},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Stop, I need to ask about the outage.",
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.responses == [None]
+    latest = store.get("voice-1")
+    assert latest is not None
+    response_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "caller_turn_completed"
+        or event.metadata.get("request_reason") == "caller_turn_completed"
+        for event in response_events
+    )
+    assert not any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in response_events
     )
 
 

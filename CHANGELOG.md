@@ -18,6 +18,8 @@ material. Newer entries are added incrementally as changes land.
 - Queued an interruption recovery response when a classified backchannel arrives
   after assistant audio has already been canceled, avoiding dead air while the
   caller keeps the floor.
+- Deferred interruption recovery while a caller transcript is still pending so
+  slow substantive ASR results answer the caller instead of resuming over them.
 
 ## 2026-06-16 - DIDWW Origin Query Patience
 

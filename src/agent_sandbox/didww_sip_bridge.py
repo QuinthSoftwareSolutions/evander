@@ -130,6 +130,7 @@ _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS = (
     "caller turn."
 )
 _INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS = 0.25
+_INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS = 1.0
 _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
     "Start with a natural transition. If the conversation has moved on, start with a soft "
     "callback such as 'Quick callback to your earlier question -' or "
@@ -2655,6 +2656,7 @@ class DidwwSipBridgeService:
         ) -> None:
             nonlocal barge_cancel_recovery_task, barge_cancel_recovery_requested
             task = asyncio.current_task()
+            recovery_started_at = loop.time()
             try:
                 self._append_debug_event(
                     voice_session_id,
@@ -2665,6 +2667,15 @@ class DidwwSipBridgeService:
                     },
                 )
                 await asyncio.sleep(_INTERRUPTED_ASSISTANT_RECOVERY_GRACE_SECONDS)
+                while not stop_event.is_set() and caller_turn_incomplete:
+                    elapsed = loop.time() - recovery_started_at
+                    remaining = (
+                        _INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS
+                        - elapsed
+                    )
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.05, remaining))
                 if stop_event.is_set():
                     return
                 if barge_cancelled_utterance_id != utterance_id:
@@ -2693,6 +2704,7 @@ class DidwwSipBridgeService:
                         "response_active": active_state,
                         "assistant_speaking": assistant_state,
                         "queued_count": queued_count,
+                        "caller_turn_incomplete": caller_turn_incomplete,
                     },
                 )
                 await request_bridge_response(
