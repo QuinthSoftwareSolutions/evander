@@ -2119,6 +2119,110 @@ def test_realtime_end_call_waits_for_caller_turn_completion_before_hangup(
     assert latest.summary == "Call ended by voice agent."
 
 
+def test_realtime_end_call_waits_for_response_done_before_hangup(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "no further request"}),
+                    },
+                },
+                {"type": "__sleep__", "seconds": 0.02},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                order.append(str(event["type"]))
+                return event
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            del instructions
+            return None
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            del payload
+            return None
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "ended"}}
+    ]
+    assert order.index("response.done") < order.index("hangup:media-didww-test")
+    assert order.index("hangup:media-didww-test") < order.index("tool_output:tool-call-1")
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+    assert latest.summary == "Call ended by voice agent."
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "bridge.end_call.requested" in event_types
+    assert "bridge.end_call.executing" in event_types
+    assert "bridge.end_call.completed" in event_types
+
+
 def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
     tmp_path: Path,
 ) -> None:
