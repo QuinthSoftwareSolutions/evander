@@ -24,11 +24,13 @@ from agent_sandbox.didww_sip_bridge import (
     DidwwSipBridgeService,
     InboundPhoneCallStartRequest,
     OpenAIRealtimeSession,
+    OutboundAudioFrame,
     PhoneCallStartRequest,
     RealtimeFunctionCall,
     RtpPacket,
     RtpUdpEndpoint,
     VoiceMediaControllerClient,
+    _build_barge_in_fade_payload,
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
@@ -672,6 +674,82 @@ def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path
     assert sent_samples == 0
     assert reported_samples == []
     assert sent == []
+
+
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    frames = [
+        OutboundAudioFrame(payload=source_byte * 160),
+        OutboundAudioFrame(payload=(b"\x22" if media_format == "alaw" else b"\x66") * 160),
+    ]
+
+    fade_payload = _build_barge_in_fade_payload(
+        frames=frames,
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[0] != silence_byte[0]
+    assert fade_payload[-1] == silence_byte[0]
+    assert fade_payload != b"".join(frame.payload for frame in frames)
+    assert any(sample != silence_byte[0] for sample in fade_payload[:16])
+
+
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_pads_short_audio_with_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=source_byte * 160)],
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[:160] != silence_byte * 160
+    assert fade_payload[160:] == silence_byte * 160
+
+
+def test_barge_in_fade_payload_returns_empty_when_disabled_or_no_audio() -> None:
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[OutboundAudioFrame(payload=b"\x11" * 160)],
+            media_format="alaw",
+            sample_rate_hz=8000,
+            fade_ms=0,
+        )
+        == b""
+    )
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[],
+            media_format="ulaw",
+            sample_rate_hz=8000,
+            fade_ms=40,
+        )
+        == b""
+    )
 
 
 def test_realtime_audio_delta_accepts_current_and_legacy_event_names() -> None:

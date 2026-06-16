@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import audioop
 import base64
 import hashlib
 import inspect
@@ -1021,6 +1022,54 @@ def _rtp_bytes_per_sample(media_format: str) -> int:
     if media_format in _RTP_STATIC_AUDIO_FORMATS:
         return 1
     raise ValueError(f"Unsupported RTP media format: {media_format}")
+
+
+_G711_SILENCE_BYTES = {
+    "alaw": b"\xD5",
+    "ulaw": b"\xFF",
+}
+
+
+def _g711_silence_byte(media_format: str) -> bytes:
+    try:
+        return _G711_SILENCE_BYTES[media_format]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+
+def _build_barge_in_fade_payload(
+    *,
+    frames: list[OutboundAudioFrame],
+    media_format: str,
+    sample_rate_hz: int,
+    fade_ms: int,
+) -> bytes:
+    if fade_ms <= 0 or not frames:
+        return b""
+    samples_to_fade = int((fade_ms * sample_rate_hz) / 1000)
+    if samples_to_fade <= 0:
+        return b""
+    bytes_per_sample = _rtp_bytes_per_sample(media_format)
+    silence_byte = _g711_silence_byte(media_format)
+    source_payload = b"".join(frame.payload for frame in frames if frame.payload)
+    if not source_payload:
+        return b""
+    fade_window = max(1, samples_to_fade - 1)
+    decode = audioop.alaw2lin if media_format == "alaw" else audioop.ulaw2lin
+    encode = audioop.lin2alaw if media_format == "alaw" else audioop.lin2ulaw
+    payload = bytearray()
+    for index in range(samples_to_fade):
+        offset = index * bytes_per_sample
+        sample_fragment = source_payload[offset : offset + bytes_per_sample]
+        if not sample_fragment:
+            payload.extend(silence_byte)
+            continue
+        linear_sample = decode(sample_fragment, 2)
+        gain = 0.0 if samples_to_fade == 1 else 1.0 - (index / fade_window)
+        faded_sample = audioop.mul(linear_sample, 2, gain)
+        encoded_sample = encode(faded_sample, 2)
+        payload.extend(encoded_sample if encoded_sample else silence_byte)
+    return bytes(payload)
 
 
 class OpenAIRealtimeSession:
