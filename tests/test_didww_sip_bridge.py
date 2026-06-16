@@ -189,6 +189,8 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
     assert "do not fill the call with generic startup scaffolding" in lowered
     assert "give the answer directly" in lowered
     assert "do not narrate internal bookkeeping" in lowered
+    assert "after a natural goodbye or closing" in lowered
+    assert "call end_call to end the phone call" in lowered
     assert "for reconciliation" not in lowered
 
 
@@ -243,6 +245,8 @@ def test_projection_to_instructions_uses_inbound_startup_contract_for_inbound_ca
     assert "outbound startup contract" not in lowered
     assert "do not use outbound startup wording" in lowered
     assert "caller metadata" in lowered
+    assert "after a natural goodbye or closing" in lowered
+    assert "call end_call to end the phone call" in lowered
 
 
 def test_initial_inbound_call_instructions_use_route_specific_opening() -> None:
@@ -755,6 +759,61 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     assert turn_detection["prefix_padding_ms"] == 300
     assert turn_detection["silence_duration_ms"] == 800
     assert "idle_timeout_ms" not in turn_detection
+    assert session["tool_choice"] == "auto"
+    assert [tool["name"] for tool in session["tools"]] == ["end_call"]
+    assert session["tools"][0]["parameters"]["properties"]["reason"]["type"] == "string"
+
+
+def test_realtime_session_with_media_controller_includes_query_origin_agent_tool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    captured: dict[str, Any] = {}
+
+    class FakeWebSocket:
+        async def send(self, text: str) -> None:
+            captured["session_update"] = json.loads(text)
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def fake_connect(url: str, **kwargs: Any) -> FakeWebSocket:
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeWebSocket()
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    config = _config(tmp_path).model_copy(
+        update={
+            "openai_api_key_env": "OPENAI_API_KEY",
+            "openai_realtime_api_base_url": "https://api.openai.test/v1",
+        }
+    )
+
+    async def run() -> None:
+        async with OpenAIRealtimeSession(
+            config=config,
+            projection={"prompt": "Call Jonathan."},
+            realtime={
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base_url": "https://api.openai.test/v1",
+                "media_controller_url": "http://controller.local",
+                "model": "gpt-realtime-2",
+            },
+        ):
+            return None
+
+    asyncio.run(run())
+
+    assert captured["url"] == "wss://api.openai.test/v1/realtime?model=gpt-realtime-2"
+    assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
+    session = captured["session_update"]["session"]
+    assert session["tool_choice"] == "auto"
+    assert [tool["name"] for tool in session["tools"]] == ["end_call", "query_origin_agent"]
+    assert session["tools"][1]["parameters"]["required"] == ["question"]
 
 
 def test_barge_in_config_defaults_and_env_overrides(
@@ -764,6 +823,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
 
     assert config.barge_in_delay_ms == 700
+    assert config.goodbye_idle_hangup_seconds == 0.0
     assert config.backchannel_max_words == 3
     assert config.backchannel_phrases == [
         "ok",
@@ -779,12 +839,14 @@ def test_barge_in_config_defaults_and_env_overrides(
     ]
 
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", "250")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", "0.25")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", "2")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES", "yep, right")
 
     loaded = load_config(tmp_path)
 
     assert loaded.barge_in_delay_ms == 250
+    assert loaded.goodbye_idle_hangup_seconds == 0.25
     assert loaded.backchannel_max_words == 2
     assert loaded.backchannel_phrases == ["yep", "right"]
 
@@ -2084,6 +2146,704 @@ def test_realtime_idle_prompt_is_bounded_across_speech_resets(
     realtime = asyncio.run(run())
 
     assert realtime.responses.count(didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS) == 2
+
+
+def test_realtime_end_call_waits_for_rtp_drain_before_hangup(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ASSISTANT_PLAYBACK_DRAIN_SECONDS", 0.01)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x07" * 160).decode("ascii")
+    order: list[str] = []
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "caller said goodbye"}),
+                    },
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.responses: list[str | None] = []
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            order.append("send_start")
+            if on_samples_sent is not None:
+                on_samples_sent(160)
+            await asyncio.sleep(0.03)
+            order.append("send_done")
+            return len(payload)
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "ended"}}
+    ]
+    assert order.index("send_done") < order.index("hangup:media-didww-test")
+    assert order.index("hangup:media-didww-test") < order.index("tool_output:tool-call-1")
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+    assert latest.summary == "Call ended by voice agent."
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "bridge.end_call.requested" in event_types
+    assert "bridge.end_call.executing" in event_types
+    assert "bridge.end_call.completed" in event_types
+
+
+def test_realtime_end_call_waits_for_caller_turn_completion_before_hangup(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "caller is done"}),
+                    },
+                },
+                {"type": "__sleep__", "seconds": 0.02},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "__sleep__", "seconds": 0.02},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Bye for now.",
+                },
+                {"type": "__sleep__", "seconds": 0.02},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.responses: list[str | None] = []
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                order.append(str(event["type"]))
+                return event
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            self.events.append({"type": "response.done", "response": {"id": "resp-2"}})
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            del payload
+            return None
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "ended"}}
+    ]
+    assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
+        "hangup:media-didww-test"
+    )
+    assert order.index("response.done") < order.index("hangup:media-didww-test")
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+    assert latest.summary == "Call ended by voice agent."
+
+
+def test_realtime_end_call_waits_for_response_done_before_hangup(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "no further request"}),
+                    },
+                },
+                {"type": "__sleep__", "seconds": 0.02},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                order.append(str(event["type"]))
+                return event
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            del instructions
+            return None
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            del payload
+            return None
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "ended"}}
+    ]
+    assert order.index("response.done") < order.index("hangup:media-didww-test")
+    assert order.index("hangup:media-didww-test") < order.index("tool_output:tool-call-1")
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+    assert latest.summary == "Call ended by voice agent."
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "bridge.end_call.requested" in event_types
+    assert "bridge.end_call.executing" in event_types
+    assert "bridge.end_call.completed" in event_types
+
+
+def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+    audio_delta = base64.b64encode(b"\x08" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-1",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "caller said goodbye"}),
+                    },
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "tool-call-2",
+                        "name": "end_call",
+                        "arguments": json.dumps({"reason": "still goodbye"}),
+                    },
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                event = self.events.pop(0)
+                order.append(str(event["type"]))
+                return event
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("end_call should not request a follow-up response")
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            order.append("send_start")
+            if on_samples_sent is not None:
+                on_samples_sent(160)
+            await asyncio.sleep(0.03)
+            order.append("send_done")
+            return len(payload)
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == [
+        {"call_id": "tool-call-1", "output": {"status": "ended"}}
+    ]
+    assert order.count("hangup:media-didww-test") == 1
+    assert order.count("hangup:call-didww-test") == 1
+    assert order.count("destroy:bridge-didww-test") == 1
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+
+
+def test_goodbye_transcript_does_not_treat_inbound_greetings_as_closings() -> None:
+    assert not didww_sip_bridge._is_goodbye_transcript(
+        "Thanks for calling, how can I help?"
+    )
+    assert not didww_sip_bridge._is_goodbye_transcript(
+        "Thank you for calling Truman support. How may I direct your call?"
+    )
+    assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling ops.")
+
+    assert didww_sip_bridge._is_goodbye_transcript("Thank you for calling.")
+    assert didww_sip_bridge._is_goodbye_transcript("Thanks for calling. Goodbye.")
+
+
+def test_realtime_goodbye_idle_hangup_waits_for_silence_before_cleanup(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ASSISTANT_PLAYBACK_DRAIN_SECONDS", 0.01)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+    audio_delta = base64.b64encode(b"\x09" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "transcript": "Thanks for calling. Goodbye.",
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+            ]
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                event = self.events.pop(0)
+                order.append(str(event["type"]))
+                return event
+            await asyncio.sleep(0.005)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("idle prompt should not be requested after goodbye")
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            order.append("send_start")
+            if on_samples_sent is not None:
+                on_samples_sent(160)
+            await asyncio.sleep(0.03)
+            order.append("send_done")
+            return len(payload)
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"goodbye_idle_hangup_seconds": 0.01}),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == []
+    assert order.index("send_done") < order.index("hangup:media-didww-test")
+    assert order.index("hangup:media-didww-test") < order.index("hangup:call-didww-test")
+    assert order.index("hangup:call-didww-test") < order.index("destroy:bridge-didww-test")
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status == "ended"
+    assert latest.summary == "Call ended by voice agent."
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "bridge.goodbye_idle.scheduled" in event_types
+    assert "bridge.goodbye_idle.executing" in event_types
+    assert "bridge.goodbye_idle.completed" in event_types
+
+
+def test_realtime_goodbye_idle_hangup_is_cancelled_by_caller_speech(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(didww_sip_bridge, "_ASSISTANT_PLAYBACK_DRAIN_SECONDS", 0.01)
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    store.attach_asterisk(
+        record.voice_session_id,
+        ari_channel_id="call-didww-test",
+        ari_bridge_id="bridge-didww-test",
+        ari_external_media_channel_id="media-didww-test",
+        rtp_port=49000,
+    )
+    stop_event = asyncio.Event()
+    order: list[str] = []
+    audio_delta = base64.b64encode(b"\x0a" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "transcript": "Thanks for calling. Goodbye.",
+                },
+                {"type": "response.output_audio.done", "response_id": "resp-1"},
+                {"type": "response.done", "response": {"id": "resp-1"}},
+                {"type": "__sleep__", "seconds": 0.01},
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 2500},
+                {"type": "__sleep__", "seconds": 0.02},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 2900},
+            ]
+            self.tool_outputs: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                order.append(str(event["type"]))
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+            order.append(f"tool_output:{call_id}")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            del instructions
+            return None
+
+    class FakeRtp:
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            if on_samples_sent is not None:
+                on_samples_sent(160)
+            await asyncio.sleep(0.03)
+            return len(payload)
+
+    class FakeAriClient:
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            order.append(f"hangup:{channel_id}")
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            order.append(f"destroy:{bridge_id}")
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"goodbye_idle_hangup_seconds": 0.05}),
+            store=store,
+            ari_client=FakeAriClient(),  # type: ignore[arg-type]
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.tool_outputs == []
+    assert not any(item.startswith("hangup:") for item in order)
+    assert not any(item.startswith("destroy:") for item in order)
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.status != "ended"
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "bridge.goodbye_idle.scheduled" in event_types
+    assert "bridge.goodbye_idle.cancelled" in event_types
 
 
 def test_short_backchannel_during_assistant_audio_does_not_cancel_or_request_response(
