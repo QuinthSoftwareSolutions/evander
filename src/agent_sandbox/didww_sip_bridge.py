@@ -124,11 +124,8 @@ _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
     "do not say the query is still pending, and do not say that you are still checking."
 )
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
-    "Tell the caller in one short sentence that you will look that up for them. "
-    "Then say, in one short sentence, that you will wait for the answer; if they want "
-    "you to keep discussing something relevant while you wait, they can say so. "
-    "Do not expose internal handoffs, delegated-query details, or technical underpinnings. "
-    "Do not introduce unrelated filler or a new topic unless the caller asks for it."
+    'Tell the caller in one short natural sentence: "Let me look that up for you - one moment." '
+    "Do not add filler, do not invite a topic shift, and do not expose internal handoffs."
 )
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",

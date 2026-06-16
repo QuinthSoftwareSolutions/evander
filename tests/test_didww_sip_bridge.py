@@ -3933,13 +3933,17 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
         "output": {"status": "pending", "query_id": "voice-query-1"},
     }
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
-    assert "projected calling task" not in str(realtime.responses[0]).lower()
-    assert "interesting fact" not in str(realtime.responses[0]).lower()
-    assert "look that up" in str(realtime.responses[0]).lower()
-    assert "something relevant" in str(realtime.responses[0]).lower()
-    assert "unrelated filler" in str(realtime.responses[0]).lower()
-    assert "origin agent" not in str(realtime.responses[0]).lower()
-    assert "originating agent" not in str(realtime.responses[0]).lower()
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "projected calling task" not in response_text
+    assert "interesting fact" not in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
@@ -4043,6 +4047,15 @@ def test_origin_query_hold_ack_does_not_queue_extra_response(
     realtime = asyncio.run(run())
 
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     assert didww_sip_bridge._is_origin_query_hold_ack("No, I'll wait.")
     assert didww_sip_bridge._is_origin_query_hold_ack("Yes, please.")
     assert not didww_sip_bridge._is_origin_query_hold_ack("Please continue with the topic.")
@@ -4881,6 +4894,15 @@ def test_realtime_function_calls_wait_for_response_done_and_dedupe_queries(
         },
     ]
     assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS]
+    response_text = str(realtime.responses[0]).lower()
+    assert "look that up for you" in response_text
+    assert "one moment" in response_text
+    assert "discuss" not in response_text
+    assert "something relevant" not in response_text
+    assert "while you wait" not in response_text
+    assert "unrelated filler" not in response_text
+    assert "origin agent" not in response_text
+    assert "originating agent" not in response_text
     latest = store.get("voice-1")
     assert latest is not None
     assert len(latest.transcript_events) == 1
