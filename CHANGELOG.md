@@ -5,10 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
-## 2026-06-16 - DIDWW Barge-In Fade Contract
+## 2026-06-16 - DIDWW Barge-In Fade
 
 - Added a configurable `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS` setting to the DIDWW SIP bridge
   with a 120 ms default and a 0 to 500 ms validation window.
+- Routed confirmed barge-in cancels through a short faded queued-RTP tail instead of dropping
+  pending assistant audio immediately, while keeping prompt Realtime response cancellation and
+  assistant audio truncation.
 - Documented the fade window in the DIDWW bridge operations guide, configuration reference, and
   sample env file so operators can distinguish a taper from a hard cut.
 
