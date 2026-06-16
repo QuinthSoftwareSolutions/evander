@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   execution state instead of VM power state, while showing VM or worker state
   as separate target metadata in the list and selected-agent details.
 
+## 2026-06-16 - Team Add-on Dispatch Routing Guard
+
+- Required completed persistent Team sessions to match the active Team dispatch
+  lease before routing into action application, including completions that omit
+  a dispatch id while a Team lease is active.
+
 ## 2026-06-16 - Team Add-on Cost Counter
 
 - Added a Team Add-on cost API and UI counters that show lifetime team-level

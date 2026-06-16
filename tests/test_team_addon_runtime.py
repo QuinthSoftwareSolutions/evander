@@ -1026,6 +1026,35 @@ def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(
     assert result["expected_dispatch_id"] == team_dispatch_id
 
 
+def test_session_routing_ignores_missing_dispatch_for_active_team_lease(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "ignored"
+    assert result["dispatch_id"] is None
+    assert result["persistent"] is False
+    assert result["ignored"] is True
+    assert result["reason"] == "dispatch_id does not match active team runtime lease"
+    assert result["expected_dispatch_id"] == team_dispatch_id
+
+
 def test_session_routing_accepts_active_team_dispatch_for_persistent_agent(
     tmp_path: Path,
 ) -> None:

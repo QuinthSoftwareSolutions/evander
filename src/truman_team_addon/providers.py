@@ -791,7 +791,14 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
                     if runtime is not None
                     else None
                 )
-                if dispatch_id is not None and dispatch_id != expected_dispatch_id:
+                dispatch_mismatch = (
+                    expected_dispatch_id is not None
+                    and dispatch_id != expected_dispatch_id
+                ) or (
+                    expected_dispatch_id is None
+                    and dispatch_id is not None
+                )
+                if dispatch_mismatch:
                     return {
                         "success": True,
                         "session_id": session_id,
