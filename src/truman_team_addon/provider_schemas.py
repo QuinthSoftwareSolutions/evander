@@ -38,6 +38,21 @@ class TeamApplyAgentActionEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:apply-agent-action action must be a JSON object")
 
 
+class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-operator-directive"]
+    team_id: ConfigValue
+    message: ConfigValue
+    recipient_agent_id: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    task_id: ConfigValue | None = None
+    title: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_message_id: ConfigValue | None = None
+    created_by: ConfigValue | None = None
+    requesting_session_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+
 class TeamRequestEphemeralAgentsEffectDefinition(EffectDefinition):
     type: Literal["effect:team:request-ephemeral-agents"]
     parent_agent_id: ConfigValue
@@ -129,6 +144,16 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
         )
 
 
+class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:publish-review-branch"]
+    host_repo_path: ConfigValue
+    target_branch: ConfigValue
+    bare_repo_name: ConfigValue | None = None
+    bare_repo_path: ConfigValue | None = None
+    source_branch: ConfigValue | None = None
+    commit_sha: ConfigValue | None = None
+
+
 class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
     type: Literal["effect:team:mark-release-published"]
     release_package_id: ConfigValue
@@ -194,6 +219,8 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "leased_count": {"type": "integer"},
         "leases": {"type": "array"},
         "dispatches": {"type": "array"},
+        "prepared_project_repos": {"type": "array"},
+        "failed_project_repo_preparations": {"type": "array"},
         "errors": {"type": "array"},
     },
     "effect:team:apply-agent-action": {
@@ -217,6 +244,16 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "accepted_ephemeral_assignment_ids": {"type": "array"},
         "rejected_ephemeral_assignment_ids": {"type": "array"},
         "updated_task_ids": {"type": "array"},
+    },
+    "effect:team:create-operator-directive": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "inbox_item_id": {"type": ["string", "null"]},
+        "recipient_agent_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
     },
     "effect:team:request-ephemeral-agents": {
         "success": {"type": "boolean"},
@@ -268,6 +305,15 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "release_package_id": {"type": ["string", "null"]},
         "created_deliverable_ids": {"type": "array"},
         "created_inbox_item_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:publish-review-branch": {
+        "success": {"type": "boolean"},
+        "review_branch": {"type": ["string", "null"]},
+        "target_branch": {"type": ["string", "null"]},
+        "commit_sha": {"type": ["string", "null"]},
+        "host_repo_path": {"type": ["string", "null"]},
+        "message": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:mark-release-published": {

@@ -1486,11 +1486,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         }
         assert ("team-git-promotion-requested", gate_id) in edges
 
-    # review -> promote-agent-branch -> record-git-promotion
+    # review -> publish-review-branch -> record-git-promotion
     promote = effects["team-git-promote-review-branch"]
-    assert promote["type"] == "effect:git:promote-agent-branch"
-    assert promote["agent_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert promote["review_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert promote["type"] == "effect:team:publish-review-branch"
+    assert promote["source_branch"] == (
+        "${{team-git-promotion-requested.payload.source_branch ?? null}}"
+    )
+    assert promote["commit_sha"] == "${{team-git-promotion-requested.payload.commit_sha ?? null}}"
+    assert promote["target_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
     assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
     assert effects["team-record-review-promotion"]["promotion_id"] == (
         "${{team-git-promotion-requested.payload.promotion_id}}"

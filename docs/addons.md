@@ -359,6 +359,11 @@ may additionally carry `agent_branch` and `commit_sha`. When present,
 name for that assignment; a mismatch fails the assignment rather than recording a
 branch the add-on cannot later promote.
 
+Persistent agents may include `git_refs` on a deliverable with `agent_branch`
+and/or `commit_sha` when the project has Git configured. Those refs are not
+published automatically; a supervising agent, project lead, or manager requests
+publication with `git_review_promotions[]`.
+
 ### Communication And Escalation Rules
 
 Team communication is directional and enforced by the repository, not by prose:
@@ -450,10 +455,15 @@ branch → release branch → canonical push — using `GitPromotionRecord` rows
 repository only records intent; the packaged pack routes each event on its
 `promotion_kind`:
 
-- `review` — `git_review_promotions[]` (`{"assignment_id", "deliverable_id"?}`):
-  the actor must be the assignment's parent and the assignment must be completed
-  or accepted with an `agent_branch`. Routes to `effect:git:promote-agent-branch`
-  then `effect:team:record-git-promotion`.
+- `review` — `git_review_promotions[]` supports two shapes. Ephemeral workers
+  use `{"assignment_id", "deliverable_id"?}`; the actor must be the assignment's
+  parent and the assignment must be completed or accepted with an `agent_branch`.
+  Persistent agents use `{"deliverable_id", "source_branch"?, "commit_sha"?}`;
+  the actor must be the producer, supervise the producer, or hold project-lead or
+  manager authority over the deliverable's project, and the source may also come
+  from the deliverable's `git_refs.agent_branch` / `git_refs.commit_sha`.
+  Routes to `effect:team:publish-review-branch` then
+  `effect:team:record-git-promotion`.
 - `feature` — `git_feature_updates[]` (`{"task_id", "source_review_branches"[],
   "feature_branch"?}`): the actor owns the task or supervises its owner. Routes to
   `effect:team:consolidate-git-branches` then `effect:team:record-git-promotion`.
@@ -467,14 +477,16 @@ repository only records intent; the packaged pack routes each event on its
   promotion (release branch → canonical branch, finalized by
   `effect:team:mark-release-published`).
 
-Three add-on-owned effect providers complete these flows:
+Four add-on-owned effect providers complete these flows:
+`effect:team:publish-review-branch` (publish a source branch or commit from the
+project's bare repo into a durable `team/<team-id>/reviews/...` branch inside
+the project's `host_repo_path`),
 `effect:team:record-git-promotion` (mark a promotion succeeded/failed and attach
 branches to `git_refs`), `effect:team:mark-release-published` (publish or block a
 release package), and `effect:team:consolidate-git-branches` (deterministic merge
 of multiple source branches strictly inside the project's `host_repo_path`,
-aborting and failing on conflict — never auto-resolving). The single-branch core
-effects `effect:git:promote-agent-branch` and `effect:git:push-branch` are reused
-unchanged.
+aborting and failing on conflict — never auto-resolving). The core
+`effect:git:push-branch` effect is reused unchanged for canonical publication.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 never leave the project's `host_repo_path`. The **only** branch pushed to the

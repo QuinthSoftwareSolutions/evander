@@ -1809,6 +1809,128 @@ def test_apply_agent_action_git_review_promotion_requires_git_config(tmp_path: P
     assert state.git_promotions == {}
 
 
+def test_apply_agent_action_records_deliverable_git_refs(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Ready for review.",
+                    "git_refs": {
+                        "agent_branch": "agents/session-backend/work",
+                        "commit_sha": "deadbeef",
+                    },
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    refs = state.deliverables["deliverable"].git_refs
+    assert refs.agent_branch == "agents/session-backend/work"
+    assert refs.commit_sha == "deadbeef"
+
+
+def test_apply_agent_action_persistent_git_review_promotion_from_commit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Ready for review.",
+                    "git_refs": {"commit_sha": "deadbeef"},
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_review_promotions": [{"deliverable_id": "deliverable"}],
+        },
+    )
+
+    assert result["success"] is True
+    promotion_id = result["git_promotion_event_ids"][0]
+    promotion = state.git_promotions[promotion_id]
+    assert promotion.promotion_kind == "review"
+    assert promotion.deliverable_id == "deliverable"
+    assert promotion.task_id == "task"
+    assert promotion.source_branch == "commit/deadbeef"
+    assert promotion.target_branch == "team/team/reviews/deliverable"
+    assert promotion.commit_sha == "deadbeef"
+    event = result["events"][0]
+    assert event["payload"]["promotion_kind"] == "review"
+    assert event["payload"]["deliverable_id"] == "deliverable"
+    assert event["payload"]["target_branch"] == "team/team/reviews/deliverable"
+    assert event["payload"]["commit_sha"] == "deadbeef"
+
+
+def test_apply_agent_action_persistent_git_review_promotion_rejects_missing_source(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_review_promotions": [{"deliverable_id": "deliverable"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("requires source_branch or commit_sha" in error for error in result["errors"])
+    assert state.git_promotions == {}
+
+
+def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable",
+                    "task_id": "task",
+                    "summary": "Ready for review.",
+                    "git_refs": {"commit_sha": "deadbeef"},
+                }
+            ],
+        },
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "git_review_promotions": [{"deliverable_id": "deliverable"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("not permitted to promote deliverable" in error for error in result["errors"])
+    assert len(state.git_promotions) == 0
+
+
 def test_apply_agent_action_git_feature_update_default_branch(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)

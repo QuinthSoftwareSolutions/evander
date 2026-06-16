@@ -298,8 +298,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             },
             {
                 "id": "team-git-promote-review-branch",
-                "display_name": "Promote agent branch to review branch",
-                "type": "effect:git:promote-agent-branch",
+                "display_name": "Publish Team review branch",
+                "type": "effect:team:publish-review-branch",
                 "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
                 "bare_repo_name": (
                     "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
@@ -307,8 +307,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "bare_repo_path": (
                     "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
                 ),
-                "agent_branch": "${{team-git-promotion-requested.payload.source_branch}}",
-                "review_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "source_branch": "${{team-git-promotion-requested.payload.source_branch ?? null}}",
+                "commit_sha": "${{team-git-promotion-requested.payload.commit_sha ?? null}}",
+                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
             },
             {
                 "id": "team-record-review-promotion",

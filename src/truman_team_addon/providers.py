@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -31,6 +32,7 @@ from .provider_schemas import (
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
@@ -438,6 +440,54 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
         return result
 
 
+class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamPublishReviewBranchEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "host_repo_path",
+            "bare_repo_name",
+            "bare_repo_path",
+            "source_branch",
+            "commit_sha",
+            "target_branch",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        try:
+            host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
+            target_branch = validate_branch_name(
+                _required_text(payload.get("target_branch"), "target_branch")
+            )
+            bare_repo_path = _resolve_bare_repo_path(
+                _optional_text(payload.get("bare_repo_path")),
+                _optional_text(payload.get("bare_repo_name")),
+            )
+            source_branch_value = _optional_text(payload.get("source_branch"))
+            source_branch = (
+                validate_branch_name(source_branch_value)
+                if source_branch_value is not None
+                else None
+            )
+            commit_sha = _optional_text(payload.get("commit_sha"))
+            if source_branch is None and commit_sha is None:
+                raise ValueError("source_branch or commit_sha is required")
+        except ValueError as exc:
+            return _review_publish_failure(None, None, str(exc))
+        return _publish_review_branch(
+            host_repo_path=host_repo_path,
+            bare_repo_path=bare_repo_path,
+            target_branch=target_branch,
+            source_branch=source_branch,
+            commit_sha=commit_sha,
+        )
+
+
 class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -701,6 +751,7 @@ def register_providers() -> ProviderPluginRegistration:
                 TeamMarkEphemeralCleanedUpEffectProvider
             ),
             "effect:team:record-git-promotion": TeamRecordGitPromotionEffectProvider,
+            "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
             "effect:team:consolidate-git-branches": (
                 TeamConsolidateGitBranchesEffectProvider
@@ -735,6 +786,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:record-git-promotion": (
                 lambda node: _materialize(TeamRecordGitPromotionEffectDefinition, node)
+            ),
+            "effect:team:publish-review-branch": (
+                lambda node: _materialize(TeamPublishReviewBranchEffectDefinition, node)
             ),
             "effect:team:mark-release-published": (
                 lambda node: _materialize(TeamMarkReleasePublishedEffectDefinition, node)
@@ -1233,6 +1287,14 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "summary": {"type": "string", "minLength": 1},
                         "artifact_refs": string_array,
                         "artifact_space_ref": text_or_null,
+                        "git_refs": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "agent_branch": text_or_null,
+                                "commit_sha": text_or_null,
+                            },
+                        },
                     },
                 },
             },
@@ -1926,8 +1988,105 @@ def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, A
     }
 
 
+def _review_publish_failure(
+    target_branch: str | None,
+    host_repo_path: str | None,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "review_branch": target_branch,
+        "target_branch": target_branch,
+        "commit_sha": None,
+        "host_repo_path": host_repo_path,
+        "message": None,
+        "error": error,
+    }
+
+
 def _git_text(proc: subprocess.CompletedProcess[str]) -> str:
     return (proc.stdout or "") + (proc.stderr or "")
+
+
+def _resolve_bare_repo_path(
+    bare_repo_path: str | None,
+    bare_repo_name: str | None,
+) -> Path:
+    if bare_repo_path and bare_repo_name:
+        raise ValueError("bare_repo_path and bare_repo_name are mutually exclusive")
+    if bare_repo_path:
+        return Path(bare_repo_path)
+    if not bare_repo_name:
+        raise ValueError("bare_repo_path or bare_repo_name is required")
+    normalized = bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
+    git_root = os.environ.get("AGENT_SANDBOX_GIT_ROOT")
+    root = Path(git_root) if git_root else Path(__file__).resolve().parents[2] / "git-remotes"
+    return root / normalized
+
+
+def _publish_review_branch(
+    *,
+    host_repo_path: str,
+    bare_repo_path: Path,
+    target_branch: str,
+    source_branch: str | None,
+    commit_sha: str | None,
+) -> dict[str, Any]:
+    repo_path = Path(host_repo_path)
+    if not (repo_path / ".git").exists():
+        return _review_publish_failure(
+            target_branch,
+            host_repo_path,
+            f"{host_repo_path} is not a git repository",
+        )
+    if not bare_repo_path.exists():
+        return _review_publish_failure(
+            target_branch,
+            host_repo_path,
+            f"bare repo not found: {bare_repo_path}",
+        )
+
+    def _git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    source_ref = commit_sha if commit_sha is not None else f"refs/heads/{source_branch}"
+    temp_ref = f"refs/agent-sandbox/team-promotions/{target_branch}"
+    target_ref = f"refs/heads/{target_branch}"
+    fetch = _git(
+        "fetch",
+        "--no-tags",
+        str(bare_repo_path),
+        f"+{source_ref}:{temp_ref}",
+    )
+    if fetch.returncode != 0:
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(fetch))
+
+    resolved = _git("rev-parse", "--verify", f"{temp_ref}^{{commit}}")
+    if resolved.returncode != 0:
+        _git("update-ref", "-d", temp_ref)
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(resolved))
+
+    resolved_commit = resolved.stdout.strip()
+    update = _git("update-ref", target_ref, resolved_commit)
+    _git("update-ref", "-d", temp_ref)
+    if update.returncode != 0:
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(update))
+
+    return {
+        "success": True,
+        "review_branch": target_branch,
+        "target_branch": target_branch,
+        "commit_sha": resolved_commit,
+        "host_repo_path": host_repo_path,
+        "message": f"Published {resolved_commit} to {target_branch}",
+        "error": None,
+    }
 
 
 def _consolidate_git_branches(

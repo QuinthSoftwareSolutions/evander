@@ -1662,12 +1662,16 @@ class TeamStateRepository:
                     artifact_space_ref = _optional_text(deliverable_payload.get("artifact_space_ref"))
                     if artifact_space_ref:
                         artifact_refs = _append_unique(artifact_refs, artifact_space_ref)
+                    git_refs = _deliverable_git_refs_from_payload(
+                        deliverable_payload.get("git_refs")
+                    )
                     deliverable = Deliverable(
                         id=deliverable_id,
                         task_id=task_id,
                         producer_agent_id=agent.id,
                         summary=_required_text(deliverable_payload.get("summary"), "summary"),
                         artifact_refs=artifact_refs,
+                        git_refs=git_refs,
                         state=TeamRecordState.PENDING,
                     )
                     state_model.deliverables[deliverable.id] = deliverable
@@ -3032,6 +3036,17 @@ def _bare_repo_fields(git: Any) -> dict[str, str]:
     return {"bare_repo_path": git.bare_repo_path}
 
 
+def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
+    payload = _optional_mapping(value, "git_refs") or {}
+    agent_branch = _optional_text(payload.get("agent_branch"))
+    if agent_branch is not None:
+        agent_branch = validate_branch_name(agent_branch)
+    return DeliverableGitRefs(
+        agent_branch=agent_branch,
+        commit_sha=_optional_text(payload.get("commit_sha")),
+    )
+
+
 def _emit_git_promotion_event(
     result: dict[str, Any],
     *,
@@ -3055,7 +3070,31 @@ def _apply_git_review_promotion(
     request: dict[str, Any],
     result: dict[str, Any],
 ) -> str | None:
-    assignment_id = _required_text(request.get("assignment_id"), "assignment_id")
+    assignment_id = _optional_text(request.get("assignment_id"))
+    if assignment_id is None:
+        return _apply_persistent_git_review_promotion(
+            state,
+            actor=actor,
+            request=request,
+            result=result,
+        )
+    return _apply_ephemeral_git_review_promotion(
+        state,
+        actor=actor,
+        request=request,
+        result=result,
+        assignment_id=assignment_id,
+    )
+
+
+def _apply_ephemeral_git_review_promotion(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+    assignment_id: str,
+) -> str | None:
     assignment = state.ephemeral_assignments.get(assignment_id)
     if assignment is None:
         result["errors"].append(
@@ -3134,6 +3173,104 @@ def _apply_git_review_promotion(
         payload["deliverable_id"] = deliverable_id
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
     return promotion_id
+
+
+def _apply_persistent_git_review_promotion(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None:
+        result["errors"].append(
+            f"git review promotion references missing deliverable {deliverable_id}"
+        )
+        return None
+    task = state.tasks.get(deliverable.task_id)
+    if task is None:
+        result["errors"].append(
+            f"git review promotion references missing task {deliverable.task_id}"
+        )
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None:
+        result["errors"].append(
+            f"git review promotion references missing project {task.project_id}"
+        )
+        return None
+    permitted = (
+        actor.id == deliverable.producer_agent_id
+        or _supervises(state, actor.id, deliverable.producer_agent_id)
+        or _is_project_lead_for(state, actor.id, project.id)
+        or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
+    )
+    if not permitted:
+        result["errors"].append(
+            f"agent {actor.id} is not permitted to promote deliverable {deliverable_id}"
+        )
+        return None
+    git = _project_git_or_error(project, result)
+    if git is None:
+        return None
+
+    commit_sha = _optional_text(request.get("commit_sha")) or deliverable.git_refs.commit_sha
+    source_branch_value = (
+        _optional_text(request.get("source_branch"))
+        or deliverable.git_refs.agent_branch
+    )
+    if source_branch_value is not None:
+        try:
+            source_branch = validate_branch_name(source_branch_value)
+        except ValueError as exc:
+            result["errors"].append(f"git review promotion has invalid source_branch: {exc}")
+            return None
+    elif commit_sha is not None:
+        source_branch = _commit_source_branch(commit_sha)
+    else:
+        result["errors"].append(
+            f"git review promotion for deliverable {deliverable_id} requires source_branch or commit_sha"
+        )
+        return None
+
+    target_branch = review_branch(actor.team_id, deliverable_id)
+    promotion_id = f"promotion-{uuid4().hex}"
+    state.git_promotions[promotion_id] = GitPromotionRecord(
+        id=promotion_id,
+        project_id=project.id,
+        task_id=task.id,
+        deliverable_id=deliverable_id,
+        actor_agent_id=actor.id,
+        source_branch=source_branch,
+        target_branch=target_branch,
+        promotion_kind="review",
+        commit_sha=commit_sha,
+    )
+    payload: dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_kind": "review",
+        "project_id": project.id,
+        "host_repo_path": git.host_repo_path,
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "deliverable_id": deliverable_id,
+    }
+    payload.update(_bare_repo_fields(git))
+    if source_branch_value is not None:
+        payload["source_branch"] = source_branch_value
+    if commit_sha is not None:
+        payload["commit_sha"] = commit_sha
+    _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
+    return promotion_id
+
+
+def _commit_source_branch(commit_sha: str) -> str:
+    slug = "".join(ch if ch.isalnum() else "-" for ch in commit_sha).strip("-")
+    if not slug:
+        slug = "unknown"
+    return validate_branch_name(f"commit/{slug[:64]}")
 
 
 def _apply_git_feature_update(
@@ -3385,7 +3522,8 @@ def _attach_promotion_success(
         refs = deliverable.git_refs
         if kind == "review":
             refs.review_branch = promotion.target_branch
-            refs.agent_branch = refs.agent_branch or promotion.source_branch
+            if not promotion.source_branch.startswith("commit/"):
+                refs.agent_branch = refs.agent_branch or promotion.source_branch
         elif kind == "feature":
             refs.feature_branch = promotion.target_branch
         elif kind == "release":
