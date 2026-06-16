@@ -433,6 +433,8 @@ class DidwwAudioQualityWindow(BaseModel):
     duplicate_packets: int = Field(default=0, ge=0)
     malformed_packets: int = Field(default=0, ge=0)
     decode_errors: int = Field(default=0, ge=0)
+    buffer_underruns: int = Field(default=0, ge=0)
+    buffer_overruns: int = Field(default=0, ge=0)
     jitter_ms: float = Field(default=0.0, ge=0.0)
     queue_depth_max: int = Field(default=0, ge=0)
 
@@ -464,6 +466,8 @@ class DidwwAudioQualityMetrics(BaseModel):
     duplicate_packets: int = Field(default=0, ge=0)
     malformed_packets: int = Field(default=0, ge=0)
     decode_errors: int = Field(default=0, ge=0)
+    buffer_underruns: int = Field(default=0, ge=0)
+    buffer_overruns: int = Field(default=0, ge=0)
     jitter_ms: float = Field(default=0.0, ge=0.0)
     queue_depth_max: int = Field(default=0, ge=0)
     windows: list[DidwwAudioQualityWindow] = Field(default_factory=list)
@@ -1584,6 +1588,8 @@ class DidwwAudioQualityTracker:
     duplicate_packets: int = 0
     malformed_packets: int = 0
     decode_errors: int = 0
+    buffer_underruns: int = 0
+    buffer_overruns: int = 0
     jitter_ms: float = 0.0
     queue_depth_max: int = 0
     windows: list[DidwwAudioQualityWindow] = field(default_factory=list)
@@ -1812,6 +1818,8 @@ class DidwwAudioQualityTracker:
         self._touch(occurred_at)
         self._window.ended_at = occurred_at or utc_now()
         if queue_depth > self._queue_depth_warning_threshold():
+            self.buffer_overruns += 1
+            self._window.buffer_overruns += 1
             self._append_event(
                 "rtp.queue_overrun",
                 severity="warning",
@@ -1822,6 +1830,28 @@ class DidwwAudioQualityTracker:
                 },
                 occurred_at=occurred_at,
             )
+
+    def record_buffer_underrun(
+        self,
+        *,
+        wait_ms: float,
+        queue_name: str = "outbound_audio",
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.buffer_underruns += 1
+        self._window.buffer_underruns += 1
+        self._touch(occurred_at)
+        self._append_event(
+            "rtp.buffer_underrun",
+            severity="warning",
+            message="Audio sender waited for queued audio longer than the frame-gap threshold",
+            metadata={
+                "queue": queue_name,
+                "wait_ms": round(max(0.0, wait_ms), 3),
+                "expected_frame_duration_ms": self.frame_duration_ms,
+            },
+            occurred_at=occurred_at,
+        )
 
     def snapshot(self, *, occurred_at: datetime | None = None) -> DidwwAudioQualityMetrics:
         now = occurred_at or utc_now()
@@ -1856,6 +1886,8 @@ class DidwwAudioQualityTracker:
             duplicate_packets=self.duplicate_packets,
             malformed_packets=self.malformed_packets,
             decode_errors=self.decode_errors,
+            buffer_underruns=self.buffer_underruns,
+            buffer_overruns=self.buffer_overruns,
             jitter_ms=self.jitter_ms,
             queue_depth_max=self.queue_depth_max,
             windows=[window],
@@ -2422,7 +2454,16 @@ class DidwwSipBridgeService:
             return
         flush = getattr(tracker, "flush", None)
         if not callable(flush):
-            return
+            snapshot = getattr(tracker, "snapshot", None)
+            if not callable(snapshot):
+                return
+
+            def flush() -> DidwwBridgeCallRecord:
+                return self.store.update_audio_quality(
+                    normalized_voice_session_id,
+                    snapshot(),
+                )
+
         try:
             result = flush()
             if asyncio.iscoroutine(result):
@@ -2432,6 +2473,26 @@ class DidwwSipBridgeService:
                 "didww_bridge_audio_quality_flush_failed voice_session_id=%s",
                 normalized_voice_session_id,
             )
+
+    def _create_audio_quality_tracker(
+        self,
+        record: DidwwBridgeCallRecord,
+        rtp: RtpUdpEndpoint,
+    ) -> DidwwAudioQualityTracker:
+        return DidwwAudioQualityTracker(
+            voice_session_id=record.voice_session_id,
+            call_id=record.call_id,
+            direction=record.direction,
+            media_format=self.config.media_format,
+            rtp_payload_type=self.config.rtp_payload_type,
+            sample_rate_hz=self.config.sample_rate_hz,
+            frame_duration_ms=self.config.frame_duration_ms,
+            rtp_port=getattr(rtp, "port", None) or record.rtp_port,
+            route_id=record.route_id,
+            asterisk_pjsip_endpoint=self.config.asterisk_pjsip_endpoint,
+            carrier=_audio_quality_tag(record, "carrier"),
+            region=_audio_quality_tag(record, "region"),
+        )
 
     def _inbound_gateway_client(self) -> VoiceMediaControllerClient:
         return VoiceMediaControllerClient(
@@ -2693,6 +2754,20 @@ class DidwwSipBridgeService:
         ari_events: Any | None = None,
     ) -> None:
         stop_event = asyncio.Event()
+        tracker: DidwwAudioQualityTracker | None = None
+        had_rtp_tracker = hasattr(rtp, "tracker")
+        previous_rtp_tracker = getattr(rtp, "tracker", None)
+        record = self.store.get(voice_session_id)
+        if record is not None:
+            tracker = self._create_audio_quality_tracker(record, rtp)
+            self._audio_quality_trackers[voice_session_id] = tracker
+            try:
+                setattr(rtp, "tracker", tracker)
+            except Exception:
+                logger.exception(
+                    "didww_bridge_audio_quality_attach_failed voice_session_id=%s",
+                    voice_session_id,
+                )
         tasks = [
             asyncio.create_task(self._rtp_to_realtime(rtp, realtime, stop_event)),
             asyncio.create_task(
@@ -2734,6 +2809,19 @@ class DidwwSipBridgeService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if tracker is not None:
+                await self._flush_audio_quality_tracker(voice_session_id)
+                self._audio_quality_trackers.pop(voice_session_id, None)
+                try:
+                    if had_rtp_tracker:
+                        setattr(rtp, "tracker", previous_rtp_tracker)
+                    else:
+                        delattr(rtp, "tracker")
+                except Exception:
+                    logger.exception(
+                        "didww_bridge_audio_quality_detach_failed voice_session_id=%s",
+                        voice_session_id,
+                    )
 
     async def _rtp_to_realtime(
         self,
@@ -2853,7 +2941,20 @@ class DidwwSipBridgeService:
         async def send_outbound_audio() -> None:
             nonlocal outbound_sender_active, last_assistant_audio_at
             while True:
+                wait_started = loop.time()
                 frame = await outbound_audio_queue.get()
+                waited_seconds = loop.time() - wait_started
+                tracker = self._audio_quality_trackers.get(voice_session_id)
+                if (
+                    tracker is not None
+                    and last_assistant_audio_at is not None
+                    and any(key not in audio_response_finished for key in audio_response_started_at)
+                    and waited_seconds
+                    > (self.config.frame_duration_ms / 1000.0)
+                    * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE
+                    and hasattr(tracker, "record_buffer_underrun")
+                ):
+                    tracker.record_buffer_underrun(wait_ms=waited_seconds * 1000.0)
                 outbound_sender_active = True
                 try:
                     if rtp_send_supports_sample_callback:
@@ -3881,6 +3982,9 @@ class DidwwSipBridgeService:
                             content_index=_realtime_content_index(event),
                         )
                     )
+                    tracker = self._audio_quality_trackers.get(voice_session_id)
+                    if tracker is not None and hasattr(tracker, "record_queue_depth"):
+                        tracker.record_queue_depth(outbound_audio_queue.qsize())
                     await asyncio.sleep(0)
                     continue
                 if _realtime_audio_done(event):
@@ -5803,6 +5907,27 @@ def _mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
         value = {}
         payload[key] = value
     return value
+
+
+def _audio_quality_tag(record: DidwwBridgeCallRecord, key: str) -> str | None:
+    normalized_key = str(key or "").strip()
+    if not normalized_key:
+        return None
+    for candidate in (
+        record.metadata,
+        record.contact,
+        record.realtime,
+        record.projection,
+    ):
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get(normalized_key)
+        nested_metadata = candidate.get("metadata")
+        if value is None and isinstance(nested_metadata, dict):
+            value = nested_metadata.get(normalized_key)
+        if value is not None:
+            return _debug_snippet(value)
+    return None
 
 
 def _optional_text(value: object) -> str | None:

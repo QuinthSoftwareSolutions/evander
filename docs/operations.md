@@ -1063,7 +1063,10 @@ and exposes the bridge API consumed by `didww_sip_bridge_url`:
 - `POST /voice-sessions/inbound-phone-calls` provisions a fixed inbound route when the bridge is
   configured to listen for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)` events.
 - `GET /voice-sessions/{voice_session_id}` returns status, transcript events, summary, decisions,
-  and action items.
+  action items, and any captured audio-quality diagnostics.
+- `GET /voice-sessions/{voice_session_id}/audio-quality` and
+  `GET /phone-calls/{call_id}/audio-quality` return the same call payload with the
+  `audio_quality` section flushed from any active in-memory tracker before responding.
 - `POST /voice-sessions/{voice_session_id}/hangup` ends a live call for operator cleanup.
 
 The bridge uses Asterisk ARI instead of implementing SIP in Python. Asterisk handles DIDWW PJSIP
@@ -1113,8 +1116,13 @@ The known-good Asterisk/DIDWW shape for a NATed Azure control-plane host is:
   host-local and should not be opened externally.
 
 The bridge creates `runtime/didww-sip-bridge-store.json`. It stores redacted phone numbers, ARI
-channel IDs, RTP port metadata, route identifiers, transcripts, and terminal summaries; caller and
-DID values are hashed for audit correlation, and it does not persist raw audio.
+channel IDs, RTP port metadata, route identifiers, transcripts, terminal summaries, and bounded
+audio-quality counters/events. The `audio_quality` payload is keyed by both `voice_session_id` and
+bridge `call_id`; it includes UTC timestamps, codec/RTP tags, packet-loss and jitter counters,
+frame-gap events, queue underrun/overrun counters, and decode/parse error counts. When audio breakup
+is reported, capture the bridge `call_id` or `voice_session_id` plus the rough UTC time and inspect
+the `audio_quality` windows/events around that time. Caller and DID values are hashed for audit
+correlation, and the bridge does not persist raw audio.
 
 Inbound failure handling is deterministic:
 

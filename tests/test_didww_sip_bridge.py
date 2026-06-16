@@ -693,6 +693,118 @@ def test_realtime_audio_delta_decode_failure_is_recorded_and_raised(
     assert "+15551234567" not in store_json
 
 
+def test_bridge_media_lifecycle_creates_and_persists_audio_quality_tracker(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+    audio_delta = base64.b64encode(b"\x01" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_audio.done",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                },
+                {"type": "response.done", "response": {"id": "resp-1", "status": "completed"}},
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            return None
+
+    class FakeRtp:
+        port = 49000
+        remote_addr = ("127.0.0.1", 49001)
+
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def recv_payload(self) -> bytes:
+            await asyncio.sleep(1)
+            return b""
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            tracker = getattr(self, "tracker", None)
+            assert tracker is not None
+            tracker.record_outbound_packet(
+                samples_sent=len(payload),
+                payload_bytes=len(payload),
+                rtp_timestamp=0,
+                sent_at_monotonic=1.0,
+            )
+            self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    rtp = FakeRtp()
+
+    async def wait_for_asterisk_end(
+        voice_session_id: str,
+        _handles: AsteriskCallHandles,
+        stop_event: asyncio.Event,
+        **_: Any,
+    ) -> None:
+        for _index in range(50):
+            if rtp.sent:
+                break
+            await asyncio.sleep(0.01)
+        store.complete(voice_session_id, status="ended")
+        stop_event.set()
+
+    service._wait_for_asterisk_end = wait_for_asterisk_end  # type: ignore[method-assign]
+
+    async def run() -> None:
+        await service._bridge_media_until_done(
+            record.voice_session_id,
+            AsteriskCallHandles(
+                call_channel_id="call-didww-test",
+                bridge_id="bridge-didww-test",
+                external_media_channel_id="media-didww-test",
+            ),
+            rtp,  # type: ignore[arg-type]
+            FakeRealtime(),  # type: ignore[arg-type]
+            FakeController(),  # type: ignore[arg-type]
+        )
+
+    asyncio.run(run())
+
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.audio_quality is not None
+    assert latest.audio_quality.voice_session_id == record.voice_session_id
+    assert latest.audio_quality.call_id == record.call_id
+    assert latest.audio_quality.rtp_port == 49000
+    assert latest.audio_quality.outbound_packets == 1
+    assert latest.audio_quality.outbound_samples == 160
+    assert rtp.sent == [b"\x01" * 160]
+    assert not hasattr(rtp, "tracker")
+
+
 def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "ari-secret")
     requests: list[httpx.Request] = []
