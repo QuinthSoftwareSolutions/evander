@@ -3792,6 +3792,155 @@ def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
     assert cancel_events[0].metadata["truncate_audio_end_ms"] == 0
 
 
+def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    first = b"\x31" * 160
+    pending = b"\x32" * 160
+    later = b"\x33" * 160
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=pending)],
+        media_format="alaw",
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(first).decode("ascii"),
+                },
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(pending).decode("ascii"),
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "response.created", "response": {"id": "resp-2"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-2",
+                    "item_id": "assistant-item-2",
+                    "delta": base64.b64encode(later).decode("ascii"),
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            if payload == first:
+                await asyncio.sleep(0.05)
+            if payload == fade_payload:
+                await asyncio.sleep(0.05)
+            if payload == later:
+                stop_event.set()
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> tuple[FakeRealtime, FakeRtp]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 40}
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        rtp = FakeRtp()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                rtp,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime, rtp
+
+    realtime, rtp = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == [
+        {"item_id": "assistant-item-1", "audio_end_ms": 20, "content_index": 0}
+    ]
+    assert rtp.sent == [first, fade_payload, later]
+    latest = store.get("voice-1")
+    assert latest is not None
+    cancel_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_cancel_sent"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].metadata["cancel_response_id"] == "resp-1"
+    assert cancel_events[0].metadata["dropped_audio_frames"] == 1
+    assert cancel_events[0].metadata["dropped_audio_bytes"] == len(pending)
+    assert cancel_events[0].metadata["fade_ms"] == 40
+    assert cancel_events[0].metadata["fade_audio_samples"] == len(fade_payload)
+    assert cancel_events[0].metadata["fade_audio_bytes"] == len(fade_payload)
+    assert cancel_events[0].metadata["truncate_item_id"] == "assistant-item-1"
+    assert cancel_events[0].metadata["truncate_audio_end_ms"] == 20
+    assert fade_payload
+    assert fade_payload != pending
+    assert fade_payload[-1] == 0xD5
+
+
 def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     tmp_path: Path,
 ) -> None:
@@ -3887,7 +4036,9 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
 
     async def run() -> tuple[FakeRealtime, FakeRtp]:
         service = DidwwSipBridgeService(
-            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            _config(
+                tmp_path
+            ).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 0}),
             store=store,
             start_background_tasks=False,
         )

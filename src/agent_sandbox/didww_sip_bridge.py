@@ -2152,6 +2152,8 @@ class DidwwSipBridgeService:
         outbound_audio_queue: asyncio.Queue[OutboundAudioFrame] = asyncio.Queue()
         outbound_sender_active = False
         outbound_sender_task: asyncio.Task[None] | None = None
+        barge_fade_active = False
+        barge_fade_task: asyncio.Task[None] | None = None
         last_played_audio_item_id: str | None = None
         last_assistant_audio_at: float | None = None
         current_caller_utterance_id = 0
@@ -2250,25 +2252,25 @@ class DidwwSipBridgeService:
             nonlocal outbound_sender_task
             outbound_sender_task = asyncio.create_task(send_outbound_audio())
 
-        def drain_outbound_audio_queue() -> int:
-            drained = 0
+        def drain_outbound_audio_queue() -> list[OutboundAudioFrame]:
+            drained: list[OutboundAudioFrame] = []
             while True:
                 try:
-                    outbound_audio_queue.get_nowait()
+                    drained.append(outbound_audio_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     return drained
-                drained += 1
 
-        async def restart_outbound_sender_after_cancel() -> None:
+        async def restart_outbound_sender_after_cancel(*, wait_for_fade: bool) -> None:
             nonlocal outbound_sender_task, outbound_sender_active
             if outbound_sender_task is not None and not outbound_sender_task.done():
                 outbound_sender_task.cancel()
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
             outbound_sender_active = False
-            start_outbound_sender()
+            if not wait_for_fade:
+                start_outbound_sender()
 
         def assistant_audio_active() -> bool:
-            if outbound_sender_active or not outbound_audio_queue.empty():
+            if outbound_sender_active or barge_fade_active or not outbound_audio_queue.empty():
                 return True
             if any(key not in audio_response_finished for key in audio_response_started_at):
                 return True
@@ -2667,7 +2669,7 @@ class DidwwSipBridgeService:
             utterance_id: int,
             transcript_text: str | None = None,
         ) -> None:
-            nonlocal barge_cancelled_utterance_id
+            nonlocal barge_cancelled_utterance_id, barge_fade_active, barge_fade_task
             if barge_cancelled_utterance_id == utterance_id:
                 return
             barge_cancelled_utterance_id = utterance_id
@@ -2686,7 +2688,33 @@ class DidwwSipBridgeService:
                 active_response_id if active_response_id and response_active else None
             )
             dropped_frames = drain_outbound_audio_queue()
-            await restart_outbound_sender_after_cancel()
+            dropped_audio_bytes = sum(len(frame.payload) for frame in dropped_frames)
+            fade_payload = _build_barge_in_fade_payload(
+                frames=dropped_frames,
+                media_format=self.config.media_format,
+                sample_rate_hz=self.config.sample_rate_hz,
+                fade_ms=self.config.barge_in_fade_ms,
+            )
+            await restart_outbound_sender_after_cancel(wait_for_fade=bool(fade_payload))
+            if fade_payload:
+                barge_fade_active = True
+
+                async def send_barge_in_fade() -> None:
+                    nonlocal barge_fade_active, barge_fade_task
+                    cancelled = False
+                    try:
+                        await rtp.send_payload(fade_payload)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                        raise
+                    finally:
+                        barge_fade_active = False
+                        if barge_fade_task is asyncio.current_task():
+                            barge_fade_task = None
+                        if not cancelled and not stop_event.is_set():
+                            start_outbound_sender()
+
+                barge_fade_task = asyncio.create_task(send_barge_in_fade())
             self._append_debug_event(
                 voice_session_id,
                 "barge_in_cancel_sent",
@@ -2697,7 +2725,11 @@ class DidwwSipBridgeService:
                     "cancel_response_id": cancel_response_id,
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
-                    "dropped_audio_frames": dropped_frames,
+                    "dropped_audio_frames": len(dropped_frames),
+                    "dropped_audio_bytes": dropped_audio_bytes,
+                    "fade_ms": self.config.barge_in_fade_ms,
+                    "fade_audio_samples": len(fade_payload),
+                    "fade_audio_bytes": len(fade_payload),
                     "truncate_item_id": truncate_item_id,
                     "truncate_audio_end_ms": truncate_audio_end_ms,
                     "transcript_snippet": _debug_snippet(transcript_text),
@@ -3345,6 +3377,8 @@ class DidwwSipBridgeService:
         finally:
             if idle_prompt_task is not None:
                 idle_prompt_task.cancel()
+            if barge_fade_task is not None:
+                barge_fade_task.cancel()
             if outbound_sender_task is not None:
                 outbound_sender_task.cancel()
             if goodbye_idle_task is not None:
@@ -3360,6 +3394,8 @@ class DidwwSipBridgeService:
                 task.cancel()
             if idle_prompt_task is not None:
                 await asyncio.gather(idle_prompt_task, return_exceptions=True)
+            if barge_fade_task is not None:
+                await asyncio.gather(barge_fade_task, return_exceptions=True)
             if outbound_sender_task is not None:
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
             if goodbye_idle_task is not None:
