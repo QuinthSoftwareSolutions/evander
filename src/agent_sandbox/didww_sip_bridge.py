@@ -101,9 +101,11 @@ _FAILED_HANGUP_CAUSE_TEXTS = {
 _DEBUG_SNIPPET_LIMIT = 200
 _ORIGIN_QUERY_ACK_GRACE_SECONDS = 2.0
 _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
+_BRIDGE_IDLE_PROMPT_MAX_PER_CALL = 2
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
+_ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS = "Still waiting on that, thanks for holding."
 _PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
 _PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
     "Answer the caller from the projected calling task now. "
@@ -2083,6 +2085,7 @@ class DidwwSipBridgeService:
         barge_delay_tasks: set[asyncio.Task[None]] = set()
         idle_prompt_task: asyncio.Task[None] | None = None
         idle_prompt_sent_this_period = False
+        idle_prompt_sent_count = 0
         idle_generation = 0
         loop = asyncio.get_running_loop()
         bytes_per_sample = _rtp_bytes_per_sample(self.config.media_format)
@@ -2199,6 +2202,11 @@ class DidwwSipBridgeService:
                 return True
             return any(_is_origin_query_response_key(request.key) for request in pending_responses)
 
+        def origin_query_pending() -> bool:
+            return any(state.status == "pending" for state in origin_queries_by_id.values()) or any(
+                state.status == "pending" for state in origin_queries_by_question.values()
+            )
+
         def response_blocked_by_caller_turn(request: BridgeResponseRequest) -> bool:
             # Caller speech can still barge in, but origin-query results must stay queued
             # until the caller turn has a final transcript.
@@ -2261,7 +2269,7 @@ class DidwwSipBridgeService:
                 await realtime.cancel_response(active_response_id)
 
         async def idle_prompt_after_playback(generation: int, *, reason: str) -> None:
-            nonlocal idle_prompt_sent_this_period
+            nonlocal idle_prompt_sent_this_period, idle_prompt_sent_count
             try:
                 while not stop_event.is_set() and assistant_audio_active():
                     await asyncio.sleep(0.05)
@@ -2269,6 +2277,7 @@ class DidwwSipBridgeService:
                     stop_event.is_set()
                     or generation != idle_generation
                     or idle_prompt_sent_this_period
+                    or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
                 ):
                     return
                 self._append_debug_event(
@@ -2289,11 +2298,18 @@ class DidwwSipBridgeService:
                     or response_active
                     or assistant_speaking
                     or pending_responses
+                    or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
                 ):
                     return
                 idle_prompt_sent_this_period = True
+                idle_prompt_sent_count += 1
+                response_instructions = (
+                    _ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS
+                    if origin_query_pending()
+                    else _IDLE_PROMPT_INSTRUCTIONS
+                )
                 await request_bridge_response(
-                    _IDLE_PROMPT_INSTRUCTIONS,
+                    response_instructions,
                     reason="idle_prompt",
                     key=_IDLE_PROMPT_RESPONSE_KEY,
                 )
@@ -2302,7 +2318,10 @@ class DidwwSipBridgeService:
 
         def schedule_idle_prompt_after_playback(*, reason: str) -> None:
             nonlocal idle_prompt_task
-            if idle_prompt_sent_this_period:
+            if (
+                idle_prompt_sent_this_period
+                or idle_prompt_sent_count >= _BRIDGE_IDLE_PROMPT_MAX_PER_CALL
+            ):
                 return
             if not audio_response_started_at and last_assistant_audio_at is None:
                 return
