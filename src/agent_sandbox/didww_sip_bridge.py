@@ -2155,28 +2155,38 @@ class RtpDatagramProtocol(asyncio.DatagramProtocol):
             packet = RtpPacket.parse(data)
         except ValueError as exc:
             if self.endpoint.tracker is not None:
-                self.endpoint.tracker.record_malformed_packet(
-                    reason=str(exc),
-                    payload_length=len(data),
-                    occurred_at=now_utc,
-                )
+                try:
+                    self.endpoint.tracker.record_malformed_packet(
+                        reason=str(exc),
+                        payload_length=len(data),
+                        occurred_at=now_utc,
+                    )
+                except Exception:
+                    logger.exception("didww_bridge_audio_quality_record_failed")
             return
-        if self.endpoint.tracker is not None:
-            self.endpoint.tracker.record_inbound_packet(
-                packet,
-                payload_bytes=len(packet.payload),
-                queue_depth=self.endpoint.incoming.qsize() + 1,
-                received_at_monotonic=now_monotonic,
-                occurred_at=now_utc,
-            )
         try:
             self.endpoint.incoming.put_nowait(packet.payload)
         except asyncio.QueueFull:
             if self.endpoint.tracker is not None:
-                self.endpoint.tracker.record_queue_depth(
-                    self.endpoint.incoming.qsize(),
+                try:
+                    self.endpoint.tracker.record_queue_depth(
+                        self.endpoint.incoming.qsize(),
+                        occurred_at=now_utc,
+                    )
+                except Exception:
+                    logger.exception("didww_bridge_audio_quality_record_failed")
+            return
+        if self.endpoint.tracker is not None:
+            try:
+                self.endpoint.tracker.record_inbound_packet(
+                    packet,
+                    payload_bytes=len(packet.payload),
+                    queue_depth=self.endpoint.incoming.qsize(),
+                    received_at_monotonic=now_monotonic,
                     occurred_at=now_utc,
                 )
+            except Exception:
+                logger.exception("didww_bridge_audio_quality_record_failed")
 
 
 class RtpUdpEndpoint:

@@ -1255,6 +1255,23 @@ def test_rtp_datagram_protocol_tracks_malformed_and_payload_type_mismatch_withou
     assert "rtp.packet.payload_type_mismatch" in event_types
 
 
+def test_rtp_datagram_protocol_delivers_payload_when_tracker_fails(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    endpoint = RtpUdpEndpoint(config)
+    protocol = didww_sip_bridge.RtpDatagramProtocol(endpoint)
+
+    class FailingTracker:
+        def record_inbound_packet(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("metrics failed")
+
+    endpoint.tracker = FailingTracker()  # type: ignore[assignment]
+    packet = RtpPacket(sequence=1, timestamp=0, ssrc=1, payload_type=8, payload=b"\x55" * 160)
+
+    protocol.datagram_received(packet.serialize(), ("127.0.0.1", 60000))
+
+    assert asyncio.run(endpoint.recv_payload()) == b"\x55" * 160
+
+
 def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -> None:
     config = _config(tmp_path)
     tracker = DidwwAudioQualityTracker(
