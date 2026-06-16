@@ -11,11 +11,12 @@ import os
 import re
 import struct
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -241,6 +242,7 @@ class DidwwSipBridgeConfig(BaseModel):
     voice_query_caller_patience_seconds: float = Field(default=18.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
+    barge_in_fade_ms: int = Field(default=120, ge=0, le=500)
     goodbye_idle_hangup_seconds: float = Field(default=0.0, ge=0)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
     backchannel_fuzzy_threshold: float = Field(default=0.84, ge=0.0, le=1.0)
@@ -1217,6 +1219,103 @@ def _rtp_bytes_per_sample(media_format: str) -> int:
     if media_format in _RTP_STATIC_AUDIO_FORMATS:
         return 1
     raise ValueError(f"Unsupported RTP media format: {media_format}")
+
+
+_G711_SILENCE_BYTES = {
+    "alaw": b"\xD5",
+    "ulaw": b"\xFF",
+}
+
+
+def _decode_g711_alaw_sample(encoded_sample: int) -> int:
+    value = encoded_sample ^ 0x55
+    mantissa = value & 0x0F
+    exponent = (value >> 4) & 0x07
+    if exponent == 0:
+        linear_sample = (mantissa << 4) + 8
+    else:
+        linear_sample = ((mantissa << 4) + 0x108) << (exponent - 1)
+    return linear_sample if value & 0x80 else -linear_sample
+
+
+def _decode_g711_ulaw_sample(encoded_sample: int) -> int:
+    value = (~encoded_sample) & 0xFF
+    mantissa = value & 0x0F
+    exponent = (value >> 4) & 0x07
+    linear_sample = ((mantissa << 3) + 0x84) << exponent
+    linear_sample -= 0x84
+    return -linear_sample if value & 0x80 else linear_sample
+
+
+_G711_DECODE_TABLES = {
+    "alaw": tuple(_decode_g711_alaw_sample(sample) for sample in range(256)),
+    "ulaw": tuple(_decode_g711_ulaw_sample(sample) for sample in range(256)),
+}
+
+
+def _g711_silence_byte(media_format: str) -> bytes:
+    try:
+        return _G711_SILENCE_BYTES[media_format]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+
+def _g711_decode_sample(media_format: str, encoded_sample: int) -> int:
+    try:
+        return _G711_DECODE_TABLES[media_format][encoded_sample]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+
+@lru_cache(maxsize=32768)
+def _g711_encode_sample(media_format: str, linear_sample: int) -> int:
+    if linear_sample == 0:
+        return _g711_silence_byte(media_format)[0]
+    try:
+        decode_table = _G711_DECODE_TABLES[media_format]
+    except KeyError as exc:  # pragma: no cover - guarded by config validation
+        raise ValueError(f"Unsupported RTP media format: {media_format}") from exc
+
+    best_sample = 0
+    best_distance: int | None = None
+    for candidate, decoded_sample in enumerate(decode_table):
+        distance = abs(decoded_sample - linear_sample)
+        if best_distance is None or distance < best_distance:
+            best_sample = candidate
+            best_distance = distance
+    return best_sample
+
+
+def _build_barge_in_fade_payload(
+    *,
+    frames: list[OutboundAudioFrame],
+    media_format: str,
+    sample_rate_hz: int,
+    fade_ms: int,
+) -> bytes:
+    if fade_ms <= 0 or not frames:
+        return b""
+    samples_to_fade = int((fade_ms * sample_rate_hz) / 1000)
+    if samples_to_fade <= 0:
+        return b""
+    bytes_per_sample = _rtp_bytes_per_sample(media_format)
+    silence_byte = _g711_silence_byte(media_format)
+    source_payload = b"".join(frame.payload for frame in frames if frame.payload)
+    if not source_payload:
+        return b""
+    fade_window = max(1, samples_to_fade - 1)
+    payload = bytearray()
+    for index in range(samples_to_fade):
+        offset = index * bytes_per_sample
+        sample_fragment = source_payload[offset : offset + bytes_per_sample]
+        if not sample_fragment:
+            payload.extend(silence_byte)
+            continue
+        linear_sample = _g711_decode_sample(media_format, sample_fragment[0])
+        gain = 0.0 if samples_to_fade == 1 else 1.0 - (index / fade_window)
+        faded_sample = int(linear_sample * gain)
+        payload.append(_g711_encode_sample(media_format, faded_sample))
+    return bytes(payload)
 
 
 class OpenAIRealtimeSession:
@@ -2972,6 +3071,8 @@ class DidwwSipBridgeService:
         outbound_audio_queue: asyncio.Queue[OutboundAudioFrame] = asyncio.Queue()
         outbound_sender_active = False
         outbound_sender_task: asyncio.Task[None] | None = None
+        barge_fade_active = False
+        barge_fade_task: asyncio.Task[None] | None = None
         last_played_audio_item_id: str | None = None
         last_assistant_audio_at: float | None = None
         current_caller_utterance_id = 0
@@ -3088,25 +3189,25 @@ class DidwwSipBridgeService:
             nonlocal outbound_sender_task
             outbound_sender_task = asyncio.create_task(send_outbound_audio())
 
-        def drain_outbound_audio_queue() -> int:
-            drained = 0
+        def drain_outbound_audio_queue() -> list[OutboundAudioFrame]:
+            drained: list[OutboundAudioFrame] = []
             while True:
                 try:
-                    outbound_audio_queue.get_nowait()
+                    drained.append(outbound_audio_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     return drained
-                drained += 1
 
-        async def restart_outbound_sender_after_cancel() -> None:
+        async def restart_outbound_sender_after_cancel(*, wait_for_fade: bool) -> None:
             nonlocal outbound_sender_task, outbound_sender_active
             if outbound_sender_task is not None and not outbound_sender_task.done():
                 outbound_sender_task.cancel()
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
             outbound_sender_active = False
-            start_outbound_sender()
+            if not wait_for_fade:
+                start_outbound_sender()
 
         def assistant_audio_active() -> bool:
-            if outbound_sender_active or not outbound_audio_queue.empty():
+            if outbound_sender_active or barge_fade_active or not outbound_audio_queue.empty():
                 return True
             if any(key not in audio_response_finished for key in audio_response_started_at):
                 return True
@@ -3649,7 +3750,7 @@ class DidwwSipBridgeService:
             utterance_id: int,
             transcript_text: str | None = None,
         ) -> None:
-            nonlocal barge_cancelled_utterance_id
+            nonlocal barge_cancelled_utterance_id, barge_fade_active, barge_fade_task
             nonlocal barge_cancelled_response_id, barge_cancelled_audio_truncated
             nonlocal barge_cancel_recovery_requested
             if barge_cancelled_utterance_id == utterance_id:
@@ -3675,7 +3776,33 @@ class DidwwSipBridgeService:
             )
             barge_cancelled_response_id = cancel_response_id
             dropped_frames = drain_outbound_audio_queue()
-            await restart_outbound_sender_after_cancel()
+            dropped_audio_bytes = sum(len(frame.payload) for frame in dropped_frames)
+            fade_payload = _build_barge_in_fade_payload(
+                frames=dropped_frames,
+                media_format=self.config.media_format,
+                sample_rate_hz=self.config.sample_rate_hz,
+                fade_ms=self.config.barge_in_fade_ms,
+            )
+            await restart_outbound_sender_after_cancel(wait_for_fade=bool(fade_payload))
+            if fade_payload:
+                barge_fade_active = True
+
+                async def send_barge_in_fade() -> None:
+                    nonlocal barge_fade_active, barge_fade_task
+                    cancelled = False
+                    try:
+                        await rtp.send_payload(fade_payload)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                        raise
+                    finally:
+                        barge_fade_active = False
+                        if barge_fade_task is asyncio.current_task():
+                            barge_fade_task = None
+                        if not cancelled and not stop_event.is_set():
+                            start_outbound_sender()
+
+                barge_fade_task = asyncio.create_task(send_barge_in_fade())
             self._append_debug_event(
                 voice_session_id,
                 "barge_in_cancel_sent",
@@ -3688,7 +3815,11 @@ class DidwwSipBridgeService:
                     "cancel_recovery_requested": barge_cancel_recovery_requested,
                     "utterance_id": utterance_id,
                     "elapsed_ms": elapsed_ms,
-                    "dropped_audio_frames": dropped_frames,
+                    "dropped_audio_frames": len(dropped_frames),
+                    "dropped_audio_bytes": dropped_audio_bytes,
+                    "fade_ms": self.config.barge_in_fade_ms,
+                    "fade_audio_samples": len(fade_payload),
+                    "fade_audio_bytes": len(fade_payload),
                     "truncate_item_id": truncate_item_id,
                     "truncate_audio_end_ms": truncate_audio_end_ms,
                     "cancelled_response_id": barge_cancelled_response_id,
@@ -4421,6 +4552,8 @@ class DidwwSipBridgeService:
         finally:
             if idle_prompt_task is not None:
                 idle_prompt_task.cancel()
+            if barge_fade_task is not None:
+                barge_fade_task.cancel()
             if outbound_sender_task is not None:
                 outbound_sender_task.cancel()
             if goodbye_idle_task is not None:
@@ -4437,6 +4570,8 @@ class DidwwSipBridgeService:
                 task.cancel()
             if idle_prompt_task is not None:
                 await asyncio.gather(idle_prompt_task, return_exceptions=True)
+            if barge_fade_task is not None:
+                await asyncio.gather(barge_fade_task, return_exceptions=True)
             if outbound_sender_task is not None:
                 await asyncio.gather(outbound_sender_task, return_exceptions=True)
             if goodbye_idle_task is not None:
@@ -5271,6 +5406,7 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0
         ),
         barge_in_delay_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", 700),
+        barge_in_fade_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", 120),
         goodbye_idle_hangup_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
         ),

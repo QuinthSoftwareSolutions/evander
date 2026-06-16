@@ -4,6 +4,9 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,11 +31,13 @@ from agent_sandbox.didww_sip_bridge import (
     DidwwAudioQualityTracker,
     InboundPhoneCallStartRequest,
     OpenAIRealtimeSession,
+    OutboundAudioFrame,
     PhoneCallStartRequest,
     RealtimeFunctionCall,
     RtpPacket,
     RtpUdpEndpoint,
     VoiceMediaControllerClient,
+    _build_barge_in_fade_payload,
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
@@ -41,6 +46,35 @@ from agent_sandbox.didww_sip_bridge import (
     load_config,
     projection_to_instructions,
 )
+
+
+def test_didww_sip_bridge_imports_with_deprecation_warnings_as_errors() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    src_path = str(repo_root / "src")
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        src_path
+        if not existing_pythonpath
+        else os.pathsep.join([src_path, existing_pythonpath])
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::DeprecationWarning",
+            "-c",
+            "import agent_sandbox.didww_sip_bridge",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _config(tmp_path: Path) -> DidwwSipBridgeConfig:
@@ -1388,6 +1422,84 @@ def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path
     assert sent == []
 
 
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    frames = [
+        OutboundAudioFrame(payload=source_byte * 160),
+        OutboundAudioFrame(payload=(b"\x22" if media_format == "alaw" else b"\x66") * 160),
+    ]
+
+    fade_payload = _build_barge_in_fade_payload(
+        frames=frames,
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
+    assert fade_payload[0] != silence_byte[0]
+    assert fade_payload[-1] == silence_byte[0]
+    assert fade_payload != b"".join(frame.payload for frame in frames)
+    assert any(sample != silence_byte[0] for sample in fade_payload[:16])
+
+
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_pads_short_audio_with_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=source_byte * 160)],
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
+    assert fade_payload[:160] != silence_byte * 160
+    assert fade_payload[160:] == silence_byte * 160
+
+
+def test_barge_in_fade_payload_returns_empty_when_disabled_or_no_audio() -> None:
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[OutboundAudioFrame(payload=b"\x11" * 160)],
+            media_format="alaw",
+            sample_rate_hz=8000,
+            fade_ms=0,
+        )
+        == b""
+    )
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[],
+            media_format="ulaw",
+            sample_rate_hz=8000,
+            fade_ms=40,
+        )
+        == b""
+    )
+
+
 def test_realtime_audio_delta_accepts_current_and_legacy_event_names() -> None:
     assert _realtime_audio_delta({"type": "response.output_audio.delta", "delta": "abc"}) == "abc"
     assert _realtime_audio_delta({"type": "response.audio.delta", "delta": "def"}) == "def"
@@ -1537,6 +1649,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
 
     assert config.barge_in_delay_ms == 700
+    assert config.barge_in_fade_ms == 120
     assert config.goodbye_idle_hangup_seconds == 0.0
     assert config.backchannel_max_words == 3
     assert config.backchannel_fuzzy_threshold == 0.84
@@ -1559,6 +1672,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     ]
 
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", "250")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", "90")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", "0.25")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", "2")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD", "0.91")
@@ -1567,6 +1681,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     loaded = load_config(tmp_path)
 
     assert loaded.barge_in_delay_ms == 250
+    assert loaded.barge_in_fade_ms == 90
     assert loaded.goodbye_idle_hangup_seconds == 0.25
     assert loaded.backchannel_max_words == 2
     assert loaded.backchannel_fuzzy_threshold == 0.91
@@ -5211,6 +5326,155 @@ def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
     assert cancel_events[0].metadata["truncate_audio_end_ms"] == 0
 
 
+def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    first = b"\x31" * 160
+    pending = b"\x32" * 160
+    later = b"\x33" * 160
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=pending)],
+        media_format="alaw",
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(first).decode("ascii"),
+                },
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(pending).decode("ascii"),
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "response.created", "response": {"id": "resp-2"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-2",
+                    "item_id": "assistant-item-2",
+                    "delta": base64.b64encode(later).decode("ascii"),
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            if payload == first:
+                await asyncio.sleep(0.05)
+            if payload == fade_payload:
+                await asyncio.sleep(0.05)
+            if payload == later:
+                stop_event.set()
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> tuple[FakeRealtime, FakeRtp]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 40}
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        rtp = FakeRtp()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                rtp,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime, rtp
+
+    realtime, rtp = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == [
+        {"item_id": "assistant-item-1", "audio_end_ms": 20, "content_index": 0}
+    ]
+    assert rtp.sent == [first, fade_payload, later]
+    latest = store.get("voice-1")
+    assert latest is not None
+    cancel_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_cancel_sent"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].metadata["cancel_response_id"] == "resp-1"
+    assert cancel_events[0].metadata["dropped_audio_frames"] == 1
+    assert cancel_events[0].metadata["dropped_audio_bytes"] == len(pending)
+    assert cancel_events[0].metadata["fade_ms"] == 40
+    assert cancel_events[0].metadata["fade_audio_samples"] == len(fade_payload)
+    assert cancel_events[0].metadata["fade_audio_bytes"] == len(fade_payload)
+    assert cancel_events[0].metadata["truncate_item_id"] == "assistant-item-1"
+    assert cancel_events[0].metadata["truncate_audio_end_ms"] == 20
+    assert fade_payload
+    assert fade_payload != pending
+    assert fade_payload[-1] == 0xD5
+
+
 def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     tmp_path: Path,
 ) -> None:
@@ -5306,7 +5570,9 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
 
     async def run() -> tuple[FakeRealtime, FakeRtp]:
         service = DidwwSipBridgeService(
-            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            _config(
+                tmp_path
+            ).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 0}),
             store=store,
             start_background_tasks=False,
         )

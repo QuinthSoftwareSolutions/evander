@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - DIDWW Barge-In Fade
+
+- Added a configurable `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS` setting to the DIDWW SIP bridge
+  with a 120 ms default and a 0 to 500 ms validation window.
+- Routed confirmed barge-in cancels through a short faded queued-RTP tail instead of dropping
+  pending assistant audio immediately, while keeping prompt Realtime response cancellation and
+  assistant audio truncation.
+- Removed the fade helper's deprecated `audioop` dependency so the DIDWW bridge imports cleanly on
+  Python 3.13 while preserving G.711 A-law and u-law fade behavior.
+- Documented the fade window in the DIDWW bridge operations guide, configuration reference, and
+  sample env file so operators can distinguish a taper from a hard cut.
+
 ## 2026-06-16 - DIDWW Audio Quality Diagnostics
 
 - Refreshed call-id audio-quality diagnostics after active tracker flushes and

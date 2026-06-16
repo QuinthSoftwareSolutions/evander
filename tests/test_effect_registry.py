@@ -4372,7 +4372,7 @@ def test_agent_create_container_upserts_when_session_exists(
     updated = session_repository.get_session("session-1")
     assert updated is not None
     assert updated.model == "gpt-5.5"
-    assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
+    assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN, ToolName.STAGE_ARTIFACT]
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["agent_provider"] == "claude"
