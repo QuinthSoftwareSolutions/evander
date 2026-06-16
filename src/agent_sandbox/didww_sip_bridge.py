@@ -121,9 +121,11 @@ _CALLER_TURN_COMPLETION_INSTRUCTIONS = (
     "Do not use or mention the queued lookup result yet."
 )
 _ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS = (
-    "Start with a natural transition such as 'I heard back on the earlier question.' "
-    "Then briefly answer from the lookup result. Do not mention internal agent handoffs, "
-    "do not say the query is still pending, and do not say that you are still checking."
+    "Start with a natural transition. If the conversation has moved on, start with a soft "
+    "callback such as 'Quick callback to your earlier question -' or "
+    "'I heard back on the earlier question.' Then briefly answer from the lookup result. "
+    "Do not mention internal agent handoffs, do not say the query is still pending, and do "
+    "not say that you are still checking."
 )
 _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
     'Tell the caller in one short natural sentence: "Let me look that up for you - one moment." '
@@ -1129,11 +1131,7 @@ class OpenAIRealtimeSession:
             }
         )
         if request_response:
-            await self.request_response(
-                "Start with a natural transition such as 'I heard back on the earlier question.' "
-                "Then briefly tell the caller the lookup result is ready. "
-                "Do not mention internal agent handoffs."
-            )
+            await self.request_response(_ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS)
 
     async def recv_json(self) -> dict[str, Any]:
         if self.websocket is None:

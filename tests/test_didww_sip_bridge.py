@@ -1761,6 +1761,15 @@ def test_realtime_tool_response_cancels_pending_idle_prompt(
     assert realtime.responses == [
         didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
     ]
+    answer_text = didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS.lower()
+    assert "earlier question" in answer_text
+    assert (
+        "quick callback to your earlier question" in answer_text
+        or "heard back on the earlier question" in answer_text
+    )
+    assert "origin agent" not in answer_text
+    assert "originating agent" not in answer_text
+    assert "internal handoff" not in answer_text
     assert didww_sip_bridge._IDLE_PROMPT_INSTRUCTIONS not in realtime.responses
 
 
