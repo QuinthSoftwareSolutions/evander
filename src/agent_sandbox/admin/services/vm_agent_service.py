@@ -503,16 +503,38 @@ SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
 WORK_BRANCH="work"
 {clone_branch_line}\
 if [[ -e "${{TARGET_DIR}}" ]]; then
-  echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
-  exit 1
-fi
-{clone_command}
-if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
-  git -C "${{TARGET_DIR}}" remote set-url origin "${{CANONICAL_REMOTE_URL}}"
-  git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
-  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+  if [[ ! -d "${{TARGET_DIR}}/.git" ]]; then
+    echo "Guest repo path exists but is not a Git worktree: ${{TARGET_DIR}}" >&2
+    exit 1
+  fi
+  REPO_ALREADY_PREPARED=1
 else
-  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+  REPO_ALREADY_PREPARED=0
+  {clone_command}
+fi
+if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
+  if git -C "${{TARGET_DIR}}" remote get-url origin >/dev/null 2>&1; then
+    git -C "${{TARGET_DIR}}" remote set-url origin "${{CANONICAL_REMOTE_URL}}"
+  else
+    git -C "${{TARGET_DIR}}" remote add origin "${{CANONICAL_REMOTE_URL}}"
+  fi
+  git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
+  if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
+    git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+  else
+    git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+  fi
+else
+  if git -C "${{TARGET_DIR}}" remote get-url origin >/dev/null 2>&1; then
+    git -C "${{TARGET_DIR}}" remote set-url origin "${{REMOTE_URL}}"
+  else
+    git -C "${{TARGET_DIR}}" remote add origin "${{REMOTE_URL}}"
+  fi
+  if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
+    git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+  else
+    git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+  fi
 fi
 git -C "${{TARGET_DIR}}" config user.name "${{GIT_USER_NAME}}"
 git -C "${{TARGET_DIR}}" config user.email "${{GIT_USER_EMAIL}}"
@@ -523,13 +545,24 @@ fi
 if [[ -n "${{BASE_BRANCH}}" ]]; then
   git -C "${{TARGET_DIR}}" config agent-sandbox.baseBranch "${{BASE_BRANCH}}"
 fi
-git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{WORK_BRANCH}}"
-CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
-if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
-  if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
-    git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
-  else
-    git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
+if [[ "${{REPO_ALREADY_PREPARED}}" == "0" ]]; then
+  git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{WORK_BRANCH}}"
+  CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
+  if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
+    if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
+      git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
+    else
+      git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
+    fi
+  fi
+else
+  if ! git -C "${{TARGET_DIR}}" config --get agent-sandbox.workBranch >/dev/null 2>&1; then
+    CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
+    if [[ -n "${{CURRENT_BRANCH}}" ]]; then
+      git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{CURRENT_BRANCH}}"
+    else
+      git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{WORK_BRANCH}}"
+    fi
   fi
 fi
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"

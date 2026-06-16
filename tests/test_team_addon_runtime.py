@@ -23,6 +23,7 @@ from truman_team_addon.models import (
     GitPromotionRecord,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
@@ -275,6 +276,24 @@ class FakeFileCopier:
             "copied_count": len(files),
             "copied_paths": [file["destination_path"] for file in files],
         }
+
+
+class FakeRepoCloner:
+    def __init__(self, *, success: bool = True, message: str = "repo prepared") -> None:
+        self.calls: list[dict[str, object]] = []
+        self.success = success
+        self.message = message
+
+    def clone_repo_into_vm(self, **kwargs: object) -> SimpleNamespace:
+        self.calls.append(dict(kwargs))
+        return SimpleNamespace(
+            success=self.success,
+            vm_name=str(kwargs.get("vm_name") or "vm-backend"),
+            message=self.message,
+            target_dir="/home/agent/Truman",
+            guest_repo_name="Truman",
+            remote_url="ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+        )
 
 
 class FakeArtifactReader:
@@ -576,6 +595,68 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
+def test_wake_due_agents_provider_prepares_project_repo_when_configured(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    repo_cloner = FakeRepoCloner()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert repo_cloner.calls == [
+        {
+            "vm_name": "vm-backend",
+            "session_id": "session-backend",
+            "repo_source": "/opt/repos/Truman",
+            "clone_branch": "main",
+            "vm_user": "agent",
+            "directory_path": "root",
+            "git_author_name": None,
+            "git_author_email": None,
+            "git_committer_name": None,
+            "git_committer_email": None,
+        }
+    ]
+    project_repo = result["dispatches"][0]["project_repo"]
+    assert project_repo["target_dir"] == "/home/agent/Truman"
+    assert project_repo["base_branch"] == "main"
+    prompt = str(resumer.calls[0]["prompt"])
+    assert '"project_repo"' in prompt
+    assert "/home/agent/Truman" in prompt
+    assert "The project host checkout is not mounted in the guest" in prompt
+    assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
+    assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
 def test_wake_due_agents_provider_skips_already_seeded_action_contract(
     tmp_path: Path,
 ) -> None:
@@ -698,6 +779,51 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
     assert len(session_store.calls) == 1
     assert "action_contract" in session_store.calls[0]["metadata"]["team_addon"]
+
+
+def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+        )
+        return state
+
+    repo.update(_set_git)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=FakeRepoCloner(success=False, message="repo missing"),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["dispatches"] == []
+    assert result["errors"] == ["backend: repo missing"]
+    assert resumer.calls == []
+    reread = TeamStateRepository(tmp_path).read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert [record.error for record in reread.action_records.values()] == ["repo missing"]
 
 
 def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:

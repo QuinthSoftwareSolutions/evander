@@ -6,10 +6,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
-from agent_sandbox.events.provider_models import AgentCopyFilesEffectDefinition
+from agent_sandbox.events.provider_models import (
+    AgentCloneRepoEffectDefinition,
+    AgentCopyFilesEffectDefinition,
+)
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.contracts import register_node_output_schema
@@ -93,6 +97,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent=agent,
                     action_artifact_path=action_path,
                 )
+                project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                if project_repo is not None:
+                    lease = {**lease, "project_repo": project_repo}
                 prompt = _build_prompt(lease, action_artifact_path=action_path)
                 result = resumer.resume_agent(
                     target=agent["session_id"],
@@ -106,15 +113,16 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
-                dispatches.append(
-                    {
-                        "agent_id": agent["id"],
-                        "session_id": agent["session_id"],
-                        "dispatch_id": lease["dispatch_id"],
-                        "action_contract": seed_result,
-                        "result": result_payload,
-                    }
-                )
+                dispatch_payload = {
+                    "agent_id": agent["id"],
+                    "session_id": agent["session_id"],
+                    "dispatch_id": lease["dispatch_id"],
+                    "action_contract": seed_result,
+                    "result": result_payload,
+                }
+                if project_repo is not None:
+                    dispatch_payload["project_repo"] = project_repo
+                dispatches.append(dispatch_payload)
                 _mirror_session_metadata(
                     context,
                     repo=repo,
@@ -757,6 +765,9 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "inbox": lease["inbox"],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
+    project_repo = lease.get("project_repo")
+    if isinstance(project_repo, Mapping):
+        context["project_repo"] = dict(project_repo)
     schema = {
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
@@ -795,6 +806,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "clear. Decompose large work by creating child tasks via task_creations with "
         "parent_task_id instead of ad hoc checklists in descriptions, and declare "
         "ordering between tasks with dependency_task_ids.\n\n"
+        f"{_project_repo_prompt_guidance(project_repo)}"
         "Action surface guide:\n"
         "- Use task_updates for tasks you own. State, priority, title, and "
         "description edits are owner-only. Do not accept or reject someone else's "
@@ -817,6 +829,96 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
     )
+
+
+def _project_repo_prompt_guidance(project_repo: object) -> str:
+    if not isinstance(project_repo, Mapping):
+        return ""
+    target_dir = _optional_text(project_repo.get("target_dir"))
+    if target_dir is None:
+        return ""
+    return (
+        f"Project repository: work in the prepared guest checkout at {target_dir}. "
+        "The project host checkout is not mounted in the guest; use this guest "
+        "repo and its configured Git helpers for code changes.\n\n"
+    )
+
+
+def _prepare_project_repo(
+    context: Any,
+    *,
+    state: Any,
+    agent: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    project_id = _optional_text(agent.get("project_id"))
+    if project_id is None:
+        return None
+    projects = getattr(state, "projects", None)
+    if not isinstance(projects, Mapping):
+        return None
+    project = projects.get(project_id)
+    git = getattr(project, "git", None)
+    if git is None:
+        return None
+
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    repo_source = _required_text(getattr(git, "host_repo_path", None), "project.git.host_repo_path")
+    clone_branch = _optional_text(getattr(git, "base_branch", None))
+    provider = AgentCloneRepoEffectProvider()
+    provider.initialize(
+        AgentCloneRepoEffectDefinition(
+            id="team-prepare-project-repo",
+            display_name="Prepare Team project repository",
+            type="effect:agent:clone-repo",
+            session_id=session_id,
+            repo_source=repo_source,
+            clone_branch=clone_branch,
+            vm_user="agent",
+        ),
+        context,
+    )
+    clone_result = provider.execute()
+    if not bool(clone_result.get("success")):
+        message = (
+            _optional_text(clone_result.get("message"))
+            or _optional_text(clone_result.get("error"))
+            or "failed to prepare Team project repository"
+        )
+        raise RuntimeError(message)
+    project_repo = _project_repo_payload(
+        project_id=project_id,
+        clone_result=clone_result,
+        base_branch=clone_branch,
+    )
+    _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
+    return project_repo
+
+
+def _project_repo_payload(
+    *,
+    project_id: str,
+    clone_result: Mapping[str, Any],
+    base_branch: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "prepared": True,
+        "project_id": project_id,
+    }
+    for key in (
+        "target_dir",
+        "guest_repo_name",
+        "remote_url",
+        "pr_notes_ref",
+        "execution_backend",
+        "vm_name",
+        "message",
+    ):
+        value = _optional_text(clone_result.get(key))
+        if value is not None:
+            payload[key] = value
+    if base_branch is not None:
+        payload["base_branch"] = base_branch
+    return payload
 
 
 def _seed_action_contract_files(
@@ -996,6 +1098,22 @@ def _mark_action_contract_seeded(
     update_fn(
         target=session_id,
         metadata={"team_addon": team_metadata},
+    )
+
+
+def _mark_project_repo_prepared(
+    context: Any,
+    *,
+    session_id: str,
+    project_repo: Mapping[str, Any],
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": {"project_repo": dict(project_repo)}},
     )
 
 

@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Add-on Project Repo Wake Prep
+
+- Prepared configured Team project repositories during persistent-agent wakes
+  through `effect:agent:clone-repo`, so agents receive a guest checkout path
+  instead of trying to work against host-only repo paths.
+- Made the libvirt repo clone helper retry-safe when the guest checkout already
+  exists, refreshing remotes/helpers without resetting or switching active work.
+
 ## 2026-06-16 - Review Regression Fixes
 
 - Ignored agent-run completion comparisons when VM state summaries are missing

@@ -248,7 +248,10 @@ set:
 
 - `effect:team:wake-due-agents` leases due persistent agents, prompts their
   Truman sessions, and mirrors a compact `metadata.team_addon` index into the
-  session manifest.
+  session manifest. When the agent's project has `project.git` configured, the
+  wake also prepares the project repo through `effect:agent:clone-repo` before
+  the resume prompt and includes the prepared guest checkout path in the Team
+  context.
 - `query:team:agent-action-artifact` reads the structured JSON action artifact
   that a prompted persistent agent must write to `/artifacts/team-action.json`.
 - `effect:team:apply-agent-action` validates the action, updates add-on state,
