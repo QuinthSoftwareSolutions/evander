@@ -1084,9 +1084,10 @@ For barge-in, the bridge keeps OpenAI Realtime built-in input noise reduction en
 for handset audio and keeps `server_vad` as the default turn-detection mode while disabling
 automatic caller-turn response creation and immediate Realtime interruption. The bridge waits
 `DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS` before sending `response.cancel`; when substantive caller
-speech cancels playback, it also truncates the assistant audio item to the RTP-played prefix so the
-next model turn does not assume the caller heard queued audio. Short configured backchannels such as
-`ok` or `uh-huh` are stored in the transcript without cancelling current assistant playback. Use
+speech cancels playback, it fades the queued RTP tail over `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS`
+before truncating the assistant audio item to the RTP-played prefix so the next model turn does
+not assume the caller heard queued audio. Short configured backchannels such as `ok` or `uh-huh`
+are stored in the transcript without cancelling current assistant playback. Use
 `OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE=far_field` for speakerphone, headset, or room audio,
 and tune `OPENAI_REALTIME_VAD_THRESHOLD`, `OPENAI_REALTIME_VAD_PREFIX_PADDING_MS`, and
 `OPENAI_REALTIME_VAD_SILENCE_DURATION_MS` if you need a more or less aggressive turn detector.

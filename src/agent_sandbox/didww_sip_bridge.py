@@ -219,6 +219,7 @@ class DidwwSipBridgeConfig(BaseModel):
     voice_query_caller_patience_seconds: float = Field(default=18.0, gt=0)
     voice_query_timeout_seconds: float = Field(default=90.0, gt=0)
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
+    barge_in_fade_ms: int = Field(default=120, ge=0, le=500)
     goodbye_idle_hangup_seconds: float = Field(default=0.0, ge=0)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
     backchannel_phrases: list[str] = Field(
@@ -4142,6 +4143,7 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
             "DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS", 90.0
         ),
         barge_in_delay_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", 700),
+        barge_in_fade_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", 120),
         goodbye_idle_hangup_seconds=_env_float(
             "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
         ),

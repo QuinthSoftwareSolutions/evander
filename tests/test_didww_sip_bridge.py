@@ -823,6 +823,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
 
     assert config.barge_in_delay_ms == 700
+    assert config.barge_in_fade_ms == 120
     assert config.goodbye_idle_hangup_seconds == 0.0
     assert config.backchannel_max_words == 3
     assert config.backchannel_phrases == [
@@ -839,6 +840,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     ]
 
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", "250")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", "90")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", "0.25")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", "2")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES", "yep, right")
@@ -846,6 +848,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     loaded = load_config(tmp_path)
 
     assert loaded.barge_in_delay_ms == 250
+    assert loaded.barge_in_fade_ms == 90
     assert loaded.goodbye_idle_hangup_seconds == 0.25
     assert loaded.backchannel_max_words == 2
     assert loaded.backchannel_phrases == ["yep", "right"]
