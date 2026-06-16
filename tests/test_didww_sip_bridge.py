@@ -2601,6 +2601,19 @@ def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
     assert latest.status == "ended"
 
 
+def test_goodbye_transcript_does_not_treat_inbound_greetings_as_closings() -> None:
+    assert not didww_sip_bridge._is_goodbye_transcript(
+        "Thanks for calling, how can I help?"
+    )
+    assert not didww_sip_bridge._is_goodbye_transcript(
+        "Thank you for calling Truman support. How may I direct your call?"
+    )
+    assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling ops.")
+
+    assert didww_sip_bridge._is_goodbye_transcript("Thank you for calling.")
+    assert didww_sip_bridge._is_goodbye_transcript("Thanks for calling. Goodbye.")
+
+
 def test_realtime_goodbye_idle_hangup_waits_for_silence_before_cleanup(
     tmp_path: Path,
     monkeypatch: Any,

@@ -4514,17 +4514,24 @@ def _is_goodbye_transcript(transcript_text: object) -> bool:
     normalized = _normalize_backchannel_phrase(transcript_text)
     if not normalized:
         return False
+    standalone_call_thanks = {
+        "thanks for calling",
+        "thank you for calling",
+    }
+    if normalized in standalone_call_thanks:
+        return True
     closing_phrases = (
         "goodbye",
         "good bye",
         "bye",
         "bye for now",
         "have a good day",
-        "thanks for calling",
-        "thank you for calling",
         "talk to you soon",
     )
-    return any(phrase in normalized for phrase in closing_phrases)
+    return any(
+        re.search(rf"(?:^| ){re.escape(phrase)}(?: |$)", normalized) is not None
+        for phrase in closing_phrases
+    )
 
 
 def _is_origin_query_response_key(key: object) -> bool:

@@ -12,6 +12,8 @@ material. Newer entries are added incrementally as changes land.
   the live call.
 - Suppressed the delayed origin-query hold prompt after the caller-facing
   patience response has already been queued.
+- Avoided treating normal inbound greetings like "thanks for calling, how can I
+  help?" as goodbye-idle hangup closings.
 
 ## 2026-06-15 - Agents Thread Log Loading
 
