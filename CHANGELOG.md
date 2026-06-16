@@ -63,6 +63,16 @@ material. Newer entries are added incrementally as changes land.
   matches the active Team runtime lease, preventing ordinary Discord wake
   replies from being recorded as missing `team-action.json` failures.
 
+## 2026-06-16 - DIDWW Origin Query Patience
+
+- Kept DIDWW origin-agent queries polling until the backend timeout after the
+  caller-facing patience response, so late answers can still be injected into
+  the live call.
+- Suppressed the delayed origin-query hold prompt after the caller-facing
+  patience response has already been queued.
+- Avoided treating normal inbound greetings like "thanks for calling, how can I
+  help?" as goodbye-idle hangup closings.
+
 ## 2026-06-15 - Agents Thread Log Loading
 
 - Bounded the initial Agents page thread-log load for container worker sessions
