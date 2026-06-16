@@ -2480,6 +2480,21 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await page.locator('.delivery-row[data-deliverable-id="deliverable-waiting"]').waitFor({
     state: "visible",
   });
+  const filteredDeliveryLayout = await page.locator(".delivery-buckets").first().evaluate((bucket) => {
+    const row = bucket.querySelector('.delivery-row[data-deliverable-id="deliverable-waiting"]');
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+    return {
+      bucketWidth: bucket.getBoundingClientRect().width,
+      rowWidth: row.getBoundingClientRect().width,
+    };
+  });
+  assert.ok(filteredDeliveryLayout, "expected the filtered deliverable row to be rendered");
+  assert.ok(
+    filteredDeliveryLayout.rowWidth > filteredDeliveryLayout.bucketWidth * 0.7,
+    `expected the filtered deliverable row to use the available workspace width: ${JSON.stringify(filteredDeliveryLayout)}`,
+  );
 
   await page.locator("#delivery-filter-accepted").click();
   assert.equal(await page.locator(".delivery-row").count(), 1);

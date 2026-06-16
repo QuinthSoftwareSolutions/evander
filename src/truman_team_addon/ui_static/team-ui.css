@@ -625,9 +625,6 @@ button.runtime-filter-button.active {
   margin-top: 0.9rem;
 }
 
-.delivery-team,
-.delivery-project,
-.delivery-bucket,
 .delivery-row,
 .delivery-detail {
   border: 1px solid var(--line);
@@ -638,19 +635,32 @@ button.runtime-filter-button.active {
 .delivery-team,
 .delivery-project,
 .delivery-bucket {
-  padding: 0.8rem;
+  min-width: 0;
 }
 
 .delivery-team {
-  background: linear-gradient(180deg, rgba(23, 111, 122, 0.06) 0%, rgba(255, 255, 255, 0) 100%);
+  display: grid;
+  gap: 0.75rem;
 }
 
 .delivery-team + .delivery-team {
-  margin-top: 0.15rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.delivery-project-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.delivery-project {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
 }
 
 .delivery-project + .delivery-project,
-.delivery-bucket + .delivery-bucket,
 .delivery-row + .delivery-row,
 .delivery-detail + .delivery-detail {
   margin-top: 0.55rem;
@@ -658,15 +668,14 @@ button.runtime-filter-button.active {
 
 .delivery-buckets {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  align-items: start;
+  gap: 0.75rem;
 }
 
 .delivery-bucket {
   display: grid;
-  gap: 0.45rem;
-  background: var(--panel-alt);
+  gap: 0.5rem;
 }
 
 .delivery-bucket h3,
@@ -687,6 +696,13 @@ button.runtime-filter-button.active {
   justify-content: space-between;
   gap: 0.55rem;
   flex-wrap: wrap;
+}
+
+.delivery-bucket-title {
+  padding: 0.42rem 0.55rem;
+  border-radius: 6px;
+  background: var(--panel-alt);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .delivery-bucket-title strong,
@@ -1434,17 +1450,8 @@ label textarea {
   }
 
   .review-delivery-panel,
-  .delivery-team,
   .delivery-row,
   .delivery-detail {
     background: var(--panel);
-  }
-
-  .delivery-team {
-    background: linear-gradient(180deg, rgba(68, 166, 180, 0.12) 0%, rgba(0, 0, 0, 0) 100%);
-  }
-
-  .delivery-bucket {
-    background: var(--panel-alt);
   }
 }

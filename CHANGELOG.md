@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   as timestamp, so overlapping ordinary wakes and Team Add-on wakes for the same
   VM cannot cause the later Team dispatch completion to be skipped.
 
+## 2026-06-16 - Team Add-on Review Delivery Layout
+
+- Flattened the Review & Delivery workspace styling so team, project, and
+  status groups read as sections instead of nested cards, and made filtered
+  single-status deliverables expand to the available workspace width.
+
 ## 2026-06-16 - Team Runtime Pack Materialization
 
 - Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
