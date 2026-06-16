@@ -489,6 +489,118 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def create_operator_directive(
+        self,
+        *,
+        team_id: str,
+        message: str,
+        recipient_agent_id: str | None = None,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        title: str | None = None,
+        source: str | None = None,
+        source_message_id: str | None = None,
+        created_by: str | None = None,
+        requesting_session_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, AgentInboxItem]:
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_message = _required_text(message, "message")
+        normalized_recipient_id = _optional_text(recipient_agent_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_task_id = _optional_text(task_id)
+        normalized_title = _optional_text(title)
+        normalized_source = _optional_text(source)
+        normalized_source_message_id = _optional_text(source_message_id)
+        normalized_created_by = _optional_text(created_by)
+        normalized_requesting_session_id = _optional_text(requesting_session_id)
+        created_inbox_id: str | None = None
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            nonlocal created_inbox_id
+            now = utc_now()
+            team = _require_present(state_model.teams, normalized_team_id, "team")
+            if team.archived:
+                raise ValueError(f"team {team.id} is archived")
+            recipient_id = normalized_recipient_id or team.manager_agent_id
+            recipient = _require_present(state_model.agents, recipient_id, "recipient agent")
+            if recipient.team_id != team.id:
+                raise ValueError(f"recipient agent {recipient.id} is not in team {team.id}")
+            if recipient.status != AgentStatus.ACTIVE:
+                raise ValueError(f"recipient agent {recipient.id} is not active")
+            if normalized_requesting_session_id is not None:
+                requester = _agent_for_session(
+                    state_model,
+                    session_id=normalized_requesting_session_id,
+                )
+                if requester.id != team.manager_agent_id:
+                    raise ValueError(
+                        "team operator directives from agent sessions require the "
+                        "team manager session"
+                    )
+                if recipient.id != team.manager_agent_id:
+                    raise ValueError(
+                        "team manager sessions can only enqueue operator directives "
+                        "for their own manager inbox"
+                    )
+
+            effective_project_id = normalized_project_id
+            if normalized_task_id is not None:
+                task = _require_present(state_model.tasks, normalized_task_id, "task")
+                project = _require_present(state_model.projects, task.project_id, "project")
+                if project.team_id != team.id:
+                    raise ValueError(f"task {task.id} is not in team {team.id}")
+                if effective_project_id is not None and effective_project_id != task.project_id:
+                    raise ValueError(
+                        f"task {task.id} belongs to project {task.project_id}, "
+                        f"not project {effective_project_id}"
+                    )
+                effective_project_id = task.project_id
+            if effective_project_id is not None:
+                project = _require_present(
+                    state_model.projects,
+                    effective_project_id,
+                    "project",
+                )
+                if project.team_id != team.id:
+                    raise ValueError(f"project {project.id} is not in team {team.id}")
+
+            payload: dict[str, Any] = {
+                "title": normalized_title or "Operator directive",
+                "message": normalized_message,
+                "team_id": team.id,
+            }
+            if effective_project_id is not None:
+                payload["project_id"] = effective_project_id
+            if normalized_source is not None:
+                payload["source"] = normalized_source
+            if normalized_source_message_id is not None:
+                payload["source_message_id"] = normalized_source_message_id
+            if normalized_created_by is not None:
+                payload["created_by"] = normalized_created_by
+            if normalized_requesting_session_id is not None:
+                payload["requesting_session_id"] = normalized_requesting_session_id
+
+            inbox_id = f"inbox-{uuid4().hex}"
+            state_model.inbox[inbox_id] = AgentInboxItem(
+                id=inbox_id,
+                recipient_agent_id=recipient.id,
+                sender_agent_id=None,
+                task_id=normalized_task_id,
+                item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+                payload=payload,
+                created_at=now,
+                updated_at=now,
+            )
+            created_inbox_id = inbox_id
+            _mark_agent_work_due(state_model, agent_id=recipient.id, now=now)
+            return state_model
+
+        state = self.update(_mutate, expected_revision=expected_revision)
+        if created_inbox_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("operator directive was not created")
+        return state, state.inbox[created_inbox_id]
+
     def record_deliverable(
         self,
         *,
@@ -2232,10 +2344,15 @@ def _resolve_action_agent(
     if action_agent_id:
         return _require_present(state.agents, action_agent_id, "agent")
     if session_id:
-        for agent in state.agents.values():
-            if agent.session_id == session_id:
-                return agent
+        return _agent_for_session(state, session_id=session_id)
     raise ValueError("agent action requires agent_id or a known session_id")
+
+
+def _agent_for_session(state: TeamState, *, session_id: str) -> PersistentAgent:
+    for agent in state.agents.values():
+        if agent.session_id == session_id:
+            return agent
+    raise ValueError(f"no team agent found for session_id {session_id}")
 
 
 def _mark_action_failure(

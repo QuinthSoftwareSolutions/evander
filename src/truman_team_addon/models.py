@@ -56,6 +56,7 @@ class AgentStatus(str, Enum):
 
 
 class TeamInboxItemType(str, Enum):
+    OPERATOR_DIRECTIVE = "operator_directive"
     QUESTION = "question"
     STATUS_REQUEST = "status_request"
     PROGRESS_REPORT = "progress_report"

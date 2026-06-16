@@ -315,6 +315,29 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def create_operator_directive(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        created_by = _optional(payload, "created_by") or _operator_actor_from_request(
+            context.auth,
+            request,
+        )
+        state, item = repository.create_operator_directive(
+            team_id=_required(payload, "team_id"),
+            message=_required(payload, "message"),
+            recipient_agent_id=_optional(payload, "recipient_agent_id"),
+            project_id=_optional(payload, "project_id"),
+            task_id=_optional(payload, "task_id"),
+            title=_optional(payload, "title"),
+            source=_optional(payload, "source"),
+            source_message_id=_optional(payload, "source_message_id"),
+            created_by=created_by,
+            requesting_session_id=_optional(payload, "requesting_session_id"),
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = team_state_payload(state)
+        response_payload["operator_directive"] = item.model_dump(mode="json")
+        return JSONResponse(response_payload, status_code=201)
+
     async def dismiss_action_record(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         state = repository.dismiss_action_record_attention(
@@ -470,6 +493,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route(
             "/review-requests/{review_request_id}/decision",
             _with_errors(decide_review_request),
+            methods=["POST"],
+        ),
+        Route(
+            "/operator-directives",
+            _with_errors(create_operator_directive),
             methods=["POST"],
         ),
         Route(

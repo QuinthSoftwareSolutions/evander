@@ -251,7 +251,9 @@ set:
   session manifest. When the agent's project has `project.git` configured, the
   wake also prepares the project repo through `effect:agent:clone-repo` before
   the resume prompt and includes the prepared guest checkout path in the Team
-  context.
+  context. Repo preparation is reported in the wake node outputs as
+  `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
+  separate workflow node because one wake tick can lease multiple agents.
 - `query:team:agent-action-artifact` reads the structured JSON action artifact
   that a prompted persistent agent must write to `/artifacts/team-action.json`.
 - `effect:team:apply-agent-action` validates the action, updates add-on state,
@@ -259,6 +261,11 @@ set:
   lease. Persistent actions may include `ephemeral_requests` to request bounded
   disposable workers and `ephemeral_acceptances` to promote or reject completed
   ephemeral results.
+- `effect:team:create-operator-directive` turns an operator request from
+  Discord, Teams, Admin Web, or another workflow into a durable
+  `operator_directive` inbox item. The item defaults to the team manager,
+  resets the manager's no-progress throttle, and is handled by the next normal
+  Team wake through `team-action.json`.
 - `query:team:session-routing` classifies a completed Truman session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before action artifacts are applied. Persistent agents are
@@ -326,6 +333,11 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   published with payload `{team_id, manager_agent_id, communication_target_id,
   title, message, urgency, project_id?, task_id?}`. Escalation ids are returned
   in `operator_escalation_event_ids`.
+- `operator_directive` inbox items — operator-to-manager instructions created
+  by the Admin API, `effect:team:create-operator-directive`, or the
+  `team_create_operator_directive` MCP tool. These are not agent-authored action
+  items. The manager handles them during its normal Team dispatch by taking the
+  requested Team actions and listing the inbox id in `handled_inbox_item_ids`.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
   "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's
@@ -377,11 +389,20 @@ Team communication is directional and enforced by the repository, not by prose:
   that event to an `effect:communication:send-message` node bound to the team's
   `operator_communication_target_id`. The repository and effect providers never
   call the communication sender directly — routing is the workflow pack's job.
+- **Operator to manager** — use `POST /operator-directives`,
+  `effect:team:create-operator-directive`, or the manager-session
+  `team_create_operator_directive` MCP tool. These surfaces create a pending
+  `operator_directive` inbox item for the manager and mark the manager due, so a
+  Discord instruction like “ask the lead for status on next dispatch” becomes
+  normal Team work instead of an out-of-band `team-action.json` write.
 - `Team.operator_communication_target_id` is outbound-only. It does not grant the
   manager's real session inbound Discord or Teams access and does not wake that
   session by itself. If the operator should message or wake the manager through
   Discord, create the manager agent/session with a read-capable Discord
   communication target in its session allowlist and grant `discord_get_commands`.
+  A manager session with mirrored root-manager `metadata.team_addon` can see
+  `team_create_operator_directive`; the gateway still verifies the session is
+  the canonical manager for the requested team before creating the inbox item.
 
 ### Action-Driven Reviews And Decision Cascade
 

@@ -1032,6 +1032,74 @@ def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Pat
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
 
 
+def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _throttle_manager(state):
+        state.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=10,
+        )
+        return state
+
+    repo.update(_throttle_manager)
+    repo.create_or_reprioritize_task(
+        task_id="status-sweep",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Status sweep",
+        description="Ask implementers for status.",
+        created_by_agent_id="manager",
+    )
+
+    state, item = repo.create_operator_directive(
+        team_id="team",
+        message="Ask the lead for a status report on next Team dispatch.",
+        title="Status report request",
+        project_id="project",
+        task_id="status-sweep",
+        source="discord",
+        source_message_id="discord-msg-1",
+        created_by="operator:jonathan",
+        requesting_session_id="session-manager",
+    )
+
+    assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+    assert item.recipient_agent_id == "manager"
+    assert item.task_id == "status-sweep"
+    assert item.payload == {
+        "title": "Status report request",
+        "message": "Ask the lead for a status report on next Team dispatch.",
+        "team_id": "team",
+        "project_id": "project",
+        "source": "discord",
+        "source_message_id": "discord-msg-1",
+        "created_by": "operator:jonathan",
+        "requesting_session_id": "session-manager",
+    }
+    runtime = state.agent_runtimes["manager"]
+    assert runtime.no_progress_count == 0
+    assert runtime.next_wake_at is None
+
+    _state, leases = repo.lease_due_agents(max_no_progress_count=3)
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    assert leases[0]["reason"] == "inbox"
+    assert leases[0]["inbox"][0]["id"] == item.id
+
+
+def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    with pytest.raises(ValueError, match="team manager session"):
+        repo.create_operator_directive(
+            team_id="team",
+            message="Ask for status.",
+            requesting_session_id="session-lead",
+        )
+
+
 def test_operator_task_creation_can_use_operator_actor(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

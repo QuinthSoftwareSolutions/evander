@@ -37,6 +37,7 @@ from truman_team_addon.provider_schemas import (
     TeamAgentActionArtifactQueryDefinition,
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
+    TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamSessionRoutingQueryDefinition,
@@ -47,6 +48,7 @@ from truman_team_addon.providers import (
     TeamAgentActionArtifactQueryProvider,
     TeamApplyAgentActionEffectProvider,
     TeamApplyEphemeralActionEffectProvider,
+    TeamCreateOperatorDirectiveEffectProvider,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
@@ -174,6 +176,12 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-read-persistent-action"]["valid"] == {
         "type": "boolean"
     }
+    assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"][
+        "failed_project_repo_preparations"
+    ] == {"type": "array"}
     assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
         "type": ["string", "null"]
     }
@@ -562,6 +570,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "team-action.example.json" in prompt
     assert "Do not accept or reject someone else's task with task_updates" in prompt
     assert "Use review_decisions only for review requests assigned to you" in prompt
+    assert "item_type operator_directive" in prompt
     for field_name in (
         "task_creations",
         "status_requests",
@@ -649,6 +658,17 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     project_repo = result["dispatches"][0]["project_repo"]
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
+    assert result["prepared_project_repos"] == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "project_id": "project",
+            "dispatch_id": result["dispatches"][0]["dispatch_id"],
+            "project_repo": project_repo,
+            "target_dir": "/home/agent/Truman",
+        }
+    ]
+    assert result["failed_project_repo_preparations"] == []
     prompt = str(resumer.calls[0]["prompt"])
     assert '"project_repo"' in prompt
     assert "/home/agent/Truman" in prompt
@@ -817,9 +837,22 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
 
     assert result["success"] is False
     assert result["dispatches"] == []
+    assert result["prepared_project_repos"] == []
+    reread = TeamStateRepository(tmp_path).read()
+    failed_repo_preparation = result["failed_project_repo_preparations"][0]
+    assert {
+        key: value
+        for key, value in failed_repo_preparation.items()
+        if key != "dispatch_id"
+    } == {
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "project_id": "project",
+        "error": "repo missing",
+    }
+    assert str(failed_repo_preparation["dispatch_id"]).startswith("team-dispatch-")
     assert result["errors"] == ["backend: repo missing"]
     assert resumer.calls == []
-    reread = TeamStateRepository(tmp_path).read()
     runtime = reread.agent_runtimes["backend"]
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
@@ -879,6 +912,40 @@ def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
     reread = TeamStateRepository(tmp_path).read()
     assert len(reread.deliverables) == 1
     assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
+    _seed_team(tmp_path)
+    provider = TeamCreateOperatorDirectiveEffectProvider()
+    provider.initialize(
+        TeamCreateOperatorDirectiveEffectDefinition(
+            id="directive",
+            display_name="Create operator directive",
+            type="effect:team:create-operator-directive",
+            team_id="team",
+            project_id="project",
+            message="Ask the lead for a status report.",
+            title="Status report",
+            source="discord",
+            source_message_id="discord-msg-1",
+            created_by="operator:jonathan",
+            requesting_session_id="session-manager",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["recipient_agent_id"] == "manager"
+    assert result["team_id"] == "team"
+    assert result["project_id"] == "project"
+    assert result["error"] is None
+    reread = TeamStateRepository(tmp_path).read()
+    item = reread.inbox[result["inbox_item_id"]]
+    assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+    assert item.payload["message"] == "Ask the lead for a status report."
+    assert reread.agent_runtimes["manager"].next_wake_at is None
 
 
 def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(

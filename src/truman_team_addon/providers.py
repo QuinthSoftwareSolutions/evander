@@ -29,6 +29,7 @@ from .provider_schemas import (
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
     TeamConsolidateGitBranchesEffectDefinition,
+    TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
@@ -90,6 +91,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         dispatches: list[dict[str, Any]] = []
+        prepared_project_repos: list[dict[str, Any]] = []
+        failed_project_repo_preparations: list[dict[str, Any]] = []
         errors: list[str] = []
         for lease in leases:
             agent = lease["agent"]
@@ -99,9 +102,26 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent=agent,
                     action_artifact_path=action_path,
                 )
-                project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                try:
+                    project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                except Exception as exc:
+                    failed_project_repo_preparations.append(
+                        _project_repo_prepare_record(
+                            agent=agent,
+                            dispatch_id=lease["dispatch_id"],
+                            error=str(exc),
+                        )
+                    )
+                    raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
+                    prepared_project_repos.append(
+                        _project_repo_prepare_record(
+                            agent=agent,
+                            dispatch_id=lease["dispatch_id"],
+                            project_repo=project_repo,
+                        )
+                    )
                 prompt = _build_prompt(lease, action_artifact_path=action_path)
                 result = resumer.resume_agent(
                     target=agent["session_id"],
@@ -145,6 +165,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "leased_count": len(leases),
             "leases": leases,
             "dispatches": dispatches,
+            "prepared_project_repos": prepared_project_repos,
+            "failed_project_repo_preparations": failed_project_repo_preparations,
             "errors": errors,
         }
 
@@ -205,6 +227,82 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
         return {**result, "state": team_state_payload(state)}
+
+
+class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateOperatorDirectiveEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "team_id",
+            "message",
+            "recipient_agent_id",
+            "project_id",
+            "task_id",
+            "title",
+            "source",
+            "source_message_id",
+            "created_by",
+            "requesting_session_id",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        try:
+            state, item = repo.create_operator_directive(
+                team_id=_required_text(payload.get("team_id"), "team_id"),
+                message=_required_text(payload.get("message"), "message"),
+                recipient_agent_id=_optional_text(payload.get("recipient_agent_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                task_id=_optional_text(payload.get("task_id")),
+                title=_optional_text(payload.get("title")),
+                source=_optional_text(payload.get("source")),
+                source_message_id=_optional_text(payload.get("source_message_id")),
+                created_by=_optional_text(payload.get("created_by")),
+                requesting_session_id=_optional_text(payload.get("requesting_session_id")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return {
+                "success": False,
+                "revision": exc.current_revision,
+                "inbox_item_id": None,
+                "recipient_agent_id": None,
+                "team_id": _optional_text(payload.get("team_id")),
+                "project_id": _optional_text(payload.get("project_id")),
+                "task_id": _optional_text(payload.get("task_id")),
+                "error": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
+            }
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "revision": repo.read().revision,
+                "inbox_item_id": None,
+                "recipient_agent_id": None,
+                "team_id": _optional_text(payload.get("team_id")),
+                "project_id": _optional_text(payload.get("project_id")),
+                "task_id": _optional_text(payload.get("task_id")),
+                "error": str(exc),
+            }
+        project_id = item.payload.get("project_id")
+        return {
+            "success": True,
+            "revision": state.revision,
+            "inbox_item_id": item.id,
+            "recipient_agent_id": item.recipient_agent_id,
+            "team_id": item.payload.get("team_id"),
+            "project_id": project_id if isinstance(project_id, str) else None,
+            "task_id": item.task_id,
+            "error": None,
+        }
 
 
 class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
@@ -741,6 +839,9 @@ def register_providers() -> ProviderPluginRegistration:
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
             "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
+            "effect:team:create-operator-directive": (
+                TeamCreateOperatorDirectiveEffectProvider
+            ),
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
             "effect:team:apply-ephemeral-action": TeamApplyEphemeralActionEffectProvider,
@@ -768,6 +869,12 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:apply-agent-action": (
                 lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
+            ),
+            "effect:team:create-operator-directive": (
+                lambda node: _materialize(
+                    TeamCreateOperatorDirectiveEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:request-ephemeral-agents": (
                 lambda node: _materialize(TeamRequestEphemeralAgentsEffectDefinition, node)
@@ -873,7 +980,12 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "all attached reviews are accepted.\n"
         "- If a deliverable should be reviewed by another agent, create a "
         "review_requests item for that reviewer; do not mark the task accepted "
-        "yourself unless the task is actually yours.\n\n"
+        "yourself unless the task is actually yours.\n"
+        "- Inbox items with item_type operator_directive are durable operator "
+        "instructions that were relayed from an out-of-band channel. Handle them "
+        "through this Team dispatch by writing the appropriate task/status/review "
+        "actions to team-action.json, then include their ids in "
+        "handled_inbox_item_ids.\n\n"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
@@ -973,6 +1085,29 @@ def _project_repo_payload(
     if base_branch is not None:
         payload["base_branch"] = base_branch
     return payload
+
+
+def _project_repo_prepare_record(
+    *,
+    agent: Mapping[str, Any],
+    dispatch_id: str,
+    project_repo: Mapping[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "agent_id": agent.get("id"),
+        "session_id": agent.get("session_id"),
+        "project_id": agent.get("project_id"),
+        "dispatch_id": dispatch_id,
+    }
+    if project_repo is not None:
+        record["project_repo"] = dict(project_repo)
+        target_dir = _optional_text(project_repo.get("target_dir"))
+        if target_dir is not None:
+            record["target_dir"] = target_dir
+    if error is not None:
+        record["error"] = error
+    return record
 
 
 def _seed_action_contract_files(

@@ -1084,6 +1084,53 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert "exactly one" in response.json()["error"]
 
 
+def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/operator-directives",
+        json={
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Status report",
+            "message": "Ask the lead for a status report.",
+            "source": "discord",
+            "source_message_id": "discord-msg-1",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    item = body["operator_directive"]
+    assert item["recipient_agent_id"] == "manager"
+    assert item["item_type"] == "operator_directive"
+    assert item["payload"]["title"] == "Status report"
+    assert item["payload"]["message"] == "Ask the lead for a status report."
+    assert item["payload"]["project_id"] == "project"
+    assert item["payload"]["source_message_id"] == "discord-msg-1"
+    assert item["payload"]["created_by"] == "operator:admin"
+    assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
+
+
 def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

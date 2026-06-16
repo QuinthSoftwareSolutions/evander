@@ -6926,6 +6926,84 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def team_create_operator_directive(
+        session_id: str,
+        team_id: str,
+        message: str,
+        title: str | None = None,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        source: str | None = None,
+        source_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a durable Team Add-on operator directive for the calling manager session.
+
+        Use this when an out-of-band operator chat message should become normal Team work
+        on the next Team runtime wake. The calling session must be the team's manager.
+        """
+
+        args = {
+            "session_id": session_id,
+            "team_id": team_id,
+            "message": message,
+            "title": title,
+            "project_id": project_id,
+            "task_id": task_id,
+            "source": source,
+            "source_message_id": source_message_id,
+        }
+        try:
+            context.policy.require_tool(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE)
+            from truman_team_addon.repository import TeamStateRepository
+
+            state, item = TeamStateRepository(context.config.runtime_dir).create_operator_directive(
+                team_id=team_id,
+                message=message,
+                title=title,
+                project_id=project_id,
+                task_id=task_id,
+                source=source or "operator_chat",
+                source_message_id=source_message_id,
+                created_by=f"agent-session:{session_id}",
+                requesting_session_id=session_id,
+            )
+            project_id_value = item.payload.get("project_id")
+            result = {
+                "status": "created",
+                "revision": state.revision,
+                "inbox_item_id": item.id,
+                "recipient_agent_id": item.recipient_agent_id,
+                "team_id": item.payload.get("team_id"),
+                "project_id": project_id_value if isinstance(project_id_value, str) else None,
+                "task_id": item.task_id,
+            }
+            audit_success(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE, args, str(exc))
+            raise
+        except (TypeError, ValueError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="team_directive_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def discord_get_commands(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
         args = {"session_id": session_id, "since_cursor": since_cursor}
         try:
