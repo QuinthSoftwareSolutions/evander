@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Agent Completion Dispatch Identity
+
+- Tracked `trigger:agent:run:completed` cursor emissions by dispatch id as well
+  as timestamp, so overlapping ordinary wakes and Team Add-on wakes for the same
+  VM cannot cause the later Team dispatch completion to be skipped.
+
 ## 2026-06-16 - Team Runtime Pack Materialization
 
 - Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
