@@ -129,6 +129,11 @@ _ORIGIN_QUERY_HOLD_RESPONSE_INSTRUCTIONS = (
     'Tell the caller in one short natural sentence: "Let me look that up for you - one moment." '
     "Do not add filler, do not invite a topic shift, and do not expose internal handoffs."
 )
+_ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS = (
+    "Tell the caller you cannot pull that up right now and offer to take a message, set a "
+    "follow-up, or help with something else. Do not mention any internal transfer of the "
+    "request, do not say the query is still pending, and do not say you are still checking."
+)
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
     "okay",
@@ -3300,7 +3305,10 @@ class DidwwSipBridgeService:
             ) -> None:
                 await realtime.request_response(instructions)
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.voice_query_timeout_seconds
+        caller_deadline = loop.time() + min(
+            self.config.voice_query_caller_patience_seconds,
+            self.config.voice_query_timeout_seconds,
+        )
         started_at = loop.time()
         if state is None:
             state = OriginQueryState(
@@ -3311,8 +3319,20 @@ class DidwwSipBridgeService:
                 completed_event=asyncio.Event(),
             )
         poll_attempt = 0
-        while not stop_event.is_set() and loop.time() < deadline:
-            await asyncio.sleep(self.config.voice_query_poll_interval_seconds)
+        while not stop_event.is_set():
+            now = loop.time()
+            if now >= caller_deadline:
+                break
+            await asyncio.sleep(
+                min(
+                    self.config.voice_query_poll_interval_seconds,
+                    max(0.0, caller_deadline - now),
+                )
+            )
+            if stop_event.is_set():
+                break
+            if loop.time() >= caller_deadline:
+                break
             query = await media_controller.get_query(voice_session_id, query_id)
             poll_attempt += 1
             status = str(query.get("status") or "").strip()
@@ -3460,10 +3480,7 @@ class DidwwSipBridgeService:
             if state.timeout_response_queued:
                 return
             state.timeout_response_queued = True
-            response_instructions = (
-                "Tell the caller the lookup did not finish in time. "
-                "Do not mention internal agent handoffs or say the query is still pending."
-            )
+            response_instructions = _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS
             response_kind = "timeout"
             response_reason = "query_timeout"
         else:

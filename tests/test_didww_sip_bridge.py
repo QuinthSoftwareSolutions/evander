@@ -4937,6 +4937,135 @@ def test_empty_origin_query_with_incomplete_startup_requests_keyed_call_objectiv
     ]
 
 
+def test_origin_query_timeout_uses_caller_patience_and_reuses_terminal_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.injected: list[dict[str, object]] = []
+            self.responses: list[str | None] = []
+            self.tool_outputs: list[dict[str, object]] = []
+
+        async def inject_origin_query_result(
+            self,
+            query: dict[str, Any],
+            *,
+            request_response: bool = True,
+        ) -> None:
+            self.injected.append(query)
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+        async def send_tool_output(self, *, call_id: str, output: dict[str, Any]) -> None:
+            self.tool_outputs.append({"call_id": call_id, "output": output})
+
+    class FakeController:
+        configured = True
+
+        def __init__(self) -> None:
+            self.create_query_calls: list[dict[str, Any]] = []
+            self.get_query_calls = 0
+            self.mark_timeout_calls = 0
+
+        async def create_query(self, voice_session_id: str, **kwargs: Any) -> dict[str, Any]:
+            self.create_query_calls.append(kwargs)
+            return {"query_id": "voice-query-1", "status": "pending"}
+
+        async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.get_query_calls += 1
+            return {"query_id": query_id, "status": "pending"}
+
+        async def mark_query_timeout(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
+            self.mark_timeout_calls += 1
+            return {
+                "query_id": query_id,
+                "status": "timeout",
+                "error": "Timed out while calling +15551234567 for help.",
+            }
+
+    async def run() -> tuple[FakeRealtime, FakeController, float, dict[str, didww_sip_bridge.OriginQueryState], dict[str, didww_sip_bridge.OriginQueryState]]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={
+                    "voice_query_caller_patience_seconds": 0.03,
+                    "voice_query_timeout_seconds": 1.0,
+                }
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        controller = FakeController()
+        query_tasks: set[asyncio.Task[None]] = set()
+        origin_queries_by_question: dict[str, didww_sip_bridge.OriginQueryState] = {}
+        origin_queries_by_id: dict[str, didww_sip_bridge.OriginQueryState] = {}
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-1",
+                name="query_origin_agent",
+                arguments={"question": "What changed?"},
+            ),
+            realtime,  # type: ignore[arg-type]
+            controller,  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            origin_queries_by_question=origin_queries_by_question,
+            origin_queries_by_id=origin_queries_by_id,
+        )
+        await asyncio.wait_for(asyncio.gather(*query_tasks), timeout=1)
+        elapsed = loop.time() - started_at
+        await service._handle_realtime_function_call(  # type: ignore[attr-defined]
+            record.voice_session_id,
+            RealtimeFunctionCall(
+                call_id="tool-call-2",
+                name="query_origin_agent",
+                arguments={"question": "What changed?"},
+            ),
+            realtime,  # type: ignore[arg-type]
+            controller,  # type: ignore[arg-type]
+            query_tasks,
+            asyncio.Event(),
+            origin_queries_by_question=origin_queries_by_question,
+            origin_queries_by_id=origin_queries_by_id,
+        )
+        return realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id
+
+    realtime, controller, elapsed, origin_queries_by_question, origin_queries_by_id = asyncio.run(
+        run()
+    )
+
+    assert elapsed < 1.0
+    assert controller.create_query_calls[0]["deadline_seconds"] == 1
+    assert controller.mark_timeout_calls == 1
+    assert realtime.tool_outputs == [
+        {
+            "call_id": "tool-call-1",
+            "output": {"status": "pending", "query_id": "voice-query-1"},
+        },
+        {
+            "call_id": "tool-call-2",
+            "output": {
+                "status": "timeout",
+                "query_id": "voice-query-1",
+                "error": "Timed out while calling +15551234567 for help.",
+                "deduplicated": True,
+            },
+        },
+    ]
+    assert realtime.injected[0]["status"] == "timeout"
+    assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS]
+    assert "handoff" not in str(realtime.responses[0]).lower()
+    assert len(origin_queries_by_question) == 1
+    assert len(origin_queries_by_id) == 1
+
+
 def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
@@ -4995,8 +5124,9 @@ def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     realtime = asyncio.run(run())
 
     assert realtime.injected[0]["status"] == "timeout"
-    assert "lookup did not finish in time" in str(realtime.responses[0])
-    assert "origin agent" not in str(realtime.responses[0]).lower()
+    assert "cannot pull that up right now" in str(realtime.responses[0])
+    assert "take a message" in str(realtime.responses[0])
+    assert "handoff" not in str(realtime.responses[0]).lower()
     latest = store.get("voice-1")
     assert latest is not None
     event_types = [event.event_type for event in latest.debug_events]
