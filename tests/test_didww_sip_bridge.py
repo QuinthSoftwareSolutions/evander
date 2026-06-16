@@ -189,6 +189,8 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
     assert "do not fill the call with generic startup scaffolding" in lowered
     assert "give the answer directly" in lowered
     assert "do not narrate internal bookkeeping" in lowered
+    assert "after a natural goodbye or closing" in lowered
+    assert "call end_call to end the phone call" in lowered
     assert "for reconciliation" not in lowered
 
 
@@ -243,6 +245,8 @@ def test_projection_to_instructions_uses_inbound_startup_contract_for_inbound_ca
     assert "outbound startup contract" not in lowered
     assert "do not use outbound startup wording" in lowered
     assert "caller metadata" in lowered
+    assert "after a natural goodbye or closing" in lowered
+    assert "call end_call to end the phone call" in lowered
 
 
 def test_initial_inbound_call_instructions_use_route_specific_opening() -> None:
@@ -755,6 +759,61 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     assert turn_detection["prefix_padding_ms"] == 300
     assert turn_detection["silence_duration_ms"] == 800
     assert "idle_timeout_ms" not in turn_detection
+    assert session["tool_choice"] == "auto"
+    assert [tool["name"] for tool in session["tools"]] == ["end_call"]
+    assert session["tools"][0]["parameters"]["properties"]["reason"]["type"] == "string"
+
+
+def test_realtime_session_with_media_controller_includes_query_origin_agent_tool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    captured: dict[str, Any] = {}
+
+    class FakeWebSocket:
+        async def send(self, text: str) -> None:
+            captured["session_update"] = json.loads(text)
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def fake_connect(url: str, **kwargs: Any) -> FakeWebSocket:
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeWebSocket()
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    config = _config(tmp_path).model_copy(
+        update={
+            "openai_api_key_env": "OPENAI_API_KEY",
+            "openai_realtime_api_base_url": "https://api.openai.test/v1",
+        }
+    )
+
+    async def run() -> None:
+        async with OpenAIRealtimeSession(
+            config=config,
+            projection={"prompt": "Call Jonathan."},
+            realtime={
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base_url": "https://api.openai.test/v1",
+                "media_controller_url": "http://controller.local",
+                "model": "gpt-realtime-2",
+            },
+        ):
+            return None
+
+    asyncio.run(run())
+
+    assert captured["url"] == "wss://api.openai.test/v1/realtime?model=gpt-realtime-2"
+    assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
+    session = captured["session_update"]["session"]
+    assert session["tool_choice"] == "auto"
+    assert [tool["name"] for tool in session["tools"]] == ["end_call", "query_origin_agent"]
+    assert session["tools"][1]["parameters"]["required"] == ["question"]
 
 
 def test_barge_in_config_defaults_and_env_overrides(

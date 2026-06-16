@@ -104,6 +104,7 @@ _BRIDGE_IDLE_PROMPT_DELAY_SECONDS = 30.0
 _ASSISTANT_PLAYBACK_DRAIN_SECONDS = 0.5
 _IDLE_PROMPT_RESPONSE_KEY = "bridge_idle_prompt"
 _IDLE_PROMPT_INSTRUCTIONS = "Are you still there?"
+_END_CALL_TOOL_NAME = "end_call"
 _PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
 _PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
     "Answer the caller from the projected calling task now. "
@@ -142,6 +143,26 @@ _DEFAULT_BACKCHANNEL_PHRASES = (
     "thanks",
     "thank you",
 )
+
+
+def _end_call_tool_definition() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": _END_CALL_TOOL_NAME,
+        "description": (
+            "End the phone call after a natural goodbye or closing when the caller has no "
+            "further request."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Optional caller-facing reason for ending the call.",
+                }
+            },
+        },
+    }
 
 
 class DidwwSipBridgeConfig(BaseModel):
@@ -1201,8 +1222,9 @@ class OpenAIRealtimeSession:
             payload["audio"]["input"]["transcription"] = {
                 "model": self.config.openai_realtime_transcription_model
             }
+        tools = [_end_call_tool_definition()]
         if self.realtime.get("media_controller_url"):
-            payload["tools"] = [
+            tools.append(
                 {
                     "type": "function",
                     "name": "query_origin_agent",
@@ -1231,7 +1253,9 @@ class OpenAIRealtimeSession:
                         "required": ["question"],
                     },
                 }
-            ]
+            )
+        if tools:
+            payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
 
@@ -3819,6 +3843,11 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
             "Preserve decisions and follow-up actions internally after the call, but do not "
             "narrate internal bookkeeping, transcript cleanup, or handoff notes aloud."
         ),
+        (
+            "After a natural goodbye or closing, and only when the caller has no further "
+            "request, call end_call to end the phone call. Do not call it during active "
+            "discussion or before saying goodbye."
+        ),
     ]
     origin = projection.get("origin")
     if isinstance(origin, dict):
@@ -3868,6 +3897,11 @@ def _inbound_projection_to_instructions(projection: dict[str, Any]) -> str:
         (
             "Preserve decisions and follow-up actions internally after the call, but do not "
             "narrate internal bookkeeping, transcript cleanup, or handoff notes aloud."
+        ),
+        (
+            "After a natural goodbye or closing, and only when the caller has no further "
+            "request, call end_call to end the phone call. Do not call it during active "
+            "discussion or before saying goodbye."
         ),
     ]
     origin = projection.get("origin")
