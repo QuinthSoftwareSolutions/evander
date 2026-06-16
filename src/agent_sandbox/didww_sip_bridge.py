@@ -140,8 +140,13 @@ _ORIGIN_QUERY_TIMEOUT_RESPONSE_INSTRUCTIONS = (
 _DEFAULT_BACKCHANNEL_PHRASES = (
     "ok",
     "okay",
+    "yep",
+    "yup",
+    "right",
+    "sure",
     "uh-huh",
     "mhm",
+    "mm-hmm",
     "yeah",
     "yes",
     "good",
@@ -221,6 +226,7 @@ class DidwwSipBridgeConfig(BaseModel):
     barge_in_delay_ms: int = Field(default=700, ge=0, le=5000)
     goodbye_idle_hangup_seconds: float = Field(default=0.0, ge=0)
     backchannel_max_words: int = Field(default=3, ge=1, le=12)
+    backchannel_fuzzy_threshold: float = Field(default=0.84, ge=0.0, le=1.0)
     backchannel_phrases: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_BACKCHANNEL_PHRASES)
     )
@@ -2889,6 +2895,7 @@ class DidwwSipBridgeService:
                 transcript_text,
                 phrases=self.config.backchannel_phrases,
                 max_words=self.config.backchannel_max_words,
+                fuzzy_threshold=self.config.backchannel_fuzzy_threshold,
             )
             if origin_query_turn_active() and _is_origin_query_hold_ack(transcript_text):
                 caller_speech_started_during_assistant = False
@@ -4146,6 +4153,10 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
             "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
         ),
         backchannel_max_words=_env_int("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", 3),
+        backchannel_fuzzy_threshold=_env_float(
+            "DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD",
+            0.84,
+        ),
         backchannel_phrases=_env_list(
             "DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES",
             list(_DEFAULT_BACKCHANNEL_PHRASES),
@@ -4458,11 +4469,32 @@ def _word_count(value: object) -> int:
     return len(normalized.split())
 
 
+def _backchannel_similarity(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    left_len = len(left)
+    right_len = len(right)
+    previous = list(range(right_len + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            insertion = current[right_index - 1] + 1
+            deletion = previous[right_index] + 1
+            substitution = previous[right_index - 1] + (left_char != right_char)
+            current.append(min(insertion, deletion, substitution))
+        previous = current
+    distance = previous[right_len]
+    return 1.0 - (distance / float(left_len + right_len))
+
+
 def _is_backchannel_transcript(
     transcript_text: object,
     *,
     phrases: list[str],
     max_words: int,
+    fuzzy_threshold: float = 0.84,
 ) -> bool:
     normalized = _normalize_backchannel_phrase(transcript_text)
     if not normalized or _word_count(normalized) > max_words:
@@ -4474,7 +4506,12 @@ def _is_backchannel_transcript(
     }
     if normalized in normalized_phrases:
         return True
-    return all(word in normalized_phrases for word in normalized.split())
+    if all(word in normalized_phrases for word in normalized.split()):
+        return True
+    return any(
+        _backchannel_similarity(normalized, phrase) >= fuzzy_threshold
+        for phrase in normalized_phrases
+    )
 
 
 def _is_origin_query_hold_ack(transcript_text: object) -> bool:

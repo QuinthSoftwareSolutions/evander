@@ -825,11 +825,17 @@ def test_barge_in_config_defaults_and_env_overrides(
     assert config.barge_in_delay_ms == 700
     assert config.goodbye_idle_hangup_seconds == 0.0
     assert config.backchannel_max_words == 3
+    assert config.backchannel_fuzzy_threshold == 0.84
     assert config.backchannel_phrases == [
         "ok",
         "okay",
+        "yep",
+        "yup",
+        "right",
+        "sure",
         "uh-huh",
         "mhm",
+        "mm-hmm",
         "yeah",
         "yes",
         "good",
@@ -841,6 +847,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", "250")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", "0.25")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", "2")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD", "0.91")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES", "yep, right")
 
     loaded = load_config(tmp_path)
@@ -848,6 +855,7 @@ def test_barge_in_config_defaults_and_env_overrides(
     assert loaded.barge_in_delay_ms == 250
     assert loaded.goodbye_idle_hangup_seconds == 0.25
     assert loaded.backchannel_max_words == 2
+    assert loaded.backchannel_fuzzy_threshold == 0.91
     assert loaded.backchannel_phrases == ["yep", "right"]
 
 
@@ -872,6 +880,25 @@ def test_backchannel_classifier_accepts_fuzzy_asr_corruption_and_rejects_substan
         transcript,
         phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
         max_words=3,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("fuzzy_threshold", "expected"),
+    [
+        (0.84, True),
+        (0.9, False),
+    ],
+)
+def test_backchannel_classifier_threshold_controls_fuzzy_matching(
+    fuzzy_threshold: float,
+    expected: bool,
+) -> None:
+    assert didww_sip_bridge._is_backchannel_transcript(
+        "okey",
+        phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
+        max_words=3,
+        fuzzy_threshold=fuzzy_threshold,
     ) is expected
 
 
