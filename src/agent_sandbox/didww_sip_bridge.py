@@ -2130,6 +2130,7 @@ class DidwwSipBridgeService:
         barge_cancelled_audio_truncated = False
         barge_cancel_recovery_requested = False
         barge_cancel_recovery_task: asyncio.Task[None] | None = None
+        interruption_recovery_cancel_requested_key: str | None = None
         barge_delay_tasks: set[asyncio.Task[None]] = set()
         end_call_requested = False
         end_call_completed = False
@@ -2649,6 +2650,39 @@ class DidwwSipBridgeService:
             if cancel_timer:
                 cancel_barge_cancel_recovery_timer()
 
+        async def cancel_active_interruption_recovery(
+            *,
+            reason: str,
+            utterance_id: int,
+            transcript_text: str | None = None,
+        ) -> bool:
+            nonlocal interruption_recovery_cancel_requested_key
+            async with response_lock:
+                request = last_response_request
+                if (
+                    not response_active
+                    or request is None
+                    or not _is_interrupted_assistant_resume_response_key(request.key)
+                ):
+                    return False
+                interruption_recovery_cancel_requested_key = request.key
+                cancel_response_id = active_response_id
+                queued_count = len(pending_responses)
+            self._append_debug_event(
+                voice_session_id,
+                "bridge.interruption_recovery.cancel_requested",
+                metadata={
+                    "reason": reason,
+                    "utterance_id": utterance_id,
+                    "request_key": interruption_recovery_cancel_requested_key,
+                    "response_id": cancel_response_id,
+                    "queued_count": queued_count,
+                    "transcript_snippet": _debug_snippet(transcript_text),
+                },
+            )
+            await realtime.cancel_response(cancel_response_id)
+            return True
+
         async def request_barge_cancel_recovery(
             *,
             reason: str,
@@ -2710,9 +2744,7 @@ class DidwwSipBridgeService:
                 await request_bridge_response(
                     _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
                     reason=reason,
-                    key=(
-                        f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:{utterance_id}"
-                    ),
+                    key=_interrupted_assistant_resume_response_key(utterance_id),
                 )
             except asyncio.CancelledError:
                 raise
@@ -3127,9 +3159,8 @@ class DidwwSipBridgeService:
                     await request_bridge_response(
                         _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
                         reason="backchannel_resume",
-                        key=(
-                            f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:"
-                            f"{current_caller_utterance_id}"
+                        key=_interrupted_assistant_resume_response_key(
+                            current_caller_utterance_id
                         ),
                     )
                 if (
@@ -3140,8 +3171,20 @@ class DidwwSipBridgeService:
                     await mark_response_done_and_flush()
                 return
             caller_speech_started_during_assistant = False
+            resume_response_key = _interrupted_assistant_resume_response_key(
+                current_caller_utterance_id
+            )
             if barge_cancelled_utterance_id == current_caller_utterance_id:
                 mark_barge_cancel_followup_requested()
+                await discard_bridge_response_keys(
+                    {resume_response_key},
+                    reason="substantive_transcript",
+                )
+                await cancel_active_interruption_recovery(
+                    reason="substantive_transcript",
+                    utterance_id=current_caller_utterance_id,
+                    transcript_text=transcript_text,
+                )
             request_instructions = (
                 _CALLER_TURN_COMPLETION_INSTRUCTIONS
                 if blocked_origin_response_index is not None
@@ -3173,6 +3216,28 @@ class DidwwSipBridgeService:
                 active_response_id = _realtime_response_id(event) or active_response_id
                 assistant_speaking = True
                 response_active = True
+                cancel_recovery_key = (
+                    interruption_recovery_cancel_requested_key
+                    if (
+                        interruption_recovery_cancel_requested_key
+                        and last_response_request is not None
+                        and last_response_request.key
+                        == interruption_recovery_cancel_requested_key
+                    )
+                    else None
+                )
+                cancel_response_id = active_response_id
+            if cancel_recovery_key:
+                self._append_debug_event(
+                    voice_session_id,
+                    "bridge.interruption_recovery.cancel_retried",
+                    metadata={
+                        "reason": "response_created",
+                        "request_key": cancel_recovery_key,
+                        "response_id": cancel_response_id,
+                    },
+                )
+                await realtime.cancel_response(cancel_response_id)
 
         async def mark_assistant_speaking() -> None:
             nonlocal assistant_speaking
@@ -3181,10 +3246,17 @@ class DidwwSipBridgeService:
 
         async def mark_response_done_and_flush() -> bool:
             nonlocal assistant_speaking, last_response_request, response_active
+            nonlocal interruption_recovery_cancel_requested_key
             request: BridgeResponseRequest | None = None
             async with response_lock:
                 assistant_speaking = False
                 response_active = False
+                if (
+                    interruption_recovery_cancel_requested_key
+                    and last_response_request is not None
+                    and last_response_request.key == interruption_recovery_cancel_requested_key
+                ):
+                    interruption_recovery_cancel_requested_key = None
                 last_response_request = None
                 if not pending_responses:
                     return False
@@ -3445,6 +3517,20 @@ class DidwwSipBridgeService:
                         isinstance(error, dict)
                         and error.get("code") == "response_cancel_not_active"
                     ):
+                        cancel_requested_key = interruption_recovery_cancel_requested_key
+                        if cancel_requested_key:
+                            flushed_response = await mark_response_done_and_flush()
+                            self._append_debug_event(
+                                voice_session_id,
+                                "bridge.interruption_recovery.cancel_not_active",
+                                metadata={
+                                    "reason": "response_cancel_not_active",
+                                    "request_key": cancel_requested_key,
+                                    "flushed_response": flushed_response,
+                                    **_realtime_error_metadata(event),
+                                },
+                            )
+                            continue
                         self._append_debug_event(
                             voice_session_id,
                             "response_cancel_not_active_ignored",
@@ -4732,6 +4818,14 @@ def _is_goodbye_transcript(transcript_text: object) -> bool:
 
 def _is_origin_query_response_key(key: object) -> bool:
     return str(key or "").startswith("query:")
+
+
+def _interrupted_assistant_resume_response_key(utterance_id: int) -> str:
+    return f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:{utterance_id}"
+
+
+def _is_interrupted_assistant_resume_response_key(key: object) -> bool:
+    return str(key or "").startswith(f"{_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX}:")
 
 
 def _origin_query_response_key(query_id: str, kind: str) -> str:

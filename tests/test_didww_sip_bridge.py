@@ -3420,6 +3420,161 @@ def test_slow_substantive_transcript_after_cancel_suppresses_recovery_response(
     )
 
 
+def test_late_substantive_transcript_after_recovery_preempts_resume_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x16" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "__sleep__", "seconds": 1.6},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Stop, I need to ask about the outage.",
+                },
+            ]
+            self.actions: list[str] = []
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+            self.sleep_until: float | None = None
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events[0]
+                if event["type"] == "__sleep__":
+                    loop = asyncio.get_running_loop()
+                    if self.sleep_until is None:
+                        self.sleep_until = loop.time() + float(event["seconds"])
+                    remaining = self.sleep_until - loop.time()
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                        continue
+                    self.events.pop(0)
+                    self.sleep_until = None
+                    continue
+                self.events.pop(0)
+                return event
+            await asyncio.sleep(0.05)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.actions.append(f"cancel:{response_id}")
+            self.cancels.append(response_id)
+            if response_id == "resp-recovery":
+                self.events.insert(
+                    0,
+                    {
+                        "type": "response.cancelled",
+                        "response": {"id": "resp-recovery", "status": "cancelled"},
+                    },
+                )
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            if instructions == didww_sip_bridge._INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS:
+                self.actions.append("request:recovery")
+                self.events.insert(
+                    0,
+                    {"type": "response.created", "response": {"id": "resp-recovery"}},
+                )
+                return
+            self.actions.append("request:caller")
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=4,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    latest = store.get("voice-1")
+    assert latest is not None
+    assert realtime.responses == [
+        didww_sip_bridge._INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+        None,
+    ]
+    assert realtime.cancels == ["resp-1", "resp-recovery"]
+    assert realtime.actions == [
+        "cancel:resp-1",
+        "request:recovery",
+        "cancel:resp-recovery",
+        "request:caller",
+    ]
+    response_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in response_events
+    )
+    assert any(
+        event.metadata.get("reason") == "caller_turn_completed"
+        or event.metadata.get("request_reason") == "caller_turn_completed"
+        for event in response_events
+    )
+    assert any(
+        event.event_type == "bridge.interruption_recovery.cancel_requested"
+        and event.metadata.get("reason") == "substantive_transcript"
+        for event in latest.debug_events
+    )
+
+
 def test_cancelled_interruption_recovery_is_retired_by_new_response_creation(
     tmp_path: Path,
 ) -> None:
