@@ -3258,6 +3258,7 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
             )
 
         async def request_response(self, instructions: str | None = None) -> None:
+            await asyncio.sleep(0)
             self.responses.append(instructions)
             stop_event.set()
 

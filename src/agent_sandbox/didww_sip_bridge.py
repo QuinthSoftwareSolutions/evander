@@ -2635,6 +2635,8 @@ class DidwwSipBridgeService:
             nonlocal barge_cancel_recovery_task
             task = barge_cancel_recovery_task
             barge_cancel_recovery_task = None
+            if task is asyncio.current_task():
+                return False
             if task is not None and not task.done():
                 task.cancel()
                 return True
