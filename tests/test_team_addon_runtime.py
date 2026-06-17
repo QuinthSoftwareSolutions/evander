@@ -873,6 +873,147 @@ def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
     assert runtime.last_thread_id == "thread-idle"
 
 
+def test_status_report_only_idle_rotation_does_not_rearm_auto_context_clearing(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+    repo.update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    runtime = repo.read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "idle"
+
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = repo.lease_due_agents(now=base_time)
+    dispatch_id = str(leases[0]["dispatch_id"])
+    repo.record_context_rotation_dispatch_started(
+        agent_id="backend",
+        dispatch_id=dispatch_id,
+        thread_id="thread-idle",
+    )
+
+    state, result = repo.apply_agent_action(
+        session_id="session-backend",
+        dispatch_id=dispatch_id,
+        action={
+            "agent_id": "backend",
+            "dispatch_id": dispatch_id,
+            "status_reports": [
+                {
+                    "summary": "No active work",
+                    "message": "No active tasks, inbox items, or reviews.",
+                    "recipient_agent_id": "lead",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_progress_at is None
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=20))
+    assert "backend" not in _leased_agent_ids(leases)
+
+
+def test_substantive_idle_rotation_action_can_rearm_auto_context_clearing(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+    repo.update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    dispatch_id = str(leases[0]["dispatch_id"])
+    repo.record_context_rotation_dispatch_started(
+        agent_id="backend",
+        dispatch_id=dispatch_id,
+        thread_id="thread-idle",
+    )
+
+    state, result = repo.apply_agent_action(
+        session_id="session-backend",
+        dispatch_id=dispatch_id,
+        action={
+            "agent_id": "backend",
+            "dispatch_id": dispatch_id,
+            "questions": [
+                {
+                    "question": "Need another assignment?",
+                    "recipient_agent_id": "lead",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is True
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "idle"
+    assert runtime.last_progress_at is not None
+
+
+def test_disabling_auto_context_clearing_clears_pending_idle_rotation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+    repo.update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    assert repo.read().agent_runtimes["backend"].context_rotation_pending is True
+
+    state = repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=False,
+        set_auto_context_clearing_enabled=True,
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.auto_context_clearing_enabled is False
+    assert runtime.context_rotation_pending is False
+    assert runtime.context_rotation_reason is None
+    assert runtime.context_rotation_requested_at is None
+    assert runtime.next_wake_at is None
+    assert runtime.last_handoff_summary is None
+
+
+def test_disabling_auto_context_clearing_preserves_manual_rotation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="manual refresh",
+    )
+
+    state = repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=False,
+        set_auto_context_clearing_enabled=True,
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.auto_context_clearing_enabled is False
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "manual"
+    assert runtime.context_rotation_requested_by == "operator:test"
+    assert runtime.last_handoff_summary is not None
+
+
 def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
     tmp_path: Path,
 ) -> None:

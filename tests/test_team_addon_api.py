@@ -1021,6 +1021,25 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["context_rotation_reason"] == "idle"
     assert "Active tasks: none." in runtime["last_handoff_summary"]
 
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "auto_context_clearing_enabled": False,
+            "expected_revision": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["auto_context_clearing_enabled"] is False
+    assert runtime["context_rotation_pending"] is False
+    assert runtime["context_rotation_reason"] is None
+    assert runtime["context_rotation_requested_at"] is None
+    assert runtime["next_wake_at"] is None
+    assert runtime["last_handoff_summary"] is None
+
 
 def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) -> None:
     client = _client(tmp_path)

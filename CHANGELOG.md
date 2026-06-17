@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Idle Context Wake Loop
+
+- Stopped status-report-only idle context rotations from immediately re-arming
+  automatic context clearing and repeatedly waking agents with no assigned work.
+- Made disabling automatic context clearing clear already-pending idle rotations
+  while preserving manual context-rotation requests.
+
 ## 2026-06-17 - Team Add-on Header Indicators
 
 - Added persistent-agent card header indicators for pending status requests and

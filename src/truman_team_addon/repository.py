@@ -554,11 +554,14 @@ class TeamStateRepository:
                 )
                 runtime.auto_context_clearing_enabled = bool(auto_context_clearing_enabled)
                 runtime.updated_at = now
-                _maybe_mark_idle_context_rotation_due(
-                    state,
-                    agent_id=agent.id,
-                    now=now,
-                )
+                if runtime.auto_context_clearing_enabled:
+                    _maybe_mark_idle_context_rotation_due(
+                        state,
+                        agent_id=agent.id,
+                        now=now,
+                    )
+                else:
+                    _clear_pending_idle_context_rotation(runtime)
             if set_reports_to_agent_id:
                 old_superior_id = agent.reports_to_agent_id
                 if reports_to_agent_id is not None:
@@ -1921,7 +1924,15 @@ class TeamStateRepository:
                     return state_model
 
             progress = False
+            context_rotation_activity = False
             projects_to_recalc: set[str] = set()
+
+            def _mark_progress(*, context_activity: bool = True) -> None:
+                nonlocal progress, context_rotation_activity
+                progress = True
+                if context_activity:
+                    context_rotation_activity = True
+
             for index, update in enumerate(
                 _list_of_mappings(normalized_action.get("task_updates"), "task_updates")
             ):
@@ -1990,7 +2001,7 @@ class TeamStateRepository:
                         changed = True
                     if changed:
                         task.updated_at = utc_now()
-                        progress = True
+                        _mark_progress()
                         result["updated_task_ids"].append(task.id)
                 except ValueError as exc:
                     _append_action_item_error(result, "task_updates", index, exc)
@@ -2032,7 +2043,7 @@ class TeamStateRepository:
                 )
                 result["created_task_ids"].append(created_id)
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
-                progress = True
+                _mark_progress()
 
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
                 recipient_id = (
@@ -2058,7 +2069,7 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
-                progress = True
+                _mark_progress()
 
             for report in _list_of_mappings(
                 normalized_action.get("status_reports"), "status_reports"
@@ -2086,7 +2097,7 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
-                progress = True
+                _mark_progress(context_activity=False)
 
             for index, status_request in enumerate(
                 _list_of_mappings(normalized_action.get("status_requests"), "status_requests")
@@ -2115,7 +2126,7 @@ class TeamStateRepository:
                     )
                     state_model.inbox[item.id] = item
                     result["created_status_request_ids"].append(item.id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "status_requests", index, exc)
 
@@ -2128,7 +2139,7 @@ class TeamStateRepository:
                     escalation=escalation,
                     result=result,
                 ):
-                    progress = True
+                    _mark_progress()
 
             for index, deliverable_payload in enumerate(
                 _list_of_mappings(normalized_action.get("deliverables"), "deliverables")
@@ -2177,7 +2188,7 @@ class TeamStateRepository:
                             },
                         )
                         result["created_inbox_item_ids"].append(inbox_id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "deliverables", index, exc)
 
@@ -2196,7 +2207,7 @@ class TeamStateRepository:
                     continue
                 if created_id is not None:
                     result["created_review_request_ids"].append(created_id)
-                    progress = True
+                    _mark_progress()
 
             for index, decision in enumerate(
                 _list_of_mappings(normalized_action.get("review_decisions"), "review_decisions")
@@ -2214,7 +2225,7 @@ class TeamStateRepository:
                     continue
                 if decided_id is not None:
                     result["decided_review_request_ids"].append(decided_id)
-                    progress = True
+                    _mark_progress()
 
             for index, goal_update in enumerate(
                 _list_of_mappings(normalized_action.get("goal_updates"), "goal_updates")
@@ -2232,7 +2243,7 @@ class TeamStateRepository:
                     continue
                 if updated_id is not None:
                     result["updated_goal_ids"].append(updated_id)
-                    progress = True
+                    _mark_progress()
 
             for index, promotion in enumerate(
                 _list_of_mappings(
@@ -2251,7 +2262,7 @@ class TeamStateRepository:
                     continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
-                    progress = True
+                    _mark_progress()
 
             for index, feature_update in enumerate(
                 _list_of_mappings(
@@ -2270,7 +2281,7 @@ class TeamStateRepository:
                     continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
-                    progress = True
+                    _mark_progress()
 
             for index, release_request in enumerate(
                 _list_of_mappings(
@@ -2290,7 +2301,7 @@ class TeamStateRepository:
                     continue
                 if release_id is not None:
                     result["release_package_ids"].append(release_id)
-                    progress = True
+                    _mark_progress()
 
             for inbox_item_id in _string_list(
                 normalized_action.get("handled_inbox_item_ids"),
@@ -2303,7 +2314,7 @@ class TeamStateRepository:
                 item.state = TeamInboxItemState.HANDLED
                 item.updated_at = utc_now()
                 result["handled_inbox_item_ids"].append(inbox_item_id)
-                progress = True
+                _mark_progress()
 
             ephemeral_requests = _list_of_mappings(
                 normalized_action.get("ephemeral_requests"),
@@ -2318,7 +2329,7 @@ class TeamStateRepository:
                         dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
                         result=result,
                     )
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     result["errors"].append(f"ephemeral_requests: {exc}")
 
@@ -2354,7 +2365,7 @@ class TeamStateRepository:
                         result["accepted_ephemeral_assignment_ids"].append(assignment.id)
                     else:
                         result["rejected_ephemeral_assignment_ids"].append(assignment.id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "ephemeral_acceptances", index, exc)
 
@@ -2374,9 +2385,10 @@ class TeamStateRepository:
             runtime.wake_leased_until = None
             runtime.wake_reason = None
             runtime.no_progress_count = 0 if progress else runtime.no_progress_count + 1
-            if progress:
-                runtime.last_progress_at = utc_now()
-            runtime.updated_at = utc_now()
+            completed_at = utc_now()
+            if context_rotation_activity:
+                runtime.last_progress_at = completed_at
+            runtime.updated_at = completed_at
             _maybe_mark_idle_context_rotation_due(
                 state_model,
                 agent_id=agent.id,
@@ -2869,6 +2881,21 @@ def _mark_context_rotation_pending(
         request_note=request_note,
     )
     runtime.updated_at = requested_at
+
+
+def _clear_pending_idle_context_rotation(runtime: AgentRuntime) -> None:
+    if (
+        not runtime.context_rotation_pending
+        or runtime.context_rotation_reason != "idle"
+    ):
+        return
+    runtime.context_rotation_pending = False
+    runtime.context_rotation_reason = None
+    runtime.context_rotation_requested_by = None
+    runtime.context_rotation_requested_at = None
+    runtime.context_rotation_request_note = None
+    runtime.next_wake_at = None
+    runtime.last_handoff_summary = None
 
 
 def _build_context_handoff_summary(
