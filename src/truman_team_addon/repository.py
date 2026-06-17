@@ -24,6 +24,8 @@ from .models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
+    AgentStandDown,
+    AgentStandDownSource,
     AgentTask,
     Deliverable,
     DeliverableGitRefs,
@@ -216,6 +218,7 @@ class TeamStateRepository:
                 id=role_id,
                 team_id=team_id,
                 name=_optional_text(manager_role_name) or "Manager",
+                permissions=[RolePermission.CREATE_ROOT_TASK],
                 created_at=now,
                 updated_at=now,
             )
@@ -305,6 +308,7 @@ class TeamStateRepository:
                 team_id=team_id,
                 project_id=project_id,
                 name=_optional_text(lead_role_name) or "Project Lead",
+                permissions=[RolePermission.CREATE_ROOT_TASK],
                 created_at=now,
                 updated_at=now,
             )
@@ -617,6 +621,83 @@ class TeamStateRepository:
                 requested_at=now,
                 request_note=normalized_request_note,
             )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def stand_down_agent(
+        self,
+        *,
+        agent_id: str,
+        reason: str,
+        set_by: str | None = None,
+        source: AgentStandDownSource | str = AgentStandDownSource.OPERATOR,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_set_by = _optional_text(set_by) or "operator"
+        normalized_source = (
+            source
+            if isinstance(source, AgentStandDownSource)
+            else AgentStandDownSource(str(source))
+        )
+
+        def _mutate(state: TeamState) -> TeamState:
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            now = utc_now()
+            stand_down = AgentStandDown(
+                id=f"stand-down-{uuid4().hex}",
+                agent_id=agent.id,
+                reason=normalized_reason,
+                source=normalized_source,
+                set_by=normalized_set_by,
+                set_at=now,
+            )
+            state.stand_downs[stand_down.id] = stand_down
+            for affected_id in _agent_subtree_ids(state, agent.id):
+                runtime = state.agent_runtimes.get(affected_id)
+                if runtime is None:
+                    continue
+                runtime.next_wake_at = None
+                runtime.updated_at = now
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def revoke_operator_stand_downs(
+        self,
+        *,
+        agent_id: str,
+        revoked_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_revoked_by = _optional_text(revoked_by) or "operator"
+
+        def _mutate(state: TeamState) -> TeamState:
+            _require_present(state.agents, normalized_agent_id, "agent")
+            now = utc_now()
+            revoked = False
+            for stand_down in state.stand_downs.values():
+                if (
+                    stand_down.agent_id == normalized_agent_id
+                    and stand_down.source == AgentStandDownSource.OPERATOR
+                    and stand_down.active
+                ):
+                    stand_down.cleared_by = normalized_revoked_by
+                    stand_down.cleared_at = now
+                    revoked = True
+            if not revoked:
+                raise ValueError(
+                    f"agent {normalized_agent_id} has no active operator stand-down"
+                )
+            for affected_id in _agent_subtree_ids(state, normalized_agent_id):
+                if _active_stand_downs_for_agent(state, affected_id):
+                    continue
+                _mark_agent_work_due(state, agent_id=affected_id, now=now)
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -1712,6 +1793,8 @@ class TeamStateRepository:
                     break
                 if agent.status != AgentStatus.ACTIVE:
                     continue
+                if _active_stand_downs_for_agent(state_model, agent.id):
+                    continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
                     continue
                 if agent.team_id in blocked_teams:
@@ -1816,6 +1899,7 @@ class TeamStateRepository:
         active_task_ids = [task.id for task in _active_tasks_for_agent(state, agent_id)]
         pending_inbox_ids = [item.id for item in _pending_inbox_for_agent(state, agent_id)]
         role = state.roles.get(agent.role_id)
+        active_stand_downs = _active_stand_downs_for_agent(state, agent_id)
         return {
             "team_addon": {
                 "agent_id": agent.id,
@@ -1832,6 +1916,11 @@ class TeamStateRepository:
                 "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                 "active_task_ids": active_task_ids,
                 "pending_inbox_item_ids": pending_inbox_ids,
+                "stand_down_active": bool(active_stand_downs),
+                "effective_stand_downs": [
+                    stand_down.model_dump(mode="json")
+                    for stand_down in active_stand_downs
+                ],
                 "auto_context_clearing_enabled": (
                     runtime.auto_context_clearing_enabled if runtime is not None else False
                 ),
@@ -1883,6 +1972,8 @@ class TeamStateRepository:
             "events": [],
             "accepted_ephemeral_assignment_ids": [],
             "rejected_ephemeral_assignment_ids": [],
+            "created_stand_down_ids": [],
+            "revoked_stand_down_ids": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -1922,6 +2013,20 @@ class TeamStateRepository:
                         result=result,
                     )
                     return state_model
+            active_stand_downs = _active_stand_downs_for_agent(state_model, agent.id)
+            if active_stand_downs and _non_empty_action_fields(normalized_action):
+                reason = _stand_down_error_detail(active_stand_downs)
+                _mark_action_failure(
+                    state_model,
+                    runtime=runtime,
+                    agent_id=agent.id,
+                    dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id or action_id,
+                    action=normalized_action,
+                    error=f"agent {agent.id} is stood down: {reason}",
+                    action_id=action_id,
+                    result=result,
+                )
+                return state_model
 
             progress = False
             context_rotation_activity = False
@@ -1932,6 +2037,39 @@ class TeamStateRepository:
                 progress = True
                 if context_activity:
                     context_rotation_activity = True
+
+            for index, stand_down_request in enumerate(
+                _list_of_mappings(normalized_action.get("stand_downs"), "stand_downs")
+            ):
+                try:
+                    stand_down_id = _apply_superior_stand_down(
+                        state_model,
+                        actor=agent,
+                        request=stand_down_request,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "stand_downs", index, exc)
+                    continue
+                result["created_stand_down_ids"].append(stand_down_id)
+                _mark_progress()
+
+            for index, revoke_request in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("stand_down_revocations"),
+                    "stand_down_revocations",
+                )
+            ):
+                try:
+                    revoked_ids = _apply_superior_stand_down_revocation(
+                        state_model,
+                        actor=agent,
+                        request=revoke_request,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "stand_down_revocations", index, exc)
+                    continue
+                result["revoked_stand_down_ids"].extend(revoked_ids)
+                _mark_progress()
 
             for index, update in enumerate(
                 _list_of_mappings(normalized_action.get("task_updates"), "task_updates")
@@ -2765,6 +2903,55 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     return tasks
 
 
+def _active_stand_downs_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> list[AgentStandDown]:
+    root_ids: list[str] = []
+    seen: set[str] = set()
+    current_id: str | None = agent_id
+    while current_id is not None and current_id not in seen:
+        seen.add(current_id)
+        root_ids.append(current_id)
+        current = state.agents.get(current_id)
+        current_id = current.reports_to_agent_id if current is not None else None
+    root_set = set(root_ids)
+    return sorted(
+        [
+            stand_down
+            for stand_down in state.stand_downs.values()
+            if stand_down.active and stand_down.agent_id in root_set
+        ],
+        key=lambda item: (item.set_at, item.id),
+    )
+
+
+def _stand_down_error_detail(stand_downs: list[AgentStandDown]) -> str:
+    if not stand_downs:
+        return "active stand-down"
+    primary = stand_downs[-1]
+    return f"{primary.source.value} stand-down on {primary.agent_id}: {primary.reason}"
+
+
+def _agent_subtree_ids(state: TeamState, agent_id: str) -> list[str]:
+    if agent_id not in state.agents:
+        return []
+    ordered: list[str] = []
+    stack = [agent_id]
+    seen: set[str] = set()
+    while stack:
+        current_id = stack.pop()
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        ordered.append(current_id)
+        agent = state.agents.get(current_id)
+        if agent is None:
+            continue
+        stack.extend(reversed(agent.subordinate_agent_ids))
+    return ordered
+
+
 def _maybe_mark_idle_context_rotation_due(
     state: TeamState,
     *,
@@ -2773,6 +2960,8 @@ def _maybe_mark_idle_context_rotation_due(
 ) -> None:
     agent = state.agents.get(agent_id)
     if agent is None:
+        return
+    if _active_stand_downs_for_agent(state, agent.id):
         return
     runtime = state.agent_runtimes.setdefault(agent.id, AgentRuntime(agent_id=agent.id))
     if not runtime.auto_context_clearing_enabled or runtime.context_rotation_pending:
@@ -2839,6 +3028,8 @@ def _is_agent_truly_idle(
     now: datetime,
 ) -> bool:
     if agent.status != AgentStatus.ACTIVE:
+        return False
+    if _active_stand_downs_for_agent(state, agent.id):
         return False
     if runtime.active_dispatch_id:
         return False
@@ -3237,6 +3428,43 @@ def _agent_has_role_permission_for_project(
     return permission in role.permissions
 
 
+def _task_creation_mandate_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    project_id: str,
+    parent_task_id: str | None,
+) -> str | None:
+    can_create_root = _agent_has_role_permission_for_project(
+        state,
+        actor,
+        RolePermission.CREATE_ROOT_TASK,
+        project_id,
+    )
+    if parent_task_id is None:
+        if can_create_root:
+            return None
+        return (
+            f"agent {actor.id} cannot create a top-level task without "
+            f"{RolePermission.CREATE_ROOT_TASK.value} permission"
+        )
+    parent = state.tasks.get(parent_task_id)
+    if parent is None:
+        return None
+    if parent.state not in _NON_TERMINAL_TASK_STATES:
+        return f"task parent {parent_task_id} is not active"
+    if parent.project_id != project_id:
+        return None
+    if can_create_root:
+        return None
+    if parent.owner_agent_id == actor.id:
+        return None
+    return (
+        f"agent {actor.id} can only create child tasks under its own active tasks "
+        f"without {RolePermission.CREATE_ROOT_TASK.value} permission"
+    )
+
+
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
     agent = state.agents.get(agent_id)
     return agent is not None and agent.project_id == project_id
@@ -3335,6 +3563,15 @@ def _plan_task_creation(
     dependency_task_ids = _string_list(
         creation.get("dependency_task_ids"), "dependency_task_ids"
     )
+    mandate_error = _task_creation_mandate_error(
+        state,
+        actor=actor,
+        project_id=project_id,
+        parent_task_id=parent_task_id,
+    )
+    if mandate_error is not None:
+        result["errors"].append(mandate_error)
+        return None
     priority = creation.get("priority")
     return _TaskCreationPlan(
         task_id=task_id,
@@ -3538,6 +3775,77 @@ def _apply_operator_escalation(
     )
     result["operator_escalation_event_ids"].append(escalation_id)
     return True
+
+
+def _apply_superior_stand_down(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+) -> str:
+    target_id = _required_text(request.get("agent_id"), "agent_id")
+    reason = _required_text(request.get("reason"), "reason")
+    target = _require_present(state.agents, target_id, "agent")
+    if target.team_id != actor.team_id:
+        raise ValueError(f"agent {target.id} is not in team {actor.team_id}")
+    if not _is_direct_subordinate(actor, target.id):
+        raise ValueError(
+            f"agent {actor.id} can only stand down a direct subordinate"
+        )
+    if target.status == AgentStatus.ARCHIVED:
+        raise ValueError(f"agent {target.id} is archived")
+    now = utc_now()
+    stand_down = AgentStandDown(
+        id=f"stand-down-{uuid4().hex}",
+        agent_id=target.id,
+        reason=reason,
+        source=AgentStandDownSource.SUPERIOR,
+        set_by=actor.id,
+        set_at=now,
+    )
+    state.stand_downs[stand_down.id] = stand_down
+    for affected_id in _agent_subtree_ids(state, target.id):
+        runtime = state.agent_runtimes.get(affected_id)
+        if runtime is None:
+            continue
+        runtime.next_wake_at = None
+        runtime.updated_at = now
+    return stand_down.id
+
+
+def _apply_superior_stand_down_revocation(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    request: dict[str, Any],
+) -> list[str]:
+    target_id = _required_text(request.get("agent_id"), "agent_id")
+    target = _require_present(state.agents, target_id, "agent")
+    if target.team_id != actor.team_id:
+        raise ValueError(f"agent {target.id} is not in team {actor.team_id}")
+    if not _is_direct_subordinate(actor, target.id):
+        raise ValueError(
+            f"agent {actor.id} can only revoke stand-downs for a direct subordinate"
+        )
+    now = utc_now()
+    revoked_ids: list[str] = []
+    for stand_down in state.stand_downs.values():
+        if (
+            stand_down.agent_id == target.id
+            and stand_down.source == AgentStandDownSource.SUPERIOR
+            and stand_down.set_by == actor.id
+            and stand_down.active
+        ):
+            stand_down.cleared_by = actor.id
+            stand_down.cleared_at = now
+            revoked_ids.append(stand_down.id)
+    if not revoked_ids:
+        raise ValueError(f"agent {target.id} has no active superior stand-down by {actor.id}")
+    for affected_id in _agent_subtree_ids(state, target.id):
+        if _active_stand_downs_for_agent(state, affected_id):
+            continue
+        _mark_agent_work_due(state, agent_id=affected_id, now=now)
+    return revoked_ids
 
 
 def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:

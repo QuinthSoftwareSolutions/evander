@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 2
+SQLITE_SCHEMA_VERSION = 3
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -167,11 +167,13 @@ class TeamStateSqliteStore:
             "release_packages": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
+            "stand_downs": {},
         }
         self._read_teams(connection, payload)
         self._read_roles(connection, payload)
         self._read_projects(connection, payload)
         self._read_agents(connection, payload)
+        self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
         self._read_tasks(connection, payload)
         self._read_deliverables(connection, payload)
@@ -191,6 +193,7 @@ class TeamStateSqliteStore:
         self._write_roles(connection, payload["roles"])
         self._write_projects(connection, payload["projects"])
         self._write_agents(connection, payload["agents"])
+        self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
         self._write_tasks(connection, payload["tasks"])
         self._write_deliverables(connection, payload["deliverables"])
@@ -436,6 +439,51 @@ class TeamStateSqliteStore:
                 agent["id"],
                 "subordinate_agent_id",
                 agent.get("subordinate_agent_ids", []),
+            )
+
+    @staticmethod
+    def _read_stand_downs(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_agent_stand_downs ORDER BY id"):
+            payload["stand_downs"][row["id"]] = {
+                "id": row["id"],
+                "agent_id": row["agent_id"],
+                "scope": row["scope"],
+                "reason": row["reason"],
+                "source": row["source"],
+                "set_by": row["set_by"],
+                "set_at": row["set_at"],
+                "cleared_by": row["cleared_by"],
+                "cleared_at": row["cleared_at"],
+            }
+
+    @staticmethod
+    def _write_stand_downs(
+        connection: sqlite3.Connection,
+        stand_downs: dict[str, Any],
+    ) -> None:
+        for stand_down in stand_downs.values():
+            connection.execute(
+                """
+                INSERT INTO team_agent_stand_downs(
+                    id, agent_id, scope, reason, source, set_by, set_at,
+                    cleared_by, cleared_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stand_down["id"],
+                    stand_down["agent_id"],
+                    stand_down.get("scope", "subtree"),
+                    stand_down["reason"],
+                    stand_down.get("source", "operator"),
+                    stand_down["set_by"],
+                    stand_down["set_at"],
+                    stand_down.get("cleared_by"),
+                    stand_down.get("cleared_at"),
+                ),
             )
 
     @staticmethod
@@ -1275,6 +1323,7 @@ _STATE_TABLES = (
     "team_review_profiles",
     "team_deliverables",
     "team_tasks",
+    "team_agent_stand_downs",
     "team_agent_runtimes",
     "team_agents",
     "team_projects",
@@ -1370,6 +1419,20 @@ CREATE TABLE IF NOT EXISTS team_agent_subordinates (
     subordinate_agent_id TEXT NOT NULL,
     PRIMARY KEY(agent_id, position)
 );
+
+CREATE TABLE IF NOT EXISTS team_agent_stand_downs (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    set_by TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    cleared_by TEXT,
+    cleared_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_agent_stand_downs_agent_active
+    ON team_agent_stand_downs(agent_id, cleared_at, source, id);
 
 CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     agent_id TEXT PRIMARY KEY,

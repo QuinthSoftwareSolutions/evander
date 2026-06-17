@@ -471,6 +471,26 @@ function bindRecordEditing() {
       return;
     }
 
+    const standDownButton = event.target.closest("[data-stand-down-agent-id]");
+    if (standDownButton) {
+      event.preventDefault();
+      void requestAgentStandDown(
+        standDownButton,
+        standDownButton.dataset.standDownAgentId,
+      );
+      return;
+    }
+
+    const standDownRevokeButton = event.target.closest("[data-stand-down-revoke-agent-id]");
+    if (standDownRevokeButton) {
+      event.preventDefault();
+      void revokeAgentStandDown(
+        standDownRevokeButton,
+        standDownRevokeButton.dataset.standDownRevokeAgentId,
+      );
+      return;
+    }
+
     const dismissActionButton = event.target.closest("[data-dismiss-action-id]");
     if (dismissActionButton) {
       event.preventDefault();
@@ -1331,6 +1351,7 @@ function renderRuntimeAgentRow(agent) {
         <strong>${escapeHtml(agent.id)}</strong>
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+          ${renderAgentStandDownControls(agent.id, agent)}
           <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
         </div>
       </div>
@@ -1343,7 +1364,7 @@ function renderRuntimeAgentRow(agent) {
           ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
           : ""
       }
-      <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}</div>
+      <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
     </li>
   `;
@@ -1775,12 +1796,14 @@ function renderAgents() {
                   <strong>${escapeHtml(details.label)}</strong>
                   <div class="record-actions">
                     <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+                    ${renderAgentStandDownControls(details.id, details)}
                     <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                     ${editButton("agent", details.id)}
                   </div>
                 </div>
               <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
               <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - ${details.taskStats.openCount} open task(s) - max ephemeral ${details.ephemeralCapacity}</div>
+              ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
               ${renderAgentOpenTasks(details.taskStats.openTasks)}
               ${renderAgentInbox(agent.id)}
             </li>
@@ -1896,6 +1919,7 @@ function agentCardData(agent) {
   const reportsToId = text(agent?.reports_to_agent_id);
   const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
   const inboxItems = pendingInboxForAgent(agent.id);
+  const standDowns = effectiveStandDowns(agent);
   const inboxIndicatorItems = {
     status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
     progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
@@ -1916,9 +1940,62 @@ function agentCardData(agent) {
     inboxCount: inboxItems.length,
     inboxIndicatorItems,
     runtime,
+    effectiveStandDowns: standDowns,
+    standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
   };
+}
+
+function effectiveStandDowns(record) {
+  const values = Array.isArray(record?.effective_stand_downs)
+    ? record.effective_stand_downs
+    : Array.isArray(record?.effectiveStandDowns)
+      ? record.effectiveStandDowns
+      : [];
+  return values.filter((item) => item && typeof item === "object");
+}
+
+function operatorRootStandDown(agentId, record) {
+  const normalizedAgentId = text(agentId);
+  return effectiveStandDowns(record).find((item) => {
+    return text(item.source) === "operator"
+      && text(item.agent_id) === normalizedAgentId
+      && text(item.root_agent_id || item.agent_id) === normalizedAgentId
+      && !Boolean(item.inherited);
+  }) || null;
+}
+
+function renderAgentStandDownControls(agentId, record) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  const standDowns = effectiveStandDowns(record);
+  const active = Boolean(record?.standDownActive || record?.stand_down_active) || standDowns.length > 0;
+  if (!active) {
+    return `<button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}">Stand down</button>`;
+  }
+  const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
+  const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
+  return `
+    <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
+    ${
+      operatorRoot
+        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke</button>`
+        : ""
+    }
+  `;
+}
+
+function agentStandDownSummary(record) {
+  const standDowns = effectiveStandDowns(record);
+  const primary = standDowns[standDowns.length - 1] || {};
+  const source = text(primary.source) || "stand-down";
+  const root = text(primary.root_agent_id || primary.agent_id);
+  const reason = text(primary.reason);
+  const inherited = Boolean(primary.inherited) && root ? ` inherited from ${root}` : "";
+  return `${humanizeToken(source)} stand-down${inherited}${reason ? `: ${reason}` : ""}`;
 }
 
 function runtimeSummary(agentId) {
@@ -3839,6 +3916,114 @@ async function requestContextRotation(button, agentId) {
     setStatus(`Context clearing queued for ${normalizedAgentId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Context clearing request failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function requestAgentStandDown(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const reason = text(window.prompt(`Reason to stand down ${normalizedAgentId}`));
+  if (!reason) {
+    setStatus("Stand-down reason is required.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Standing down agent subtree.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+          reason,
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; stand down again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Stood down ${normalizedAgentId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Stand-down request failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function revokeAgentStandDown(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Revoking stand-down.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; revoke again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Revoked stand-down for ${normalizedAgentId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Stand-down revoke failed.", "error");
   } finally {
     if (button.isConnected) {
       button.disabled = false;

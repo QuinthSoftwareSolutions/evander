@@ -1135,6 +1135,61 @@ def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
     assert "archived" in response.json()["error"]
 
 
+def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/agents/lead/stand-down",
+        json={"reason": "Await operator follow-up.", "expected_revision": 4},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["stand_downs"]) == 1
+    stand_down = next(iter(body["stand_downs"].values()))
+    assert stand_down["agent_id"] == "lead"
+    assert stand_down["source"] == "operator"
+    assert body["agents"]["lead"]["stand_down_active"] is True
+    assert body["agents"]["backend"]["stand_down_active"] is True
+    assert body["agents"]["backend"]["effective_stand_downs"][0]["inherited"] is True
+
+    response = client.post(
+        "/api/addons/team-addon/agents/lead/stand-down/revoke",
+        json={"expected_revision": 5},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    stand_down = next(iter(body["stand_downs"].values()))
+    assert stand_down["cleared_at"] is not None
+    assert body["agents"]["lead"]["stand_down_active"] is False
+    assert body["agents"]["backend"]["stand_down_active"] is False
+
+
 def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

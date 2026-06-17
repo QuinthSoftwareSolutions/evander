@@ -230,9 +230,7 @@ def _role_record(
         "project_id": project_id,
         "name": _role_name(role_key),
         "description": "",
-        "permissions": (
-            ["request_release"] if normalized_key == "release-operator" else []
-        ),
+        "permissions": _role_permissions(normalized_key),
         "ephemeral_policy": (
             ephemeral_policy
             if isinstance(ephemeral_policy, dict)
@@ -251,6 +249,14 @@ def _default_role_id(*, team_id: str, project_id: str | None, role_key: str) -> 
 
 def _role_id_part(value: str) -> str:
     return value.strip().replace("_", "-")
+
+
+def _role_permissions(normalized_key: str) -> list[str]:
+    if normalized_key in {"manager", "project-lead"}:
+        return ["create_root_task"]
+    if normalized_key == "release-operator":
+        return ["request_release"]
+    return []
 
 
 def _role_key_from_id(role_id: str) -> str:

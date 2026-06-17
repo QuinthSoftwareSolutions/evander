@@ -313,6 +313,27 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def stand_down_agent(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.stand_down_agent(
+            agent_id=request.path_params["agent_id"],
+            reason=_required(payload, "reason"),
+            set_by=_optional(payload, "set_by")
+            or _operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def revoke_agent_stand_down(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.revoke_operator_stand_downs(
+            agent_id=request.path_params["agent_id"],
+            revoked_by=_optional(payload, "revoked_by")
+            or _operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
@@ -581,6 +602,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route(
             "/agents/{agent_id}/context-rotation",
             _with_errors(request_agent_context_rotation),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/stand-down",
+            _with_errors(stand_down_agent),
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{agent_id}/stand-down/revoke",
+            _with_errors(revoke_agent_stand_down),
             methods=["POST"],
         ),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),

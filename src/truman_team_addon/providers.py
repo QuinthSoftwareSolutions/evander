@@ -51,7 +51,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 6
+ACTION_CONTRACT_SCHEMA_VERSION = 7
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1290,6 +1290,8 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "review_decisions": [],
         "goal_updates": [],
         "operator_escalations": [],
+        "stand_downs": [],
+        "stand_down_revocations": [],
         "git_review_promotions": [],
         "git_feature_updates": [],
         "git_release_requests": [],
@@ -1304,16 +1306,20 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Continue your assigned team-agent work.\n"
         "Use the provided team context and update only your own assigned tasks. "
         "Questions and progress reports must go to your direct superior; top-level "
-        "managers use operator_escalations. Use task_creations only for yourself, "
-        "subordinates, or project/team scopes you lead. Use status_requests only "
+        "managers use operator_escalations. Use task_creations only when you have "
+        "an active mandate: managers and project leads may create top-level tasks "
+        "when their role has create_root_task, while other agents must create child "
+        "tasks under their own active parent tasks. Use status_requests only "
         "for direct subordinates. Use review_requests/review_decisions for deliverable "
         "review, goal_updates for project goals, git_* actions for review/feature/release "
-        "branch promotion, and ephemeral_* actions for scoped worker delegation.\n\n"
+        "branch promotion, stand_downs/stand_down_revocations for direct-subordinate "
+        "hold control, and ephemeral_* actions for scoped worker delegation.\n\n"
         "Each task carries derived graph context: dependency_status, child_task_ids, "
         "blocked_by_task_ids, and subtask_counts. Do not start tasks whose "
         "dependency_status is not 'satisfied'; wait until their blocked_by_task_ids "
         "clear. Decompose large work by creating child tasks via task_creations with "
-        "parent_task_id instead of ad hoc checklists in descriptions, and declare "
+        "parent_task_id instead of ad hoc checklists in descriptions; non-lead "
+        "roles must include that active parent_task_id. Declare "
         "ordering between tasks with dependency_task_ids.\n\n"
         f"{_project_repo_prompt_guidance(project_repo)}"
         "Action surface guide:\n"
@@ -1342,6 +1348,9 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "through this Team dispatch by writing the appropriate task/status/review "
         "actions to team-action.json, then include their ids in "
         "handled_inbox_item_ids.\n\n"
+        "- Use stand_downs when you need a direct subordinate and that subordinate's "
+        "subtree to stop future Team work. Use stand_down_revocations to clear a "
+        "stand-down you set. Do not encode stand-downs as prose-only status_requests.\n\n"
         f"{handoff_section}"
         f"{action_feedback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
@@ -1723,6 +1732,12 @@ def _persistent_action_schema() -> dict[str, Any]:
             },
             "task_creations": {
                 "type": "array",
+                "description": (
+                    "Create tasks only under an active mandate. Roles with "
+                    "create_root_task may create top-level tasks; other agents "
+                    "must create child tasks by setting parent_task_id to one of "
+                    "their own active tasks."
+                ),
                 "default": [],
                 "items": {
                     "type": "object",
@@ -1779,6 +1794,39 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "urgency": {"type": "string"},
                         "project_id": text_or_null,
                         "task_id": text_or_null,
+                    },
+                },
+            },
+            "stand_downs": {
+                "type": "array",
+                "description": (
+                    "Stand down a direct subordinate and that subordinate's subtree. "
+                    "Operator stand-downs are separate and cannot be revoked here."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["agent_id", "reason"],
+                    "properties": {
+                        "agent_id": {"type": "string", "minLength": 1},
+                        "reason": {"type": "string", "minLength": 1},
+                    },
+                },
+            },
+            "stand_down_revocations": {
+                "type": "array",
+                "description": (
+                    "Revoke a superior stand-down that this agent previously set "
+                    "on a direct subordinate. Operator stand-downs require operator revoke."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["agent_id"],
+                    "properties": {
+                        "agent_id": {"type": "string", "minLength": 1},
                     },
                 },
             },
@@ -1971,6 +2019,8 @@ def _persistent_action_example() -> dict[str, Any]:
         "questions": [],
         "status_reports": [],
         "operator_escalations": [],
+        "stand_downs": [],
+        "stand_down_revocations": [],
         "deliverables": [],
         "review_requests": [
             {

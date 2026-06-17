@@ -314,13 +314,18 @@ applied item counts as progress and resets the agent's `no_progress_count`.
 
 - `task_creations[]` — delegate work down or across the hierarchy. Shape:
   `{"id"?, "owner_agent_id", "project_id", "priority"?, "title", "description",
-  "state"?, "parent_task_id"?, "dependency_task_ids"?}`. The actor may create a
-  task for itself, for a direct subordinate, for any agent in a project it leads
-  (`lead_agent_id`), or — as the team manager — for that project's direct lead.
-  Targets outside the actor's team or outside the target project are rejected.
-  Parent and dependency tasks must belong to the same project, parent cycles and
-  dependency cycles are rejected, tasks default to `pending`, and tasks may only
-  start in a non-terminal state. Created ids are returned in `created_task_ids`.
+  "state"?, "parent_task_id"?, "dependency_task_ids"?}`. Top-level task
+  creation requires the actor's role to hold `create_root_task`; the built-in
+  manager and project-lead roles carry that permission, while ordinary worker
+  roles do not. Agents without `create_root_task` must create child tasks under
+  one of their own active parent tasks by setting `parent_task_id`. The actor may
+  create a task for itself, for a direct subordinate, for any agent in a project
+  it leads (`lead_agent_id`), or — as the team manager — for that project's
+  direct lead. Targets outside the actor's team or outside the target project
+  are rejected. Parent and dependency tasks must belong to the same project,
+  parent cycles and dependency cycles are rejected, tasks default to `pending`,
+  and tasks may only start in a non-terminal state. Created ids are returned in
+  `created_task_ids`.
 - `task_updates[]` — update owned task details or maintain dependency edges.
   Shape: `{"task_id", "state"?, "priority"?, "title"?, "description"?,
   "dependency_task_ids"?}`. State, priority, title, and description remain
@@ -350,6 +355,13 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   published with payload `{team_id, manager_agent_id, communication_target_id,
   title, message, urgency, project_id?, task_id?}`. Escalation ids are returned
   in `operator_escalation_event_ids`.
+- `stand_downs[]` and `stand_down_revocations[]` — direct-superior hold control.
+  Shape: `{"agent_id", "reason"}` to stand down a direct subordinate and that
+  subordinate's subtree; `{"agent_id"}` to revoke a superior stand-down the
+  actor previously set. Held agents are skipped by future Team wake leasing, and
+  already-running dispatches from a held agent cannot apply non-empty Team
+  actions. Operator stand-downs are a separate source and cannot be revoked by
+  these agent-authored action items.
 - `operator_directive` inbox items — operator-to-manager instructions created
   by the Admin API, `effect:team:create-operator-directive`, or the
   `team_create_operator_directive` MCP tool. These are not agent-authored action
@@ -432,6 +444,13 @@ Team communication is directional and enforced by the repository, not by prose:
   A manager session with mirrored root-manager `metadata.team_addon` can see
   `team_create_operator_directive`; the gateway still verifies the session is
   the canonical manager for the requested team before creating the inbox item.
+- **Operator stand-down** — use `POST /agents/{agent_id}/stand-down` with a
+  required `reason` to disable that agent and its subordinate subtree. Held
+  agents are skipped by future Team wake leasing, and any already-running
+  dispatch that later submits non-empty Team actions is recorded as a failed
+  action instead of being applied. Operator holds are durable state and can only
+  be cleared through `POST /agents/{agent_id}/stand-down/revoke`; agent actions
+  cannot revoke or override them.
 
 ### Action-Driven Reviews And Decision Cascade
 
