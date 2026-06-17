@@ -5,6 +5,60 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Idle Context Wake Loop
+
+- Stopped status-report-only idle context rotations from immediately re-arming
+  automatic context clearing and repeatedly waking agents with no assigned work.
+- Made disabling automatic context clearing clear already-pending idle rotations
+  while preserving manual context-rotation requests.
+
+## 2026-06-17 - Team Add-on Header Indicators
+
+- Added persistent-agent card header indicators for pending status requests and
+  progress reports, using down/up speech-bubble icons with per-item hover
+  bubbles for each matching inbox item.
+- Made teams blocked by the lifetime cost cap explicit in Team UI headers with
+  a `Blocked: cost cap reached` notice and cost-blocked status pill.
+
+## 2026-06-17 - Team Add-on Action Feedback
+
+- Added one-shot Team action feedback to persistent-agent wake prompts when an
+  agent's most recent dispatch produced validation errors.
+- Persisted feedback-delivery markers on action records so the same correction
+  is not repeated and older failed dispatches are not replayed after newer
+  action attempts.
+
+## 2026-06-17 - Team Add-on Artifact Handoffs
+
+- Added scoped artifact publishing for Team deliverables: agents can list
+  `/artifacts`-relative `artifact_paths`, which are published into the
+  control-plane artifact store and indexed through artifact spaces.
+- Kept Team state refs-only by recording stable `artifact-space:` refs on
+  deliverables and surfacing those refs in deliverable/review inbox payloads.
+- Persisted Team action failures when deliverable artifact publication fails
+  before applying the action, instead of returning only a transient effect
+  error after consuming the dispatch.
+- Encoded unsafe Team, project, deliverable, and dispatch IDs in Team artifact
+  space paths so otherwise valid identifiers with spaces still publish.
+- Resolved Team deliverable artifact publishing through the action session
+  fallback and treated empty `artifact_paths` as omitted so Git-only
+  deliverables from schema-driven agents do not fail publication preflight.
+
+## 2026-06-17 - Team Add-on Focused Org Chart
+
+- Added a top-level Team Add-on tab for a focused org-chart view that keeps the
+  existing dense workspace intact.
+- Made focused org-chart agent cards show awake/due/idle state, current work,
+  waiting/blocker context, and open the existing agent edit dialog when
+  selected.
+
+## 2026-06-17 - Team Add-on SQLite State Store
+
+- Migrated canonical Team Add-on state from `runtime/addons/team-addon/state.json`
+  to relational SQLite at `runtime/addons/team-addon/state.db`.
+- Added one-time legacy JSON import on first database initialization while
+  keeping the existing `TeamStateRepository` and `TeamState` domain API.
+
 ## 2026-06-17 - Playwright VM Profile Repair
 
 - Fixed `bootstrap_playwright_vm.sh` so rerunning it removes only its managed

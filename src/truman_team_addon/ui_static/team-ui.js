@@ -29,6 +29,7 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let costsRequestId = 0;
 let showArchived = false;
+let activeTeamView = "workspace";
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -78,6 +79,10 @@ const elements = {
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
   refreshButton: document.querySelector("#refresh-button"),
+  teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
+  teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
+  orgFocusSummary: document.querySelector("#org-focus-summary"),
+  orgFocusView: document.querySelector("#org-focus-view"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -259,6 +264,7 @@ const fieldTooltips = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  bindTopLevelTabs();
   bindForms();
   bindRecordEditing();
   bindGeneratedIds();
@@ -353,6 +359,34 @@ const timelineTypeOrder = [
   "release_package",
 ];
 
+function bindTopLevelTabs() {
+  elements.teamViewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setTeamView(button.dataset.teamView || "workspace");
+    });
+  });
+  updateTeamViewTabs();
+}
+
+function setTeamView(view) {
+  activeTeamView = view === "org" ? "org" : "workspace";
+  renderFocusedOrgChartIfActive();
+  updateTeamViewTabs();
+}
+
+function updateTeamViewTabs() {
+  elements.teamViewButtons.forEach((button) => {
+    const active = (button.dataset.teamView || "workspace") === activeTeamView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  elements.teamViewPanels.forEach((panel) => {
+    const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
+    panel.hidden = !active;
+  });
+}
+
 function bindForms() {
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
@@ -422,7 +456,20 @@ function bindRecordEditing() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && elements.editModal && !elements.editModal.hidden) {
       closeEditDialog();
+      return;
     }
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    if (elements.editModal?.contains(event.target)) {
+      return;
+    }
+    const editTarget = event.target.closest("[data-edit-type][data-edit-id]");
+    if (!editTarget || editTarget.tagName === "BUTTON") {
+      return;
+    }
+    event.preventDefault();
+    openEditDialog(editTarget.dataset.editType, editTarget.dataset.editId);
   });
 
   elements.editForm?.addEventListener("submit", (event) => {
@@ -805,6 +852,7 @@ function render() {
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
   renderHierarchy();
+  renderFocusedOrgChartIfActive();
   renderAgents();
   renderRoles();
   renderProjects();
@@ -814,6 +862,20 @@ function render() {
   refreshSelects();
   renderTimeline();
   decorateFieldTooltips(document);
+  updateTeamViewTabs();
+}
+
+function renderFocusedOrgChartIfActive() {
+  if (activeTeamView === "org") {
+    renderFocusedOrgChart();
+    return;
+  }
+  if (elements.orgFocusSummary) {
+    elements.orgFocusSummary.innerHTML = "";
+  }
+  if (elements.orgFocusView) {
+    elements.orgFocusView.innerHTML = "";
+  }
 }
 
 function setDeliveryFilter(filter) {
@@ -905,13 +967,44 @@ function renderSummary() {
 }
 
 function renderTeamCostCounter(teamId) {
-  const cost = costState.team_costs?.[teamId];
+  const cost = teamCostForTeam(teamId);
   if (!cost) {
     return costState.error
       ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
       : "";
   }
   return renderCostCounter(cost, { label: "Team cost", compact: false });
+}
+
+function teamCostForTeam(teamId) {
+  return costState.team_costs?.[teamId] || null;
+}
+
+function renderTeamCostBlockedPill(teamId) {
+  const cost = teamCostForTeam(teamId);
+  if (!cost?.cost_limit_reached) {
+    return "";
+  }
+  return `
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the cap is raised or cleared.">
+      cost blocked
+    </span>
+  `;
+}
+
+function renderTeamCostBlockedNotice(teamId) {
+  const cost = teamCostForTeam(teamId);
+  if (!cost?.cost_limit_reached) {
+    return "";
+  }
+  const maxCost = numberOrNull(cost.max_cost_usd);
+  const capLabel = maxCost === null ? "configured cap" : formatUsd(maxCost);
+  return `
+    <div class="team-cost-blocked-notice" role="status">
+      <strong>Blocked: cost cap reached</strong>
+      <span>Team wakes are suspended until the cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} used of ${escapeHtml(capLabel)} lifetime cap.</span>
+    </div>
+  `;
 }
 
 function renderProjectCostCounter(projectId) {
@@ -1376,6 +1469,95 @@ function renderRuntimeSection({ title, count, emptyMessage, body }) {
   `;
 }
 
+function renderFocusedOrgChart() {
+  if (!elements.orgFocusView) {
+    return;
+  }
+
+  const teams = values(state.teams);
+  const visibleTeams = teams.filter(isVisibleTeam);
+  const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  const awakeCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+  const attentionCount = visibleAgents.filter((agent) => {
+    const details = agentCardData(agent);
+    return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+  }).length;
+  const dueCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "due").length;
+
+  if (elements.orgFocusSummary) {
+    elements.orgFocusSummary.innerHTML = [
+      ["Teams", visibleTeams.length],
+      ["Agents", visibleAgents.length],
+      ["Awake", awakeCount],
+      ["Due", dueCount],
+      ["Attention", attentionCount],
+    ]
+      .map(
+        ([label, value]) => `
+          <div class="org-focus-metric">
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(label)}</span>
+          </div>
+        `,
+      )
+      .join("");
+  }
+
+  if (!teams.length) {
+    elements.orgFocusView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+    return;
+  }
+  if (!visibleTeams.length) {
+    elements.orgFocusView.innerHTML = `<p class="empty-state">No active team.</p>`;
+    return;
+  }
+
+  elements.orgFocusView.innerHTML = visibleTeams
+    .map((team) => {
+      const hierarchy = teamHierarchyGraph(team);
+      const teamAgents = values(state.agents).filter(
+        (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
+      );
+      const teamAwakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+      const teamAttentionCount = teamAgents.filter((agent) => {
+        const details = agentCardData(agent);
+        return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+      }).length;
+      return `
+        <article class="org-focus-team">
+          <div class="org-focus-team-header">
+            <div>
+              <p class="section-label">${escapeHtml(team.id)}</p>
+              <h3>${escapeHtml(team.name)}</h3>
+              ${renderTeamCostCounter(team.id)}
+              ${renderTeamCostBlockedNotice(team.id)}
+            </div>
+            <div class="org-focus-team-status">
+              ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+              ${renderTeamCostBlockedPill(team.id)}
+              <span class="state-pill info">${teamAwakeCount} awake</span>
+              <span class="state-pill ${teamAttentionCount ? "warning" : "accepted"}">${teamAttentionCount} attention</span>
+            </div>
+          </div>
+          <div class="org-focus-chart">
+            ${renderHierarchyForest(hierarchy.roots, { focused: true })}
+            ${
+              hierarchy.orphanRoots.length
+                ? `
+                  <section class="hierarchy-fallbacks" aria-label="Unreached agents">
+                    <p class="subheading">Unreached agents</p>
+                    ${renderHierarchyForest(hierarchy.orphanRoots, { focused: true })}
+                  </section>
+                `
+                : ""
+            }
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function renderHierarchy() {
   const teams = values(state.teams);
   const visibleTeams = teams.filter(isVisibleTeam);
@@ -1398,9 +1580,11 @@ function renderHierarchy() {
                 <p class="section-label">${escapeHtml(team.id)}</p>
                 <h3>${escapeHtml(team.name)}</h3>
                 ${renderTeamCostCounter(team.id)}
+                ${renderTeamCostBlockedNotice(team.id)}
               </div>
               <div class="record-actions">
                 ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+                ${renderTeamCostBlockedPill(team.id)}
                 ${editButton("team", team.id)}
               </div>
             </div>
@@ -1423,28 +1607,40 @@ function renderHierarchy() {
     .join("");
 }
 
-function renderHierarchyForest(nodes) {
+function renderHierarchyForest(nodes, options = {}) {
   if (!nodes.length) {
     return `<p class="empty-state">No reporting tree.</p>`;
   }
   return `
     <ol class="hierarchy-tree">
-      ${nodes.map((node) => renderHierarchyNode(node)).join("")}
+      ${nodes.map((node) => renderHierarchyNode(node, options)).join("")}
     </ol>
   `;
 }
 
-function renderHierarchyNode(node) {
+function renderHierarchyNode(node, options = {}) {
   if (!node) {
     return "";
   }
   if (node.kind === "agent") {
     const children = (node.children || []).length
-      ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child)).join("")}</ol>`
+      ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child, options)).join("")}</ol>`
+      : "";
+    const focused = Boolean(options.focused);
+    const cardClasses = [
+      "hierarchy-node-card",
+      focused ? "org-focus-node-card" : "",
+      focused ? `org-focus-node-card--${agentAwakeState(node.agentData).kind}` : "",
+      node.agentData.taskStats.blockedWaitingCount || node.agentData.inboxCount ? "org-focus-node-card--attention" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const actionAttrs = focused
+      ? `role="button" data-edit-type="agent" data-edit-id="${escapeAttr(node.agentData.id)}" aria-label="Edit ${escapeAttr(node.agentData.label)}"`
       : "";
     return `
       <li class="hierarchy-branch">
-        <article class="hierarchy-node-card" tabindex="0">
+        <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
           <div class="hierarchy-node-summary">
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
@@ -1457,9 +1653,12 @@ function renderHierarchyNode(node) {
             <div class="hierarchy-node-subtitle">
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
               <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
+              ${focused ? renderAgentAwakePill(node.agentData) : ""}
+              ${renderAgentInboxHeaderIndicators(node.agentData)}
             </div>
           </div>
-          <div class="hierarchy-node-details">${renderHierarchyDetails(node.agentData)}</div>
+          ${focused ? renderOrgNodeWorkSummary(node.agentData) : ""}
+          <div class="hierarchy-node-details${focused ? " org-node-hover-panel" : ""}">${renderHierarchyDetails(node.agentData, { focused })}</div>
         </article>
         ${children}
       </li>
@@ -1600,10 +1799,6 @@ function pendingInboxForAgent(agentId) {
     .sort(byId);
 }
 
-function pendingInboxCount(agentId) {
-  return pendingInboxForAgent(agentId).length;
-}
-
 function agentTaskStats(agentId) {
   const tasks = orderedTasksForAgent(agentId);
   const openTasks = tasks.filter((task) => !terminalTaskStates.has(task.state));
@@ -1644,6 +1839,11 @@ function agentCardData(agent) {
   const projectName = projectLabel(projectId);
   const reportsToId = text(agent?.reports_to_agent_id);
   const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
+  const inboxItems = pendingInboxForAgent(agent.id);
+  const inboxIndicatorItems = {
+    status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
+    progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
+  };
 
   return {
     id: text(agent?.id),
@@ -1657,7 +1857,8 @@ function agentCardData(agent) {
     reportsToLabel: reportsToId || "operator",
     directSubordinateCount: directSubordinateIds.length,
     taskStats,
-    inboxCount: pendingInboxCount(agent.id),
+    inboxCount: inboxItems.length,
+    inboxIndicatorItems,
     runtime,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
@@ -1728,8 +1929,240 @@ function runtimeSummary(agentId) {
   };
 }
 
-function renderHierarchyDetails(agentData) {
+function runtimeOperationForAgent(agentId) {
+  return (state.runtime_operations?.agents || []).find((row) => {
+    return text(row?.id || row?.agent_id) === text(agentId);
+  }) || null;
+}
+
+function agentAwakeState(agentData) {
+  const runtimeRow = runtimeOperationForAgent(agentData.id);
+  const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData.runtime?.activeDispatchId);
+  if (activeDispatchId) {
+    return {
+      kind: "awake",
+      label: "Awake",
+      detail: `dispatch ${activeDispatchId}`,
+    };
+  }
+  if (Boolean(runtimeRow?.lease_active) || isFutureTimestamp(agentData.runtime?.wakeLeasedUntil)) {
+    return {
+      kind: "awake",
+      label: "Awake",
+      detail: "lease active",
+    };
+  }
+  if (Boolean(runtimeRow?.wake_due)) {
+    return {
+      kind: "due",
+      label: "Due",
+      detail: "wake due",
+    };
+  }
+  if (agentData.runtime?.present) {
+    return {
+      kind: "idle",
+      label: "Idle",
+      detail: "runtime idle",
+    };
+  }
+  return {
+    kind: "unknown",
+    label: "No runtime",
+    detail: "no runtime snapshot",
+  };
+}
+
+function isFutureTimestamp(value) {
+  const raw = text(value);
+  if (!raw) {
+    return false;
+  }
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+function renderAgentAwakePill(agentData) {
+  const awake = agentAwakeState(agentData);
+  return `
+    <span class="awake-indicator awake-indicator--${escapeAttr(awake.kind)}" title="${escapeAttr(awake.detail)}">
+      <span class="awake-dot" aria-hidden="true"></span>
+      ${escapeHtml(awake.label)}
+    </span>
+  `;
+}
+
+function renderAgentInboxHeaderIndicators(agentData) {
+  const indicatorItems = agentData.inboxIndicatorItems || {};
+  return `
+    <span class="agent-inbox-indicators" aria-label="Pending inbox summary">
+      ${renderAgentInboxHeaderIndicator({
+        itemType: "status_request",
+        direction: "down",
+        label: "Status requests",
+        items: indicatorItems.status_request || [],
+      })}
+      ${renderAgentInboxHeaderIndicator({
+        itemType: "progress_report",
+        direction: "up",
+        label: "Progress reports",
+        items: indicatorItems.progress_report || [],
+      })}
+    </span>
+  `;
+}
+
+function renderAgentInboxHeaderIndicator({ itemType, direction, label, items }) {
+  const rows = Array.isArray(items) ? items : [];
+  const count = rows.length;
+  const stateClass = count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty";
+  return `
+    <span
+      class="agent-inbox-indicator agent-inbox-indicator--${escapeAttr(itemType)} ${stateClass}"
+      tabindex="0"
+      aria-label="${escapeAttr(`${label}: ${count}`)}"
+    >
+      ${renderAgentInboxIndicatorIcon(direction)}
+      <strong>${count}</strong>
+      ${count ? renderAgentInboxIndicatorPopover(label, rows) : ""}
+    </span>
+  `;
+}
+
+function renderAgentInboxIndicatorIcon(direction) {
+  const arrow =
+    direction === "up"
+      ? `
+        <path d="M10 8V3"></path>
+        <path d="M7.3 5.7 10 3l2.7 2.7"></path>
+      `
+      : `
+        <path d="M10 3v5"></path>
+        <path d="M7.3 5.3 10 8l2.7-2.7"></path>
+      `;
+  return `
+    <svg class="agent-inbox-icon agent-inbox-icon--${escapeAttr(direction)}" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      ${arrow}
+      <path d="M5.5 8.2h9a2.2 2.2 0 0 1 2.2 2.2v2.6a2.2 2.2 0 0 1-2.2 2.2H9.3L5 18v-2.8a2.2 2.2 0 0 1-1.7-2.1v-2.7a2.2 2.2 0 0 1 2.2-2.2Z"></path>
+    </svg>
+  `;
+}
+
+function renderAgentInboxIndicatorPopover(label, items) {
+  return `
+    <span class="agent-inbox-popover" role="tooltip" aria-label="${escapeAttr(label)}">
+      ${items.map((item) => renderAgentInboxBubble(item)).join("")}
+    </span>
+  `;
+}
+
+function renderAgentInboxBubble(item) {
+  const detail = inboxItemDetail(item) || item.id;
+  const metaParts = [];
+  if (item.task_id) {
+    metaParts.push(`task ${item.task_id}`);
+  }
+  if (item.sender_agent_id) {
+    metaParts.push(`from ${item.sender_agent_id}`);
+  }
+  return `
+    <span class="agent-inbox-bubble">
+      <strong>${escapeHtml(detail)}</strong>
+      ${metaParts.length ? `<small>${escapeHtml(metaParts.join(" - "))}</small>` : ""}
+    </span>
+  `;
+}
+
+function agentWorkSnapshot(agentData) {
+  const openTasks = agentData.taskStats.openTasks || [];
+  const waitingTasks = openTasks.filter(isTaskWaitingOrBlocked);
+  const currentTask = openTasks.find((task) => !isTaskWaitingOrBlocked(task)) || openTasks[0] || null;
+  const inboxItems = pendingInboxForAgent(agentData.id);
+  const runtimeAttention = agentRuntimeAttentionRows(agentData.id);
+  const activeAssignments = activeEphemeralAssignmentsForAgent(agentData.id);
+  const primary = currentTask
+    ? `${currentTask.title} (${humanizeToken(currentTask.state)})`
+    : inboxItems[0]
+      ? `${inboxItemLabels[inboxItems[0].item_type] || inboxItems[0].item_type}: ${inboxItemDetail(inboxItems[0]) || inboxItems[0].id}`
+      : activeAssignments[0]
+        ? `${activeAssignments[0].title || activeAssignments[0].id} (${humanizeToken(activeAssignments[0].state)})`
+        : "No open work";
+  const waiting = [];
+  waitingTasks.slice(0, 2).forEach((task) => {
+    waiting.push(`${task.title} (${humanizeToken(task.state)})`);
+  });
+  runtimeAttention.slice(0, 2).forEach((row) => {
+    const label = row.title || row.id;
+    if (label && !waiting.includes(label)) {
+      waiting.push(`${label} (${humanizeToken(row.kind)})`);
+    }
+  });
+  return {
+    primary,
+    waiting,
+    inboxItems,
+    runtimeAttention,
+    activeAssignments,
+  };
+}
+
+function isTaskWaitingOrBlocked(task) {
+  return (
+    task.state === "blocked" ||
+    task.state === "waiting_for_review" ||
+    task.dependency_status === "waiting" ||
+    task.dependency_status === "blocked" ||
+    Boolean((task.blocked_by_task_ids || []).length)
+  );
+}
+
+function agentRuntimeAttentionRows(agentId) {
+  return (state.runtime_operations?.attention || []).filter((row) => {
+    return text(row.agent_id) === text(agentId);
+  });
+}
+
+function renderOrgNodeWorkSummary(agentData) {
+  const snapshot = agentWorkSnapshot(agentData);
+  const waitingLabel = snapshot.waiting.length
+    ? snapshot.waiting[0]
+    : snapshot.inboxItems.length
+      ? `${snapshot.inboxItems.length} pending inbox`
+      : "Clear";
+  return `
+    <div class="org-node-work">
+      <div class="org-node-work-line org-node-work-line--now">
+        <span>Now</span>
+        <strong>${escapeHtml(snapshot.primary)}</strong>
+      </div>
+      <div class="org-node-work-line org-node-work-line--waiting">
+        <span>Waiting</span>
+        <strong>${escapeHtml(waitingLabel)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderHierarchyDetails(agentData, { focused = false } = {}) {
   const lines = [];
+  const awake = agentAwakeState(agentData);
+  const snapshot = agentWorkSnapshot(agentData);
+
+  if (focused) {
+    lines.push(`Awake status ${awake.label} - ${awake.detail}`);
+    lines.push(`Current work ${snapshot.primary}`);
+    if (snapshot.waiting.length) {
+      lines.push(`Waiting on ${snapshot.waiting.join("; ")}`);
+    }
+    if (snapshot.inboxItems.length) {
+      lines.push(
+        `Inbox ${snapshot.inboxItems
+          .slice(0, 2)
+          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxItemDetail(item) || item.id}`)
+          .join("; ")}`,
+      );
+    }
+  }
 
   if (agentData.id) {
     lines.push(`Agent ${agentData.id}`);
@@ -2816,6 +3249,7 @@ function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
           <p class="section-label">Team</p>
           <h3>${teamLabel}</h3>
           ${teamGroup.team ? renderTeamCostCounter(teamGroup.team.id) : ""}
+          ${teamGroup.team ? renderTeamCostBlockedNotice(teamGroup.team.id) : ""}
         </div>
         <span class="delivery-bucket-count">${visibleRowCount} deliverable${visibleRowCount === 1 ? "" : "s"}</span>
       </div>

@@ -18,6 +18,8 @@ test("team add-on static UI exposes context clearing controls", async () => {
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
   assert.match(script, /Handoff summary/);
+  assert.match(script, /data-team-view/);
+  assert.match(script, /agentAwakeState/);
 });
 
 function emptyState() {
@@ -1783,6 +1785,45 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.match(orgChartState, /\blead\b/);
   assert.match(orgChartState, /Backend Worker/);
   assert.match(orgChartState, /\bworker\b/);
+
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page").waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".org-focus-node-card").count(), 4);
+  await page.locator(".org-focus-summary").getByText("Awake").waitFor({ state: "visible" });
+
+  const focusedBackendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await focusedBackendCard.locator(".awake-indicator", { hasText: "Awake" }).waitFor({
+    state: "visible",
+  });
+  await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
+    state: "hidden",
+  });
+  await focusedBackendCard.locator(".org-node-work").getByText("Resolve dependency").waitFor({
+    state: "visible",
+  });
+
+  await focusedBackendCard.hover();
+  await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
+    state: "visible",
+  });
+  const focusedBackendDetails = focusedBackendCard.locator(".org-node-hover-panel");
+  await focusedBackendDetails.getByText("Awake status Awake - dispatch dispatch-42").waitFor({
+    state: "visible",
+  });
+  await focusedBackendDetails.getByText("Current work Build API (In Progress)").waitFor({
+    state: "visible",
+  });
+  await focusedBackendDetails.getByText("Waiting on Resolve dependency (Blocked)").waitFor({
+    state: "visible",
+  });
+
+  await focusedBackendCard.click();
+  await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
+    state: "visible",
+  });
 });
 
 test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {

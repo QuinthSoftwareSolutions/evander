@@ -73,7 +73,7 @@ scoped and removable:
 ```python
 from agent_sandbox.addons import addon_json_object_store
 
-store = addon_json_object_store(runtime_dir, "team-addon", "state.json")
+store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 ```
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
@@ -91,9 +91,11 @@ for this pattern. It is still disabled by default; enable it with
 `addon_loader.modules: ["truman_team_addon"]` or by enabling the
 `agent_sandbox.addons` entry-point group. For the bundled add-on, explicit
 module loading is the recommended operator path because entry-point loading is
-disabled by default. Its canonical state lives under
-`runtime/addons/team-addon/state.json`, while Truman session metadata remains
-a non-canonical integration index.
+disabled by default. Its canonical state lives in relational SQLite under
+`runtime/addons/team-addon/state.db`; a legacy
+`runtime/addons/team-addon/state.json` file is imported once when the database
+is first initialized. Truman session metadata remains a non-canonical
+integration index.
 
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
@@ -271,6 +273,11 @@ set:
   lease. Persistent actions may include `ephemeral_requests` to request bounded
   disposable workers and `ephemeral_acceptances` to promote or reject completed
   ephemeral results.
+- If the most recent recorded action for an agent failed validation, the next
+  successful `effect:team:wake-due-agents` dispatch includes one-shot
+  `recent_action_feedback` for that failed dispatch only. The runtime marks that
+  feedback delivered after the resume succeeds, so older failures are not
+  replayed and the same feedback does not repeat on later wakes.
 - `effect:team:create-operator-directive` turns an operator request from
   Discord, Teams, Admin Web, or another workflow into a durable
   `operator_directive` inbox item. The item defaults to the team manager,
@@ -348,6 +355,18 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   `team_create_operator_directive` MCP tool. These are not agent-authored action
   items. The manager handles them during its normal Team dispatch by taking the
   requested Team actions and listing the inbox id in `handled_inbox_item_ids`.
+- `deliverables[]` — record finished work for an owned task. Shape:
+  `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
+  "artifact_space_ref"?, "git_refs"?}`. `artifact_paths` are relative paths
+  under the session `/artifacts` folder; when present, the Team runtime publishes
+  only those files or directories into the control-plane artifact store, records
+  the latest version under
+  `/teams/<team_id>/projects/<project_id>/deliverables/<deliverable_id>`, and
+  appends the resulting `artifact-space:` ref to `artifact_refs`. Failed artifact
+  publication rejects that deliverable item without creating a ref-less
+  deliverable. Deliverable notices and review-request inbox items include the
+  final `artifact_refs` so leads and reviewers can import the referenced
+  published archive when needed.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
   "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's
@@ -524,7 +543,11 @@ aborting and failing on conflict — never auto-resolving). The core
 never leave the project's `host_repo_path`. The **only** branch pushed to the
 canonical remote is the release branch, and only on the `canonical_push` route via
 `effect:git:push-branch`. Deliverables that ship non-Git artifacts remain fully
-supported through `artifact_refs` and require no push at all.
+supported through `artifact_refs` and require no push at all. For Team-authored
+deliverables, `artifact_paths` publish to immutable keys shaped as
+`team/<team_id>/<project_id>/<deliverable_id>/<dispatch_id>/bundle` and are
+indexed through artifact spaces; Team state stores only the resulting stable
+refs.
 
 ### Bundled Team Add-on Enablement
 

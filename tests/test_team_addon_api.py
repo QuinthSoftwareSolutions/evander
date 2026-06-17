@@ -405,7 +405,18 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-dismiss-action-id" in script.text
     assert 'fetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
+    assert "renderTeamCostBlockedNotice" in script.text
+    assert "Blocked: cost cap reached" in script.text
     assert "renderProjectCostCounter" in script.text
+    assert "renderAgentInboxHeaderIndicators" in script.text
+    assert "renderAgentInboxIndicatorIcon" in script.text
+    assert "agent-inbox-indicator" in script.text
+    assert 'direction: "down"' in script.text
+    assert 'direction: "up"' in script.text
+    assert "agent-inbox-icon--${escapeAttr(direction)}" in script.text
+    assert "agent-inbox-bubble" in script.text
+    assert "Status requests" in script.text
+    assert "Progress reports" in script.text
     assert "max_cost_usd" in script.text
     assert "cost_limit_reached" in script.text
 
@@ -423,6 +434,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text
+    assert ".team-cost-blocked-notice" in stylesheet.text
+    assert ".agent-inbox-indicator" in stylesheet.text
+    assert ".agent-inbox-icon" in stylesheet.text
+    assert ".agent-inbox-popover" in stylesheet.text
+    assert ".agent-inbox-bubble" in stylesheet.text
 
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200
@@ -1004,6 +1020,25 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["context_rotation_pending"] is True
     assert runtime["context_rotation_reason"] == "idle"
     assert "Active tasks: none." in runtime["last_handoff_summary"]
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "auto_context_clearing_enabled": False,
+            "expected_revision": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["auto_context_clearing_enabled"] is False
+    assert runtime["context_rotation_pending"] is False
+    assert runtime["context_rotation_reason"] is None
+    assert runtime["context_rotation_requested_at"] is None
+    assert runtime["next_wake_at"] is None
+    assert runtime["last_handoff_summary"] is None
 
 
 def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) -> None:

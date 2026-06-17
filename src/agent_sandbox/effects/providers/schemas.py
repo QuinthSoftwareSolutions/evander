@@ -613,6 +613,7 @@ class ArtifactPublishArtifactsEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     key: ConfigValue
+    source_paths: ConfigValue | None = None
     vm_user: ConfigValue | None = None
 
     @model_validator(mode="after")

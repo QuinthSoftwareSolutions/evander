@@ -4,7 +4,7 @@ from agent_sandbox.addons import AddonAdminNavigation, AddonRegistration
 
 from .api import admin_api_routes
 from .providers import register_providers
-from .repository import ADDON_ID
+from .repository import ADDON_ID, STATE_FILE
 from .ui import admin_ui_routes
 
 
@@ -23,7 +23,7 @@ def register_addon() -> AddonRegistration:
         workflow_providers=register_providers,
         metadata={
             "description": "Hierarchical team state model for optional agent-team orchestration.",
-            "state_file": "state.json",
+            "state_file": STATE_FILE,
             "runtime_workflow_pack": "truman_team_addon.workflow_packs.team_runtime_v1",
         },
     )

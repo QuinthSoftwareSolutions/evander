@@ -486,7 +486,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Renew an expired or soon-expiring session.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
-  "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
+  "effect:artifact:publish-artifacts": "Publish the session /artifacts folder, or selected source paths, as an immutable tar.gz archive.",
   "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",

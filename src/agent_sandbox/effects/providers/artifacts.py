@@ -134,30 +134,66 @@ import sys
 BEGIN = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_BEGIN__"
 END = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_END__"
 
+def normalize_source_path(value):
+    text = str(value or "").strip()
+    if not text or "\x00" in text or "\\" in text:
+        raise ValueError("source_paths entries must be non-empty relative POSIX paths")
+    path = pathlib.PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("source_paths entries must be relative and must not contain dot segments")
+    return path.as_posix()
+
+def add_path(path, artifacts_root, dirs_by_name, files_by_name):
+    if path.is_symlink():
+        raise ValueError(f"refusing to publish symlink: {path}")
+    try:
+        relative = path.relative_to(artifacts_root).as_posix()
+    except ValueError:
+        raise ValueError(f"artifact path escaped artifact root: {path}")
+    if path.is_dir():
+        if relative:
+            dirs_by_name[relative] = path
+        return
+    if path.is_file():
+        file_stat = path.stat()
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError(f"refusing to publish non-regular file: {path}")
+        files_by_name[relative] = path
+        return
+    raise ValueError(f"refusing to publish unsupported path: {path}")
+
 try:
     artifacts_root = pathlib.Path(os.environ.get("AGENT_SANDBOX_ARTIFACTS_DIR") or "/artifacts")
     artifacts_root = artifacts_root.resolve(strict=True)
-    dirs = []
-    files = []
-    source_byte_count = 0
-    for child in sorted(artifacts_root.rglob("*")):
-        if child.is_symlink():
-            raise ValueError(f"refusing to publish symlink: {child}")
-        try:
-            child.relative_to(artifacts_root)
-        except ValueError:
-            raise ValueError(f"artifact path escaped artifact root: {child}")
-        if child.is_dir():
-            dirs.append(child)
-            continue
-        if child.is_file():
-            file_stat = child.stat()
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ValueError(f"refusing to publish non-regular file: {child}")
-            source_byte_count += file_stat.st_size
-            files.append(child)
-            continue
-        raise ValueError(f"refusing to publish unsupported path: {child}")
+    source_paths_payload = []
+    if len(sys.argv) > 1 and str(sys.argv[1]).strip():
+        parsed = json.loads(sys.argv[1])
+        if not isinstance(parsed, list):
+            raise ValueError("source_paths must be a list of relative paths")
+        source_paths_payload = [normalize_source_path(item) for item in parsed]
+    dirs_by_name = {}
+    files_by_name = {}
+    if source_paths_payload:
+        seen = set()
+        for source_path in source_paths_payload:
+            if source_path in seen:
+                continue
+            seen.add(source_path)
+            candidate = artifacts_root / source_path
+            if candidate.is_symlink():
+                raise ValueError(f"refusing to publish symlink: {candidate}")
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(artifacts_root)
+            add_path(resolved, artifacts_root, dirs_by_name, files_by_name)
+            if resolved.is_dir():
+                for child in sorted(resolved.rglob("*")):
+                    add_path(child, artifacts_root, dirs_by_name, files_by_name)
+    else:
+        for child in sorted(artifacts_root.rglob("*")):
+            add_path(child, artifacts_root, dirs_by_name, files_by_name)
+    dirs = [dirs_by_name[name] for name in sorted(dirs_by_name)]
+    files = [files_by_name[name] for name in sorted(files_by_name)]
+    source_byte_count = sum(file_path.stat().st_size for file_path in files)
     if not files:
         raise ValueError("artifacts directory does not contain any regular files")
     archive = io.BytesIO()
@@ -171,6 +207,7 @@ try:
         "success": True,
         "archive_format": "tar.gz",
         "artifacts_root": str(artifacts_root),
+        "source_paths": source_paths_payload,
         "source_file_count": len(files),
         "source_byte_count": source_byte_count,
         "content_base64": base64.b64encode(content).decode("ascii"),
@@ -345,12 +382,14 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "key": effect.key,
+            "source_paths": effect.source_paths,
             "vm_user": effect.vm_user,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
 
         key = validate_artifact_key(_required_text(payload.get("key"), "artifact key is required"))
+        source_paths = _optional_string_list(payload.get("source_paths"), "source_paths")
         store = PublishedArtifactStore(context.config_path("runtime_dir"))
         if store.exists(key):
             raise ValueError(f"Published artifact key already exists: {key}")
@@ -360,7 +399,11 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
             payload,
             effect_id=effect.id,
             display_name="Publish artifacts",
-            command=_python_stdin_command(_PUBLISH_SCRIPT),
+            command=(
+                _python_stdin_command(_PUBLISH_SCRIPT, json.dumps(source_paths))
+                if source_paths
+                else _python_stdin_command(_PUBLISH_SCRIPT)
+            ),
             timeout_seconds=1800,
         )
         script_payload = _parse_script_payload(
@@ -389,6 +432,7 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
             metadata={
                 "effect_type": "effect:artifact:publish-artifacts",
                 "effect_id": effect.id,
+                "source_paths": source_paths,
             },
         )
         return {
@@ -405,6 +449,7 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
             "mime_type": record.mime_type,
             "byte_count": record.byte_count,
             "sha256": record.sha256,
+            "source_paths": source_paths,
             "source_file_count": record.source_file_count,
             "source_byte_count": record.source_byte_count,
             "download_url": f"/api/admin/artifact-downloads/{_url_quote_key(record.key)}",
@@ -627,6 +672,19 @@ def _required_text(value: Any, message: str) -> str:
     if text is None:
         raise ValueError(message)
     return text
+
+
+def _optional_string_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a list of strings")
+    normalized = [str(item).strip() for item in value]
+    if any(not item for item in normalized):
+        raise ValueError(f"{field_name} entries must be non-empty strings")
+    return normalized
 
 
 def _optional_bool(value: Any, *, default: bool) -> bool:

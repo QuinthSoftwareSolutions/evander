@@ -243,6 +243,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "release_package_ids": {"type": "array"},
         "created_ephemeral_assignment_ids": {"type": "array"},
         "ephemeral_events": {"type": "array"},
+        "published_deliverable_artifacts": {"type": "array"},
         "accepted_ephemeral_assignment_ids": {"type": "array"},
         "rejected_ephemeral_assignment_ids": {"type": "array"},
         "updated_task_ids": {"type": "array"},

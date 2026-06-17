@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+from agent_sandbox.effects.providers.artifacts import ArtifactPublishArtifactsEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase
+from agent_sandbox.artifact_spaces import ArtifactSpaceStore
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
 from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
+    ArtifactPublishArtifactsEffectDefinition,
 )
 from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.contracts import register_node_output_schema
 from agent_sandbox.workflow.plugins import ProviderPluginRegistration
@@ -44,9 +51,11 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 4
+ACTION_CONTRACT_SCHEMA_VERSION = 6
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
+_ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 
 
 class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
@@ -154,6 +163,13 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                feedback_source_dispatch_id = _action_feedback_source_dispatch_id(lease)
+                if feedback_source_dispatch_id is not None:
+                    state = repo.mark_action_feedback_delivered(
+                        agent_id=agent["id"],
+                        source_dispatch_id=feedback_source_dispatch_id,
+                        delivery_dispatch_id=lease["dispatch_id"],
+                    )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
@@ -225,14 +241,37 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        expected_revision = _optional_int(payload.get("expected_revision"), default=None)
+        valid = _optional_bool(payload.get("valid"), default=True)
+        action = _optional_mapping(payload.get("action"), "action")
+        original_action = dict(action) if isinstance(action, dict) else None
+        artifact_publish_records: list[dict[str, Any]] = []
+        artifact_publish_errors: list[str] = []
+        if valid:
+            action, artifact_publish_records, artifact_publish_errors = (
+                _prepare_deliverable_artifacts(
+                    self.runtime_context,
+                    repo=repo,
+                    action=action,
+                    session_id=_optional_text(payload.get("session_id")),
+                    dispatch_id=_optional_text(payload.get("dispatch_id")),
+                    expected_revision=expected_revision,
+                )
+            )
+        action_error = _optional_text(payload.get("error"))
+        if artifact_publish_errors:
+            publish_error = "; ".join(artifact_publish_errors)
+            action_error = f"{action_error}; {publish_error}" if action_error else publish_error
+            action = original_action
+            valid = False
         try:
             state, result = repo.apply_agent_action(
-                action=_optional_mapping(payload.get("action"), "action"),
+                action=action,
                 session_id=_optional_text(payload.get("session_id")),
                 dispatch_id=_optional_text(payload.get("dispatch_id")),
-                valid=_optional_bool(payload.get("valid"), default=True),
-                error=_optional_text(payload.get("error")),
-                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+                valid=valid,
+                error=action_error,
+                expected_revision=expected_revision,
             )
         except TeamStateConflictError as exc:
             return {
@@ -260,6 +299,8 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
+        if artifact_publish_records:
+            result["published_deliverable_artifacts"] = artifact_publish_records
         return {**result, "state": team_state_payload(state)}
 
 
@@ -873,6 +914,248 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
         }
 
 
+def _prepare_deliverable_artifacts(
+    context: Any,
+    *,
+    repo: TeamStateRepository,
+    action: dict[str, Any] | None,
+    session_id: str | None,
+    dispatch_id: str | None,
+    expected_revision: int | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str]]:
+    if action is None:
+        return None, [], []
+    deliverables_value = action.get("deliverables")
+    if not isinstance(deliverables_value, list):
+        return action, [], []
+    if not any(
+        isinstance(item, Mapping) and item.get("artifact_paths") is not None
+        for item in deliverables_value
+    ):
+        return action, [], []
+
+    state = repo.read()
+    if expected_revision is not None and state.revision != expected_revision:
+        return action, [], []
+
+    normalized_action = dict(action)
+    normalized_session_id = _optional_text(session_id)
+    normalized_dispatch_id = _optional_text(dispatch_id) or _optional_text(
+        normalized_action.get("dispatch_id")
+    )
+    agent = _artifact_preflight_agent(
+        state,
+        action=normalized_action,
+        session_id=normalized_session_id,
+    )
+    runtime = state.agent_runtimes.get(agent.id) if agent is not None else None
+    if (
+        agent is None
+        or (normalized_session_id is not None and agent.session_id != normalized_session_id)
+        or (
+            normalized_dispatch_id is not None
+            and runtime is not None
+            and runtime.active_dispatch_id is not None
+            and normalized_dispatch_id != runtime.active_dispatch_id
+        )
+    ):
+        return action, [], []
+
+    next_deliverables: list[Any] = []
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for index, raw_deliverable in enumerate(deliverables_value):
+        if not isinstance(raw_deliverable, Mapping):
+            next_deliverables.append(raw_deliverable)
+            continue
+        deliverable = dict(raw_deliverable)
+        if deliverable.get("artifact_paths") is None:
+            next_deliverables.append(deliverable)
+            continue
+        try:
+            artifact_paths = _string_list(deliverable.get("artifact_paths"), "artifact_paths")
+            if not artifact_paths:
+                deliverable.pop("artifact_paths", None)
+                next_deliverables.append(deliverable)
+                continue
+            task_id = _required_text(deliverable.get("task_id"), "task_id")
+            task = state.tasks.get(task_id)
+            if task is None or task.owner_agent_id != agent.id:
+                next_deliverables.append(deliverable)
+                continue
+            deliverable_id = _optional_text(deliverable.get("id")) or f"deliverable-{uuid4().hex}"
+            deliverable["id"] = deliverable_id
+            artifact_record = _publish_deliverable_artifact_bundle(
+                context,
+                agent=agent.model_dump(mode="json"),
+                team_id=agent.team_id,
+                project_id=task.project_id,
+                deliverable_id=deliverable_id,
+                dispatch_id=normalized_dispatch_id or "manual",
+                source_paths=artifact_paths,
+            )
+            artifact_refs = _string_list(deliverable.get("artifact_refs"), "artifact_refs")
+            deliverable["artifact_refs"] = _append_unique_text(
+                artifact_refs,
+                artifact_record["artifact_ref"],
+            )
+            records.append(artifact_record)
+            next_deliverables.append(deliverable)
+        except Exception as exc:
+            errors.append(f"deliverables[{index}]: failed to publish artifact_paths: {exc}")
+    normalized_action["deliverables"] = next_deliverables
+    return normalized_action, records, errors
+
+
+def _artifact_preflight_agent(
+    state: Any,
+    *,
+    action: Mapping[str, Any],
+    session_id: str | None,
+) -> Any | None:
+    agent_id = _optional_text(action.get("agent_id"))
+    if agent_id is not None:
+        return state.agents.get(agent_id)
+    if session_id is None:
+        return None
+    for agent in state.agents.values():
+        if agent.session_id == session_id:
+            return agent
+    return None
+
+
+def _publish_deliverable_artifact_bundle(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    team_id: str,
+    project_id: str,
+    deliverable_id: str,
+    dispatch_id: str,
+    source_paths: list[str],
+) -> dict[str, Any]:
+    runtime_dir = _runtime_dir(context)
+    safe_team_id = _artifact_space_path_segment(team_id, "team_id")
+    safe_project_id = _artifact_space_path_segment(project_id, "project_id")
+    safe_deliverable_id = _artifact_space_path_segment(deliverable_id, "deliverable_id")
+    safe_dispatch_id = _artifact_space_path_segment(dispatch_id, "dispatch_id")
+    artifact_key = (
+        f"team/{safe_team_id}/{safe_project_id}/"
+        f"{safe_deliverable_id}/{safe_dispatch_id}/bundle"
+    )
+    artifact_ref_path = (
+        f"/teams/{safe_team_id}/projects/{safe_project_id}/"
+        f"deliverables/{safe_deliverable_id}"
+    )
+    artifact_ref = f"artifact-space:{artifact_ref_path}"
+    store = PublishedArtifactStore(runtime_dir)
+    if store.exists(artifact_key):
+        artifact = store.get(artifact_key)
+        publish_result: dict[str, Any] = {
+            "success": True,
+            "key": artifact.metadata.key,
+            "byte_count": artifact.metadata.byte_count,
+            "sha256": artifact.metadata.sha256,
+            "source_file_count": artifact.metadata.source_file_count,
+            "source_byte_count": artifact.metadata.source_byte_count,
+            "reused": True,
+        }
+    else:
+        provider = ArtifactPublishArtifactsEffectProvider()
+        provider.initialize(
+            ArtifactPublishArtifactsEffectDefinition(
+                id=f"team-deliverable-artifacts-{deliverable_id}",
+                display_name="Publish Team deliverable artifacts",
+                type="effect:artifact:publish-artifacts",
+                session_id=_required_text(agent.get("session_id"), "session_id"),
+                key=artifact_key,
+                source_paths=source_paths,
+            ),
+            context,
+        )
+        publish_result = provider.execute()
+        publish_result["reused"] = False
+
+    version = _ensure_deliverable_artifact_space_version(
+        runtime_dir,
+        space_path=artifact_ref_path,
+        artifact_key=artifact_key,
+        team_id=team_id,
+        project_id=project_id,
+        deliverable_id=deliverable_id,
+        agent_id=_required_text(agent.get("id"), "agent_id"),
+    )
+    return {
+        "deliverable_id": deliverable_id,
+        "project_id": project_id,
+        "team_id": team_id,
+        "artifact_key": artifact_key,
+        "artifact_ref": artifact_ref,
+        "artifact_space_path": artifact_ref_path,
+        "artifact_space_version_id": version.get("id"),
+        "artifact_space_version": version.get("version"),
+        "source_paths": source_paths,
+        "publish_result": publish_result,
+    }
+
+
+def _artifact_space_path_segment(value: str, field_name: str) -> str:
+    text = _required_text(value, field_name)
+    if (
+        _ARTIFACT_SPACE_SAFE_SEGMENT_RE.fullmatch(text)
+        and text not in {".", ".."}
+        and not text.startswith(_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX)
+    ):
+        return text
+    encoded = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{_ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX}{encoded}"
+
+
+def _ensure_deliverable_artifact_space_version(
+    runtime_dir: Path,
+    *,
+    space_path: str,
+    artifact_key: str,
+    team_id: str,
+    project_id: str,
+    deliverable_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    subject = f"team-agent:{agent_id}"
+    store = ArtifactSpaceStore(runtime_dir)
+    state = store.ensure_space(
+        path=space_path,
+        display_name=f"Deliverable {deliverable_id}",
+        metadata={
+            "team_id": team_id,
+            "project_id": project_id,
+            "deliverable_id": deliverable_id,
+            "source": "team_addon",
+        },
+        subject=subject,
+    )
+    for version in state.versions_for_space(space_path, artifact_id="bundle"):
+        if version.artifact_key == artifact_key:
+            return version.model_dump(mode="json")
+    state = store.publish_version(
+        space_path=space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject=subject,
+        metadata={
+            "team_id": team_id,
+            "project_id": project_id,
+            "deliverable_id": deliverable_id,
+            "source": "team_addon",
+        },
+    )
+    return state.versions_for_space(space_path, artifact_id="bundle")[-1].model_dump(mode="json")
+
+
+def _append_unique_text(values: list[str], value: str) -> list[str]:
+    return values if value in values else [*values, value]
+
+
 def register_providers() -> ProviderPluginRegistration:
     for node_type, outputs in TEAM_OUTPUT_SCHEMAS.items():
         register_node_output_schema(node_type=node_type, outputs=outputs)
@@ -965,6 +1248,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
+        "recent_action_feedback": lease.get("recent_action_feedback") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
     project_repo = lease.get("project_repo")
@@ -980,6 +1264,17 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Prior handoff summary from Team state:\n"
         f"{handoff_summary}\n\n"
         if handoff_summary
+        else ""
+    )
+    action_feedback = lease.get("recent_action_feedback")
+    action_feedback_section = (
+        "Most recent Team action feedback (one-shot):\n"
+        "Your previous Team dispatch had validation errors. Do not repeat these "
+        "mistakes. Some valid parts of that action may already have applied, so "
+        "inspect the current Team context and retry only missing corrected action "
+        "items.\n"
+        f"{json.dumps(action_feedback, sort_keys=True, indent=2)}\n\n"
+        if isinstance(action_feedback, list) and action_feedback
         else ""
     )
     schema = {
@@ -1028,6 +1323,10 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "- Use review_requests to ask a specific same-team agent to review a "
         "deliverable. Include instructions when the reviewer needs a focused "
         "check.\n"
+        "- For non-Git deliverables, stage files under /artifacts and list the "
+        "exact relative files or directories in deliverables[].artifact_paths. "
+        "The Team runtime publishes only those paths and records artifact refs "
+        "for reviewers.\n"
         "- Use review_decisions only for review requests assigned to you. Accepting "
         "a review is the action that cascades to deliverable/task acceptance once "
         "all attached reviews are accepted.\n"
@@ -1040,6 +1339,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "actions to team-action.json, then include their ids in "
         "handled_inbox_item_ids.\n\n"
         f"{handoff_section}"
+        f"{action_feedback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
@@ -1049,6 +1349,16 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
     )
+
+
+def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
+    feedback = lease.get("recent_action_feedback")
+    if not isinstance(feedback, list) or not feedback:
+        return None
+    first = feedback[0]
+    if not isinstance(first, Mapping):
+        return None
+    return _optional_text(first.get("dispatch_id"))
 
 
 def _project_repo_prompt_guidance(project_repo: object) -> str:
@@ -1363,6 +1673,11 @@ def _mark_project_repo_prepared(
 def _persistent_action_schema() -> dict[str, Any]:
     text_or_null = {"type": ["string", "null"]}
     string_array = {"type": "array", "items": {"type": "string"}, "default": []}
+    non_empty_string_array = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "minItems": 1,
+    }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://agent-sandbox.local/team-addon/team-action.v1.schema.json",
@@ -1474,6 +1789,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "id": {"type": "string", "minLength": 1},
                         "task_id": {"type": "string", "minLength": 1},
                         "summary": {"type": "string", "minLength": 1},
+                        "artifact_paths": non_empty_string_array,
                         "artifact_refs": string_array,
                         "artifact_space_ref": text_or_null,
                         "git_refs": {

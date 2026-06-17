@@ -10,9 +10,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agent_sandbox.addons import addon_json_object_store
 from agent_sandbox.models import utc_now
-from agent_sandbox.storage import JsonObjectStore
 
 from .git_naming import (
     canonical_release_branch,
@@ -55,10 +53,11 @@ from .models import (
     task_payload_with_derived,
     _ensure_unique,
 )
+from .sqlite_store import LEGACY_STATE_FILE, STATE_DB_FILE, TeamStateSqliteStore
 from .templates import TeamTemplate, get_template
 
 ADDON_ID = "team-addon"
-STATE_FILE = "state.json"
+STATE_FILE = STATE_DB_FILE
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
@@ -100,12 +99,7 @@ class TeamStateConflictError(RuntimeError):
 class TeamStateRepository:
     def __init__(self, runtime_dir: str | Path) -> None:
         self.runtime_dir = Path(runtime_dir)
-        self.store: JsonObjectStore[Any] = addon_json_object_store(
-            self.runtime_dir,
-            ADDON_ID,
-            STATE_FILE,
-            initial_object=TeamState.empty().model_dump(mode="json"),
-        )
+        self.store = TeamStateSqliteStore(self.runtime_dir)
 
     def read(self) -> TeamState:
         return TeamState.model_validate(self.store.read_object())
@@ -157,6 +151,39 @@ class TeamStateRepository:
             record.dismissed_at = utc_now()
             record.dismissed_by = _optional_text(dismissed_by) or "operator"
             record.dismissed_reason = _optional_text(dismissed_reason)
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def mark_action_feedback_delivered(
+        self,
+        *,
+        agent_id: str,
+        source_dispatch_id: str,
+        delivery_dispatch_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_source_dispatch_id = _required_text(
+            source_dispatch_id,
+            "source_dispatch_id",
+        )
+        normalized_delivery_dispatch_id = _required_text(
+            delivery_dispatch_id,
+            "delivery_dispatch_id",
+        )
+
+        def _mutate(state: TeamState) -> TeamState:
+            delivered_at = utc_now()
+            for record in state.action_records.values():
+                if record.agent_id != normalized_agent_id:
+                    continue
+                if record.dispatch_id != normalized_source_dispatch_id:
+                    continue
+                if record.success or record.feedback_delivered_at is not None:
+                    continue
+                record.feedback_delivered_at = delivered_at
+                record.feedback_delivered_by_dispatch_id = normalized_delivery_dispatch_id
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -527,11 +554,14 @@ class TeamStateRepository:
                 )
                 runtime.auto_context_clearing_enabled = bool(auto_context_clearing_enabled)
                 runtime.updated_at = now
-                _maybe_mark_idle_context_rotation_due(
-                    state,
-                    agent_id=agent.id,
-                    now=now,
-                )
+                if runtime.auto_context_clearing_enabled:
+                    _maybe_mark_idle_context_rotation_due(
+                        state,
+                        agent_id=agent.id,
+                        now=now,
+                    )
+                else:
+                    _clear_pending_idle_context_rotation(runtime)
             if set_reports_to_agent_id:
                 old_superior_id = agent.reports_to_agent_id
                 if reports_to_agent_id is not None:
@@ -1701,10 +1731,12 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
                 wake_eligible = (
                     rotation_pending
                     or bool(pending_inbox)
+                    or bool(action_feedback)
                     or any(
                         state_model.dependency_status(task.id) == "satisfied"
                         for task in active_tasks
@@ -1720,18 +1752,30 @@ class TeamStateRepository:
                     runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
-                if not pending_inbox and not rotation_pending and not due_by_time:
+                if (
+                    not pending_inbox
+                    and not rotation_pending
+                    and not action_feedback
+                    and not due_by_time
+                ):
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
                     and not pending_inbox
                     and not rotation_pending
+                    and not action_feedback
                 ):
                     continue
 
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
-                reason = "inbox" if pending_inbox else "scheduled"
+                reason = (
+                    "inbox"
+                    if pending_inbox
+                    else "action_feedback"
+                    if action_feedback
+                    else "scheduled"
+                )
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
@@ -1749,6 +1793,7 @@ class TeamStateRepository:
                             for task in active_tasks
                         ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
+                        "recent_action_feedback": action_feedback,
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                     }
@@ -1879,7 +1924,15 @@ class TeamStateRepository:
                     return state_model
 
             progress = False
+            context_rotation_activity = False
             projects_to_recalc: set[str] = set()
+
+            def _mark_progress(*, context_activity: bool = True) -> None:
+                nonlocal progress, context_rotation_activity
+                progress = True
+                if context_activity:
+                    context_rotation_activity = True
+
             for index, update in enumerate(
                 _list_of_mappings(normalized_action.get("task_updates"), "task_updates")
             ):
@@ -1948,7 +2001,7 @@ class TeamStateRepository:
                         changed = True
                     if changed:
                         task.updated_at = utc_now()
-                        progress = True
+                        _mark_progress()
                         result["updated_task_ids"].append(task.id)
                 except ValueError as exc:
                     _append_action_item_error(result, "task_updates", index, exc)
@@ -1990,7 +2043,7 @@ class TeamStateRepository:
                 )
                 result["created_task_ids"].append(created_id)
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
-                progress = True
+                _mark_progress()
 
             for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
                 recipient_id = (
@@ -2016,7 +2069,7 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
-                progress = True
+                _mark_progress()
 
             for report in _list_of_mappings(
                 normalized_action.get("status_reports"), "status_reports"
@@ -2044,7 +2097,7 @@ class TeamStateRepository:
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
-                progress = True
+                _mark_progress(context_activity=False)
 
             for index, status_request in enumerate(
                 _list_of_mappings(normalized_action.get("status_requests"), "status_requests")
@@ -2073,7 +2126,7 @@ class TeamStateRepository:
                     )
                     state_model.inbox[item.id] = item
                     result["created_status_request_ids"].append(item.id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "status_requests", index, exc)
 
@@ -2086,7 +2139,7 @@ class TeamStateRepository:
                     escalation=escalation,
                     result=result,
                 ):
-                    progress = True
+                    _mark_progress()
 
             for index, deliverable_payload in enumerate(
                 _list_of_mappings(normalized_action.get("deliverables"), "deliverables")
@@ -2128,10 +2181,14 @@ class TeamStateRepository:
                             sender_agent_id=agent.id,
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
-                            payload={"deliverable_id": deliverable.id, "summary": deliverable.summary},
+                            payload={
+                                "deliverable_id": deliverable.id,
+                                "summary": deliverable.summary,
+                                "artifact_refs": list(deliverable.artifact_refs),
+                            },
                         )
                         result["created_inbox_item_ids"].append(inbox_id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "deliverables", index, exc)
 
@@ -2150,7 +2207,7 @@ class TeamStateRepository:
                     continue
                 if created_id is not None:
                     result["created_review_request_ids"].append(created_id)
-                    progress = True
+                    _mark_progress()
 
             for index, decision in enumerate(
                 _list_of_mappings(normalized_action.get("review_decisions"), "review_decisions")
@@ -2168,7 +2225,7 @@ class TeamStateRepository:
                     continue
                 if decided_id is not None:
                     result["decided_review_request_ids"].append(decided_id)
-                    progress = True
+                    _mark_progress()
 
             for index, goal_update in enumerate(
                 _list_of_mappings(normalized_action.get("goal_updates"), "goal_updates")
@@ -2186,7 +2243,7 @@ class TeamStateRepository:
                     continue
                 if updated_id is not None:
                     result["updated_goal_ids"].append(updated_id)
-                    progress = True
+                    _mark_progress()
 
             for index, promotion in enumerate(
                 _list_of_mappings(
@@ -2205,7 +2262,7 @@ class TeamStateRepository:
                     continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
-                    progress = True
+                    _mark_progress()
 
             for index, feature_update in enumerate(
                 _list_of_mappings(
@@ -2224,7 +2281,7 @@ class TeamStateRepository:
                     continue
                 if promotion_id is not None:
                     result["git_promotion_event_ids"].append(promotion_id)
-                    progress = True
+                    _mark_progress()
 
             for index, release_request in enumerate(
                 _list_of_mappings(
@@ -2244,7 +2301,7 @@ class TeamStateRepository:
                     continue
                 if release_id is not None:
                     result["release_package_ids"].append(release_id)
-                    progress = True
+                    _mark_progress()
 
             for inbox_item_id in _string_list(
                 normalized_action.get("handled_inbox_item_ids"),
@@ -2257,7 +2314,7 @@ class TeamStateRepository:
                 item.state = TeamInboxItemState.HANDLED
                 item.updated_at = utc_now()
                 result["handled_inbox_item_ids"].append(inbox_item_id)
-                progress = True
+                _mark_progress()
 
             ephemeral_requests = _list_of_mappings(
                 normalized_action.get("ephemeral_requests"),
@@ -2272,7 +2329,7 @@ class TeamStateRepository:
                         dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
                         result=result,
                     )
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     result["errors"].append(f"ephemeral_requests: {exc}")
 
@@ -2308,7 +2365,7 @@ class TeamStateRepository:
                         result["accepted_ephemeral_assignment_ids"].append(assignment.id)
                     else:
                         result["rejected_ephemeral_assignment_ids"].append(assignment.id)
-                    progress = True
+                    _mark_progress()
                 except ValueError as exc:
                     _append_action_item_error(result, "ephemeral_acceptances", index, exc)
 
@@ -2328,9 +2385,10 @@ class TeamStateRepository:
             runtime.wake_leased_until = None
             runtime.wake_reason = None
             runtime.no_progress_count = 0 if progress else runtime.no_progress_count + 1
-            if progress:
-                runtime.last_progress_at = utc_now()
-            runtime.updated_at = utc_now()
+            completed_at = utc_now()
+            if context_rotation_activity:
+                runtime.last_progress_at = completed_at
+            runtime.updated_at = completed_at
             _maybe_mark_idle_context_rotation_due(
                 state_model,
                 agent_id=agent.id,
@@ -2825,6 +2883,21 @@ def _mark_context_rotation_pending(
     runtime.updated_at = requested_at
 
 
+def _clear_pending_idle_context_rotation(runtime: AgentRuntime) -> None:
+    if (
+        not runtime.context_rotation_pending
+        or runtime.context_rotation_reason != "idle"
+    ):
+        return
+    runtime.context_rotation_pending = False
+    runtime.context_rotation_reason = None
+    runtime.context_rotation_requested_by = None
+    runtime.context_rotation_requested_at = None
+    runtime.context_rotation_request_note = None
+    runtime.next_wake_at = None
+    runtime.last_handoff_summary = None
+
+
 def _build_context_handoff_summary(
     state: TeamState,
     *,
@@ -3009,6 +3082,92 @@ def _agent_for_session(state: TeamState, *, session_id: str) -> PersistentAgent:
         if agent.session_id == session_id:
             return agent
     raise ValueError(f"no team agent found for session_id {session_id}")
+
+
+def _latest_action_feedback_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> list[dict[str, Any]]:
+    records = [
+        record
+        for record in state.action_records.values()
+        if record.agent_id == agent_id
+    ]
+    if not records:
+        return []
+    latest_record = max(records, key=lambda record: (record.created_at, record.id))
+    if latest_record.success:
+        return []
+    if latest_record.dismissed_at is not None:
+        return []
+    if latest_record.feedback_delivered_at is not None:
+        return []
+    latest_dispatch_id = latest_record.dispatch_id
+    failed_records = [
+        record
+        for record in records
+        if record.dispatch_id == latest_dispatch_id
+        and not record.success
+        and record.dismissed_at is None
+    ]
+    return [
+        _action_feedback_payload(record)
+        for record in sorted(
+            failed_records,
+            key=lambda record: (record.created_at, record.id),
+        )
+    ]
+
+
+def _action_feedback_payload(record: AgentActionRecord) -> dict[str, Any]:
+    error = record.error or "action failed validation"
+    return {
+        "action_record_id": record.id,
+        "dispatch_id": record.dispatch_id,
+        "created_at": record.created_at.isoformat(),
+        "error": error,
+        "action_fields": _non_empty_action_fields(record.action),
+        "correction_hints": _correction_hints(error),
+    }
+
+
+def _non_empty_action_fields(action: Mapping[str, Any]) -> list[str]:
+    ignored_fields = {"agent_id", "dispatch_id", "schema_version", "notes"}
+    return sorted(
+        key
+        for key, value in action.items()
+        if key not in ignored_fields and value not in (None, "", [], {})
+    )
+
+
+def _correction_hints(error: str) -> list[str]:
+    normalized = error.casefold()
+    hints: list[str] = []
+    if "must not start with 'refs/'" in normalized:
+        hints.append(
+            "Use bare branch names like agents/... or team/..., not refs/heads/...."
+        )
+    if "cannot deliver task" in normalized:
+        hints.append("Only the task owner can create deliverables for that task.")
+    if "artifact_paths must contain at least one path" in normalized:
+        hints.append(
+            "For Git-only deliverables, omit artifact_paths; otherwise list staged "
+            "paths under /artifacts."
+        )
+    if "assignment_id must be a non-empty string" in normalized:
+        hints.append(
+            "Use the assignment_id shape for ephemeral promotions, or the "
+            "deliverable_id shape for persistent deliverables."
+        )
+    if "already exists" in normalized:
+        hints.append(
+            "Do not recreate existing ids; reference existing records or choose a new id."
+        )
+    if not hints:
+        hints.append(
+            "Review the current Team context and retry only the missing corrected action items."
+        )
+    return hints
 
 
 def _mark_action_failure(
@@ -3577,6 +3736,7 @@ def _apply_review_request(
         "review_request_id": review.id,
         "deliverable_id": deliverable_id,
         "instructions": instructions or "",
+        "artifact_refs": list(deliverable.artifact_refs),
     }
     if profile is not None:
         payload["review_profile"] = {
@@ -4872,7 +5032,9 @@ __all__ = [
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
     "GIT_PROMOTION_EVENT_TYPE",
+    "LEGACY_STATE_FILE",
     "OPERATOR_ESCALATION_EVENT_TYPE",
+    "STATE_DB_FILE",
     "STATE_FILE",
     "TeamStateConflictError",
     "TeamStateRepository",
