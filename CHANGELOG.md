@@ -5,6 +5,38 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Timeline UTC Sorting
+
+- Kept Team Add-on timeline rows in server order for legacy offset-naive ISO
+  timestamps by treating those timestamps as UTC in the static UI sort path.
+
+## 2026-06-17 - Team Add-on Release And Revision Hardening
+
+- Allowed artifact-only Team release packages to be created without project Git
+  configuration, leaving release/canonical branches unset and emitting no Git
+  promotions.
+- Required `expected_revision` on Team Add-on Admin API write routes while
+  keeping workflow effects able to omit it for single-writer runtime steps.
+- Clarified Team cost caps as estimated operational wake guards and surfaced the
+  estimate language in Team UI copy.
+
+## 2026-06-17 - Team Add-on Focused Tab Follow-Ups
+
+- Added task-status filters to the focused Planning tab, defaulting to current
+  non-terminal work while letting terminal task states be shown on demand.
+- Made focused People and Operations rows compact and collapsible, removed the
+  duplicate Hierarchy panel from focused People, and added smoke coverage for
+  two-team Org chart rendering.
+- Added Org chart team tabs so operators can switch between the aggregate view
+  and a single team's reporting tree.
+
+## 2026-06-17 - Team Add-on Focused Tab Density
+
+- Sorted the derived Team Add-on timeline newest-first and paged the focused
+  Timeline tab into compact expandable rows.
+- Collapsed focused Delivery and Planning records into summary-first drill-down
+  cards while keeping the existing Workspace tab layout unchanged.
+
 ## 2026-06-17 - Team Add-on Batched Task Mandates
 
 - Enforced ordinary-agent task mandate checks against batch-local parent tasks

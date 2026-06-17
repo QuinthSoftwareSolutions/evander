@@ -125,6 +125,12 @@ agent's role permission rather than an exact role name. The built-in
 `auto-dev-squad` template grants `request_release` to its project-scoped
 release-operator role.
 
+Admin API write routes require `expected_revision`. Missing or null revisions
+return `400`, stale revisions return `409`, and successful writes advance the
+Team state revision. Workflow effects and agent-action application may omit
+`expected_revision` when the workflow is operating as the single writer for that
+step; they still honor the revision check when a value is provided.
+
 ### Template Catalog And Setup Flow
 
 The bundled Team Add-on exposes a built-in template catalog at
@@ -545,10 +551,11 @@ repository only records intent; the packaged pack routes each event on its
   branch are not release sources yet; first publish a review branch if needed,
   then run `git_feature_updates[]` so the deliverable records
   `git_refs.feature_branch`. This creates a pending `ReleasePackage` and, when
-  feature branches are present, a `release` promotion (consolidate feature
-  branches → release branch) followed by a `canonical_push` promotion (release
-  branch → canonical branch, finalized by
-  `effect:team:mark-release-published`).
+  feature branches are present, requires project Git config and creates a
+  `release` promotion (consolidate feature branches → release branch) followed by
+  a `canonical_push` promotion (release branch → canonical branch, finalized by
+  `effect:team:mark-release-published`). Pure artifact releases do not require
+  project Git config and do not create release or canonical branches.
 
 Four add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the
@@ -565,11 +572,24 @@ aborting and failing on conflict — never auto-resolving). The core
 never leave the project's `host_repo_path`. The **only** branch pushed to the
 canonical remote is the release branch, and only on the `canonical_push` route via
 `effect:git:push-branch`. Deliverables that ship non-Git artifacts remain fully
-supported through `artifact_refs` and require no push at all. For Team-authored
-deliverables, `artifact_paths` publish to immutable keys shaped as
+supported through `artifact_refs`, require no push at all, and can be packaged
+even when the project has no Git configuration. For Team-authored deliverables,
+`artifact_paths` publish to immutable keys shaped as
 `team/<team_id>/<project_id>/<deliverable_id>/<dispatch_id>/bundle` and are
 indexed through artifact spaces; Team state stores only the resulting stable
 refs.
+
+### Team Cost Guard
+
+Teams may carry an optional `max_cost_usd` estimated lifetime cap. The wake loop
+checks Team cost payloads before leasing due agents; when the estimated total
+reaches the cap, future Team wakes for that team are skipped until the cap is
+raised or cleared. This is an operational safety rail, not billing-grade
+enforcement: totals are derived from recorded model-usage events, the local
+pricing catalog, and optional Claude transcript backfill. Cost payloads expose
+`coverage_status` and `coverage_reasons`; operators should treat partial
+coverage as a reason to inspect the underlying usage data before making spend
+promises.
 
 ### Bundled Team Add-on Enablement
 

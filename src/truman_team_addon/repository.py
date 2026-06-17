@@ -4728,9 +4728,6 @@ def _build_release_package(
     release-package endpoint so both enforce identical validation and branch naming.
     """
 
-    git = _project_git_or_error(project, result)
-    if git is None:
-        return None
     project_id = project.id
     deliverable_ids = _string_list(request.get("deliverable_ids"), "deliverable_ids")
     if not deliverable_ids:
@@ -4781,14 +4778,21 @@ def _build_release_package(
     if release_id in state.release_packages:
         result["errors"].append(f"release package {release_id} already exists")
         return None
-    target_release_branch = validate_branch_name(
-        _optional_text(request.get("release_branch"))
-        or release_branch(team_id, release_id)
-    )
-    target_canonical_branch = validate_branch_name(
-        _optional_text(request.get("canonical_branch"))
-        or canonical_release_branch(project, release_id)
-    )
+    target_release_branch: str | None = None
+    target_canonical_branch: str | None = None
+    git = None
+    if feature_branches:
+        git = _project_git_or_error(project, result)
+        if git is None:
+            return None
+        target_release_branch = validate_branch_name(
+            _optional_text(request.get("release_branch"))
+            or release_branch(team_id, release_id)
+        )
+        target_canonical_branch = validate_branch_name(
+            _optional_text(request.get("canonical_branch"))
+            or canonical_release_branch(project, release_id)
+        )
     promotion_ids: list[str] = []
     now = utc_now()
     # Internal feature branches are consolidated into a release branch, which is then
@@ -4796,6 +4800,8 @@ def _build_release_package(
     # promotions when there is at least one feature branch to consolidate; pure
     # artifact deliverables need no push.
     if feature_branches:
+        assert git is not None
+        assert target_release_branch is not None
         release_promotion_id = f"promotion-{uuid4().hex}"
         state.git_promotions[release_promotion_id] = GitPromotionRecord(
             id=release_promotion_id,

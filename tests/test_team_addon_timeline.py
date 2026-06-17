@@ -304,6 +304,11 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
         "git_promotion",
         "release_package",
     }
+    assert entry_ids[:3] == [
+        "task:beta-task:created",
+        "release:alpha-release:created",
+        "git-promotion:alpha-promotion:result",
+    ]
     assert entry_ids[-3:] == [
         "release:alpha-release:blocked",
         "review:alpha-review:decision",
@@ -311,7 +316,7 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
     ]
 
     entries_by_id = {entry["id"]: entry for entry in entries}
-    task_created = entries[0]
+    task_created = entries_by_id["task:alpha-task:created"]
     assert task_created == {
         "id": "task:alpha-task:created",
         "type": "task",
@@ -374,8 +379,8 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     )
 
     assert [entry["id"] for entry in leader_view["entries"]] == [
-        "task:alpha-task:created",
         "task:alpha-task:updated",
+        "task:alpha-task:created",
         "review:alpha-review:decision",
         "review:alpha-review:created",
     ]
@@ -387,12 +392,12 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
 
     attention_view = derive_team_timeline(state, attention_needed=True)
     assert [entry["id"] for entry in attention_view["entries"]] == [
-        "action:alpha-action:created",
-        "ephemeral:alpha-ephemeral:requested",
-        "ephemeral:alpha-ephemeral:state",
-        "git-promotion:alpha-promotion:requested",
-        "git-promotion:alpha-promotion:result",
         "release:alpha-release:created",
+        "git-promotion:alpha-promotion:result",
+        "git-promotion:alpha-promotion:requested",
+        "ephemeral:alpha-ephemeral:state",
+        "ephemeral:alpha-ephemeral:requested",
+        "action:alpha-action:created",
         "release:alpha-release:blocked",
     ]
     assert all(entry["attention_needed"] is True for entry in attention_view["entries"])
@@ -431,8 +436,8 @@ def test_derive_team_timeline_normalizes_naive_timestamps_for_sorting() -> None:
     timeline = derive_team_timeline(state, types="review")
 
     assert [entry["id"] for entry in timeline["entries"]] == [
-        "review:alpha-review:created",
         "review:alpha-review:decision",
+        "review:alpha-review:created",
     ]
 
 

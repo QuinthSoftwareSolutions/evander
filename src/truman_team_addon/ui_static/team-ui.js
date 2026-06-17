@@ -18,6 +18,12 @@ const gitProviders = [
 ];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
+const defaultPlanningTaskStates = new Set([
+  "pending",
+  "in_progress",
+  "blocked",
+  "waiting_for_review",
+]);
 
 let state = emptyState();
 let costState = emptyCostState();
@@ -27,9 +33,12 @@ let templates = [];
 let timelineState = emptyTimelineState();
 let timelineLoading = false;
 let timelineRequestId = 0;
+let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
 let activeTeamView = "workspace";
+let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
+let selectedOrgTeamId = "all";
 
 const teamViewIds = new Set([
   "workspace",
@@ -63,6 +72,7 @@ const ephemeralWorkKinds = new Set([
   "cleanup_pending_ephemeral_assignment",
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
+const timelinePageSize = 10;
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
@@ -93,6 +103,7 @@ const elements = {
   teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
   orgFocusSummary: document.querySelector("#org-focus-summary"),
+  orgFocusTeamTabs: document.querySelector("#org-focus-team-tabs"),
   orgFocusView: document.querySelector("#org-focus-view"),
   setupFormsPanel: document.querySelector("#setup-forms-panel"),
   workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
@@ -131,7 +142,7 @@ const fieldTooltips = {
   "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
-  "setup-template-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
+  "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
   "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
@@ -156,7 +167,7 @@ const fieldTooltips = {
   "create-team-form:manager_role_id": "Optional role record ID for the manager role. Leave blank to let the backend derive one.",
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
-  "create-team-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
+  "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
 
   "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
@@ -238,7 +249,7 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
-  "edit:team:max_cost_usd": "Set or clear the lifetime USD cap that suspends future Team wakes when reached.",
+  "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
@@ -285,11 +296,14 @@ document.addEventListener("DOMContentLoaded", () => {
   bindExistingAgentPickers();
   bindRuntimeFilters();
   bindDeliveryFilters();
+  bindPlanningFilters();
+  bindOrgFocusTabs();
   bindArchivedVisibilityToggle();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplatePreview();
   });
   bindTimelineFilters();
+  bindTimelinePagination();
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
@@ -834,6 +848,42 @@ function bindDeliveryFilters() {
   });
 }
 
+function bindPlanningFilters() {
+  document.querySelectorAll("[data-planning-task-status]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const status = input.dataset.planningTaskStatus;
+      if (!taskStates.includes(status)) {
+        return;
+      }
+      if (input.checked) {
+        selectedPlanningTaskStates.add(status);
+      } else {
+        selectedPlanningTaskStates.delete(status);
+      }
+      renderProjects();
+    });
+  });
+  updatePlanningFilterControls();
+}
+
+function bindOrgFocusTabs() {
+  elements.orgFocusTeamTabs?.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-org-team-id]");
+    if (!button) {
+      return;
+    }
+    selectedOrgTeamId = button.dataset.orgTeamId || "all";
+    renderFocusedOrgChart();
+  });
+}
+
+function updatePlanningFilterControls() {
+  document.querySelectorAll("[data-planning-task-status]").forEach((input) => {
+    const status = input.dataset.planningTaskStatus;
+    input.checked = selectedPlanningTaskStates.has(status);
+  });
+}
+
 async function loadState({ preserveForms = false } = {}) {
   const drafts = preserveForms ? captureFormDrafts() : null;
   setStatus("Loading team state.", "loading");
@@ -921,6 +971,7 @@ function render() {
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
+  updatePlanningFilterControls();
   renderHierarchy();
   renderFocusedOrgChartIfActive();
   renderAgents();
@@ -943,6 +994,9 @@ function renderFocusedOrgChartIfActive() {
   }
   if (elements.orgFocusSummary) {
     elements.orgFocusSummary.innerHTML = "";
+  }
+  if (elements.orgFocusTeamTabs) {
+    elements.orgFocusTeamTabs.innerHTML = "";
   }
   if (elements.orgFocusView) {
     elements.orgFocusView.innerHTML = "";
@@ -1043,10 +1097,10 @@ function renderTeamCostCounter(teamId) {
   const cost = teamCostForTeam(teamId);
   if (!cost) {
     return costState.error
-      ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
+      ? renderCostCounter(null, { label: "Estimated team cost", compact: false, error: costState.error })
       : "";
   }
-  return renderCostCounter(cost, { label: "Team cost", compact: false });
+  return renderCostCounter(cost, { label: "Estimated team cost", compact: false });
 }
 
 function teamCostForTeam(teamId) {
@@ -1059,7 +1113,7 @@ function renderTeamCostBlockedPill(teamId) {
     return "";
   }
   return `
-    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the cap is raised or cleared.">
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the estimated cap is raised or cleared.">
       cost blocked
     </span>
   `;
@@ -1072,10 +1126,12 @@ function renderTeamCostBlockedNotice(teamId) {
   }
   const maxCost = numberOrNull(cost.max_cost_usd);
   const capLabel = maxCost === null ? "configured cap" : formatUsd(maxCost);
+  const coverage = text(cost.coverage_status || costState.coverage_status);
+  const coverageNote = coverage && coverage !== "complete" ? " Cost coverage is partial." : "";
   return `
     <div class="team-cost-blocked-notice" role="status">
-      <strong>Blocked: cost cap reached</strong>
-      <span>Team wakes are suspended until the cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} used of ${escapeHtml(capLabel)} lifetime cap.</span>
+      <strong>Blocked: estimated cost cap reached</strong>
+      <span>Team wakes are suspended until the estimated cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} lifetime cap.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -1085,7 +1141,7 @@ function renderProjectCostCounter(projectId) {
   if (!cost) {
     return "";
   }
-  return renderCostCounter(cost, { label: "Project cost", compact: true });
+  return renderCostCounter(cost, { label: "Estimated project cost", compact: true });
 }
 
 function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
@@ -1110,7 +1166,7 @@ function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
   if (maxCost !== null) {
     parts.push(
       limitReached
-        ? `limit reached ${formatUsd(maxCost)}`
+        ? `estimated limit reached ${formatUsd(maxCost)}`
         : `${formatUsd(cost.remaining_cost_usd)} remaining`,
     );
   }
@@ -1287,6 +1343,9 @@ function renderRuntimeAttentionRows(attention, emptyMessage = "No current blocke
 }
 
 function renderRuntimeAttentionRow(row) {
+  if (activeTeamView === "operations") {
+    return renderCompactRuntimeAttentionRow(row);
+  }
   const refs = runtimeReferenceParts(row);
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
@@ -1322,6 +1381,56 @@ function renderRuntimeAttentionRow(row) {
   `;
 }
 
+function renderCompactRuntimeAttentionRow(row) {
+  const refs = runtimeReferenceParts(row);
+  const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
+  const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
+  const action =
+    row.kind === "failed_action_record" && row.action_record_id
+      ? `
+        <div class="record-actions runtime-attention-actions">
+          <button
+            type="button"
+            class="record-action"
+            data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
+          >Dismiss</button>
+        </div>
+      `
+      : "";
+  const summaryParts = [
+    humanizeToken(row.kind || "attention"),
+    row.agent_id ? `agent ${row.agent_id}` : "",
+    row.project_id ? `project ${row.project_id}` : "",
+  ].filter(Boolean);
+  return `
+    <li class="record-item runtime-item runtime-item-compact runtime-severity-${escapeHtml(row.severity || "info")}">
+      <details>
+        <summary class="runtime-summary compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(row.title || row.id)}</strong>
+            <span>${escapeHtml(summaryParts.join(" - ") || row.id)}</span>
+          </span>
+          <span class="runtime-summary-meta">
+            <span class="state-pill ${escapeHtml(row.severity || "info")}">${escapeHtml(row.severity || "info")}</span>
+            ${row.state ? `<span>${escapeHtml(humanizeToken(row.state))}</span>` : ""}
+          </span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="meta-line">${escapeHtml(row.kind || "attention")} - ${escapeHtml(row.id)}</div>
+          ${row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : ""}
+          ${
+            stateLine || errorLine
+              ? `<div class="meta-line">${escapeHtml([stateLine, errorLine].filter(Boolean).join(" - "))}</div>`
+              : ""
+          }
+          ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+          ${action}
+        </div>
+      </details>
+    </li>
+  `;
+}
+
 function renderRuntimeAgentRows(agents, emptyMessage = "No agent runtime data yet.") {
   if (!agents.length) {
     return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
@@ -1334,6 +1443,9 @@ function renderRuntimeAgentRows(agents, emptyMessage = "No agent runtime data ye
 }
 
 function renderRuntimeAgentRow(agent) {
+  if (activeTeamView === "operations") {
+    return renderCompactRuntimeAgentRow(agent);
+  }
   const status = runtimeAgentStatus(agent);
   const refs = runtimeReferenceParts(agent);
   const wakeReason = runtimeText(agent.wake_reason);
@@ -1366,6 +1478,58 @@ function renderRuntimeAgentRow(agent) {
       }
       <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+    </li>
+  `;
+}
+
+function renderCompactRuntimeAgentRow(agent) {
+  const status = runtimeAgentStatus(agent);
+  const refs = runtimeReferenceParts(agent);
+  const wakeReason = runtimeText(agent.wake_reason);
+  const lastWake = runtimeText(agent.last_wake_at);
+  const nextWake = runtimeText(agent.next_wake_at);
+  const wakeLease = runtimeText(agent.wake_leased_until);
+  const dispatchId = runtimeText(agent.active_dispatch_id);
+  const contextPending = Boolean(agent.context_rotation_pending);
+  const contextAuto = Boolean(agent.auto_context_clearing_enabled);
+  const lastRotated = runtimeText(agent.last_context_rotated_at);
+  const handoffSummary = text(agent.last_handoff_summary);
+  const flags = [
+    agent.wake_due ? "wake due" : "",
+    agent.lease_active ? "lease active" : "",
+    agent.active_dispatch_id ? `dispatch ${agent.active_dispatch_id}` : "",
+    agent.stand_down_active ? "stood down" : "",
+  ].filter(Boolean);
+  return `
+    <li class="record-item runtime-item runtime-item-compact runtime-agent-item">
+      <details>
+        <summary class="runtime-summary compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(agent.id)}</strong>
+            <span>${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</span>
+          </span>
+          <span class="runtime-summary-meta">
+            <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+            <span>${escapeHtml(flags.join(" - ") || "idle")}</span>
+          </span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="record-actions">
+            ${renderAgentStandDownControls(agent.id, agent)}
+            <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
+          </div>
+          <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
+          <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
+          <div class="meta-line">Context clearing ${escapeHtml(contextAuto ? "auto on" : "auto off")} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+          ${
+            handoffSummary
+              ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+              : ""
+          }
+          <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
+          ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+        </div>
+      </details>
     </li>
   `;
 }
@@ -1550,7 +1714,17 @@ function renderFocusedOrgChart() {
 
   const teams = values(state.teams);
   const visibleTeams = teams.filter(isVisibleTeam);
-  const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  if (selectedOrgTeamId !== "all" && !visibleTeams.some((team) => text(team.id) === text(selectedOrgTeamId))) {
+    selectedOrgTeamId = "all";
+  }
+  const focusedTeams =
+    selectedOrgTeamId === "all"
+      ? visibleTeams
+      : visibleTeams.filter((team) => text(team.id) === text(selectedOrgTeamId));
+  const focusedTeamIds = new Set(focusedTeams.map((team) => text(team.id)));
+  const visibleAgents = values(state.agents).filter(
+    (agent) => isVisibleAgent(agent) && focusedTeamIds.has(text(agent.team_id)),
+  );
   const awakeCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
   const attentionCount = visibleAgents.filter((agent) => {
     const details = agentCardData(agent);
@@ -1560,7 +1734,7 @@ function renderFocusedOrgChart() {
 
   if (elements.orgFocusSummary) {
     elements.orgFocusSummary.innerHTML = [
-      ["Teams", visibleTeams.length],
+      ["Teams", focusedTeams.length],
       ["Agents", visibleAgents.length],
       ["Awake", awakeCount],
       ["Due", dueCount],
@@ -1577,6 +1751,10 @@ function renderFocusedOrgChart() {
       .join("");
   }
 
+  if (elements.orgFocusTeamTabs) {
+    elements.orgFocusTeamTabs.innerHTML = renderOrgFocusTeamTabs(visibleTeams);
+  }
+
   if (!teams.length) {
     elements.orgFocusView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
     return;
@@ -1586,7 +1764,7 @@ function renderFocusedOrgChart() {
     return;
   }
 
-  elements.orgFocusView.innerHTML = visibleTeams
+  elements.orgFocusView.innerHTML = focusedTeams
     .map((team) => {
       const hierarchy = teamHierarchyGraph(team);
       const teamAgents = values(state.agents).filter(
@@ -1630,6 +1808,47 @@ function renderFocusedOrgChart() {
       `;
     })
     .join("");
+}
+
+function renderOrgFocusTeamTabs(visibleTeams) {
+  if (visibleTeams.length <= 1) {
+    return "";
+  }
+  const buttons = [
+    renderOrgFocusTeamTab({
+      id: "all",
+      label: "All teams",
+      count: visibleTeams.length,
+      selected: selectedOrgTeamId === "all",
+    }),
+    ...visibleTeams.map((team) => {
+      const teamAgents = values(state.agents).filter(
+        (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
+      );
+      return renderOrgFocusTeamTab({
+        id: team.id,
+        label: team.name || team.id,
+        count: teamAgents.length,
+        selected: text(selectedOrgTeamId) === text(team.id),
+      });
+    }),
+  ];
+  return buttons.join("");
+}
+
+function renderOrgFocusTeamTab({ id, label, count, selected }) {
+  return `
+    <button
+      type="button"
+      class="org-focus-team-tab${selected ? " active" : ""}"
+      role="tab"
+      aria-selected="${selected ? "true" : "false"}"
+      data-org-team-id="${escapeAttr(id)}"
+    >
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(count)}</strong>
+    </button>
+  `;
 }
 
 function renderHierarchy() {
@@ -1785,6 +2004,14 @@ function renderAgents() {
     renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
     return;
   }
+  if (activeTeamView === "people") {
+    renderIntoActiveTargets("[data-agents-view]", `
+      <ul class="agent-list compact-record-list">
+        ${agents.map((agent) => renderCompactAgent(agent)).join("")}
+      </ul>
+    `);
+    return;
+  }
   renderIntoActiveTargets("[data-agents-view]", `
     <ul class="agent-list">
       ${agents
@@ -1812,6 +2039,48 @@ function renderAgents() {
         .join("")}
     </ul>
   `);
+}
+
+function renderCompactAgent(agent) {
+  const details = agentCardData(agent);
+  const blockedWaiting = details.taskStats.blockedWaitingCount;
+  const inboxCount = details.inboxCount;
+  const summaryBits = [
+    `${details.taskStats.openCount} open`,
+    blockedWaiting ? `${blockedWaiting} blocked/waiting` : "",
+    inboxCount ? `${inboxCount} inbox` : "",
+  ].filter(Boolean);
+  return `
+    <li class="agent-item agent-item-compact">
+      <details>
+        <summary class="agent-summary compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(details.label)}</strong>
+            <span>${escapeHtml(details.role)} - ${escapeHtml(details.id)}</span>
+          </span>
+          <span class="agent-summary-meta">
+            <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+            ${renderAgentAwakePill(details)}
+            ${renderAgentInboxHeaderIndicators(details)}
+            <span>${escapeHtml(summaryBits.join(" - ") || "no open work")}</span>
+          </span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="record-actions">
+            ${renderAgentStandDownControls(details.id, details)}
+            <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
+            ${editButton("agent", details.id)}
+          </div>
+          <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - max ephemeral ${details.ephemeralCapacity}</div>
+          ${details.projectId ? `<div class="meta-line">Project ${escapeHtml(details.projectLabel || details.projectId)}</div>` : ""}
+          ${details.runtime?.summary ? `<div class="meta-line">Runtime ${escapeHtml(details.runtime.summary)}</div>` : ""}
+          ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
+          ${renderAgentOpenTasks(details.taskStats.openTasks)}
+          ${renderAgentInbox(agent.id)}
+        </div>
+      </details>
+    </li>
+  `;
 }
 
 function renderAgentOpenTasks(openTasks) {
@@ -2520,6 +2789,48 @@ function renderProjects() {
     return;
   }
 
+  if (activeTeamView === "planning") {
+    updatePlanningFilterControls();
+    const projectCards = projects
+      .map((project) => {
+        const projectTasks = values(state.tasks)
+          .filter((task) => task.project_id === project.id)
+          .sort(byPriority);
+        const visibleTasks = planningTasksForProject(projectTasks);
+        if (!visibleTasks.length) {
+          return null;
+        }
+        const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
+        const projectDeliverables = values(state.deliverables).filter((deliverable) => {
+          return visibleTaskIds.has(deliverable.task_id);
+        });
+        return {
+          project,
+          projectTasks,
+          visibleTasks,
+          projectDeliverables,
+        };
+      })
+      .filter(Boolean)
+      .sort(comparePlanningProjectCards);
+    if (!projectCards.length) {
+      renderIntoActiveTargets(
+        "[data-projects-view]",
+        `<p class="empty-state">No project task cards match the selected statuses.</p>`,
+      );
+      return;
+    }
+    renderIntoActiveTargets(
+      "[data-projects-view]",
+      projectCards
+        .map(({ project, projectTasks, visibleTasks, projectDeliverables }) =>
+          renderPlanningProjectBlock(project, projectTasks, visibleTasks, projectDeliverables),
+        )
+        .join(""),
+    );
+    return;
+  }
+
   renderIntoActiveTargets(
     "[data-projects-view]",
     projects
@@ -2564,6 +2875,106 @@ function renderProjects() {
   );
 }
 
+function planningTasksForProject(projectTasks) {
+  return projectTasks
+    .filter((task) => selectedPlanningTaskStates.has(task.state))
+    .sort(comparePlanningTasks);
+}
+
+function comparePlanningTasks(left, right) {
+  return (
+    planningTaskStatusRank(left.state) - planningTaskStatusRank(right.state) ||
+    byPriority(left, right)
+  );
+}
+
+function planningTaskStatusRank(status) {
+  const order = {
+    blocked: 0,
+    waiting_for_review: 1,
+    in_progress: 2,
+    pending: 3,
+    finished: 4,
+    accepted: 5,
+    rejected: 6,
+  };
+  return order[status] ?? 99;
+}
+
+function comparePlanningProjectCards(left, right) {
+  const leftBlocked = left.visibleTasks.filter(isTaskWaitingOrBlocked).length;
+  const rightBlocked = right.visibleTasks.filter(isTaskWaitingOrBlocked).length;
+  return (
+    rightBlocked - leftBlocked ||
+    right.visibleTasks.length - left.visibleTasks.length ||
+    projectSortKey(left.project).localeCompare(projectSortKey(right.project))
+  );
+}
+
+function renderPlanningProjectBlock(project, projectTasks, visibleTasks, projectDeliverables) {
+  const openTasks = visibleTasks.filter((task) => !terminalTaskStates.has(task.state));
+  const blockedTasks = visibleTasks.filter((task) => task.state === "blocked");
+  const waitingTasks = visibleTasks.filter((task) => task.state === "waiting_for_review");
+  const goals = project.goals || [];
+  const hiddenCount = projectTasks.length - visibleTasks.length;
+  const detailBits = [
+    `${visibleTasks.length} shown`,
+    `${openTasks.length} open`,
+    `${projectDeliverables.length} deliverable${projectDeliverables.length === 1 ? "" : "s"}`,
+  ];
+  if (blockedTasks.length) {
+    detailBits.push(`${blockedTasks.length} blocked`);
+  }
+  if (waitingTasks.length) {
+    detailBits.push(`${waitingTasks.length} waiting review`);
+  }
+  if (hiddenCount > 0) {
+    detailBits.push(`${hiddenCount} hidden`);
+  }
+  return `
+    <article class="project-block planning-project-card">
+      <details>
+        <summary class="planning-project-summary">
+          <span class="planning-project-main">
+            <strong>${escapeHtml(project.name)}</strong>
+            <span>${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</span>
+          </span>
+          <span class="planning-project-meta">
+            <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+            <span>${escapeHtml(detailBits.join(" - "))}</span>
+          </span>
+        </summary>
+        <div class="planning-project-body">
+          <div class="project-header">
+            <div>
+              <strong>${escapeHtml(project.name)}</strong>
+              <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+              ${renderProjectCostCounter(project.id)}
+              ${renderProjectGit(project.git)}
+            </div>
+            <div class="record-actions">
+              <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+              ${editButton("project", project.id)}
+            </div>
+          </div>
+          <div class="project-columns planning-project-columns">
+            <div>
+              <p class="subheading">Goals</p>
+              ${renderGoals(goals, { compact: true })}
+              <p class="subheading">Deliverables</p>
+              ${renderDeliverables(projectDeliverables, { compact: true })}
+            </div>
+            <div>
+              <p class="subheading">Tasks</p>
+              ${renderTasks(visibleTasks, { compact: true })}
+            </div>
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
 function renderProjectGit(git) {
   if (!git || !git.host_repo_path) {
     return "";
@@ -2576,9 +2987,36 @@ function renderProjectGit(git) {
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
-function renderGoals(goals) {
+function renderGoals(goals, { compact = false } = {}) {
   if (!goals.length) {
     return `<p class="empty-state">No goals.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="goal-list compact-record-list">
+        ${goals
+          .map((goal) => {
+            return `
+              <li class="record-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(goal.description)}</strong>
+                      <span>${escapeHtml(goal.id)}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(goal.state)}">${escapeHtml(goal.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="meta-line">${escapeHtml(goal.id)}</div>
+                    <div class="meta-line">${escapeHtml(goal.description)}</div>
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="goal-list">
@@ -2599,9 +3037,40 @@ function renderGoals(goals) {
   `;
 }
 
-function renderTasks(tasks) {
+function renderTasks(tasks, { compact = false } = {}) {
   if (!tasks.length) {
     return `<p class="empty-state">No tasks.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="task-list compact-record-list">
+        ${tasks
+          .map((task) => {
+            return `
+              <li class="task-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(task.title)}</strong>
+                      <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - priority ${task.priority}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="record-actions">
+                      ${editButton("task", task.id)}
+                    </div>
+                    <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
+                    ${renderTaskGraph(task)}
+                    <div class="meta-line">${escapeHtml(task.description)}</div>
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="task-list">
@@ -2657,9 +3126,38 @@ function renderTaskGraph(task) {
   `;
 }
 
-function renderDeliverables(deliverables) {
+function renderDeliverables(deliverables, { compact = false } = {}) {
   if (!deliverables.length) {
     return `<p class="empty-state">No deliverables.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="deliverable-list compact-record-list">
+        ${deliverables
+          .map((deliverable) => {
+            return `
+              <li class="record-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(deliverable.summary)}</strong>
+                      <span>${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
+                    ${renderReviewSummary(deliverable.review_request_ids || [])}
+                    ${renderArtifactRefs(deliverable.artifact_refs || [])}
+                    ${renderGitRefs(deliverable.git_refs)}
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="deliverable-list">
@@ -2854,6 +3352,14 @@ function renderReviewProfiles() {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
+  if (activeTeamView === "delivery") {
+    renderIntoActiveTargets("[data-review-profiles-view]", `
+      <ul class="review-list compact-record-list">
+        ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
+      </ul>
+    `);
+    return;
+  }
   renderIntoActiveTargets("[data-review-profiles-view]", `
     <ul class="review-list">
       ${profiles
@@ -2882,6 +3388,35 @@ function renderReviewProfiles() {
   `);
 }
 
+function renderCompactReviewProfile(profile) {
+  const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
+  const roles = (profile.applicable_role_ids || []).length
+    ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
+    : "all reviewer roles";
+  const criteria = profile.criteria || [];
+  return `
+    <li class="record-item compact-record-card">
+      <details>
+        <summary class="compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(profile.name)}</strong>
+            <span>${escapeHtml(scope)} - ${criteria.length} criteria</span>
+          </span>
+          <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="record-actions">
+            ${editButton("review-profile", profile.id)}
+          </div>
+          <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
+          ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
+          ${renderProfileCriteria(criteria)}
+        </div>
+      </details>
+    </li>
+  `;
+}
+
 function renderProfileCriteria(criteria) {
   if (!criteria.length) {
     return "";
@@ -2906,6 +3441,14 @@ function renderReleases() {
   const releases = values(state.release_packages).sort(byId);
   if (!releases.length) {
     renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
+    return;
+  }
+  if (activeTeamView === "delivery") {
+    renderIntoActiveTargets("[data-releases-view]", `
+      <ul class="release-list compact-record-list">
+        ${releases.map((release) => renderCompactRelease(release)).join("")}
+      </ul>
+    `);
     return;
   }
   renderIntoActiveTargets("[data-releases-view]", `
@@ -2933,6 +3476,33 @@ function renderReleases() {
         .join("")}
     </ul>
   `);
+}
+
+function renderCompactRelease(release) {
+  const deliverables = (release.deliverable_ids || []).join(", ");
+  const lines = [];
+  if (release.release_branch) lines.push(`release ${release.release_branch}`);
+  if (release.canonical_branch) lines.push(`canonical ${release.canonical_branch}`);
+  if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
+  return `
+    <li class="record-item compact-record-card">
+      <details>
+        <summary class="compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(release.id)}</strong>
+            <span>Project ${escapeHtml(release.project_id)}${deliverables ? ` - ${escapeHtml(deliverables)}` : ""}</span>
+          </span>
+          <span class="state-pill ${escapeHtml(release.state)}">${escapeHtml(release.state)}</span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
+          ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
+          ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
+          ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+        </div>
+      </details>
+    </li>
+  `;
 }
 
 function renderTemplateSetup() {
@@ -3126,8 +3696,27 @@ function bindTimelineFilters() {
   document.querySelectorAll("[data-timeline-filter]").forEach((filter) => {
     filter.addEventListener("change", () => {
       syncTimelineFilterControls(filter.dataset.timelineFilter, filter.value);
+      timelinePage = 1;
       void loadTimeline();
     });
+  });
+}
+
+function bindTimelinePagination() {
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-timeline-page-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.timelinePageAction;
+    if (action === "next") {
+      timelinePage += 1;
+    } else if (action === "previous") {
+      timelinePage = Math.max(1, timelinePage - 1);
+    } else {
+      return;
+    }
+    renderTimeline();
   });
 }
 
@@ -3201,11 +3790,55 @@ async function loadTimeline() {
 }
 
 function normalizeTimeline(payload) {
+  const entries = Array.isArray(payload?.entries)
+    ? payload.entries.slice().sort(compareTimelineEntriesNewestFirst)
+    : [];
   return {
     ...emptyTimelineState(),
     ...(payload || {}),
-    entries: Array.isArray(payload?.entries) ? payload.entries : [],
+    entries,
   };
+}
+
+function compareTimelineEntriesNewestFirst(left, right) {
+  const leftTime = timelineEntrySortTime(left);
+  const rightTime = timelineEntrySortTime(right);
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  return (
+    String(left.category || "").localeCompare(String(right.category || "")) ||
+    String(left.type || "").localeCompare(String(right.type || "")) ||
+    String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function timelineEntrySortTime(entry) {
+  const timestamp = entry?.timestamp;
+  if (!timestamp) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = Date.parse(normalizeTimelineTimestampForSort(timestamp));
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function normalizeTimelineTimestampForSort(timestamp) {
+  const text = String(timestamp || "").trim();
+  if (!text) {
+    return text;
+  }
+  // The API treats legacy offset-naive ISO datetimes as UTC when sorting.
+  if (isOffsetNaiveIsoDateTime(text)) {
+    return `${text}Z`;
+  }
+  return text;
+}
+
+function isOffsetNaiveIsoDateTime(timestamp) {
+  return (
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(timestamp) &&
+    !/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(timestamp)
+  );
 }
 
 function renderTimeline() {
@@ -3213,10 +3846,17 @@ function renderTimeline() {
     return;
   }
 
-  const entries = timelineState.entries || [];
+  const entries = (timelineState.entries || []).slice().sort(compareTimelineEntriesNewestFirst);
+  if (activeTeamView === "timeline") {
+    const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+    timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+  }
   const summaryParts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
+  }
+  if (activeTeamView === "timeline" && entries.length > timelinePageSize) {
+    summaryParts.push(`page ${timelinePage} of ${Math.ceil(entries.length / timelinePageSize)}`);
   }
   document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
     summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
@@ -3232,11 +3872,53 @@ function renderTimeline() {
     return;
   }
 
+  if (activeTeamView === "timeline") {
+    renderFocusedTimeline(entries);
+    return;
+  }
+
   renderIntoActiveTargets("[data-timeline-view]", `
     <ul class="timeline-list">
       ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
     </ul>
   `);
+}
+
+function renderFocusedTimeline(entries) {
+  const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+  timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+  const start = (timelinePage - 1) * timelinePageSize;
+  const pageEntries = entries.slice(start, start + timelinePageSize);
+  const pagination = entries.length > timelinePageSize
+    ? renderTimelinePagination(pageCount, start, pageEntries.length, entries.length)
+    : "";
+
+  renderIntoActiveTargets("[data-timeline-view]", `
+    ${pagination}
+    <ul class="timeline-list timeline-list-compact">
+      ${pageEntries.map((entry) => renderCompactTimelineEntry(entry)).join("")}
+    </ul>
+  `);
+}
+
+function renderTimelinePagination(pageCount, start, pageLength, total) {
+  const first = start + 1;
+  const last = start + pageLength;
+  return `
+    <div class="timeline-pagination" aria-label="Timeline pages">
+      <button
+        type="button"
+        data-timeline-page-action="previous"
+        ${timelinePage <= 1 ? "disabled" : ""}
+      >Previous</button>
+      <span>${first}-${last} of ${total}</span>
+      <button
+        type="button"
+        data-timeline-page-action="next"
+        ${timelinePage >= pageCount ? "disabled" : ""}
+      >Next</button>
+    </div>
+  `;
 }
 
 function selectedTemplate() {
@@ -3458,6 +4140,9 @@ function renderDeliveryBucket(status, rows) {
 }
 
 function renderDeliveryRow(row) {
+  if (activeTeamView === "delivery") {
+    return renderCompactDeliveryRow(row);
+  }
   const deliverable = row.deliverable;
   const task = row.task;
   const project = row.project;
@@ -3504,17 +4189,84 @@ function renderDeliveryRow(row) {
             </div>
           </div>
         </div>
-        <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
-        ${renderArtifactRefs(deliverable.artifact_refs || [])}
-        ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
-        ${
-          reviewIds.length
-            ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
-            : ""
-        }
-        ${releaseSummaries}
+        ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
       </div>
     </article>
+  `;
+}
+
+function renderCompactDeliveryRow(row) {
+  const deliverable = row.deliverable;
+  const task = row.task;
+  const project = row.project;
+  const team = row.team;
+  const reviewIds = row.reviewRequests.map((review) => review.id);
+  const releaseSummaries = renderReleaseSummary(row.releasePackages);
+  const gitPromotionIds = uniqueTextList([
+    ...(deliverable.git_refs?.promotion_record_ids || []),
+    ...row.releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
+  ]);
+  const scope = [
+    team ? team.name || team.id : "Unknown team",
+    project ? project.name || project.id : "Unknown project",
+  ].join(" - ");
+  const reviewText = `${reviewIds.length} review${reviewIds.length === 1 ? "" : "s"}`;
+  const releaseText = `${row.releasePackages.length} release${row.releasePackages.length === 1 ? "" : "s"}`;
+  return `
+    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
+      <summary class="delivery-row-summary">
+        <span class="delivery-summary-main">
+          <strong>${escapeHtml(deliverable.summary || deliverable.id)}</strong>
+          <span>${escapeHtml(deliverable.id)}${task ? ` - ${escapeHtml(task.title)}` : ""}</span>
+        </span>
+        <span class="delivery-summary-meta">
+          <span class="state-pill ${escapeAttr(row.effectiveStatus)}">${escapeHtml(row.effectiveStatus)}</span>
+          <span>${escapeHtml(reviewText)}</span>
+          <span>${escapeHtml(releaseText)}</span>
+        </span>
+      </summary>
+      <div class="delivery-row-body">
+        <div class="meta-line">${escapeHtml(scope)}</div>
+        <div class="delivery-detail-grid">
+          <div>
+            <div class="delivery-detail-label">Deliverable</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Task</div>
+            <div class="delivery-detail-value">
+              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(task.state)}` : "missing"}
+            </div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Producer</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.producer_agent_id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Deliverable state</div>
+            <div class="delivery-detail-value">
+              <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+            </div>
+          </div>
+        </div>
+        ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
+      </div>
+    </details>
+  `;
+}
+
+function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds }) {
+  const deliverable = row.deliverable;
+  return `
+    <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
+    ${renderArtifactRefs(deliverable.artifact_refs || [])}
+    ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
+    ${
+      reviewIds.length
+        ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
+        : ""
+    }
+    ${releaseSummaries}
   `;
 }
 
@@ -3623,6 +4375,52 @@ function renderTimelineEntry(entry) {
         <p class="timeline-summary-text">${escapeHtml(entry.summary)}</p>
         ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
       </article>
+    </li>
+  `;
+}
+
+function renderCompactTimelineEntry(entry) {
+  const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
+  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
+  const relatedIds = renderTimelineRelatedIds(entry);
+  const relatedAgents = [
+    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
+    (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const scope = [
+    entry.team_id ? `team ${entry.team_id}` : "",
+    entry.project_id ? `project ${entry.project_id}` : "",
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  return `
+    <li class="timeline-entry timeline-entry-compact">
+      <details>
+        <summary class="timeline-entry-summary">
+          <span class="timeline-summary-main">
+            <span class="timeline-timestamp">${escapeHtml(timestamp)}</span>
+            <span class="timeline-summary-text">${escapeHtml(entry.summary)}</span>
+          </span>
+          <span class="timeline-summary-pills">
+            <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.type))}</span>
+            <span class="state-pill ${escapeHtml(entry.status || "pending")}">${escapeHtml(entry.status || "pending")}</span>
+          </span>
+        </summary>
+        <div class="timeline-entry-details">
+          <div class="timeline-pills">
+            <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.category))}</span>
+            ${entry.attention_needed ? `<span class="state-pill blocked">attention needed</span>` : ""}
+          </div>
+          <div class="timeline-meta">
+            <div class="meta-line">${escapeHtml(actorSubject ? `Actor ${actorSubject}` : "Actor unknown")}</div>
+            ${scope ? `<div class="meta-line">${escapeHtml(scope)}</div>` : ""}
+            ${relatedAgents ? `<div class="meta-line">${escapeHtml(relatedAgents)}</div>` : ""}
+          </div>
+          ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
+        </div>
+      </details>
     </li>
   `;
 }
@@ -4455,7 +5253,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
-      ${numberField("Max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
+      ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }

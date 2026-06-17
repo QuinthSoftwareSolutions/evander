@@ -251,7 +251,9 @@ button.team-view-tab[aria-selected="true"] {
 }
 
 .runtime-operations-header,
-.runtime-section-header {
+.runtime-section-header,
+.focused-section-header,
+.planning-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -269,6 +271,35 @@ button.team-view-tab[aria-selected="true"] {
   gap: 0.45rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.planning-filters {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.planning-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.9rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.62rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planning-filters input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 button.runtime-filter-button {
@@ -570,6 +601,53 @@ button.runtime-filter-button.active {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;
+}
+
+.org-focus-team-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.65rem;
+}
+
+button.org-focus-team-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0.32rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+button.org-focus-team-tab:hover {
+  border-color: rgba(23, 111, 122, 0.3);
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+button.org-focus-team-tab.active,
+button.org-focus-team-tab[aria-selected="true"] {
+  border-color: rgba(23, 111, 122, 0.34);
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
+}
+
+button.org-focus-team-tab strong {
+  min-width: 1.35rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  font-size: 0.74rem;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .org-focus-view {
@@ -884,6 +962,10 @@ button.runtime-filter-button.active {
   gap: 0.65rem;
 }
 
+.timeline-list-compact {
+  gap: 0.35rem;
+}
+
 .timeline-entry {
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
@@ -891,6 +973,79 @@ button.runtime-filter-button.active {
   padding: 0.75rem;
   background: var(--panel);
   box-shadow: 0 8px 20px var(--shadow);
+}
+
+.timeline-entry-compact {
+  padding: 0;
+  box-shadow: none;
+}
+
+.timeline-entry-compact details {
+  min-width: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.timeline-entry-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.45rem;
+  padding: 0.38rem 0.6rem;
+  cursor: pointer;
+}
+
+.timeline-entry-summary::marker {
+  color: var(--muted);
+}
+
+.timeline-summary-main,
+.timeline-summary-pills {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.timeline-summary-main {
+  flex: 1 1 auto;
+}
+
+.timeline-summary-pills {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.timeline-entry-summary .timeline-summary-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-entry-details {
+  border-top: 1px solid var(--line);
+  padding: 0.55rem 0.7rem 0.65rem;
+}
+
+.timeline-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.timeline-pagination button {
+  min-height: 1.85rem;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
 }
 
 .timeline-entry-top {
@@ -903,6 +1058,7 @@ button.runtime-filter-button.active {
 .timeline-timestamp {
   font-size: 0.92rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .timeline-pills {
@@ -1094,6 +1250,61 @@ button.runtime-filter-button.active {
   background: var(--panel);
 }
 
+.delivery-row-compact {
+  padding: 0;
+  box-shadow: none;
+}
+
+.delivery-row-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.65rem;
+  padding: 0.42rem 0.6rem;
+  cursor: pointer;
+}
+
+.delivery-row-summary::marker {
+  color: var(--muted);
+}
+
+.delivery-summary-main {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.delivery-summary-main strong,
+.delivery-summary-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-summary-main span,
+.delivery-summary-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.delivery-summary-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.delivery-row-compact .delivery-row-body {
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.7rem 0.75rem;
+  margin-top: 0;
+}
+
 .delivery-row-header {
   display: flex;
   align-items: flex-start;
@@ -1218,6 +1429,94 @@ button.runtime-filter-button.active {
 .review-list li + li,
 .release-list li + li {
   margin-top: 0.5rem;
+}
+
+.compact-record-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.compact-record-list li + li {
+  margin-top: 0;
+}
+
+.compact-record-card {
+  padding: 0;
+}
+
+.compact-record-card > details,
+.planning-project-card > details {
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.compact-record-summary,
+.planning-project-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.45rem;
+  padding: 0.42rem 0.6rem;
+  cursor: pointer;
+}
+
+.compact-record-summary::marker,
+.planning-project-summary::marker {
+  color: var(--muted);
+}
+
+.compact-record-main,
+.planning-project-main {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.compact-record-main strong,
+.compact-record-main span,
+.planning-project-main strong,
+.planning-project-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-record-main span,
+.planning-project-main span,
+.planning-project-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.compact-record-body,
+.planning-project-body {
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.7rem 0.75rem;
+}
+
+.compact-record-body .record-actions {
+  margin-bottom: 0.35rem;
+}
+
+.planning-project-card {
+  overflow: hidden;
+}
+
+.planning-project-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.planning-project-columns {
+  margin-top: 0.75rem;
 }
 
 .agent-line,
@@ -1395,6 +1694,43 @@ button.record-action:hover {
   border-radius: 8px;
   background: var(--panel);
   padding: 0.7rem;
+}
+
+.runtime-item-compact {
+  padding: 0;
+}
+
+.runtime-item-compact > details {
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.runtime-summary-meta,
+.agent-summary-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.agent-item-compact {
+  padding: 0;
+}
+
+.agent-item-compact > details {
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.agent-summary .awake-indicator {
+  margin-top: 0;
 }
 
 .runtime-severity-warning {
@@ -1824,6 +2160,8 @@ label textarea {
   .team-header,
   .runtime-operations-header,
   .runtime-section-header,
+  .focused-section-header,
+  .planning-header,
   .agent-line,
   .task-line,
   .record-line,
@@ -1835,9 +2173,32 @@ label textarea {
   .delivery-bucket-title,
   .timeline-header,
   .timeline-entry-top,
+  .timeline-entry-summary,
+  .delivery-row-summary,
+  .compact-record-summary,
+  .planning-project-summary,
   .org-focus-header,
   .org-focus-team-header {
     display: grid;
+  }
+
+  .timeline-summary-pills,
+  .delivery-summary-meta,
+  .planning-project-meta,
+  .runtime-summary-meta,
+  .agent-summary-meta,
+  .planning-filters {
+    justify-content: flex-start;
+  }
+
+  .timeline-entry-summary .timeline-summary-text,
+  .delivery-summary-main strong,
+  .delivery-summary-main span,
+  .compact-record-main strong,
+  .compact-record-main span,
+  .planning-project-main strong,
+  .planning-project-main span {
+    white-space: normal;
   }
 
   .team-header-actions {

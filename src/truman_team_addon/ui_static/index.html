@@ -345,7 +345,7 @@
                   <label>Manager agent ID <input name="manager_agent_id" required /></label>
                   <label>Manager session ID <input name="manager_session_id" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
-                  <label>Max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+                  <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                   <p class="subheading">Project</p>
                   <label>Project ID <input name="project_id" required /></label>
                   <label>Project name <input name="project_name" required /></label>
@@ -442,7 +442,7 @@
                 <label>Manager role ID <input name="manager_role_id" /></label>
                 <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
                 <label>Operator communication target id <input name="operator_communication_target_id" /></label>
-                <label>Max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                 <button type="submit">Create team</button>
               </form>
             </details>
@@ -710,15 +710,14 @@
         data-team-view-panel="people"
         hidden
       >
-        <section class="content-grid">
-          <div class="content-panel" aria-labelledby="focused-hierarchy-heading">
-            <h2 id="focused-hierarchy-heading">Hierarchy</h2>
-            <div class="hierarchy-view" data-hierarchy-view></div>
+        <section class="content-panel people-agents-panel" aria-labelledby="focused-agents-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">People</p>
+              <h2 id="focused-agents-heading">Agents</h2>
+            </div>
           </div>
-          <div class="content-panel" aria-labelledby="focused-agents-heading">
-            <h2 id="focused-agents-heading">Agents</h2>
-            <div class="agents-view" data-agents-view></div>
-          </div>
+          <div class="agents-view" data-agents-view></div>
         </section>
         <section class="content-panel" aria-labelledby="focused-roles-heading">
           <h2 id="focused-roles-heading">Roles</h2>
@@ -735,7 +734,21 @@
         hidden
       >
         <section class="content-panel" aria-labelledby="focused-projects-heading">
-          <h2 id="focused-projects-heading">Projects</h2>
+          <div class="planning-header">
+            <div>
+              <p class="section-label">Planning</p>
+              <h2 id="focused-projects-heading">Projects</h2>
+            </div>
+            <div class="planning-filters" role="group" aria-label="Planning task statuses">
+              <label><input id="planning-status-blocked" type="checkbox" data-planning-task-status="blocked" checked /> Blocked</label>
+              <label><input id="planning-status-waiting-for-review" type="checkbox" data-planning-task-status="waiting_for_review" checked /> Waiting review</label>
+              <label><input id="planning-status-in-progress" type="checkbox" data-planning-task-status="in_progress" checked /> In progress</label>
+              <label><input id="planning-status-pending" type="checkbox" data-planning-task-status="pending" checked /> Pending</label>
+              <label><input id="planning-status-accepted" type="checkbox" data-planning-task-status="accepted" /> Accepted</label>
+              <label><input id="planning-status-finished" type="checkbox" data-planning-task-status="finished" /> Finished</label>
+              <label><input id="planning-status-rejected" type="checkbox" data-planning-task-status="rejected" /> Rejected</label>
+            </div>
+          </div>
           <div class="projects-view" data-projects-view></div>
         </section>
       </main>
@@ -851,6 +864,7 @@
           </div>
           <div id="org-focus-summary" class="org-focus-summary"></div>
         </section>
+        <nav id="org-focus-team-tabs" class="org-focus-team-tabs" role="tablist" aria-label="Org chart teams"></nav>
         <section id="org-focus-view" class="org-focus-view" aria-label="Focused team org chart"></section>
       </main>
       <div id="edit-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">

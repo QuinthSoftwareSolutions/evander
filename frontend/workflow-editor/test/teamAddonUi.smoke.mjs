@@ -25,6 +25,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
+  assert.match(script, /data-planning-task-status/);
+  assert.match(script, /renderCompactAgent/);
+  assert.match(script, /renderCompactRuntimeAgentRow/);
   assert.match(script, /agentAwakeState/);
 });
 
@@ -816,15 +819,32 @@ function compareTimelineEntries(left, right) {
   if (leftMissing !== rightMissing) {
     return leftMissing ? 1 : -1;
   }
-  const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NEGATIVE_INFINITY;
-  const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NEGATIVE_INFINITY;
+  const leftTime = timelineSortTime(left.timestamp);
+  const rightTime = timelineSortTime(right.timestamp);
   if (leftTime !== rightTime) {
-    return leftTime - rightTime;
+    return rightTime - leftTime;
   }
   return (
     String(left.category || "").localeCompare(String(right.category || "")) ||
     String(left.type || "").localeCompare(String(right.type || "")) ||
     String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function timelineSortTime(timestamp) {
+  if (!timestamp) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const text = String(timestamp).trim();
+  const normalized = isOffsetNaiveIsoDateTime(text) ? `${text}Z` : text;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function isOffsetNaiveIsoDateTime(timestamp) {
+  return (
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(timestamp) &&
+    !/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(timestamp)
   );
 }
 
@@ -914,7 +934,10 @@ async function serveStatic(response, assetName, contentType) {
   response.end(body);
 }
 
-async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, initialState = null } = {}) {
+async function createTeamAddonServer(
+  t,
+  { conflictOnFirstTeamCreate = false, initialState = null, timelinePayload = null } = {},
+) {
   const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
   const timelineRequests = [];
@@ -986,7 +1009,12 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/timeline") {
         timelineRequests.push(url.search);
-        jsonResponse(response, buildTimelinePayload(state, url));
+        jsonResponse(
+          response,
+          typeof timelinePayload === "function"
+            ? timelinePayload(state, url)
+            : timelinePayload || buildTimelinePayload(state, url),
+        );
         return;
       }
 
@@ -1428,9 +1456,9 @@ function applyMutation(state, pathname, payload) {
   }
 }
 
-async function openBrowserPage(t, port) {
+async function openBrowserPage(t, port, contextOptions = {}) {
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -2395,6 +2423,42 @@ function seededGitState() {
         state: "pending",
       },
     },
+    runtime_operations: {
+      generated_at: "2026-06-09T16:00:00Z",
+      agents: [
+        {
+          id: "alpha-lead",
+          team_id: "team-alpha",
+          project_id: "alpha-project",
+          session_id: "session-alpha-lead",
+          wake_due: true,
+          lease_active: false,
+          active_dispatch_id: "",
+          wake_reason: "status_request",
+          last_wake_at: "2026-06-09T15:30:00Z",
+          next_wake_at: "2026-06-09T16:05:00Z",
+          wake_leased_until: "",
+          no_progress_count: 1,
+          context_rotation_pending: false,
+          auto_context_clearing_enabled: true,
+          last_context_rotated_at: "2026-06-09T15:00:00Z",
+        },
+      ],
+      attention: [
+        {
+          id: "attention-blocked",
+          kind: "blocked_task",
+          severity: "warning",
+          title: "Blocked delivery",
+          team_id: "team-beta",
+          project_id: "beta-project",
+          agent_id: "beta-lead",
+          task_id: "task-blocked",
+          state: "blocked",
+          detail: "Work blocked by an upstream issue.",
+        },
+      ],
+    },
     review_profiles: {
       "profile-alpha": {
         id: "profile-alpha",
@@ -2736,6 +2800,10 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-operations-page").getByText("Showing Needs attention.").waitFor({
     state: "visible",
   });
+  await page.locator("#team-operations-page .runtime-item-compact").first().waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-operations-page .runtime-item-compact details[open]").count(), 0);
 
   await page.getByRole("tab", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });
@@ -2743,6 +2811,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   assert.equal(await page.locator(".delivery-row").count(), 5);
+  assert.equal(await page.locator("#team-delivery-page .delivery-row[open]").count(), 0);
   assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
   await page.locator("#team-delivery-page .review-profiles-view .record-item").first().waitFor({
     state: "visible",
@@ -2754,7 +2823,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "People" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   assert.equal(await page.locator(".agent-item").count(), 4);
-  assert.equal(await page.locator(".hierarchy-team").count(), 2);
+  assert.equal(await page.locator("#team-people-page .hierarchy-view").count(), 0);
+  assert.equal(await page.locator("#team-people-page .agent-item-compact details[open]").count(), 0);
   await page.locator("#team-people-page").getByText("Project Lead").first().waitFor({
     state: "visible",
   });
@@ -2762,10 +2832,19 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });
   assert.equal(await page.locator(".project-block").count(), 2);
+  assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
+  const alphaProjectCard = page.locator("#team-planning-page .planning-project-card", { hasText: "Alpha Project" });
+  await alphaProjectCard.locator(":scope > details > summary").click();
   await page.locator("#team-planning-page").getByText("Git: host /srv/git/alpha-project").waitFor({
     state: "visible",
   });
   await page.locator("#team-planning-page").getByText("Draft pending delivery").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-planning-page").getByText("Ship accepted delivery").count(), 0);
+  await page.locator("#planning-status-accepted").check();
+  await alphaProjectCard.locator(":scope > details > summary").click();
+  await page.locator("#team-planning-page").getByText("Ship accepted delivery").waitFor({
     state: "visible",
   });
 
@@ -2776,10 +2855,45 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Timeline" }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
-  assert.ok((await page.locator(".timeline-entry").count()) >= 10);
+  assert.equal(await page.locator("#team-timeline-page .timeline-entry").count(), 10);
+  await page.locator("#team-timeline-page .timeline-pagination").getByText(/1-10 of/).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-timeline-page .timeline-entry details[open]").count(), 0);
+  await page.locator("#team-timeline-page .timeline-entry").first().locator("summary").click();
+  await page.locator("#team-timeline-page .timeline-entry details[open]").first().waitFor({
+    state: "visible",
+  });
   await page.locator("#focused-timeline-type-filter").selectOption("review");
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
   assert.equal(await page.locator("#timeline-type-filter").inputValue(), "review");
+
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  await page.locator("#team-org-page").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 2);
+  await page.locator('#team-org-page [data-org-team-id="all"][aria-selected="true"]').waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-org-page").getByRole("heading", { name: "Beta Team" }).waitFor({
+    state: "visible",
+  });
+  await page.locator('#team-org-page [data-org-team-id="team-alpha"]').click();
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 1);
+  await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Beta Team" }).count(), 0);
+  await page.locator('#team-org-page [data-org-team-id="team-beta"]').click();
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 1);
+  await page.locator("#team-org-page").getByRole("heading", { name: "Beta Team" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).count(), 0);
+  await page.locator('#team-org-page [data-org-team-id="all"]').click();
+  assert.equal(await page.locator("#team-org-page .org-focus-team").count(), 2);
 
   await page.getByRole("tab", { name: "Workspace" }).click();
   await page.locator("#team-workspace-page").waitFor({ state: "visible" });
@@ -2986,4 +3100,49 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await page.getByText(/Review review-waiting accepted/).first().waitFor({
     state: "visible",
   });
+});
+
+test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {
+  const timelinePayload = {
+    revision: 1,
+    derived: true,
+    audit_log: false,
+    description: "Derived timeline from the current TeamState snapshot.",
+    filters: {},
+    timestampless_count: 0,
+    entries: [
+      timelineEntry({
+        id: "review:aware-newer:decision",
+        type: "review",
+        category: "decision",
+        timestamp: "2026-01-01T12:40:00Z",
+        timestamp_source: "decision_at",
+        status: "accepted",
+        attention_needed: false,
+        summary: "Aware UTC event",
+      }),
+      timelineEntry({
+        id: "review:naive-older:created",
+        type: "review",
+        category: "created",
+        timestamp: "2026-01-01T12:30:00",
+        timestamp_source: "created_at",
+        status: "pending",
+        attention_needed: false,
+        summary: "Naive UTC event",
+      }),
+    ],
+  };
+  const { port } = await createTeamAddonServer(t, { timelinePayload });
+  const page = await openBrowserPage(t, port, { timezoneId: "America/Los_Angeles" });
+
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.locator("#team-timeline-page .timeline-entry").first().waitFor({
+    state: "visible",
+  });
+
+  const summaries = await page
+    .locator("#team-timeline-page .timeline-summary-text")
+    .allTextContents();
+  assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
 });

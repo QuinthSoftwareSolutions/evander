@@ -849,9 +849,9 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
     return ProjectGitConfig.model_validate(normalized)
 
 
-def _expected_revision(payload: Mapping[str, Any]) -> int | None:
+def _expected_revision(payload: Mapping[str, Any]) -> int:
     if "expected_revision" not in payload or payload.get("expected_revision") is None:
-        return None
+        raise ValueError("expected_revision is required")
     return _coerce_int(payload["expected_revision"], "expected_revision")
 
 
