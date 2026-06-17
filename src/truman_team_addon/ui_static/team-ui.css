@@ -251,7 +251,9 @@ button.team-view-tab[aria-selected="true"] {
 }
 
 .runtime-operations-header,
-.runtime-section-header {
+.runtime-section-header,
+.focused-section-header,
+.planning-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -269,6 +271,35 @@ button.team-view-tab[aria-selected="true"] {
   gap: 0.45rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.planning-filters {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.planning-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.9rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.62rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planning-filters input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 button.runtime-filter-button {
@@ -570,6 +601,53 @@ button.runtime-filter-button.active {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;
+}
+
+.org-focus-team-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.65rem;
+}
+
+button.org-focus-team-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0.32rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+button.org-focus-team-tab:hover {
+  border-color: rgba(23, 111, 122, 0.3);
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+}
+
+button.org-focus-team-tab.active,
+button.org-focus-team-tab[aria-selected="true"] {
+  border-color: rgba(23, 111, 122, 0.34);
+  background: rgba(23, 111, 122, 0.12);
+  color: var(--accent-strong);
+}
+
+button.org-focus-team-tab strong {
+  min-width: 1.35rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  background: var(--panel-alt);
+  color: var(--accent-strong);
+  font-size: 0.74rem;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .org-focus-view {
@@ -1618,6 +1696,43 @@ button.record-action:hover {
   padding: 0.7rem;
 }
 
+.runtime-item-compact {
+  padding: 0;
+}
+
+.runtime-item-compact > details {
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.runtime-summary-meta,
+.agent-summary-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.agent-item-compact {
+  padding: 0;
+}
+
+.agent-item-compact > details {
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.agent-summary .awake-indicator {
+  margin-top: 0;
+}
+
 .runtime-severity-warning {
   box-shadow: inset 3px 0 0 rgba(154, 107, 19, 0.7);
 }
@@ -2045,6 +2160,8 @@ label textarea {
   .team-header,
   .runtime-operations-header,
   .runtime-section-header,
+  .focused-section-header,
+  .planning-header,
   .agent-line,
   .task-line,
   .record-line,
@@ -2067,7 +2184,10 @@ label textarea {
 
   .timeline-summary-pills,
   .delivery-summary-meta,
-  .planning-project-meta {
+  .planning-project-meta,
+  .runtime-summary-meta,
+  .agent-summary-meta,
+  .planning-filters {
     justify-content: flex-start;
   }
 
