@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Timeline UTC Sorting
+
+- Kept Team Add-on timeline rows in server order for legacy offset-naive ISO
+  timestamps by treating those timestamps as UTC in the static UI sort path.
+
 ## 2026-06-17 - Team Add-on Release And Revision Hardening
 
 - Allowed artifact-only Team release packages to be created without project Git

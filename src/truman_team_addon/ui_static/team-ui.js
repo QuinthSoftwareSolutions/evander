@@ -3818,8 +3818,27 @@ function timelineEntrySortTime(entry) {
   if (!timestamp) {
     return Number.NEGATIVE_INFINITY;
   }
-  const parsed = Date.parse(timestamp);
+  const parsed = Date.parse(normalizeTimelineTimestampForSort(timestamp));
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function normalizeTimelineTimestampForSort(timestamp) {
+  const text = String(timestamp || "").trim();
+  if (!text) {
+    return text;
+  }
+  // The API treats legacy offset-naive ISO datetimes as UTC when sorting.
+  if (isOffsetNaiveIsoDateTime(text)) {
+    return `${text}Z`;
+  }
+  return text;
+}
+
+function isOffsetNaiveIsoDateTime(timestamp) {
+  return (
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(timestamp) &&
+    !/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(timestamp)
+  );
 }
 
 function renderTimeline() {

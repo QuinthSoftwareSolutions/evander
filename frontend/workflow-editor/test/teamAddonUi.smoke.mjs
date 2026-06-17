@@ -819,8 +819,8 @@ function compareTimelineEntries(left, right) {
   if (leftMissing !== rightMissing) {
     return leftMissing ? 1 : -1;
   }
-  const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NEGATIVE_INFINITY;
-  const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NEGATIVE_INFINITY;
+  const leftTime = timelineSortTime(left.timestamp);
+  const rightTime = timelineSortTime(right.timestamp);
   if (leftTime !== rightTime) {
     return rightTime - leftTime;
   }
@@ -828,6 +828,23 @@ function compareTimelineEntries(left, right) {
     String(left.category || "").localeCompare(String(right.category || "")) ||
     String(left.type || "").localeCompare(String(right.type || "")) ||
     String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function timelineSortTime(timestamp) {
+  if (!timestamp) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const text = String(timestamp).trim();
+  const normalized = isOffsetNaiveIsoDateTime(text) ? `${text}Z` : text;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function isOffsetNaiveIsoDateTime(timestamp) {
+  return (
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(timestamp) &&
+    !/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(timestamp)
   );
 }
 
@@ -917,7 +934,10 @@ async function serveStatic(response, assetName, contentType) {
   response.end(body);
 }
 
-async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, initialState = null } = {}) {
+async function createTeamAddonServer(
+  t,
+  { conflictOnFirstTeamCreate = false, initialState = null, timelinePayload = null } = {},
+) {
   const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
   const timelineRequests = [];
@@ -989,7 +1009,12 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/timeline") {
         timelineRequests.push(url.search);
-        jsonResponse(response, buildTimelinePayload(state, url));
+        jsonResponse(
+          response,
+          typeof timelinePayload === "function"
+            ? timelinePayload(state, url)
+            : timelinePayload || buildTimelinePayload(state, url),
+        );
         return;
       }
 
@@ -1431,9 +1456,9 @@ function applyMutation(state, pathname, payload) {
   }
 }
 
-async function openBrowserPage(t, port) {
+async function openBrowserPage(t, port, contextOptions = {}) {
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -3075,4 +3100,49 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await page.getByText(/Review review-waiting accepted/).first().waitFor({
     state: "visible",
   });
+});
+
+test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {
+  const timelinePayload = {
+    revision: 1,
+    derived: true,
+    audit_log: false,
+    description: "Derived timeline from the current TeamState snapshot.",
+    filters: {},
+    timestampless_count: 0,
+    entries: [
+      timelineEntry({
+        id: "review:aware-newer:decision",
+        type: "review",
+        category: "decision",
+        timestamp: "2026-01-01T12:40:00Z",
+        timestamp_source: "decision_at",
+        status: "accepted",
+        attention_needed: false,
+        summary: "Aware UTC event",
+      }),
+      timelineEntry({
+        id: "review:naive-older:created",
+        type: "review",
+        category: "created",
+        timestamp: "2026-01-01T12:30:00",
+        timestamp_source: "created_at",
+        status: "pending",
+        attention_needed: false,
+        summary: "Naive UTC event",
+      }),
+    ],
+  };
+  const { port } = await createTeamAddonServer(t, { timelinePayload });
+  const page = await openBrowserPage(t, port, { timezoneId: "America/Los_Angeles" });
+
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.locator("#team-timeline-page .timeline-entry").first().waitFor({
+    state: "visible",
+  });
+
+  const summaries = await page
+    .locator("#team-timeline-page .timeline-summary-text")
+    .allTextContents();
+  assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
 });
