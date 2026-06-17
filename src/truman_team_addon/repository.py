@@ -3154,6 +3154,12 @@ def _correction_hints(error: str) -> list[str]:
             "For Git-only deliverables, omit artifact_paths; otherwise list staged "
             "paths under /artifacts."
         )
+    if "has neither a feature branch nor artifact refs" in normalized:
+        hints.append(
+            "Feature-promote Git deliverables before release: publish a review branch if "
+            "needed, then use git_feature_updates with source_review_branches and retry "
+            "git_release_requests only after git_refs.feature_branch is present."
+        )
     if "assignment_id must be a non-empty string" in normalized:
         hints.append(
             "Use the assignment_id shape for ephemeral promotions, or the "
@@ -4391,7 +4397,10 @@ def _build_release_package(
             feature_branches = _append_unique(feature_branches, feature)
         elif not deliverable.artifact_refs:
             result["errors"].append(
-                f"deliverable {deliverable_id} has neither a feature branch nor artifact refs"
+                f"deliverable {deliverable_id} has neither a feature branch nor artifact refs; "
+                "Git release requests require feature-promoted deliverables. Publish a review "
+                "branch first if needed, then use git_feature_updates with source_review_branches "
+                "so the deliverable has git_refs.feature_branch before retrying git_release_requests"
             )
             valid = False
         for artifact_ref in deliverable.artifact_refs:

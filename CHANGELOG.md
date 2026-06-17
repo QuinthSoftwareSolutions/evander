@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Release Promotion Guidance
+
+- Made `git_release_requests` failures for accepted Git deliverables without
+  `git_refs.feature_branch` explain the required review-to-feature promotion
+  step before retrying release publication.
+- Added matching wake-prompt and action-feedback guidance so release operators
+  do not retry canonical release publication from raw agent or review branches.
+
 ## 2026-06-17 - Team Add-on Idle Context Wake Loop
 
 - Stopped status-report-only idle context rotations from immediately re-arming

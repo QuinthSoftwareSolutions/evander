@@ -2556,6 +2556,33 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert state.git_promotions == {}
 
 
+def test_apply_agent_action_git_release_request_requires_feature_promoted_git_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.release_packages == {}
+    assert any("git_feature_updates" in error for error in result["errors"])
+    assert any("git_refs.feature_branch" in error for error in result["errors"])
+
+
 def test_apply_agent_action_git_release_request_allows_project_release_operator(
     tmp_path: Path,
 ) -> None:

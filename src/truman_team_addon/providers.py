@@ -1330,6 +1330,10 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "- Use review_decisions only for review requests assigned to you. Accepting "
         "a review is the action that cascades to deliverable/task acceptance once "
         "all attached reviews are accepted.\n"
+        "- Before git_release_requests for Git work, make sure every deliverable is "
+        "accepted and already has git_refs.feature_branch. Raw agent or review "
+        "branches are not release sources; use git_review_promotions and "
+        "git_feature_updates first.\n"
         "- If a deliverable should be reviewed by another agent, create a "
         "review_requests item for that reviewer; do not mark the task accepted "
         "yourself unless the task is actually yours.\n"
@@ -1895,13 +1899,21 @@ def _persistent_action_schema() -> dict[str, Any]:
             "git_release_requests": {
                 "type": "array",
                 "description": (
-                    "Create a release package from accepted deliverables. The "
-                    "repository derives source branches from deliverable git_refs; "
+                    "Create a release package from accepted deliverables. Git deliverables "
+                    "must already have git_refs.feature_branch; use git_review_promotions "
+                    "and git_feature_updates first when a deliverable only has agent or "
+                    "review refs. The repository derives source branches from deliverable git_refs; "
                     "do not provide source_branch, target_branch, or commit_sha here."
                 ),
                 "default": [],
                 "items": {
                     "type": "object",
+                    "description": (
+                        "Create a release package from accepted deliverables. Git deliverables "
+                        "must already have git_refs.feature_branch; use git_review_promotions "
+                        "and git_feature_updates first when a deliverable only has agent or "
+                        "review refs."
+                    ),
                     "additionalProperties": False,
                     "required": ["project_id", "deliverable_ids"],
                     "properties": {

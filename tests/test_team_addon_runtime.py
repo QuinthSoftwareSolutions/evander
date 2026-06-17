@@ -633,6 +633,32 @@ def test_latest_failed_action_feedback_is_leased_once(tmp_path: Path) -> None:
     assert backend_lease["recent_action_feedback"] == []
 
 
+def test_release_request_feedback_points_to_feature_promotion(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-release",
+        dispatch_id="dispatch-release",
+        created_at=base_time,
+        success=False,
+        error=(
+            "deliverable deliverable has neither a feature branch nor artifact refs; "
+            "Git release requests require feature-promoted deliverables"
+        ),
+        action={"git_release_requests": [{"project_id": "project"}]},
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=1))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    assert backend_lease["reason"] == "action_feedback"
+    feedback = backend_lease["recent_action_feedback"][0]
+    assert feedback["action_fields"] == ["git_release_requests"]
+    assert any("git_feature_updates" in hint for hint in feedback["correction_hints"])
+    assert any("git_refs.feature_branch" in hint for hint in feedback["correction_hints"])
+
+
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     _seed_team(tmp_path)
     resumer = FakeResumer()
@@ -683,6 +709,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
     assert "commit_sha" in review_promotion_shapes[1]["properties"]
     assert "source_branch" in review_promotion_shapes[1]["properties"]
+    release_request_property = schema["properties"]["git_release_requests"]
+    assert "git_refs.feature_branch" in release_request_property["description"]
     release_request_schema = schema["properties"]["git_release_requests"]["items"]
     assert release_request_schema["additionalProperties"] is False
     assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
@@ -709,6 +737,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "team-action.example.json" in prompt
     assert "Do not accept or reject someone else's task with task_updates" in prompt
     assert "Use review_decisions only for review requests assigned to you" in prompt
+    assert "Raw agent or review branches are not release sources" in prompt
     assert "item_type operator_directive" in prompt
     for field_name in (
         "task_creations",

@@ -522,7 +522,10 @@ repository only records intent; the packaged pack routes each event on its
   only the project lead, the team manager, or an agent whose same-project role
   has `request_release` may request a release, and every deliverable must belong
   to the project, be accepted, and carry either a `git_refs.feature_branch` or
-  non-Git `artifact_refs`. This creates a pending `ReleasePackage` and, when
+  non-Git `artifact_refs`. Deliverables that only have an agent branch or review
+  branch are not release sources yet; first publish a review branch if needed,
+  then run `git_feature_updates[]` so the deliverable records
+  `git_refs.feature_branch`. This creates a pending `ReleasePackage` and, when
   feature branches are present, a `release` promotion (consolidate feature
   branches → release branch) followed by a `canonical_push` promotion (release
   branch → canonical branch, finalized by
