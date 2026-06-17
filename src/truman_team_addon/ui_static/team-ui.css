@@ -155,6 +155,7 @@ textarea {
 .team-view-tabs {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.25rem;
   max-width: 100%;
   margin-bottom: 1rem;
@@ -196,6 +197,26 @@ button.team-view-tab[aria-selected="true"] {
 
 .team-layout[hidden] {
   display: none;
+}
+
+.focused-team-page {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.focused-team-page[hidden] {
+  display: none;
+}
+
+.setup-form-mount {
+  width: min(100%, 56rem);
+}
+
+.setup-form-mount .forms-panel {
+  position: static;
+  max-height: none;
+  width: 100%;
 }
 
 .team-main {

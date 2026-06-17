@@ -64,7 +64,13 @@ class AgentStatus(str, Enum):
 
 
 class RolePermission(str, Enum):
+    CREATE_ROOT_TASK = "create_root_task"
     REQUEST_RELEASE = "request_release"
+
+
+class AgentStandDownSource(str, Enum):
+    OPERATOR = "operator"
+    SUPERIOR = "superior"
 
 
 class TeamInboxItemType(str, Enum):
@@ -569,6 +575,32 @@ class AgentActionRecord(TeamModel):
         return _optional_text(value)
 
 
+class AgentStandDown(TeamModel):
+    id: str
+    agent_id: str
+    scope: Literal["subtree"] = "subtree"
+    reason: str
+    source: AgentStandDownSource = AgentStandDownSource.OPERATOR
+    set_by: str
+    set_at: datetime = Field(default_factory=utc_now)
+    cleared_by: str | None = None
+    cleared_at: datetime | None = None
+
+    @field_validator("id", "agent_id", "reason", "set_by", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("cleared_by", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @property
+    def active(self) -> bool:
+        return self.cleared_at is None
+
+
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
@@ -751,6 +783,7 @@ class TeamState(TeamModel):
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
+    stand_downs: dict[str, AgentStandDown] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
     @classmethod
@@ -760,6 +793,7 @@ class TeamState(TeamModel):
     @model_validator(mode="after")
     def _validate_state(self) -> "TeamState":
         errors: list[str] = []
+        self._ensure_core_role_permissions()
         self._validate_key_matches(errors)
         self._validate_teams(errors)
         self._validate_projects(errors)
@@ -776,6 +810,7 @@ class TeamState(TeamModel):
         self._validate_releases(errors)
         self._validate_ephemeral_assignments(errors)
         self._validate_git_promotions(errors)
+        self._validate_stand_downs(errors)
         if errors:
             raise ValueError("; ".join(errors))
         return self
@@ -802,6 +837,7 @@ class TeamState(TeamModel):
             "release_packages",
             "ephemeral_assignments",
             "git_promotions",
+            "stand_downs",
         ):
             collection = getattr(self, collection_name)
             for key, record in collection.items():
@@ -810,6 +846,18 @@ class TeamState(TeamModel):
                     errors.append(
                         f"{collection_name}.{key} key does not match record id {record_id}"
                     )
+
+    def _ensure_core_role_permissions(self) -> None:
+        for team in self.teams.values():
+            manager = self.agents.get(team.manager_agent_id)
+            role = self.roles.get(manager.role_id) if manager is not None else None
+            if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
+                role.permissions.append(RolePermission.CREATE_ROOT_TASK)
+        for project in self.projects.values():
+            lead = self.agents.get(project.lead_agent_id)
+            role = self.roles.get(lead.role_id) if lead is not None else None
+            if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
+                role.permissions.append(RolePermission.CREATE_ROOT_TASK)
 
     def _validate_teams(self, errors: list[str]) -> None:
         for team in self.teams.values():
@@ -1255,6 +1303,15 @@ class TeamState(TeamModel):
                     f"{promotion.release_package_id}"
                 )
 
+    def _validate_stand_downs(self, errors: list[str]) -> None:
+        for stand_down in self.stand_downs.values():
+            if stand_down.agent_id not in self.agents:
+                errors.append(
+                    f"stand-down {stand_down.id} references missing agent {stand_down.agent_id}"
+                )
+            if stand_down.cleared_at is not None and stand_down.cleared_by is None:
+                errors.append(f"stand-down {stand_down.id} has cleared_at without cleared_by")
+
 
 def _required_text(value: object, field_name: str) -> str:
     text = str(value or "").strip()
@@ -1331,7 +1388,37 @@ def _agent_payload_with_role(state: TeamState, agent: PersistentAgent) -> dict[s
         if role is not None
         else []
     )
+    effective_stand_downs = _effective_stand_down_payloads(state, agent.id)
+    payload["effective_stand_downs"] = effective_stand_downs
+    payload["stand_down_active"] = bool(effective_stand_downs)
     return payload
+
+
+def _effective_stand_down_payloads(
+    state: TeamState,
+    agent_id: str,
+) -> list[dict[str, Any]]:
+    root_ids: list[str] = []
+    seen: set[str] = set()
+    current_id: str | None = agent_id
+    while current_id is not None and current_id not in seen:
+        seen.add(current_id)
+        root_ids.append(current_id)
+        current = state.agents.get(current_id)
+        current_id = current.reports_to_agent_id if current is not None else None
+    root_set = set(root_ids)
+    rows: list[dict[str, Any]] = []
+    for stand_down in sorted(
+        state.stand_downs.values(),
+        key=lambda item: (item.set_at, item.id),
+    ):
+        if not stand_down.active or stand_down.agent_id not in root_set:
+            continue
+        row = stand_down.model_dump(mode="json")
+        row["inherited"] = stand_down.agent_id != agent_id
+        row["root_agent_id"] = stand_down.agent_id
+        rows.append(row)
+    return rows
 
 
 def runtime_operations_payload(
@@ -1367,6 +1454,9 @@ def _runtime_agent_payload(
         runtime.wake_leased_until is not None
         and _ensure_utc(runtime.wake_leased_until) > now
     )
+    effective_stand_downs = _effective_stand_down_payloads(state, agent.id)
+    if effective_stand_downs:
+        wake_due = False
     detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
     if agent.project_id is not None:
         detail_parts.append(f"project {agent.project_id}")
@@ -1377,10 +1467,12 @@ def _runtime_agent_payload(
         detail_parts.append("no runtime snapshot")
     elif runtime.wake_reason is not None:
         detail_parts.append(f"wake reason {runtime.wake_reason}")
+    if effective_stand_downs:
+        detail_parts.append("stood down")
     return {
         "id": agent.id,
         "kind": "agent_runtime",
-        "severity": "warning" if wake_due or lease_active else "info",
+        "severity": "warning" if wake_due or lease_active or effective_stand_downs else "info",
         "title": agent.id,
         "detail": "; ".join(detail_parts),
         "team_id": agent.team_id,
@@ -1394,6 +1486,8 @@ def _runtime_agent_payload(
         ),
         "session_id": agent.session_id,
         "status": agent.status.value,
+        "stand_down_active": bool(effective_stand_downs),
+        "effective_stand_downs": effective_stand_downs,
         "last_wake_at": _json_datetime(runtime.last_wake_at if runtime is not None else None),
         "next_wake_at": _json_datetime(next_wake_at),
         "wake_leased_until": _json_datetime(wake_leased_until),

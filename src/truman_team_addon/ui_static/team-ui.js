@@ -31,6 +31,17 @@ let costsRequestId = 0;
 let showArchived = false;
 let activeTeamView = "workspace";
 
+const teamViewIds = new Set([
+  "workspace",
+  "overview",
+  "operations",
+  "delivery",
+  "people",
+  "planning",
+  "setup",
+  "timeline",
+  "org",
+]);
 const runtimeFilterChoices = [
   ["all", "All"],
   ["needs_attention", "Needs attention"],
@@ -83,6 +94,9 @@ const elements = {
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
   orgFocusSummary: document.querySelector("#org-focus-summary"),
   orgFocusView: document.querySelector("#org-focus-view"),
+  setupFormsPanel: document.querySelector("#setup-forms-panel"),
+  workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
+  focusedSetupMount: document.querySelector("#focused-setup-mount"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -369,9 +383,8 @@ function bindTopLevelTabs() {
 }
 
 function setTeamView(view) {
-  activeTeamView = view === "org" ? "org" : "workspace";
-  renderFocusedOrgChartIfActive();
-  updateTeamViewTabs();
+  activeTeamView = teamViewIds.has(view) ? view : "workspace";
+  render();
 }
 
 function updateTeamViewTabs() {
@@ -385,6 +398,41 @@ function updateTeamViewTabs() {
     const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
     panel.hidden = !active;
   });
+}
+
+function panelForTarget(target) {
+  return target?.closest?.("[data-team-view-panel]") || null;
+}
+
+function targetIsActive(target) {
+  const panel = panelForTarget(target);
+  return !panel || !panel.hidden;
+}
+
+function renderIntoActiveTargets(selector, html) {
+  const targets = Array.from(document.querySelectorAll(selector));
+  targets.forEach((target) => {
+    if (targetIsActive(target)) {
+      target.innerHTML = html;
+    } else {
+      target.innerHTML = "";
+    }
+  });
+  return targets.filter(targetIsActive).length;
+}
+
+function placeSetupFormsPanel() {
+  const panel = elements.setupFormsPanel;
+  if (!panel) {
+    return;
+  }
+  if (activeTeamView === "setup" && elements.focusedSetupMount) {
+    elements.focusedSetupMount.appendChild(panel);
+    return;
+  }
+  if (elements.workspaceSetupAnchor && elements.workspaceSetupAnchor.parentNode) {
+    elements.workspaceSetupAnchor.after(panel);
+  }
 }
 
 function bindForms() {
@@ -419,6 +467,26 @@ function bindRecordEditing() {
       void requestContextRotation(
         contextRotationButton,
         contextRotationButton.dataset.contextRotationAgentId,
+      );
+      return;
+    }
+
+    const standDownButton = event.target.closest("[data-stand-down-agent-id]");
+    if (standDownButton) {
+      event.preventDefault();
+      void requestAgentStandDown(
+        standDownButton,
+        standDownButton.dataset.standDownAgentId,
+      );
+      return;
+    }
+
+    const standDownRevokeButton = event.target.closest("[data-stand-down-revoke-agent-id]");
+    if (standDownRevokeButton) {
+      event.preventDefault();
+      void revokeAgentStandDown(
+        standDownRevokeButton,
+        standDownRevokeButton.dataset.standDownRevokeAgentId,
       );
       return;
     }
@@ -848,6 +916,8 @@ function normalizeCosts(payload) {
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   updateArchivedVisibilityToggle();
+  updateTeamViewTabs();
+  placeSetupFormsPanel();
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
@@ -863,6 +933,7 @@ function render() {
   renderTimeline();
   decorateFieldTooltips(document);
   updateTeamViewTabs();
+  placeSetupFormsPanel();
 }
 
 function renderFocusedOrgChartIfActive() {
@@ -899,7 +970,7 @@ function updateDeliveryFilterButtons() {
 }
 
 function renderReviewDeliveryWorkspace() {
-  if (!elements.reviewDeliveryView) {
+  if (!document.querySelector("[data-review-delivery-view]")) {
     return;
   }
   updateDeliveryFilterButtons();
@@ -910,11 +981,11 @@ function renderReviewDeliveryWorkspace() {
       : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
 
   if (!visibleRows.length) {
-    elements.reviewDeliveryView.innerHTML = `
+    renderIntoActiveTargets("[data-review-delivery-view]", `
       <p class="empty-state">
         No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
       </p>
-    `;
+    `);
     bindWorkspaceReviewDecisionForms();
     return;
   }
@@ -923,9 +994,10 @@ function renderReviewDeliveryWorkspace() {
   const bucketStatuses =
     selectedDeliveryFilter === "all" ? deliveryStatusOrder : [selectedDeliveryFilter];
 
-  elements.reviewDeliveryView.innerHTML = teamGroups
-    .map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses))
-    .join("");
+  renderIntoActiveTargets(
+    "[data-review-delivery-view]",
+    teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join(""),
+  );
   bindWorkspaceReviewDecisionForms();
 }
 
@@ -952,7 +1024,7 @@ function renderSummary() {
     ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
   ];
 
-  elements.summaryGrid.innerHTML = metrics
+  const html = metrics
     .map(([label, value]) => {
       return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
     })
@@ -964,6 +1036,7 @@ function renderSummary() {
           ? `<p class="empty-state summary-empty-state">No active team.</p>`
       : "",
     );
+  renderIntoActiveTargets("[data-summary-grid]", html);
 }
 
 function renderTeamCostCounter(teamId) {
@@ -1278,6 +1351,7 @@ function renderRuntimeAgentRow(agent) {
         <strong>${escapeHtml(agent.id)}</strong>
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+          ${renderAgentStandDownControls(agent.id, agent)}
           <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
         </div>
       </div>
@@ -1290,7 +1364,7 @@ function renderRuntimeAgentRow(agent) {
           ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
           : ""
       }
-      <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}</div>
+      <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}${agent.stand_down_active ? " - stood down" : ""}</div>
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
     </li>
   `;
@@ -1362,7 +1436,7 @@ function bindRuntimeFilters() {
 }
 
 function renderRuntimeOperations() {
-  if (!elements.runtimeOperationsView) {
+  if (!document.querySelector("[data-runtime-operations-view]")) {
     return;
   }
 
@@ -1443,7 +1517,7 @@ function renderRuntimeOperations() {
     );
   }
 
-  elements.runtimeOperationsView.innerHTML = `
+  renderIntoActiveTargets("[data-runtime-operations-view]", `
     <div class="runtime-filter-summary">Showing ${escapeHtml(runtimeFilterLabel(runtimeFilter))}.</div>
     ${sections.join("")}
     ${
@@ -1451,7 +1525,7 @@ function renderRuntimeOperations() {
         ? `<div class="meta-line runtime-generated-at">Runtime generated ${escapeHtml(runtime.generated_at)}</div>`
         : ""
     }
-  `;
+  `);
 }
 
 function renderRuntimeSection({ title, count, emptyMessage, body }) {
@@ -1562,18 +1636,20 @@ function renderHierarchy() {
   const teams = values(state.teams);
   const visibleTeams = teams.filter(isVisibleTeam);
   if (!teams.length) {
-    elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+    renderIntoActiveTargets("[data-hierarchy-view]", `<p class="empty-state">No teams registered.</p>`);
     return;
   }
   if (!visibleTeams.length) {
-    elements.hierarchyView.innerHTML = `<p class="empty-state">No active team.</p>`;
+    renderIntoActiveTargets("[data-hierarchy-view]", `<p class="empty-state">No active team.</p>`);
     return;
   }
 
-  elements.hierarchyView.innerHTML = visibleTeams
-    .map((team) => {
-      const hierarchy = teamHierarchyGraph(team);
-      return `
+  renderIntoActiveTargets(
+    "[data-hierarchy-view]",
+    visibleTeams
+      .map((team) => {
+        const hierarchy = teamHierarchyGraph(team);
+        return `
         <article class="hierarchy-team">
             <div class="hierarchy-team-header">
               <div>
@@ -1603,8 +1679,9 @@ function renderHierarchy() {
           </div>
         </article>
       `;
-    })
-    .join("");
+      })
+      .join(""),
+  );
 }
 
 function renderHierarchyForest(nodes, options = {}) {
@@ -1701,14 +1778,14 @@ function renderAgents() {
   const allAgents = values(state.agents).sort(byId);
   const agents = allAgents.filter(isVisibleAgent);
   if (!allAgents.length) {
-    elements.agentsView.innerHTML = `<p class="empty-state">No agents registered.</p>`;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
     return;
   }
   if (!agents.length) {
-    elements.agentsView.innerHTML = `<p class="empty-state">No visible agents.</p>`;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
     return;
   }
-  elements.agentsView.innerHTML = `
+  renderIntoActiveTargets("[data-agents-view]", `
     <ul class="agent-list">
       ${agents
         .map((agent) => {
@@ -1719,12 +1796,14 @@ function renderAgents() {
                   <strong>${escapeHtml(details.label)}</strong>
                   <div class="record-actions">
                     <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+                    ${renderAgentStandDownControls(details.id, details)}
                     <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                     ${editButton("agent", details.id)}
                   </div>
                 </div>
               <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
               <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - ${details.taskStats.openCount} open task(s) - max ephemeral ${details.ephemeralCapacity}</div>
+              ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
               ${renderAgentOpenTasks(details.taskStats.openTasks)}
               ${renderAgentInbox(agent.id)}
             </li>
@@ -1732,7 +1811,7 @@ function renderAgents() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderAgentOpenTasks(openTasks) {
@@ -1752,20 +1831,20 @@ function renderAgentOpenTasks(openTasks) {
 }
 
 function renderRoles() {
-  if (!elements.rolesView) {
+  if (!document.querySelector("[data-roles-view]")) {
     return;
   }
   const allRoles = values(state.roles).sort(byId);
   const roles = allRoles.filter(isVisibleRole);
   if (!allRoles.length) {
-    elements.rolesView.innerHTML = `<p class="empty-state">No roles registered.</p>`;
+    renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No roles registered.</p>`);
     return;
   }
   if (!roles.length) {
-    elements.rolesView.innerHTML = `<p class="empty-state">No visible roles.</p>`;
+    renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No visible roles.</p>`);
     return;
   }
-  elements.rolesView.innerHTML = `
+  renderIntoActiveTargets("[data-roles-view]", `
     <ul class="review-list">
       ${roles
         .map((role) => {
@@ -1790,7 +1869,7 @@ function renderRoles() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function pendingInboxForAgent(agentId) {
@@ -1840,6 +1919,7 @@ function agentCardData(agent) {
   const reportsToId = text(agent?.reports_to_agent_id);
   const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
   const inboxItems = pendingInboxForAgent(agent.id);
+  const standDowns = effectiveStandDowns(agent);
   const inboxIndicatorItems = {
     status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
     progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
@@ -1860,9 +1940,62 @@ function agentCardData(agent) {
     inboxCount: inboxItems.length,
     inboxIndicatorItems,
     runtime,
+    effectiveStandDowns: standDowns,
+    standDownActive: Boolean(agent?.stand_down_active) || standDowns.length > 0,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
   };
+}
+
+function effectiveStandDowns(record) {
+  const values = Array.isArray(record?.effective_stand_downs)
+    ? record.effective_stand_downs
+    : Array.isArray(record?.effectiveStandDowns)
+      ? record.effectiveStandDowns
+      : [];
+  return values.filter((item) => item && typeof item === "object");
+}
+
+function operatorRootStandDown(agentId, record) {
+  const normalizedAgentId = text(agentId);
+  return effectiveStandDowns(record).find((item) => {
+    return text(item.source) === "operator"
+      && text(item.agent_id) === normalizedAgentId
+      && text(item.root_agent_id || item.agent_id) === normalizedAgentId
+      && !Boolean(item.inherited);
+  }) || null;
+}
+
+function renderAgentStandDownControls(agentId, record) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  const standDowns = effectiveStandDowns(record);
+  const active = Boolean(record?.standDownActive || record?.stand_down_active) || standDowns.length > 0;
+  if (!active) {
+    return `<button class="record-action" type="button" data-stand-down-agent-id="${escapeAttr(normalizedAgentId)}">Stand down</button>`;
+  }
+  const operatorRoot = operatorRootStandDown(normalizedAgentId, record);
+  const summary = agentStandDownSummary({ effectiveStandDowns: standDowns });
+  return `
+    <span class="state-pill blocked" title="${escapeAttr(summary)}">stood down</span>
+    ${
+      operatorRoot
+        ? `<button class="record-action" type="button" data-stand-down-revoke-agent-id="${escapeAttr(normalizedAgentId)}">Revoke</button>`
+        : ""
+    }
+  `;
+}
+
+function agentStandDownSummary(record) {
+  const standDowns = effectiveStandDowns(record);
+  const primary = standDowns[standDowns.length - 1] || {};
+  const source = text(primary.source) || "stand-down";
+  const root = text(primary.root_agent_id || primary.agent_id);
+  const reason = text(primary.reason);
+  const inherited = Boolean(primary.inherited) && root ? ` inherited from ${root}` : "";
+  return `${humanizeToken(source)} stand-down${inherited}${reason ? `: ${reason}` : ""}`;
 }
 
 function runtimeSummary(agentId) {
@@ -2379,24 +2512,26 @@ function renderProjects() {
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
-    elements.projectsView.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+    renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No projects registered.</p>`);
     return;
   }
   if (!projects.length) {
-    elements.projectsView.innerHTML = `<p class="empty-state">No visible projects.</p>`;
+    renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No visible projects.</p>`);
     return;
   }
 
-  elements.projectsView.innerHTML = projects
-    .map((project) => {
-      const projectTasks = values(state.tasks)
-        .filter((task) => task.project_id === project.id)
-        .sort(byPriority);
-      const projectDeliverables = values(state.deliverables).filter((deliverable) => {
-        const task = state.tasks[deliverable.task_id];
-        return task?.project_id === project.id;
-      });
-      return `
+  renderIntoActiveTargets(
+    "[data-projects-view]",
+    projects
+      .map((project) => {
+        const projectTasks = values(state.tasks)
+          .filter((task) => task.project_id === project.id)
+          .sort(byPriority);
+        const projectDeliverables = values(state.deliverables).filter((deliverable) => {
+          const task = state.tasks[deliverable.task_id];
+          return task?.project_id === project.id;
+        });
+        return `
         <article class="project-block">
             <div class="project-header">
               <div>
@@ -2424,8 +2559,9 @@ function renderProjects() {
           </div>
         </article>
       `;
-    })
-    .join("");
+      })
+      .join(""),
+  );
 }
 
 function renderProjectGit(git) {
@@ -2705,20 +2841,20 @@ function renderGitRefs(gitRefs, extraPromotionIds = []) {
 }
 
 function renderReviewProfiles() {
-  if (!elements.reviewProfilesView) {
+  if (!document.querySelector("[data-review-profiles-view]")) {
     return;
   }
   const allProfiles = values(state.review_profiles).sort(byId);
   const profiles = allProfiles.filter(isVisibleReviewProfile);
   if (!allProfiles.length) {
-    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No review profiles.</p>`;
+    renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No review profiles.</p>`);
     return;
   }
   if (!profiles.length) {
-    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No visible review profiles.</p>`;
+    renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
-  elements.reviewProfilesView.innerHTML = `
+  renderIntoActiveTargets("[data-review-profiles-view]", `
     <ul class="review-list">
       ${profiles
         .map((profile) => {
@@ -2743,7 +2879,7 @@ function renderReviewProfiles() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderProfileCriteria(criteria) {
@@ -2764,15 +2900,15 @@ function renderProfileCriteria(criteria) {
 }
 
 function renderReleases() {
-  if (!elements.releasesView) {
+  if (!document.querySelector("[data-releases-view]")) {
     return;
   }
   const releases = values(state.release_packages).sort(byId);
   if (!releases.length) {
-    elements.releasesView.innerHTML = `<p class="empty-state">No release packages.</p>`;
+    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
     return;
   }
-  elements.releasesView.innerHTML = `
+  renderIntoActiveTargets("[data-releases-view]", `
     <ul class="release-list">
       ${releases
         .map((release) => {
@@ -2796,7 +2932,7 @@ function renderReleases() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderTemplateSetup() {
@@ -2987,23 +3123,27 @@ function renderTemplateCriteria(criteria) {
 }
 
 function bindTimelineFilters() {
-  const filters = [
-    elements.timelineTeamFilter,
-    elements.timelineProjectFilter,
-    elements.timelineAgentFilter,
-    elements.timelineTypeFilter,
-    elements.timelineStatusFilter,
-    elements.timelineAttentionFilter,
-  ];
-  filters.forEach((filter) => {
-    filter?.addEventListener("change", () => {
+  document.querySelectorAll("[data-timeline-filter]").forEach((filter) => {
+    filter.addEventListener("change", () => {
+      syncTimelineFilterControls(filter.dataset.timelineFilter, filter.value);
       void loadTimeline();
     });
   });
 }
 
+function syncTimelineFilterControls(filterKey, value) {
+  if (!filterKey) {
+    return;
+  }
+  document.querySelectorAll(`[data-timeline-filter="${filterKey}"]`).forEach((filter) => {
+    if (filter.value !== value) {
+      filter.value = value;
+    }
+  });
+}
+
 async function loadTimeline() {
-  if (!elements.timelineView) {
+  if (!document.querySelector("[data-timeline-view]")) {
     return;
   }
   const requestId = ++timelineRequestId;
@@ -3069,7 +3209,7 @@ function normalizeTimeline(payload) {
 }
 
 function renderTimeline() {
-  if (!elements.timelineView) {
+  if (!document.querySelector("[data-timeline-view]")) {
     return;
   }
 
@@ -3078,20 +3218,25 @@ function renderTimeline() {
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
   }
-  elements.timelineSummary.textContent = summaryParts.join(" · ");
+  document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
+    summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
+  });
 
   if (!entries.length) {
-    elements.timelineView.innerHTML = timelineLoading
-      ? `<p class="timeline-empty">Loading timeline entries.</p>`
-      : `<p class="timeline-empty">No timeline entries match these filters.</p>`;
+    renderIntoActiveTargets(
+      "[data-timeline-view]",
+      timelineLoading
+        ? `<p class="timeline-empty">Loading timeline entries.</p>`
+        : `<p class="timeline-empty">No timeline entries match these filters.</p>`,
+    );
     return;
   }
 
-  elements.timelineView.innerHTML = `
+  renderIntoActiveTargets("[data-timeline-view]", `
     <ul class="timeline-list">
       ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
     </ul>
-  `;
+  `);
 }
 
 function selectedTemplate() {
@@ -3531,12 +3676,12 @@ function describeTimelineStatus(timeline) {
 }
 
 function readTimelineFilters() {
-  const teamId = text(elements.timelineTeamFilter?.value);
-  const projectId = text(elements.timelineProjectFilter?.value);
-  const agentId = text(elements.timelineAgentFilter?.value);
-  const type = text(elements.timelineTypeFilter?.value);
-  const status = text(elements.timelineStatusFilter?.value);
-  const attentionValue = text(elements.timelineAttentionFilter?.value);
+  const teamId = timelineFilterValue("team_id");
+  const projectId = timelineFilterValue("project_id");
+  const agentId = timelineFilterValue("agent_id");
+  const type = timelineFilterValue("type");
+  const status = timelineFilterValue("status");
+  const attentionValue = timelineFilterValue("attention_needed");
   return {
     team_id: teamId || null,
     project_id: projectId || null,
@@ -3546,6 +3691,12 @@ function readTimelineFilters() {
     attention_needed:
       attentionValue === "true" ? true : attentionValue === "false" ? false : null,
   };
+}
+
+function timelineFilterValue(filterKey) {
+  const controls = Array.from(document.querySelectorAll(`[data-timeline-filter="${filterKey}"]`));
+  const activeControl = controls.find(targetIsActive);
+  return text((activeControl || controls[0])?.value);
 }
 
 function refreshSelects({ includeEditForm = false } = {}) {
@@ -3765,6 +3916,114 @@ async function requestContextRotation(button, agentId) {
     setStatus(`Context clearing queued for ${normalizedAgentId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Context clearing request failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function requestAgentStandDown(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const reason = text(window.prompt(`Reason to stand down ${normalizedAgentId}`));
+  if (!reason) {
+    setStatus("Stand-down reason is required.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Standing down agent subtree.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+          reason,
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; stand down again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Stood down ${normalizedAgentId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Stand-down request failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function revokeAgentStandDown(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Revoking stand-down.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/stand-down/revoke`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; revoke again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Revoked stand-down for ${normalizedAgentId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Stand-down revoke failed.", "error");
   } finally {
     if (button.isConnected) {
       button.disabled = false;
@@ -4469,11 +4728,10 @@ function setStatus(message, level) {
 }
 
 function setTimelineStatus(message, level) {
-  if (!elements.timelineStatus) {
-    return;
-  }
-  elements.timelineStatus.textContent = message;
-  elements.timelineStatus.className = `timeline-status ${level || ""}`.trim();
+  document.querySelectorAll("[data-timeline-status]").forEach((status) => {
+    status.textContent = targetIsActive(status) ? message : "";
+    status.className = `timeline-status ${level || ""}`.trim();
+  });
 }
 
 function formatTimelineTimestamp(timestamp) {

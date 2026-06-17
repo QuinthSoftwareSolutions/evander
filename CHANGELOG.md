@@ -5,6 +5,42 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Batched Task Mandates
+
+- Enforced ordinary-agent task mandate checks against batch-local parent tasks
+  so agents cannot create child tasks under newly-created subordinate-owned
+  parents in the same action.
+
+## 2026-06-17 - Team Add-on Focused Workspace Tabs
+
+- Added focused Team Add-on tabs for overview, operations, delivery, people,
+  planning, setup, and timeline workflows while keeping the existing Workspace
+  tab available as the all-in-one view.
+- Reused the existing Workspace renderers and setup forms across the focused
+  tabs so runtime filters, review decisions, edit controls, timeline filters,
+  and setup submissions keep the same behavior.
+
+## 2026-06-17 - Team Add-on Release Promotion Guidance
+
+- Made `git_release_requests` failures for accepted Git deliverables without
+  `git_refs.feature_branch` explain the required review-to-feature promotion
+  step before retrying release publication.
+- Added matching wake-prompt and action-feedback guidance so release operators
+  do not retry canonical release publication from raw agent or review branches.
+
+## 2026-06-17 - Team Add-on Stand-Down And Task Mandates
+
+- Added `create_root_task` role permission and granted it to manager and
+  project-lead roles, while requiring ordinary agents to create child tasks
+  under their own active parent tasks.
+- Added operator stand-down/revoke support for Team agents and subordinate
+  subtrees, with wake leasing skips and apply-time rejection for already-running
+  dispatches that submit Team actions after the hold lands.
+- Added `stand_downs` and `stand_down_revocations` to the Team agent action
+  contract so direct superiors can issue structured holds instead of prose-only
+  status requests.
+- Surfaced stand-down state and controls in the Team Admin UI.
+
 ## 2026-06-17 - Team Add-on Idle Context Wake Loop
 
 - Stopped status-report-only idle context rotations from immediately re-arming
@@ -225,7 +261,7 @@ material. Newer entries are added incrementally as changes land.
 - Routed completed persistent Team sessions only when the completed dispatch id
   matches the active Team runtime lease, preventing ordinary Discord wake
   replies from being recorded as missing `team-action.json` failures.
-=======
+
 ## 2026-06-16 - DIDWW Barge-In Fade
 
 - Added a configurable `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS` setting to the DIDWW SIP bridge

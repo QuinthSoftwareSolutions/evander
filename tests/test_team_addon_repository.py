@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from truman_team_addon.models import (
     AgentRuntime,
+    AgentStandDownSource,
     AgentStatus,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
@@ -17,6 +19,7 @@ from truman_team_addon.models import (
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
+    RolePermission,
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
@@ -207,7 +210,7 @@ def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
         )
     assert "feedback_delivered_at" in columns
     assert "feedback_delivered_by_dispatch_id" in columns
-    assert metadata["sqlite_schema_version"] == "2"
+    assert metadata["sqlite_schema_version"] == "3"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
@@ -275,6 +278,9 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     )
     assert state.revision == 1
     assert state.agents["manager"].display_name == "Team Manager"
+    assert state.roles["team__manager"].permissions == [
+        RolePermission.CREATE_ROOT_TASK
+    ]
 
     state = repo.create_project(
         project_id="project",
@@ -288,6 +294,9 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     )
     assert state.revision == 2
     assert state.agents["lead"].display_name == "Project Lead"
+    assert state.roles["project__project-lead"].permissions == [
+        RolePermission.CREATE_ROOT_TASK
+    ]
 
     repo.create_role(
         role_id="project__backend",
@@ -906,6 +915,152 @@ def test_apply_agent_action_manager_can_assign_project_leads(tmp_path: Path) -> 
     assert state.tasks["task-lead"].created_by_agent_id == "manager"
 
 
+def test_apply_agent_action_rejects_root_task_without_permission(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "task-root",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Unmandated root",
+                    "description": "Backend cannot open a top-level task.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("create_root_task" in error for error in result["errors"])
+    assert "task-root" not in state.tasks
+
+
+def test_operator_stand_down_blocks_subtree_wakes_and_active_dispatch_actions(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task", owner_agent_id="backend")
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+
+    state = repo.stand_down_agent(
+        agent_id="lead",
+        reason="Pause project work.",
+        set_by="operator:test",
+    )
+    assert state.stand_downs
+    assert state.stand_downs[next(iter(state.stand_downs))].agent_id == "lead"
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "dispatch_id": dispatch_id,
+            "task_updates": [{"task_id": "backend-task", "state": "in_progress"}],
+        },
+        dispatch_id=dispatch_id,
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert any("stood down" in error for error in result["errors"])
+    assert state.tasks["backend-task"].state == TeamTaskState.PENDING
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+
+    _state, leases = repo.lease_due_agents(
+        now=datetime(2026, 1, 1, minute=5, tzinfo=UTC),
+    )
+    assert "backend" not in [lease["agent"]["id"] for lease in leases]
+
+    state = repo.revoke_operator_stand_downs(
+        agent_id="lead",
+        revoked_by="operator:test",
+    )
+    assert all(stand_down.cleared_at is not None for stand_down in state.stand_downs.values())
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, minute=10, tzinfo=UTC),
+    )
+    assert len(leases) == 1
+
+
+def test_superior_action_stand_downs_and_revokes_direct_subordinate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "stand_downs": [
+                {"agent_id": "backend", "reason": "Await revised project plan."}
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert len(result["created_stand_down_ids"]) == 1
+    stand_down_id = result["created_stand_down_ids"][0]
+    assert state.stand_downs[stand_down_id].source == AgentStandDownSource.SUPERIOR
+    assert state.stand_downs[stand_down_id].set_by == "lead"
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert leases == []
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "stand_down_revocations": [{"agent_id": "backend"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["revoked_stand_down_ids"] == [stand_down_id]
+    assert state.stand_downs[stand_down_id].cleared_by == "lead"
+
+    _state, leases = repo.lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, minute=5, tzinfo=UTC),
+    )
+    assert len(leases) == 1
+
+
+def test_superior_action_cannot_revoke_operator_stand_down(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state = repo.stand_down_agent(
+        agent_id="backend",
+        reason="Operator hold.",
+        set_by="operator:test",
+    )
+    operator_stand_down_id = next(iter(state.stand_downs))
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "stand_down_revocations": [{"agent_id": "backend"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["revoked_stand_down_ids"] == []
+    assert state.stand_downs[operator_stand_down_id].cleared_at is None
+    assert any("no active superior stand-down" in error for error in result["errors"])
+
+
 def test_apply_agent_action_item_errors_do_not_abort_valid_task_creation(
     tmp_path: Path,
 ) -> None:
@@ -1156,6 +1311,7 @@ def test_apply_agent_action_manager_question_redirected_to_escalations(tmp_path:
 
 def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="parent", owner_agent_id="backend")
 
     repo.apply_agent_action(action={"agent_id": "backend"}, valid=False, error="boom")
     assert repo.read().agent_runtimes["backend"].no_progress_count == 1
@@ -1170,6 +1326,7 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
                     "priority": 1,
                     "title": "Self serve",
                     "description": "Backend assigns itself follow-up work.",
+                    "parent_task_id": "parent",
                 }
             ],
         },
@@ -2556,6 +2713,33 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert state.git_promotions == {}
 
 
+def test_apply_agent_action_git_release_request_requires_feature_promoted_git_deliverable(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.release_packages == {}
+    assert any("git_feature_updates" in error for error in result["errors"])
+    assert any("git_refs.feature_branch" in error for error in result["errors"])
+
+
 def test_apply_agent_action_git_release_request_allows_project_release_operator(
     tmp_path: Path,
 ) -> None:
@@ -2666,6 +2850,47 @@ def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path)
     assert state.child_task_ids("parent") == ["child"]
 
 
+def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-parent", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "worker-parent",
+                    "owner_agent_id": "worker",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Worker parent",
+                    "description": "Subordinate-owned parent task.",
+                    "parent_task_id": "backend-parent",
+                },
+                {
+                    "id": "worker-child",
+                    "owner_agent_id": "worker",
+                    "project_id": "project",
+                    "priority": 2,
+                    "title": "Worker child",
+                    "description": "Must not bypass mandate through batch-local parent.",
+                    "parent_task_id": "worker-parent",
+                },
+            ],
+        },
+    )
+
+    assert result["created_task_ids"] == ["worker-parent"]
+    assert any(
+        "can only create child tasks under its own active tasks" in error
+        for error in result["errors"]
+    )
+    assert "worker-parent" in state.tasks
+    assert "worker-child" not in state.tasks
+
+
 def test_apply_agent_action_task_creation_rejects_missing_parent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
@@ -2696,6 +2921,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="parent", owner_agent_id="backend")
     repo.create_project(
         project_id="project-2",
         team_id="team",
@@ -2725,6 +2951,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
                     "priority": 1,
                     "title": "Child",
                     "description": "Depends across projects.",
+                    "parent_task_id": "parent",
                     "dependency_task_ids": ["other"],
                 }
             ],
@@ -2741,6 +2968,7 @@ def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="parent", owner_agent_id="backend")
 
     state, result = repo.apply_agent_action(
         action={
@@ -2753,6 +2981,7 @@ def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
                     "priority": 1,
                     "title": "A",
                     "description": "First task.",
+                    "parent_task_id": "parent",
                     "dependency_task_ids": ["b"],
                 },
                 {
@@ -2762,6 +2991,7 @@ def test_apply_agent_action_task_creation_batch_rejects_sibling_cycle(
                     "priority": 2,
                     "title": "B",
                     "description": "Second task.",
+                    "parent_task_id": "parent",
                     "dependency_task_ids": ["a"],
                 },
             ],

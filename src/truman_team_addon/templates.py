@@ -246,6 +246,7 @@ _AUTO_DEV_SQUAD_TEMPLATE = {
             "key": "manager",
             "label": "Manager",
             "description": "Owns operator communication and overall coordination.",
+            "permissions": ["create_root_task"],
             "ephemeral_policy": {"max_concurrent": 0},
         },
         {
@@ -253,6 +254,7 @@ _AUTO_DEV_SQUAD_TEMPLATE = {
             "label": "Project Lead",
             "description": "Owns the project plan and task routing.",
             "reports_to_role_key": "manager",
+            "permissions": ["create_root_task"],
             "ephemeral_policy": {"max_concurrent": 1},
         },
         {

@@ -11,14 +11,20 @@ const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/truman_team_addon/ui_static", import.meta.url)),
 );
 
-test("team add-on static UI exposes context clearing controls", async () => {
+test("team add-on static UI exposes runtime control hooks", async () => {
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
 
   assert.match(script, /auto_context_clearing_enabled/);
   assert.match(script, /data-context-rotation-agent-id/);
   assert.match(script, /context-rotation/);
+  assert.match(script, /data-stand-down-agent-id/);
+  assert.match(script, /data-stand-down-revoke-agent-id/);
+  assert.match(script, /stand-down/);
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
+  assert.match(script, /data-summary-grid/);
+  assert.match(script, /data-review-delivery-view/);
+  assert.match(script, /data-timeline-filter/);
   assert.match(script, /agentAwakeState/);
 });
 
@@ -28,7 +34,7 @@ function emptyState() {
     teams: {},
     projects: {},
     roles: {},
-    available_role_permissions: ["request_release"],
+    available_role_permissions: ["create_root_task", "request_release"],
     agents: {},
     agent_runtimes: {},
     tasks: {},
@@ -40,6 +46,7 @@ function emptyState() {
     release_packages: {},
     ephemeral_assignments: {},
     git_promotions: {},
+    stand_downs: {},
   };
 }
 
@@ -105,6 +112,7 @@ function autoDevSquadTemplate() {
         label: "Manager",
         description: "Owns operator communication and overall coordination.",
         reports_to_role_key: null,
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
       },
       {
@@ -112,6 +120,7 @@ function autoDevSquadTemplate() {
         label: "Project Lead",
         description: "Owns the project plan and task routing.",
         reports_to_role_key: "manager",
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 1 },
       },
       {
@@ -133,6 +142,7 @@ function autoDevSquadTemplate() {
         label: "Release Operator",
         description: "Handles release handoff and publication.",
         reports_to_role_key: "project_lead",
+        permissions: ["request_release"],
         ephemeral_policy: { max_concurrent: 1 },
       },
     ],
@@ -1109,7 +1119,7 @@ function applyTemplateMaterialization(state, payload, template) {
       roleKey: role.key,
       name: role.label,
       description: role.description,
-      permissions: role.key === "release_operator" ? ["request_release"] : [],
+      permissions: role.permissions || [],
       ephemeralPolicy: role.ephemeral_policy,
     });
   }
@@ -1980,7 +1990,7 @@ function seededGitState() {
         project_id: null,
         name: "Manager",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
         archived: false,
       },
@@ -1990,7 +2000,7 @@ function seededGitState() {
         project_id: "alpha-project",
         name: "Project Lead",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
         archived: false,
       },
@@ -2000,7 +2010,7 @@ function seededGitState() {
         project_id: null,
         name: "Manager",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
         archived: false,
       },
@@ -2010,7 +2020,7 @@ function seededGitState() {
         project_id: "beta-project",
         name: "Project Lead",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
         archived: false,
       },
@@ -2448,7 +2458,7 @@ function seededOrgChartState() {
         project_id: null,
         name: "Manager",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 2 },
         archived: false,
       },
@@ -2458,7 +2468,7 @@ function seededOrgChartState() {
         project_id: "project",
         name: "Project Lead",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 1 },
         archived: false,
       },
@@ -2648,7 +2658,7 @@ function seededMalformedHierarchyState() {
         project_id: null,
         name: "Manager",
         description: "",
-        permissions: [],
+        permissions: ["create_root_task"],
         ephemeral_policy: { max_concurrent: 0 },
         archived: false,
       },
@@ -2690,6 +2700,94 @@ function seededMalformedHierarchyState() {
   };
 }
 
+test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
+
+  for (const tabName of [
+    "Workspace",
+    "Overview",
+    "Operations",
+    "Delivery",
+    "People",
+    "Planning",
+    "Setup",
+    "Timeline",
+    "Org chart",
+  ]) {
+    await page.getByRole("tab", { name: tabName }).waitFor({ state: "visible" });
+  }
+
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await page.locator("#team-overview-page").waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".metric").count(), 7);
+  await page.locator("#team-overview-page").getByText("Pending reviews").waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Operations" }).click();
+  await page.locator("#team-operations-page").waitFor({ state: "visible" });
+  await page.locator("#team-operations-page").getByRole("button", { name: "Needs attention" }).click();
+  await page.locator("#team-operations-page").getByText("Showing Needs attention.").waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator("#team-delivery-page").getByRole("heading", { name: "Alpha Team (team-alpha)" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator(".delivery-row").count(), 5);
+  assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
+  await page.locator("#team-delivery-page .review-profiles-view .record-item").first().waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-delivery-page .releases-view .record-item").first().waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "People" }).click();
+  await page.locator("#team-people-page").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".agent-item").count(), 4);
+  assert.equal(await page.locator(".hierarchy-team").count(), 2);
+  await page.locator("#team-people-page").getByText("Project Lead").first().waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Planning" }).click();
+  await page.locator("#team-planning-page").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".project-block").count(), 2);
+  await page.locator("#team-planning-page").getByText("Git: host /srv/git/alpha-project").waitFor({
+    state: "visible",
+  });
+  await page.locator("#team-planning-page").getByText("Draft pending delivery").waitFor({
+    state: "visible",
+  });
+
+  await page.getByRole("tab", { name: "Setup" }).click();
+  await page.locator("#team-setup-page #setup-template-form").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-workspace-page #setup-template-form").count(), 0);
+
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await page.locator("#team-timeline-page").waitFor({ state: "visible" });
+  await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
+  assert.ok((await page.locator(".timeline-entry").count()) >= 10);
+  await page.locator("#focused-timeline-type-filter").selectOption("review");
+  await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
+  assert.equal(await page.locator("#timeline-type-filter").inputValue(), "review");
+
+  await page.getByRole("tab", { name: "Workspace" }).click();
+  await page.locator("#team-workspace-page").waitFor({ state: "visible" });
+  await page.locator("#team-workspace-page #setup-template-form").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-setup-page #setup-template-form").count(), 0);
+  await page.locator("#review-delivery-view .delivery-row").first().waitFor({ state: "visible" });
+});
+
 test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
   const { port, requests, state, timelineRequests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
@@ -2698,6 +2796,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
 
   await page.getByText("Loaded revision 4.").waitFor({ state: "visible" });
   await page
+    .getByLabel("Workspace", { exact: true })
     .getByText("Derived from the current TeamState snapshot, not a persisted audit log.")
     .waitFor({ state: "visible" });
   await page.getByText("Timestamp unavailable").first().waitFor({ state: "visible" });
