@@ -2719,6 +2719,8 @@ def _maybe_mark_idle_context_rotation_due(
     runtime = state.agent_runtimes.setdefault(agent.id, AgentRuntime(agent_id=agent.id))
     if not runtime.auto_context_clearing_enabled or runtime.context_rotation_pending:
         return
+    if not _has_activity_since_last_context_rotation(state, agent=agent, runtime=runtime):
+        return
     if not _is_agent_truly_idle(state, agent=agent, runtime=runtime, now=now):
         return
     _mark_context_rotation_pending(
@@ -2730,6 +2732,45 @@ def _maybe_mark_idle_context_rotation_due(
         requested_at=now,
         request_note=None,
     )
+
+
+def _has_activity_since_last_context_rotation(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+) -> bool:
+    rotated_at = runtime.last_context_rotated_at
+    if rotated_at is None:
+        return True
+    rotated_at = _ensure_utc(rotated_at)
+    if runtime.last_progress_at is not None and _ensure_utc(runtime.last_progress_at) > rotated_at:
+        return True
+
+    def _newer_than_rotation(value: datetime | None) -> bool:
+        return value is not None and _ensure_utc(value) > rotated_at
+
+    for task in state.tasks.values():
+        if task.owner_agent_id != agent.id:
+            continue
+        if _newer_than_rotation(task.created_at) or _newer_than_rotation(task.updated_at):
+            return True
+    for item in state.inbox.values():
+        if item.recipient_agent_id != agent.id:
+            continue
+        if _newer_than_rotation(item.created_at) or _newer_than_rotation(item.updated_at):
+            return True
+    for review in state.review_requests.values():
+        if review.reviewer_agent_id != agent.id:
+            continue
+        if _newer_than_rotation(review.created_at) or _newer_than_rotation(review.decision_at):
+            return True
+    for assignment in state.ephemeral_assignments.values():
+        if assignment.parent_agent_id != agent.id:
+            continue
+        if _newer_than_rotation(assignment.created_at) or _newer_than_rotation(assignment.updated_at):
+            return True
+    return False
 
 
 def _is_agent_truly_idle(

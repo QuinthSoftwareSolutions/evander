@@ -30,6 +30,8 @@ material. Newer entries are added incrementally as changes land.
 - Added manual context-clearing requests that generate a Team-state handoff and
   rotate the agent onto a fresh thread on its next wake without interrupting an
   active dispatch.
+- Prevented idle auto-clearing from immediately re-arming after a fresh context
+  produces no progress and no new work has arrived.
 
 ## 2026-06-16 - Team Add-on Release Operator Authorization
 

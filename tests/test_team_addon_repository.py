@@ -1166,6 +1166,67 @@ def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
     assert "Active tasks: none." in runtime.last_handoff_summary
 
 
+def test_auto_context_rotation_waits_for_activity_after_fresh_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_or_reprioritize_task(
+        task_id="finish-me",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Finish me",
+        description="Work that will make the agent non-idle.",
+        created_by_agent_id="lead",
+    )
+    repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+    repo.update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
+    _state, leases = repo.lease_due_agents(agent_id="backend")
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    repo.record_context_rotation_dispatch_started(
+        agent_id="backend",
+        dispatch_id=dispatch_id,
+        thread_id="fresh-thread",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={"agent_id": "backend"},
+        dispatch_id=dispatch_id,
+    )
+
+    assert result["success"] is True
+    assert result["applied"] is False
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_context_rotated_at is not None
+    assert runtime.no_progress_count == 1
+
+    state = repo.create_or_reprioritize_task(
+        task_id="post-rotation-work",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Post-rotation work",
+        description="New work should allow a later idle rotation.",
+        created_by_agent_id="lead",
+    )
+    assert state.agent_runtimes["backend"].context_rotation_pending is False
+
+    state = repo.update_task(
+        task_id="post-rotation-work",
+        state=TeamTaskState.ACCEPTED,
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "idle"
+
+
 def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
     tmp_path: Path,
 ) -> None:
