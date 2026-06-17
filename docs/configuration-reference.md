@@ -495,7 +495,7 @@ Type-specific keys:
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
-| `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
+| `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `source_paths`, `vm_user`, `outputs` |
 | `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
 | `effect:artifact-space:create` | `path` | `display_name`, `metadata`, `grants`, `subject`, `expected_revision`, `outputs` |
 | `effect:artifact-space:publish-version` | `space_path`, `artifact_id`, `artifact_key` | `subject`, `metadata`, `expected_revision`, `require_existing_artifact`, `outputs` |
@@ -660,9 +660,10 @@ set, is relative to `/artifacts` and cannot contain dot or parent segments.
 Agents can perform the same session-artifact staging directly through the
 policy-gated `stage_artifact` MCP tool; it does not publish an immutable archive
 or create a communication artifact id.
-`effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder
-as a `tar.gz` archive and stores it in the host durable artifact store under an
-immutable caller-provided `key`. Reusing a key fails.
+`effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder,
+or only the relative files/directories listed in `source_paths`, as a `tar.gz`
+archive and stores it in the host durable artifact store under an immutable
+caller-provided `key`. Reusing a key fails.
 `effect:artifact:import-published` reads an immutable published artifact by
 `key`, copies its archive into the selected session, and extracts it under that
 session's `/artifacts` folder. `destination_path`, when set, is a relative

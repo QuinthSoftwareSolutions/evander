@@ -1685,6 +1685,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "key",
+        "source_paths",
         "vm_user",
     ]
     artifact_import = next(

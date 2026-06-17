@@ -5,6 +5,19 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Artifact Handoffs
+
+- Added scoped artifact publishing for Team deliverables: agents can list
+  `/artifacts`-relative `artifact_paths`, which are published into the
+  control-plane artifact store and indexed through artifact spaces.
+- Kept Team state refs-only by recording stable `artifact-space:` refs on
+  deliverables and surfacing those refs in deliverable/review inbox payloads.
+- Persisted Team action failures when deliverable artifact publication fails
+  before applying the action, instead of returning only a transient effect
+  error after consuming the dispatch.
+- Encoded unsafe Team, project, deliverable, and dispatch IDs in Team artifact
+  space paths so otherwise valid identifiers with spaces still publish.
+
 ## 2026-06-17 - Team Add-on Focused Org Chart
 
 - Added a top-level Team Add-on tab for a focused org-chart view that keeps the

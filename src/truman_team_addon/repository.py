@@ -2122,7 +2122,11 @@ class TeamStateRepository:
                             sender_agent_id=agent.id,
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
-                            payload={"deliverable_id": deliverable.id, "summary": deliverable.summary},
+                            payload={
+                                "deliverable_id": deliverable.id,
+                                "summary": deliverable.summary,
+                                "artifact_refs": list(deliverable.artifact_refs),
+                            },
                         )
                         result["created_inbox_item_ids"].append(inbox_id)
                     progress = True
@@ -3571,6 +3575,7 @@ def _apply_review_request(
         "review_request_id": review.id,
         "deliverable_id": deliverable_id,
         "instructions": instructions or "",
+        "artifact_refs": list(deliverable.artifact_refs),
     }
     if profile is not None:
         payload["review_profile"] = {

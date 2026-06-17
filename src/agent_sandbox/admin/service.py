@@ -3605,6 +3605,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Immutable key for the published tar.gz archive.",
                 placeholder="runs/${{trigger.event_id}}",
             ),
+            _field(
+                "source_paths",
+                "Source paths",
+                "string_list",
+                bindable=True,
+                description=(
+                    "Optional relative paths under /artifacts to publish. "
+                    "Leave empty to publish the full artifacts folder."
+                ),
+            ),
             _field("vm_user", "VM user", "string", bindable=True),
         ],
     ),

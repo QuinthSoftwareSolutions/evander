@@ -350,6 +350,18 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   `team_create_operator_directive` MCP tool. These are not agent-authored action
   items. The manager handles them during its normal Team dispatch by taking the
   requested Team actions and listing the inbox id in `handled_inbox_item_ids`.
+- `deliverables[]` — record finished work for an owned task. Shape:
+  `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
+  "artifact_space_ref"?, "git_refs"?}`. `artifact_paths` are relative paths
+  under the session `/artifacts` folder; when present, the Team runtime publishes
+  only those files or directories into the control-plane artifact store, records
+  the latest version under
+  `/teams/<team_id>/projects/<project_id>/deliverables/<deliverable_id>`, and
+  appends the resulting `artifact-space:` ref to `artifact_refs`. Failed artifact
+  publication rejects that deliverable item without creating a ref-less
+  deliverable. Deliverable notices and review-request inbox items include the
+  final `artifact_refs` so leads and reviewers can import the referenced
+  published archive when needed.
 - `review_requests[]` — request a review of a deliverable; reviews are never
   auto-assigned. Shape: `{"id"?, "deliverable_id", "reviewer_agent_id",
   "review_profile_id"?, "instructions"?}`. The actor must be the deliverable's
@@ -526,7 +538,11 @@ aborting and failing on conflict — never auto-resolving). The core
 never leave the project's `host_repo_path`. The **only** branch pushed to the
 canonical remote is the release branch, and only on the `canonical_push` route via
 `effect:git:push-branch`. Deliverables that ship non-Git artifacts remain fully
-supported through `artifact_refs` and require no push at all.
+supported through `artifact_refs` and require no push at all. For Team-authored
+deliverables, `artifact_paths` publish to immutable keys shaped as
+`team/<team_id>/<project_id>/<deliverable_id>/<dispatch_id>/bundle` and are
+indexed through artifact spaces; Team state stores only the resulting stable
+refs.
 
 ### Bundled Team Add-on Enablement
 

@@ -2478,6 +2478,9 @@ deliverables into that folder without changing directories.
 Use `effect:artifact:stage` to copy a file or directory from `/home/agent` into
 that folder, then `effect:artifact:publish-artifacts` to publish the full folder
 as an immutable keyed `tar.gz` archive under `runtime/published-artifacts/`.
+Set `source_paths` to publish only specific relative files or directories under
+`/artifacts`; unsafe paths, symlinks, and paths outside the artifacts root are
+rejected.
 Use `effect:artifact:import-published` to extract a previously published archive
 back into a selected session's `/artifacts` folder; imports fail on existing
 files unless `overwrite` is set.

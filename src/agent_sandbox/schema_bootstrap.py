@@ -1083,6 +1083,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "mime_type": {"type": "string"},
         "byte_count": {"type": "integer"},
         "sha256": {"type": "string"},
+        "source_paths": {"type": "array", "items": {"type": "string"}},
         "source_file_count": {"type": "integer"},
         "source_byte_count": {"type": "integer"},
         "download_url": {"type": "string"},

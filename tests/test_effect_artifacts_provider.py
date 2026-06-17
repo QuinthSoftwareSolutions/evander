@@ -17,6 +17,7 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
     _IMPORT_SCRIPT,
+    _PUBLISH_SCRIPT,
 )
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.provider_models import (
@@ -42,6 +43,14 @@ def _context(tmp_path: Path) -> EffectRuntimeContext:
 
 def _stdout_payload(payload: dict[str, object]) -> str:
     return f"{_BEGIN}\n{json.dumps(payload)}\n{_END}\n"
+
+
+def _script_payload(stdout: str) -> dict[str, object]:
+    start = stdout.find(_BEGIN)
+    end = stdout.find(_END)
+    assert start >= 0
+    assert end > start
+    return json.loads(stdout[start + len(_BEGIN) : end].strip())
 
 
 def test_artifact_stage_effect_returns_staged_path(
@@ -143,6 +152,106 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
     with pytest.raises(ValueError, match="already exists"):
         provider.execute()
     assert calls == 1
+
+
+def test_artifact_publish_effect_accepts_source_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "payload.tar.gz"
+    source = tmp_path / "report.txt"
+    source.write_text("report\n", encoding="utf-8")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname="reports/report.txt")
+    archive_content = archive.read_bytes()
+    commands: list[str] = []
+
+    def fake_execute(self: AgentExecEffectProvider, *, resolved_config=None):
+        del resolved_config
+        effect = self.effect_definition
+        commands.append(str(effect.command))  # type: ignore[attr-defined]
+        return {
+            "success": True,
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "stdout": _stdout_payload(
+                {
+                    "success": True,
+                    "archive_format": "tar.gz",
+                    "artifacts_root": "/artifacts",
+                    "source_paths": ["reports/report.txt"],
+                    "source_file_count": 1,
+                    "source_byte_count": len("report\n"),
+                    "content_base64": base64.b64encode(archive_content).decode("ascii"),
+                }
+            ),
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_execute)
+    provider = ArtifactPublishArtifactsEffectProvider()
+    provider.initialize(
+        ArtifactPublishArtifactsEffectDefinition(
+            id="artifact-publish-1",
+            display_name="Publish",
+            type="effect:artifact:publish-artifacts",
+            session_id="session-1",
+            key="runs/session-1/report",
+            source_paths=["reports/report.txt"],
+        ),
+        _context(tmp_path),
+    )
+
+    result = provider.execute()
+
+    assert result["source_paths"] == ["reports/report.txt"]
+    assert "\"reports/report.txt\"" in commands[0]
+    stored = PublishedArtifactStore(tmp_path).get("runs/session-1/report")
+    assert stored.metadata.metadata["source_paths"] == ["reports/report.txt"]
+
+
+def test_artifact_publish_script_publishes_only_selected_paths(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    (artifacts / "reports").mkdir(parents=True)
+    (artifacts / "reports" / "report.txt").write_text("report\n", encoding="utf-8")
+    (artifacts / "logs").mkdir()
+    (artifacts / "logs" / "debug.txt").write_text("debug\n", encoding="utf-8")
+    (artifacts / "team-action.json").write_text("{}", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-", json.dumps(["reports/report.txt"])],
+        input=_PUBLISH_SCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = _script_payload(result.stdout)
+    assert payload["source_paths"] == ["reports/report.txt"]
+    archive_content = base64.b64decode(str(payload["content_base64"]))
+    archive_path = tmp_path / "selected.tar.gz"
+    archive_path.write_bytes(archive_content)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+    assert names == {"reports/report.txt"}
+
+
+def test_artifact_publish_script_rejects_unsafe_source_paths(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "report.txt").write_text("report\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-", json.dumps(["../report.txt"])],
+        input=_PUBLISH_SCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts)},
+    )
+
+    assert result.returncode == 2
+    assert "source_paths entries must be relative" in result.stderr
 
 
 def test_artifact_import_published_copies_archive_and_extracts_into_session(
