@@ -31,6 +31,17 @@ let costsRequestId = 0;
 let showArchived = false;
 let activeTeamView = "workspace";
 
+const teamViewIds = new Set([
+  "workspace",
+  "overview",
+  "operations",
+  "delivery",
+  "people",
+  "planning",
+  "setup",
+  "timeline",
+  "org",
+]);
 const runtimeFilterChoices = [
   ["all", "All"],
   ["needs_attention", "Needs attention"],
@@ -83,6 +94,9 @@ const elements = {
   teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
   orgFocusSummary: document.querySelector("#org-focus-summary"),
   orgFocusView: document.querySelector("#org-focus-view"),
+  setupFormsPanel: document.querySelector("#setup-forms-panel"),
+  workspaceSetupAnchor: document.querySelector("#workspace-setup-anchor"),
+  focusedSetupMount: document.querySelector("#focused-setup-mount"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -369,9 +383,8 @@ function bindTopLevelTabs() {
 }
 
 function setTeamView(view) {
-  activeTeamView = view === "org" ? "org" : "workspace";
-  renderFocusedOrgChartIfActive();
-  updateTeamViewTabs();
+  activeTeamView = teamViewIds.has(view) ? view : "workspace";
+  render();
 }
 
 function updateTeamViewTabs() {
@@ -385,6 +398,41 @@ function updateTeamViewTabs() {
     const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
     panel.hidden = !active;
   });
+}
+
+function panelForTarget(target) {
+  return target?.closest?.("[data-team-view-panel]") || null;
+}
+
+function targetIsActive(target) {
+  const panel = panelForTarget(target);
+  return !panel || !panel.hidden;
+}
+
+function renderIntoActiveTargets(selector, html) {
+  const targets = Array.from(document.querySelectorAll(selector));
+  targets.forEach((target) => {
+    if (targetIsActive(target)) {
+      target.innerHTML = html;
+    } else {
+      target.innerHTML = "";
+    }
+  });
+  return targets.filter(targetIsActive).length;
+}
+
+function placeSetupFormsPanel() {
+  const panel = elements.setupFormsPanel;
+  if (!panel) {
+    return;
+  }
+  if (activeTeamView === "setup" && elements.focusedSetupMount) {
+    elements.focusedSetupMount.appendChild(panel);
+    return;
+  }
+  if (elements.workspaceSetupAnchor && elements.workspaceSetupAnchor.parentNode) {
+    elements.workspaceSetupAnchor.after(panel);
+  }
 }
 
 function bindForms() {
@@ -848,6 +896,8 @@ function normalizeCosts(payload) {
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   updateArchivedVisibilityToggle();
+  updateTeamViewTabs();
+  placeSetupFormsPanel();
   renderSummary();
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
@@ -863,6 +913,7 @@ function render() {
   renderTimeline();
   decorateFieldTooltips(document);
   updateTeamViewTabs();
+  placeSetupFormsPanel();
 }
 
 function renderFocusedOrgChartIfActive() {
@@ -899,7 +950,7 @@ function updateDeliveryFilterButtons() {
 }
 
 function renderReviewDeliveryWorkspace() {
-  if (!elements.reviewDeliveryView) {
+  if (!document.querySelector("[data-review-delivery-view]")) {
     return;
   }
   updateDeliveryFilterButtons();
@@ -910,11 +961,11 @@ function renderReviewDeliveryWorkspace() {
       : workspaceRows.filter((row) => row.effectiveStatus === selectedDeliveryFilter);
 
   if (!visibleRows.length) {
-    elements.reviewDeliveryView.innerHTML = `
+    renderIntoActiveTargets("[data-review-delivery-view]", `
       <p class="empty-state">
         No deliverables match the ${escapeHtml(deliveryStatusLabels[selectedDeliveryFilter] || selectedDeliveryFilter)} filter.
       </p>
-    `;
+    `);
     bindWorkspaceReviewDecisionForms();
     return;
   }
@@ -923,9 +974,10 @@ function renderReviewDeliveryWorkspace() {
   const bucketStatuses =
     selectedDeliveryFilter === "all" ? deliveryStatusOrder : [selectedDeliveryFilter];
 
-  elements.reviewDeliveryView.innerHTML = teamGroups
-    .map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses))
-    .join("");
+  renderIntoActiveTargets(
+    "[data-review-delivery-view]",
+    teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join(""),
+  );
   bindWorkspaceReviewDecisionForms();
 }
 
@@ -952,7 +1004,7 @@ function renderSummary() {
     ["Ephemeral", ephemeral.filter((assignment) => assignment.state !== "cleaned_up").length],
   ];
 
-  elements.summaryGrid.innerHTML = metrics
+  const html = metrics
     .map(([label, value]) => {
       return `<div class="metric"><strong>${value}</strong><span>${escapeHtml(label)}</span></div>`;
     })
@@ -964,6 +1016,7 @@ function renderSummary() {
           ? `<p class="empty-state summary-empty-state">No active team.</p>`
       : "",
     );
+  renderIntoActiveTargets("[data-summary-grid]", html);
 }
 
 function renderTeamCostCounter(teamId) {
@@ -1362,7 +1415,7 @@ function bindRuntimeFilters() {
 }
 
 function renderRuntimeOperations() {
-  if (!elements.runtimeOperationsView) {
+  if (!document.querySelector("[data-runtime-operations-view]")) {
     return;
   }
 
@@ -1443,7 +1496,7 @@ function renderRuntimeOperations() {
     );
   }
 
-  elements.runtimeOperationsView.innerHTML = `
+  renderIntoActiveTargets("[data-runtime-operations-view]", `
     <div class="runtime-filter-summary">Showing ${escapeHtml(runtimeFilterLabel(runtimeFilter))}.</div>
     ${sections.join("")}
     ${
@@ -1451,7 +1504,7 @@ function renderRuntimeOperations() {
         ? `<div class="meta-line runtime-generated-at">Runtime generated ${escapeHtml(runtime.generated_at)}</div>`
         : ""
     }
-  `;
+  `);
 }
 
 function renderRuntimeSection({ title, count, emptyMessage, body }) {
@@ -1562,18 +1615,20 @@ function renderHierarchy() {
   const teams = values(state.teams);
   const visibleTeams = teams.filter(isVisibleTeam);
   if (!teams.length) {
-    elements.hierarchyView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+    renderIntoActiveTargets("[data-hierarchy-view]", `<p class="empty-state">No teams registered.</p>`);
     return;
   }
   if (!visibleTeams.length) {
-    elements.hierarchyView.innerHTML = `<p class="empty-state">No active team.</p>`;
+    renderIntoActiveTargets("[data-hierarchy-view]", `<p class="empty-state">No active team.</p>`);
     return;
   }
 
-  elements.hierarchyView.innerHTML = visibleTeams
-    .map((team) => {
-      const hierarchy = teamHierarchyGraph(team);
-      return `
+  renderIntoActiveTargets(
+    "[data-hierarchy-view]",
+    visibleTeams
+      .map((team) => {
+        const hierarchy = teamHierarchyGraph(team);
+        return `
         <article class="hierarchy-team">
             <div class="hierarchy-team-header">
               <div>
@@ -1603,8 +1658,9 @@ function renderHierarchy() {
           </div>
         </article>
       `;
-    })
-    .join("");
+      })
+      .join(""),
+  );
 }
 
 function renderHierarchyForest(nodes, options = {}) {
@@ -1701,14 +1757,14 @@ function renderAgents() {
   const allAgents = values(state.agents).sort(byId);
   const agents = allAgents.filter(isVisibleAgent);
   if (!allAgents.length) {
-    elements.agentsView.innerHTML = `<p class="empty-state">No agents registered.</p>`;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
     return;
   }
   if (!agents.length) {
-    elements.agentsView.innerHTML = `<p class="empty-state">No visible agents.</p>`;
+    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
     return;
   }
-  elements.agentsView.innerHTML = `
+  renderIntoActiveTargets("[data-agents-view]", `
     <ul class="agent-list">
       ${agents
         .map((agent) => {
@@ -1732,7 +1788,7 @@ function renderAgents() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderAgentOpenTasks(openTasks) {
@@ -1752,20 +1808,20 @@ function renderAgentOpenTasks(openTasks) {
 }
 
 function renderRoles() {
-  if (!elements.rolesView) {
+  if (!document.querySelector("[data-roles-view]")) {
     return;
   }
   const allRoles = values(state.roles).sort(byId);
   const roles = allRoles.filter(isVisibleRole);
   if (!allRoles.length) {
-    elements.rolesView.innerHTML = `<p class="empty-state">No roles registered.</p>`;
+    renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No roles registered.</p>`);
     return;
   }
   if (!roles.length) {
-    elements.rolesView.innerHTML = `<p class="empty-state">No visible roles.</p>`;
+    renderIntoActiveTargets("[data-roles-view]", `<p class="empty-state">No visible roles.</p>`);
     return;
   }
-  elements.rolesView.innerHTML = `
+  renderIntoActiveTargets("[data-roles-view]", `
     <ul class="review-list">
       ${roles
         .map((role) => {
@@ -1790,7 +1846,7 @@ function renderRoles() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function pendingInboxForAgent(agentId) {
@@ -2379,24 +2435,26 @@ function renderProjects() {
   const allProjects = values(state.projects).sort(byId);
   const projects = allProjects.filter(isVisibleProject);
   if (!allProjects.length) {
-    elements.projectsView.innerHTML = `<p class="empty-state">No projects registered.</p>`;
+    renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No projects registered.</p>`);
     return;
   }
   if (!projects.length) {
-    elements.projectsView.innerHTML = `<p class="empty-state">No visible projects.</p>`;
+    renderIntoActiveTargets("[data-projects-view]", `<p class="empty-state">No visible projects.</p>`);
     return;
   }
 
-  elements.projectsView.innerHTML = projects
-    .map((project) => {
-      const projectTasks = values(state.tasks)
-        .filter((task) => task.project_id === project.id)
-        .sort(byPriority);
-      const projectDeliverables = values(state.deliverables).filter((deliverable) => {
-        const task = state.tasks[deliverable.task_id];
-        return task?.project_id === project.id;
-      });
-      return `
+  renderIntoActiveTargets(
+    "[data-projects-view]",
+    projects
+      .map((project) => {
+        const projectTasks = values(state.tasks)
+          .filter((task) => task.project_id === project.id)
+          .sort(byPriority);
+        const projectDeliverables = values(state.deliverables).filter((deliverable) => {
+          const task = state.tasks[deliverable.task_id];
+          return task?.project_id === project.id;
+        });
+        return `
         <article class="project-block">
             <div class="project-header">
               <div>
@@ -2424,8 +2482,9 @@ function renderProjects() {
           </div>
         </article>
       `;
-    })
-    .join("");
+      })
+      .join(""),
+  );
 }
 
 function renderProjectGit(git) {
@@ -2705,20 +2764,20 @@ function renderGitRefs(gitRefs, extraPromotionIds = []) {
 }
 
 function renderReviewProfiles() {
-  if (!elements.reviewProfilesView) {
+  if (!document.querySelector("[data-review-profiles-view]")) {
     return;
   }
   const allProfiles = values(state.review_profiles).sort(byId);
   const profiles = allProfiles.filter(isVisibleReviewProfile);
   if (!allProfiles.length) {
-    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No review profiles.</p>`;
+    renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No review profiles.</p>`);
     return;
   }
   if (!profiles.length) {
-    elements.reviewProfilesView.innerHTML = `<p class="empty-state">No visible review profiles.</p>`;
+    renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
-  elements.reviewProfilesView.innerHTML = `
+  renderIntoActiveTargets("[data-review-profiles-view]", `
     <ul class="review-list">
       ${profiles
         .map((profile) => {
@@ -2743,7 +2802,7 @@ function renderReviewProfiles() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderProfileCriteria(criteria) {
@@ -2764,15 +2823,15 @@ function renderProfileCriteria(criteria) {
 }
 
 function renderReleases() {
-  if (!elements.releasesView) {
+  if (!document.querySelector("[data-releases-view]")) {
     return;
   }
   const releases = values(state.release_packages).sort(byId);
   if (!releases.length) {
-    elements.releasesView.innerHTML = `<p class="empty-state">No release packages.</p>`;
+    renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
     return;
   }
-  elements.releasesView.innerHTML = `
+  renderIntoActiveTargets("[data-releases-view]", `
     <ul class="release-list">
       ${releases
         .map((release) => {
@@ -2796,7 +2855,7 @@ function renderReleases() {
         })
         .join("")}
     </ul>
-  `;
+  `);
 }
 
 function renderTemplateSetup() {
@@ -2987,23 +3046,27 @@ function renderTemplateCriteria(criteria) {
 }
 
 function bindTimelineFilters() {
-  const filters = [
-    elements.timelineTeamFilter,
-    elements.timelineProjectFilter,
-    elements.timelineAgentFilter,
-    elements.timelineTypeFilter,
-    elements.timelineStatusFilter,
-    elements.timelineAttentionFilter,
-  ];
-  filters.forEach((filter) => {
-    filter?.addEventListener("change", () => {
+  document.querySelectorAll("[data-timeline-filter]").forEach((filter) => {
+    filter.addEventListener("change", () => {
+      syncTimelineFilterControls(filter.dataset.timelineFilter, filter.value);
       void loadTimeline();
     });
   });
 }
 
+function syncTimelineFilterControls(filterKey, value) {
+  if (!filterKey) {
+    return;
+  }
+  document.querySelectorAll(`[data-timeline-filter="${filterKey}"]`).forEach((filter) => {
+    if (filter.value !== value) {
+      filter.value = value;
+    }
+  });
+}
+
 async function loadTimeline() {
-  if (!elements.timelineView) {
+  if (!document.querySelector("[data-timeline-view]")) {
     return;
   }
   const requestId = ++timelineRequestId;
@@ -3069,7 +3132,7 @@ function normalizeTimeline(payload) {
 }
 
 function renderTimeline() {
-  if (!elements.timelineView) {
+  if (!document.querySelector("[data-timeline-view]")) {
     return;
   }
 
@@ -3078,20 +3141,25 @@ function renderTimeline() {
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
   }
-  elements.timelineSummary.textContent = summaryParts.join(" · ");
+  document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
+    summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
+  });
 
   if (!entries.length) {
-    elements.timelineView.innerHTML = timelineLoading
-      ? `<p class="timeline-empty">Loading timeline entries.</p>`
-      : `<p class="timeline-empty">No timeline entries match these filters.</p>`;
+    renderIntoActiveTargets(
+      "[data-timeline-view]",
+      timelineLoading
+        ? `<p class="timeline-empty">Loading timeline entries.</p>`
+        : `<p class="timeline-empty">No timeline entries match these filters.</p>`,
+    );
     return;
   }
 
-  elements.timelineView.innerHTML = `
+  renderIntoActiveTargets("[data-timeline-view]", `
     <ul class="timeline-list">
       ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
     </ul>
-  `;
+  `);
 }
 
 function selectedTemplate() {
@@ -3531,12 +3599,12 @@ function describeTimelineStatus(timeline) {
 }
 
 function readTimelineFilters() {
-  const teamId = text(elements.timelineTeamFilter?.value);
-  const projectId = text(elements.timelineProjectFilter?.value);
-  const agentId = text(elements.timelineAgentFilter?.value);
-  const type = text(elements.timelineTypeFilter?.value);
-  const status = text(elements.timelineStatusFilter?.value);
-  const attentionValue = text(elements.timelineAttentionFilter?.value);
+  const teamId = timelineFilterValue("team_id");
+  const projectId = timelineFilterValue("project_id");
+  const agentId = timelineFilterValue("agent_id");
+  const type = timelineFilterValue("type");
+  const status = timelineFilterValue("status");
+  const attentionValue = timelineFilterValue("attention_needed");
   return {
     team_id: teamId || null,
     project_id: projectId || null,
@@ -3546,6 +3614,12 @@ function readTimelineFilters() {
     attention_needed:
       attentionValue === "true" ? true : attentionValue === "false" ? false : null,
   };
+}
+
+function timelineFilterValue(filterKey) {
+  const controls = Array.from(document.querySelectorAll(`[data-timeline-filter="${filterKey}"]`));
+  const activeControl = controls.find(targetIsActive);
+  return text((activeControl || controls[0])?.value);
 }
 
 function refreshSelects({ includeEditForm = false } = {}) {
@@ -4469,11 +4543,10 @@ function setStatus(message, level) {
 }
 
 function setTimelineStatus(message, level) {
-  if (!elements.timelineStatus) {
-    return;
-  }
-  elements.timelineStatus.textContent = message;
-  elements.timelineStatus.className = `timeline-status ${level || ""}`.trim();
+  document.querySelectorAll("[data-timeline-status]").forEach((status) => {
+    status.textContent = targetIsActive(status) ? message : "";
+    status.className = `timeline-status ${level || ""}`.trim();
+  });
 }
 
 function formatTimelineTimestamp(timestamp) {

@@ -39,6 +39,83 @@
           Workspace
         </button>
         <button
+          id="team-view-overview-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-overview-page"
+          data-team-view="overview"
+        >
+          Overview
+        </button>
+        <button
+          id="team-view-operations-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-operations-page"
+          data-team-view="operations"
+        >
+          Operations
+        </button>
+        <button
+          id="team-view-delivery-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-delivery-page"
+          data-team-view="delivery"
+        >
+          Delivery
+        </button>
+        <button
+          id="team-view-people-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-people-page"
+          data-team-view="people"
+        >
+          People
+        </button>
+        <button
+          id="team-view-planning-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-planning-page"
+          data-team-view="planning"
+        >
+          Planning
+        </button>
+        <button
+          id="team-view-setup-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-setup-page"
+          data-team-view="setup"
+        >
+          Setup
+        </button>
+        <button
+          id="team-view-timeline-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-timeline-page"
+          data-team-view="timeline"
+        >
+          Timeline
+        </button>
+        <button
           id="team-view-org-tab"
           class="team-view-tab"
           type="button"
@@ -61,7 +138,7 @@
         <section class="team-main">
           <section class="summary-panel" aria-labelledby="summary-heading">
             <h2 id="summary-heading">Overview</h2>
-            <div id="summary-grid" class="summary-grid"></div>
+            <div id="summary-grid" class="summary-grid" data-summary-grid></div>
           </section>
 
           <section class="content-panel runtime-operations-panel" aria-labelledby="runtime-operations-heading">
@@ -91,7 +168,7 @@
                 </button>
               </div>
             </div>
-            <div id="runtime-operations-view" class="runtime-operations-view"></div>
+            <div id="runtime-operations-view" class="runtime-operations-view" data-runtime-operations-view></div>
           </section>
 
           <section class="content-panel review-delivery-panel" aria-labelledby="review-delivery-heading">
@@ -126,7 +203,7 @@
                 </button>
               </div>
             </div>
-            <div id="review-delivery-view" class="review-delivery-view">
+            <div id="review-delivery-view" class="review-delivery-view" data-review-delivery-view>
               <p class="empty-state">Review &amp; Delivery rows render here.</p>
             </div>
           </section>
@@ -134,33 +211,33 @@
           <section class="content-grid">
             <div class="content-panel" aria-labelledby="hierarchy-heading">
               <h2 id="hierarchy-heading">Hierarchy</h2>
-              <div id="hierarchy-view" class="hierarchy-view"></div>
+              <div id="hierarchy-view" class="hierarchy-view" data-hierarchy-view></div>
             </div>
 
             <div class="content-panel" aria-labelledby="agents-heading">
               <h2 id="agents-heading">Agents</h2>
-              <div id="agents-view" class="agents-view"></div>
+              <div id="agents-view" class="agents-view" data-agents-view></div>
             </div>
           </section>
 
           <section class="content-panel" aria-labelledby="roles-heading">
             <h2 id="roles-heading">Roles</h2>
-            <div id="roles-view" class="roles-view"></div>
+            <div id="roles-view" class="roles-view" data-roles-view></div>
           </section>
 
           <section class="content-panel" aria-labelledby="projects-heading">
             <h2 id="projects-heading">Projects</h2>
-            <div id="projects-view" class="projects-view"></div>
+            <div id="projects-view" class="projects-view" data-projects-view></div>
           </section>
 
           <section class="content-panel" aria-labelledby="review-profiles-heading">
             <h2 id="review-profiles-heading">Review profiles</h2>
-            <div id="review-profiles-view" class="review-profiles-view"></div>
+            <div id="review-profiles-view" class="review-profiles-view" data-review-profiles-view></div>
           </section>
 
           <section class="content-panel" aria-labelledby="releases-heading">
             <h2 id="releases-heading">Releases</h2>
-            <div id="releases-view" class="releases-view"></div>
+            <div id="releases-view" class="releases-view" data-releases-view></div>
           </section>
 
           <section class="content-panel timeline-panel" aria-labelledby="timeline-heading">
@@ -171,38 +248,60 @@
                   Derived from the current TeamState snapshot, not a persisted audit log.
                 </p>
               </div>
-              <div id="timeline-summary" class="timeline-summary"></div>
+              <div id="timeline-summary" class="timeline-summary" data-timeline-summary></div>
             </div>
 
             <div class="timeline-filters" aria-label="Timeline filters">
               <label>
                 Team
-                <select id="timeline-team-filter" data-options="timeline-teams" data-placeholder="All teams"></select>
+                <select
+                  id="timeline-team-filter"
+                  data-timeline-filter="team_id"
+                  data-options="timeline-teams"
+                  data-placeholder="All teams"
+                ></select>
               </label>
               <label>
                 Project
                 <select
                   id="timeline-project-filter"
+                  data-timeline-filter="project_id"
                   data-options="timeline-projects"
                   data-placeholder="All projects"
                 ></select>
               </label>
               <label>
                 Agent
-                <select id="timeline-agent-filter" data-options="timeline-agents" data-placeholder="All agents"></select>
+                <select
+                  id="timeline-agent-filter"
+                  data-timeline-filter="agent_id"
+                  data-options="timeline-agents"
+                  data-placeholder="All agents"
+                ></select>
               </label>
               <label>
                 Item type
-                <select id="timeline-type-filter" data-options="timeline-types" data-placeholder="All types"></select>
+                <select
+                  id="timeline-type-filter"
+                  data-timeline-filter="type"
+                  data-options="timeline-types"
+                  data-placeholder="All types"
+                ></select>
               </label>
               <label>
                 Status
-                <select id="timeline-status-filter" data-options="timeline-statuses" data-placeholder="All statuses"></select>
+                <select
+                  id="timeline-status-filter"
+                  data-timeline-filter="status"
+                  data-options="timeline-statuses"
+                  data-placeholder="All statuses"
+                ></select>
               </label>
               <label>
                 Attention needed
                 <select
                   id="timeline-attention-filter"
+                  data-timeline-filter="attention_needed"
                   data-options="timeline-attention"
                   data-placeholder="Any attention"
                 >
@@ -213,12 +312,13 @@
               </label>
             </div>
 
-            <div id="timeline-status" class="timeline-status" role="status" aria-live="polite"></div>
-            <div id="timeline-view" class="timeline-view"></div>
+            <div id="timeline-status" class="timeline-status" role="status" aria-live="polite" data-timeline-status></div>
+            <div id="timeline-view" class="timeline-view" data-timeline-view></div>
           </section>
         </section>
 
-        <aside class="forms-panel" aria-labelledby="forms-heading">
+        <span id="workspace-setup-anchor" hidden></span>
+        <aside id="setup-forms-panel" class="forms-panel" aria-labelledby="forms-heading" data-setup-forms-panel>
           <h2 id="forms-heading">Setup</h2>
           <div class="form-stack">
             <details open class="template-setup">
@@ -513,6 +613,227 @@
             </details>
           </div>
         </aside>
+      </main>
+
+      <main
+        id="team-overview-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-overview-tab"
+        data-team-view-panel="overview"
+        hidden
+      >
+        <section class="summary-panel" aria-labelledby="focused-overview-heading">
+          <h2 id="focused-overview-heading">Overview</h2>
+          <div class="summary-grid" data-summary-grid></div>
+        </section>
+      </main>
+
+      <main
+        id="team-operations-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-operations-tab"
+        data-team-view-panel="operations"
+        hidden
+      >
+        <section class="content-panel runtime-operations-panel" aria-labelledby="focused-runtime-operations-heading">
+          <div class="runtime-operations-header">
+            <div>
+              <p class="section-label">Operations</p>
+              <h2 id="focused-runtime-operations-heading">Runtime / Blockers</h2>
+            </div>
+            <div class="runtime-filter-group" role="toolbar" aria-label="Runtime filters">
+              <button class="runtime-filter-button" type="button" data-runtime-filter="all">All</button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="needs_attention">
+                Needs attention
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="due_leased_agents">
+                Due / leased agents
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="blocked_waiting_work">
+                Blocked / waiting work
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="ephemeral_work">
+                Ephemeral work
+              </button>
+            </div>
+          </div>
+          <div class="runtime-operations-view" data-runtime-operations-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-delivery-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-delivery-tab"
+        data-team-view-panel="delivery"
+        hidden
+      >
+        <section class="content-panel review-delivery-panel" aria-labelledby="focused-review-delivery-heading">
+          <div class="review-delivery-header">
+            <div>
+              <p class="subheading">Delivery</p>
+              <h2 id="focused-review-delivery-heading">Review &amp; Delivery</h2>
+            </div>
+            <div class="review-delivery-filters" role="toolbar" aria-label="Review and delivery filters">
+              <button type="button" class="delivery-filter is-active" data-filter="all">All</button>
+              <button type="button" class="delivery-filter" data-filter="pending">Pending</button>
+              <button type="button" class="delivery-filter" data-filter="waiting_for_review">
+                Waiting for review
+              </button>
+              <button type="button" class="delivery-filter" data-filter="accepted">Accepted</button>
+              <button type="button" class="delivery-filter" data-filter="rejected">Rejected</button>
+              <button type="button" class="delivery-filter" data-filter="blocked">Blocked</button>
+            </div>
+          </div>
+          <div class="review-delivery-view" data-review-delivery-view></div>
+        </section>
+        <section class="content-grid">
+          <div class="content-panel" aria-labelledby="focused-review-profiles-heading">
+            <h2 id="focused-review-profiles-heading">Review profiles</h2>
+            <div class="review-profiles-view" data-review-profiles-view></div>
+          </div>
+          <div class="content-panel" aria-labelledby="focused-releases-heading">
+            <h2 id="focused-releases-heading">Releases</h2>
+            <div class="releases-view" data-releases-view></div>
+          </div>
+        </section>
+      </main>
+
+      <main
+        id="team-people-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-people-tab"
+        data-team-view-panel="people"
+        hidden
+      >
+        <section class="content-grid">
+          <div class="content-panel" aria-labelledby="focused-hierarchy-heading">
+            <h2 id="focused-hierarchy-heading">Hierarchy</h2>
+            <div class="hierarchy-view" data-hierarchy-view></div>
+          </div>
+          <div class="content-panel" aria-labelledby="focused-agents-heading">
+            <h2 id="focused-agents-heading">Agents</h2>
+            <div class="agents-view" data-agents-view></div>
+          </div>
+        </section>
+        <section class="content-panel" aria-labelledby="focused-roles-heading">
+          <h2 id="focused-roles-heading">Roles</h2>
+          <div class="roles-view" data-roles-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-planning-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-planning-tab"
+        data-team-view-panel="planning"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-projects-heading">
+          <h2 id="focused-projects-heading">Projects</h2>
+          <div class="projects-view" data-projects-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-setup-page"
+        class="focused-team-page setup-page"
+        role="tabpanel"
+        aria-labelledby="team-view-setup-tab"
+        data-team-view-panel="setup"
+        hidden
+      >
+        <div id="focused-setup-mount" class="setup-form-mount"></div>
+      </main>
+
+      <main
+        id="team-timeline-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-timeline-tab"
+        data-team-view-panel="timeline"
+        hidden
+      >
+        <section class="content-panel timeline-panel" aria-labelledby="focused-timeline-heading">
+          <div class="timeline-header">
+            <div>
+              <h2 id="focused-timeline-heading">Timeline / Audit</h2>
+              <p class="timeline-note">
+                Derived from the current TeamState snapshot, not a persisted audit log.
+              </p>
+            </div>
+            <div class="timeline-summary" data-timeline-summary></div>
+          </div>
+
+          <div class="timeline-filters" aria-label="Timeline filters">
+            <label>
+              Team
+              <select
+                id="focused-timeline-team-filter"
+                data-timeline-filter="team_id"
+                data-options="timeline-teams"
+                data-placeholder="All teams"
+              ></select>
+            </label>
+            <label>
+              Project
+              <select
+                id="focused-timeline-project-filter"
+                data-timeline-filter="project_id"
+                data-options="timeline-projects"
+                data-placeholder="All projects"
+              ></select>
+            </label>
+            <label>
+              Agent
+              <select
+                id="focused-timeline-agent-filter"
+                data-timeline-filter="agent_id"
+                data-options="timeline-agents"
+                data-placeholder="All agents"
+              ></select>
+            </label>
+            <label>
+              Item type
+              <select
+                id="focused-timeline-type-filter"
+                data-timeline-filter="type"
+                data-options="timeline-types"
+                data-placeholder="All types"
+              ></select>
+            </label>
+            <label>
+              Status
+              <select
+                id="focused-timeline-status-filter"
+                data-timeline-filter="status"
+                data-options="timeline-statuses"
+                data-placeholder="All statuses"
+              ></select>
+            </label>
+            <label>
+              Attention needed
+              <select
+                id="focused-timeline-attention-filter"
+                data-timeline-filter="attention_needed"
+                data-options="timeline-attention"
+                data-placeholder="Any attention"
+              >
+                <option value=""></option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="timeline-status" role="status" aria-live="polite" data-timeline-status></div>
+          <div class="timeline-view" data-timeline-view></div>
+        </section>
       </main>
 
       <main
