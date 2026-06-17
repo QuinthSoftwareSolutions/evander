@@ -115,6 +115,34 @@ def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     assert set(sessions) == {"session-1"}
 
 
+def test_read_all_safe_drops_unknown_session_tool_names(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    payload = {
+        **_session_payload(session_id="session-1"),
+        "allowed_tools": ["approval_submit", "retired_addon_tool"],
+        "approval_required_tools": ["approval_submit", "retired_addon_tool"],
+        "approval_tool_settings": {
+            "approval_submit": {"max_uses": 1},
+            "retired_addon_tool": {"max_uses": 1},
+        },
+        "tool_argument_policies": {
+            "approval_submit": [],
+            "retired_addon_tool": [],
+        },
+    }
+    path.write_text(json.dumps({"session-1": payload}), encoding="utf-8")
+    repository = JsonSessionManifestRepository(path)
+
+    sessions = repository.read_all_safe()
+
+    assert set(sessions) == {"session-1"}
+    session = sessions["session-1"]
+    assert [tool.value for tool in session.allowed_tools] == ["approval_submit"]
+    assert [tool.value for tool in session.approval_required_tools] == ["approval_submit"]
+    assert set(session.approval_tool_settings) == {"approval_submit"}
+    assert set(session.tool_argument_policies) == {"approval_submit"}
+
+
 def test_session_repository_treats_non_dict_top_level_as_empty(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     path.write_text("[]", encoding="utf-8")

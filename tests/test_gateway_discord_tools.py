@@ -35,7 +35,6 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.runtime import build_runtime
-from truman_team_addon.repository import TeamStateRepository
 
 
 class FakeDiscordService:
@@ -929,97 +928,6 @@ def test_discord_post_status_resolves_communication_target_id(tmp_path: Path) ->
     assert fake_discord.post_calls == [
         ("Host relay is healthy.", "123456789012345678", "session-1"),
     ]
-
-
-def test_team_create_operator_directive_allows_metadata_manager_session(
-    tmp_path: Path,
-) -> None:
-    context = make_context(tmp_path)
-    repo = TeamStateRepository(tmp_path)
-    repo.create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-    )
-    repo.create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-    )
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-manager",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"team_addon": {"agent_id": "manager", "role": "manager"}},
-        ),
-    )
-    server = create_server(context)
-
-    result = call_tool(
-        server,
-        "team_create_operator_directive",
-        {
-            "session_id": "session-manager",
-            "team_id": "team",
-            "project_id": "project",
-            "message": "Ask the lead for a status report.",
-            "title": "Status report",
-            "source": "discord",
-            "source_message_id": "discord-msg-1",
-        },
-    )
-
-    assert result["status"] == "created"
-    assert result["recipient_agent_id"] == "manager"
-    reread = TeamStateRepository(tmp_path).read()
-    item = reread.inbox[result["inbox_item_id"]]
-    assert item.item_type.value == "operator_directive"
-    assert item.payload["message"] == "Ask the lead for a status report."
-    assert item.payload["requesting_session_id"] == "session-manager"
-    assert reread.agent_runtimes["manager"].next_wake_at is None
-
-
-def test_team_create_operator_directive_rejects_non_manager_session(
-    tmp_path: Path,
-) -> None:
-    context = make_context(tmp_path)
-    repo = TeamStateRepository(tmp_path)
-    repo.create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-    )
-    repo.create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-    )
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-lead",
-            allowed_tools=[ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="team manager session"):
-        call_tool(
-            server,
-            "team_create_operator_directive",
-            {
-                "session_id": "session-lead",
-                "team_id": "team",
-                "message": "Ask for status.",
-            },
-        )
 
 
 def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:

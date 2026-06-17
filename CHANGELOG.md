@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Boundary Cleanup
+
+- Removed the Team-specific manager directive MCP tool, Team metadata policy
+  special-case, and Team guidance from the core Discord wake prompt so
+  operator-directive behavior stays on add-on-owned Admin API and workflow
+  effect surfaces.
+
 ## 2026-06-17 - Email Send And Communication Integration
 
 - Implemented real email draft sending for JSON-store, Gmail, and Microsoft Graph
@@ -222,7 +229,8 @@ material. Newer entries are added incrementally as changes land.
   normal Team runtime instead of requiring ad hoc `team-action.json` writes.
 - Exposed the directive path through the Team Admin API,
   `effect:team:create-operator-directive`, and the manager-facing
-  `team_create_operator_directive` MCP tool.
+  MCP tool. The MCP tool was later removed to keep Team-specific behavior out
+  of the core gateway.
 
 ## 2026-06-16 - Team Add-on Project Repo Wake Prep
 
