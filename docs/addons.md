@@ -113,6 +113,16 @@ or keyboard focus on an agent node reveals operational details from the add-on
 state payload, including session, project, reports-to, task, inbox, runtime
 wake, and ephemeral-capacity information when those records are available.
 
+Team roles are first-class state records under `TeamState.roles`. Agents store a
+`role_id` instead of a free-form role string, and role records carry the display
+name, optional project scope, default ephemeral policy, and permission list for
+that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
+and the bundled UI includes a `Roles` view plus create/edit forms. The only
+bundled permission today is `request_release`; release authorization checks the
+agent's role permission rather than an exact role name. The built-in
+`auto-dev-squad` template grants `request_release` to its project-scoped
+release-operator role.
+
 ### Template Catalog And Setup Flow
 
 The bundled Team Add-on exposes a built-in template catalog at
@@ -443,7 +453,7 @@ agents with open child tasks can still be woken to supervise or consolidate that
 work.
 
 Review profiles are reusable, team-owned review rubrics. A profile may be scoped
-to one project, constrained to specific reviewer roles with `applicable_roles`,
+to one project, constrained to specific reviewer roles with `applicable_role_ids`,
 and populated with criteria rows. Review requests can attach a profile and
 instructions; review decisions can then record per-criterion outcomes. Archived
 profiles remain visible for history but cannot be assigned to new review
@@ -490,13 +500,14 @@ repository only records intent; the packaged pack routes each event on its
   `effect:team:consolidate-git-branches` then `effect:team:record-git-promotion`.
 - `release` and `canonical_push` — `git_release_requests[]` (`{"id"?,
   "project_id", "deliverable_ids"[], "release_branch"?, "canonical_branch"?}`):
-  only the project lead, the project's scoped release operator, or the team
-  manager may request a release, and every deliverable must belong to the
-  project, be accepted, and carry either a `git_refs.feature_branch` or non-Git
-  `artifact_refs`. This creates a pending `ReleasePackage` and, when feature
-  branches are present, a `release` promotion (consolidate feature branches →
-  release branch) followed by a `canonical_push` promotion (release branch →
-  canonical branch, finalized by `effect:team:mark-release-published`).
+  only the project lead, the team manager, or an agent whose same-project role
+  has `request_release` may request a release, and every deliverable must belong
+  to the project, be accepted, and carry either a `git_refs.feature_branch` or
+  non-Git `artifact_refs`. This creates a pending `ReleasePackage` and, when
+  feature branches are present, a `release` promotion (consolidate feature
+  branches → release branch) followed by a `canonical_push` promotion (release
+  branch → canonical branch, finalized by
+  `effect:team:mark-release-published`).
 
 Four add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the

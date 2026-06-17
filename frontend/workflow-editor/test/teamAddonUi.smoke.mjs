@@ -930,6 +930,22 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
         jsonResponse(response, state);
         return;
       }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/costs") {
+        jsonResponse(response, {
+          generated_at: "2026-06-09T00:00:00Z",
+          coverage_status: "complete",
+          coverage_reasons: [],
+          team_costs: {},
+          project_costs: {},
+          unattributed_costs: null,
+          source_counts: {},
+          events_count: 0,
+          priced_events_count: 0,
+          unpriced_events_count: 0,
+          backfill: null,
+        });
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/templates") {
         jsonResponse(response, { templates: [template] });
         return;
@@ -1434,8 +1450,12 @@ async function waitForCondition(predicate, message, { timeoutMs = 2000, interval
 }
 
 async function openDetails(page, name) {
-  const summary = page.locator("summary", { hasText: name });
-  await summary.click();
+  const details = page
+    .locator("details", { has: page.locator("summary", { hasText: name }) })
+    .first();
+  await details.evaluate((element) => {
+    element.open = true;
+  });
 }
 
 async function fillAutoDevSquadForm(page) {
@@ -1451,10 +1471,10 @@ async function fillAutoDevSquadForm(page) {
   await form.locator('[name="project_lead_agent_id"]').fill("project-lead-auto-dev-squad");
   await form.locator('[name="project_lead_session_id"]').fill("session-project-lead-auto-dev-squad");
   await form.locator('[name="host_repo_path"]').fill("/srv/repos/auto-dev-squad");
-  await form.locator('[name="bare_repo_name"]').fill("auto-dev-squad.git");
+  await form.locator('[name="bare_repo"]').fill("auto-dev-squad.git");
   await form.locator('[name="base_branch"]').fill("main");
   await form.locator('[name="canonical_origin_url"]').fill("ssh://git.example/auto-dev-squad.git");
-  await form.locator('[name="provider"]').fill("github");
+  await form.locator('[name="provider"]').selectOption("github");
   await form.locator('[name="canonical_release_branch_prefix"]').fill("releases");
   await form.locator('[name="implementer_agent_id"]').fill("implementer-auto-dev-squad");
   await form.locator('[name="implementer_session_id"]').fill("session-implementer-auto-dev-squad");
@@ -1467,15 +1487,17 @@ async function fillAutoDevSquadForm(page) {
 test("team add-on UI renders empty state and submits setup forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
+  const statusMessage = page.locator("#status-message");
 
   await page
     .locator("#hierarchy-view")
     .getByText("No teams registered.")
     .waitFor({ state: "visible" });
 
+  await openDetails(page, "Create team");
   const teamForm = page.locator("#create-team-form");
-  await teamForm.locator('[name="id"]').fill("team");
   await teamForm.locator('[name="name"]').fill("Team");
+  await teamForm.locator('[name="id"]').fill("team");
   await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.locator('[name="manager_display_name"]').fill("Team Manager");
@@ -1486,16 +1508,16 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await openDetails(page, "Create project");
   await waitForSelectOption(page, '#create-project-form [name="team_id"]', "team");
   const projectForm = page.locator("#create-project-form");
-  await projectForm.locator('[name="id"]').fill("project");
   await projectForm.locator('[name="team_id"]').selectOption("team");
   await projectForm.locator('[name="name"]').fill("Project");
+  await projectForm.locator('[name="id"]').fill("project");
   await projectForm.locator('[name="lead_agent_id"]').fill("lead");
   await projectForm.locator('[name="lead_session_id"]').fill("session-lead");
   await projectForm.locator('[name="lead_display_name"]').fill("Project Lead");
   await projectForm.locator('[name="goal_id"]').fill("goal");
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
-  await projectForm.locator('[name="bare_repo_name"]').fill("project.git");
+  await projectForm.locator('[name="bare_repo"]').fill("project.git");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
@@ -1503,10 +1525,10 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await openDetails(page, "Create role");
   await waitForSelectOption(page, '#create-role-form [name="team_id"]', "team");
   const roleForm = page.locator("#create-role-form");
-  await roleForm.locator('[name="id"]').fill("project__backend");
   await roleForm.locator('[name="team_id"]').selectOption("team");
   await roleForm.locator('[name="project_id"]').selectOption("project");
   await roleForm.locator('[name="name"]').fill("Backend");
+  await roleForm.locator('[name="id"]').fill("project__backend");
   await roleForm.locator('[name="max_concurrent"]').fill("2");
   await roleForm.getByRole("button", { name: "Create role" }).click();
   await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
@@ -1515,10 +1537,10 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', "lead");
   await waitForSelectOption(page, '#register-agent-form [name="role_id"]', "project__backend");
   const agentForm = page.locator("#register-agent-form");
-  await agentForm.locator('[name="id"]').fill("backend");
   await agentForm.locator('[name="team_id"]').selectOption("team");
   await agentForm.locator('[name="project_id"]').selectOption("project");
   await agentForm.locator('[name="role_id"]').selectOption("project__backend");
+  await agentForm.locator('[name="id"]').fill("backend");
   await agentForm.locator('[name="session_id"]').fill("session-backend");
   await agentForm.locator('[name="display_name"]').fill("Backend Agent");
   await agentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
@@ -1532,14 +1554,21 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await openDetails(page, "Create task");
   await waitForSelectOption(page, '#create-task-form [name="owner_agent_id"]', "backend");
   const taskForm = page.locator("#create-task-form");
-  await taskForm.locator('[name="id"]').fill("task");
   await taskForm.locator('[name="owner_agent_id"]').selectOption("backend");
   await taskForm.locator('[name="project_id"]').selectOption("project");
   await taskForm.locator('[name="priority"]').fill("5");
   await taskForm.locator('[name="title"]').fill("Build backend");
+  await taskForm.locator('[name="id"]').fill("task");
   await taskForm.locator('[name="description"]').fill("Implement backend work.");
+  await taskForm.locator('[name="created_by_agent_id"]').selectOption("lead");
   await taskForm.getByRole("button", { name: "Create task" }).click();
-  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  try {
+    await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; status=${await statusMessage.textContent()}; requests=${JSON.stringify(requests, null, 2)}`,
+    );
+  }
 
   await openDetails(page, "Update task");
   await waitForSelectOption(page, '#update-task-form [name="task_id"]', "task");
@@ -1840,9 +1869,10 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   const { port } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
+  await openDetails(page, "Create team");
   const teamForm = page.locator("#create-team-form");
-  await teamForm.locator('[name="id"]').fill("team");
   await teamForm.locator('[name="name"]').fill("Team");
+  await teamForm.locator('[name="id"]').fill("team");
   await teamForm.locator('[name="manager_agent_id"]').fill("manager");
   await teamForm.locator('[name="manager_session_id"]').fill("session-manager");
   await teamForm.getByRole("button", { name: "Create team" }).click();
@@ -2457,7 +2487,7 @@ function seededOrgChartState() {
         reports_to_agent_id: "backend",
         subordinate_agent_ids: [],
         ephemeral_policy: { max_concurrent: 0 },
-        status: "archived",
+        status: "active",
       },
     },
     agent_runtimes: {

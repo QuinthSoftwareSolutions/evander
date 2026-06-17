@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on First-Class Roles
+
+- Added first-class Team role records with role IDs, display names, project
+  scope, default ephemeral policy, and configurable permissions.
+- Moved agent assignment and review-profile filtering from raw role strings to
+  `role_id` / `applicable_role_ids`, and changed release authorization to use
+  the `request_release` role permission instead of an exact role name.
+- Added Admin API and bundled UI support for creating and editing roles, plus a
+  migration script for existing Team Add-on state files.
+
 ## 2026-06-17 - Team Add-on Context Clearing
 
 - Added opt-in automatic context clearing for persistent Team agents when they
