@@ -42,27 +42,41 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
         lead_session_id="session-lead",
         lead_display_name="Project Lead",
         goals=[ProjectGoal(id="goal", description="Ship work")],
-        expected_revision=1,
+        expected_revision=repo.read().revision,
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=repo.read().revision,
+    )
+    repo.create_role(
+        role_id="project__worker",
+        team_id="team",
+        project_id="project",
+        name="Worker",
+        expected_revision=repo.read().revision,
     )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         display_name="Backend Agent",
-        expected_revision=2,
+        expected_revision=repo.read().revision,
     )
     repo.register_agent(
         agent_id="worker",
         team_id="team",
         project_id="project",
-        role="worker",
+        role_id="project__worker",
         session_id="session-worker",
         reports_to_agent_id="backend",
         display_name="  Worker Agent  ",
-        expected_revision=3,
+        expected_revision=repo.read().revision,
     )
     return repo
 
@@ -70,13 +84,23 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
 def _register_release_operator(
     repo: TeamStateRepository,
     *,
-    role: str = "release_operator",
+    role_id: str = "project__release-operator",
+    permissions: list[str] | None = None,
 ) -> None:
+    if role_id not in repo.read().roles:
+        repo.create_role(
+            role_id=role_id,
+            team_id="team",
+            project_id="project",
+            name="Release Operator",
+            permissions=permissions if permissions is not None else ["request_release"],
+            expected_revision=repo.read().revision,
+        )
     repo.register_agent(
         agent_id="release-operator",
         team_id="team",
         project_id="project",
-        role=role,
+        role_id=role_id,
         session_id="session-release-operator",
         reports_to_agent_id="lead",
         expected_revision=repo.read().revision,
@@ -167,17 +191,24 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.revision == 2
     assert state.agents["lead"].display_name == "Project Lead"
 
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     state = repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         display_name="  Backend Agent  ",
-        expected_revision=2,
+        expected_revision=3,
     )
-    assert state.revision == 3
+    assert state.revision == 4
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
     assert state.agents["lead"].subordinate_agent_ids == ["backend"]
     assert state.agents["backend"].display_name == "Backend Agent"
@@ -194,11 +225,11 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         max_cost_usd="123.45",
         set_max_cost_usd=True,
         archived=True,
-        expected_revision=4,
+        expected_revision=repo.read().revision,
     )
 
     team = state.teams["team"]
-    assert state.revision == 5
+    assert state.revision == 7
     assert team.name == "Renamed Team"
     assert team.operator_communication_target_id is None
     assert str(team.max_cost_usd) == "123.45"
@@ -217,20 +248,27 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         git=ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git"),
         set_git=True,
         goals=[ProjectGoal(id="goal-2", description="Updated goal")],
-        expected_revision=5,
+        expected_revision=repo.read().revision,
     )
 
     project = state.projects["project"]
-    assert state.revision == 6
+    assert state.revision == 8
     assert project.name == "Renamed Project"
     assert project.status is ProjectStatus.BLOCKED
     assert project.git is not None
     assert project.git.bare_repo_name == "repo.git"
     assert [goal.id for goal in project.goals] == ["goal-2"]
 
+    repo.create_role(
+        role_id="project__qa",
+        team_id="team",
+        project_id="project",
+        name="QA",
+        expected_revision=repo.read().revision,
+    )
     state = repo.update_agent(
         agent_id="worker",
-        role="qa",
+        role_id="project__qa",
         session_id="session-worker-2",
         reports_to_agent_id="lead",
         set_reports_to_agent_id=True,
@@ -238,12 +276,12 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         set_display_name=True,
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=3),
         status=AgentStatus.PAUSED,
-        expected_revision=6,
+        expected_revision=repo.read().revision,
     )
 
     worker = state.agents["worker"]
-    assert state.revision == 7
-    assert worker.role == "qa"
+    assert state.revision == 10
+    assert worker.role_id == "project__qa"
     assert worker.session_id == "session-worker-2"
     assert worker.display_name is None
     assert worker.reports_to_agent_id == "lead"
@@ -279,11 +317,11 @@ def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_pat
             agent_id="lead",
             reports_to_agent_id="worker",
             set_reports_to_agent_id=True,
-            expected_revision=4,
+            expected_revision=repo.read().revision,
         )
 
     state = repo.read()
-    assert state.revision == 4
+    assert state.revision == 6
     assert state.agents["lead"].reports_to_agent_id == "manager"
     assert state.agents["manager"].subordinate_agent_ids == ["lead"]
 
@@ -541,15 +579,22 @@ def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> Non
         lead_session_id="session-lead",
         expected_revision=1,
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=1),
-        expected_revision=2,
+        expected_revision=3,
     )
     repo.create_or_reprioritize_task(
         task_id="task",
@@ -559,7 +604,7 @@ def test_repository_enforces_parent_ephemeral_concurrency(tmp_path: Path) -> Non
         title="Build backend",
         description="Implement backend work.",
         created_by_agent_id="lead",
-        expected_revision=3,
+        expected_revision=repo.read().revision,
     )
 
     with pytest.raises(ValueError, match="max_concurrent=1"):
@@ -835,7 +880,7 @@ def test_apply_agent_action_rejects_cross_project_task_creation(tmp_path: Path) 
         name="Second Project",
         lead_agent_id="lead-2",
         lead_session_id="session-lead-2",
-        expected_revision=4,
+        expected_revision=repo.read().revision,
     )
 
     # lead leads "project" but tries to place a task on backend inside "project-2".
@@ -870,7 +915,7 @@ def test_apply_agent_action_rejects_cross_project_self_task_creation(
         name="Second Project",
         lead_agent_id="lead-2",
         lead_session_id="session-lead-2",
-        expected_revision=4,
+        expected_revision=repo.read().revision,
     )
 
     state, result = repo.apply_agent_action(
@@ -1036,6 +1081,111 @@ def test_apply_agent_action_task_creation_resets_no_progress_count(tmp_path: Pat
 
     assert result["success"] is True
     assert state.agent_runtimes["backend"].no_progress_count == 0
+
+
+def test_context_clearing_is_disabled_by_default_for_idle_agents(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state = repo.create_or_reprioritize_task(
+        task_id="already-done",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Already done",
+        description="Terminal task should not opt in automatically.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.ACCEPTED,
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.auto_context_clearing_enabled is False
+    assert runtime.context_rotation_pending is False
+
+
+def test_manual_context_rotation_marks_pending_even_when_agent_has_work(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_or_reprioritize_task(
+        task_id="active-work",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active work",
+        description="Manual rotation is allowed with active work.",
+        created_by_agent_id="lead",
+    )
+
+    state = repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="controlled test",
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.auto_context_clearing_enabled is False
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "manual"
+    assert runtime.context_rotation_requested_by == "operator:test"
+    assert runtime.context_rotation_request_note == "controlled test"
+    assert runtime.next_wake_at == runtime.context_rotation_requested_at
+    assert "Active tasks:" in str(runtime.last_handoff_summary)
+    assert "active-work" in str(runtime.last_handoff_summary)
+
+
+def test_auto_context_rotation_marks_pending_when_enabled_agent_becomes_idle(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_or_reprioritize_task(
+        task_id="finish-me",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Finish me",
+        description="Work that will make the agent non-idle.",
+        created_by_agent_id="lead",
+    )
+
+    state = repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+
+    assert state.agent_runtimes["backend"].auto_context_clearing_enabled is True
+    assert state.agent_runtimes["backend"].context_rotation_pending is False
+
+    state = repo.update_task(task_id="finish-me", state=TeamTaskState.ACCEPTED)
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.context_rotation_reason == "idle"
+    assert runtime.next_wake_at == runtime.context_rotation_requested_at
+    assert runtime.last_handoff_summary is not None
+    assert "Active tasks: none." in runtime.last_handoff_summary
+
+
+def test_auto_context_rotation_does_not_mark_pending_with_pending_inbox(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    repo.create_operator_directive(
+        team_id="team",
+        recipient_agent_id="backend",
+        message="Handle this first.",
+        created_by="operator:test",
+    )
+
+    state = repo.update_agent(
+        agent_id="backend",
+        auto_context_clearing_enabled=True,
+        set_auto_context_clearing_enabled=True,
+    )
+
+    runtime = state.agent_runtimes["backend"]
+    assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_rotation_pending is False
 
 
 def test_operator_task_creation_resets_no_progress_and_wakes_owner(tmp_path: Path) -> None:
@@ -2395,7 +2545,7 @@ def test_apply_agent_action_task_creation_rejects_cross_project_dependency(
         name="Second Project",
         lead_agent_id="lead-2",
         lead_session_id="session-lead-2",
-        expected_revision=4,
+        expected_revision=repo.read().revision,
     )
     repo.create_or_reprioritize_task(
         task_id="other",
@@ -2619,8 +2769,8 @@ def _seed_review_profile(
     repo: TeamStateRepository,
     *,
     profile_id: str = "profile",
-    project_id: str | None = None,
-    applicable_roles: list[str] | None = None,
+    project_id: str | None = "project",
+    applicable_role_ids: list[str] | None = None,
     criteria: list[ReviewProfileCriterion] | None = None,
 ) -> None:
     repo.create_review_profile(
@@ -2629,7 +2779,11 @@ def _seed_review_profile(
         project_id=project_id,
         name="Backend review",
         description="Checklist for backend deliverables.",
-        applicable_roles=applicable_roles or ["backend", "worker"],
+        applicable_role_ids=(
+            applicable_role_ids
+            if applicable_role_ids is not None
+            else ["project__backend", "project__worker"]
+        ),
         criteria=criteria
         or [
             ReviewProfileCriterion(id="tests", label="Tests pass", required=True),
@@ -2649,7 +2803,7 @@ def test_create_update_archive_review_profile(tmp_path: Path) -> None:
     assert profile.team_id == "team"
     assert profile.name == "Backend review"
     assert [c.id for c in profile.criteria] == ["tests", "docs"]
-    assert profile.applicable_roles == ["backend", "worker"]
+    assert profile.applicable_role_ids == ["project__backend", "project__worker"]
     assert profile.archived is False
 
     state = repo.update_review_profile(
@@ -2753,7 +2907,7 @@ def test_apply_agent_action_review_request_cross_project_profile_errors(
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
     # Profile is scoped to a different project than the deliverable's task ("project").
-    _seed_review_profile(repo, project_id="project-2")
+    _seed_review_profile(repo, project_id="project-2", applicable_role_ids=[])
 
     state, result = repo.apply_agent_action(
         action={
@@ -2777,7 +2931,7 @@ def test_apply_agent_action_review_request_role_profile_errors(tmp_path: Path) -
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
-    _seed_review_profile(repo, applicable_roles=["backend"])
+    _seed_review_profile(repo, applicable_role_ids=["project__backend"])
 
     state, result = repo.apply_agent_action(
         action={
@@ -2793,7 +2947,7 @@ def test_apply_agent_action_review_request_role_profile_errors(tmp_path: Path) -
     )
 
     assert result["success"] is False
-    assert any("reviewer role worker" in error for error in result["errors"])
+    assert any("reviewer role project__worker" in error for error in result["errors"])
     assert state.review_requests == {}
 
 

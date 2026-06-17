@@ -36,6 +36,7 @@ from truman_team_addon.models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
+    TeamRole,
     TeamState,
     TeamTaskState,
     runtime_operations_payload,
@@ -47,7 +48,7 @@ def _valid_state() -> TeamState:
     manager = PersistentAgent(
         id="manager",
         team_id="team",
-        role="manager",
+        role_id="team__manager",
         session_id="session-manager",
         subordinate_agent_ids=["lead"],
     )
@@ -55,7 +56,7 @@ def _valid_state() -> TeamState:
         id="lead",
         team_id="team",
         project_id="project",
-        role="project_lead",
+        role_id="project__project-lead",
         session_id="session-lead",
         reports_to_agent_id="manager",
         subordinate_agent_ids=["ui", "reviewer"],
@@ -64,7 +65,7 @@ def _valid_state() -> TeamState:
         id="ui",
         team_id="team",
         project_id="project",
-        role="ui",
+        role_id="project__ui",
         session_id="session-ui",
         reports_to_agent_id="lead",
     )
@@ -72,7 +73,7 @@ def _valid_state() -> TeamState:
         id="reviewer",
         team_id="team",
         project_id="project",
-        role="reviewer",
+        role_id="project__reviewer",
         session_id="session-reviewer",
         reports_to_agent_id="lead",
     )
@@ -99,6 +100,31 @@ def _valid_state() -> TeamState:
                     )
                 ],
             )
+        },
+        roles={
+            "team__manager": TeamRole(
+                id="team__manager",
+                team_id="team",
+                name="Manager",
+            ),
+            "project__project-lead": TeamRole(
+                id="project__project-lead",
+                team_id="team",
+                project_id="project",
+                name="Project Lead",
+            ),
+            "project__ui": TeamRole(
+                id="project__ui",
+                team_id="team",
+                project_id="project",
+                name="UI",
+            ),
+            "project__reviewer": TeamRole(
+                id="project__reviewer",
+                team_id="team",
+                project_id="project",
+                name="Reviewer",
+            ),
         },
         agents={
             "manager": manager,
@@ -273,7 +299,7 @@ def test_persistent_agent_display_name_is_optional_and_trimmed() -> None:
         id="agent",
         team_id="team",
         display_name="  Friendly Name  ",
-        role="worker",
+        role_id="role-worker",
         session_id="session-agent",
     )
 
@@ -282,7 +308,7 @@ def test_persistent_agent_display_name_is_optional_and_trimmed() -> None:
     legacy_agent = PersistentAgent(
         id="legacy",
         team_id="team",
-        role="worker",
+        role_id="role-worker",
         session_id="session-legacy",
     )
 
@@ -877,7 +903,7 @@ def _profile() -> ReviewProfile:
         project_id="project",
         name="Code review",
         description="Standard code review rubric.",
-        applicable_roles=["reviewer"],
+        applicable_role_ids=["project__reviewer"],
         criteria=[
             ReviewProfileCriterion(id="tests", label="Tests pass"),
             ReviewProfileCriterion(
@@ -895,7 +921,7 @@ def test_review_profile_round_trips_through_team_state() -> None:
 
     profile = validated.review_profiles["profile"]
     assert profile.name == "Code review"
-    assert profile.applicable_roles == ["reviewer"]
+    assert profile.applicable_role_ids == ["project__reviewer"]
     assert [criterion.id for criterion in profile.criteria] == ["tests", "style"]
     assert profile.criteria[1].required is False
     assert profile.archived is False

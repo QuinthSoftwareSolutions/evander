@@ -136,11 +136,16 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             project_repo=project_repo,
                         )
                     )
+                runtime_payload = lease.get("runtime")
+                context_rotation_pending = (
+                    isinstance(runtime_payload, Mapping)
+                    and bool(runtime_payload.get("context_rotation_pending"))
+                )
                 prompt = _build_prompt(lease, action_artifact_path=action_path)
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=prompt,
-                    resume_mode=resume_mode,
+                    resume_mode="new_context" if context_rotation_pending else resume_mode,
                     dispatch_id=lease["dispatch_id"],
                 )
                 result_payload = _coerce_mapping(result)
@@ -158,6 +163,19 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 }
                 if project_repo is not None:
                     dispatch_payload["project_repo"] = project_repo
+                if context_rotation_pending:
+                    thread_id = _optional_text(result_payload.get("thread_id"))
+                    state = repo.record_context_rotation_dispatch_started(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        thread_id=thread_id,
+                    )
+                    dispatch_payload["context_rotation"] = {
+                        "rotated": True,
+                        "reason": runtime_payload.get("context_rotation_reason")
+                        if isinstance(runtime_payload, Mapping)
+                        else None,
+                    }
                 dispatches.append(dispatch_payload)
                 _mirror_session_metadata(
                     context,
@@ -952,6 +970,18 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         context["project_repo"] = dict(project_repo)
+    runtime = lease.get("runtime")
+    handoff_summary = (
+        _optional_text(runtime.get("last_handoff_summary"))
+        if isinstance(runtime, Mapping)
+        else None
+    )
+    handoff_section = (
+        "Prior handoff summary from Team state:\n"
+        f"{handoff_summary}\n\n"
+        if handoff_summary
+        else ""
+    )
     schema = {
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
@@ -1009,6 +1039,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "through this Team dispatch by writing the appropriate task/status/review "
         "actions to team-action.json, then include their ids in "
         "handled_inbox_item_ids.\n\n"
+        f"{handoff_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
@@ -1977,6 +2008,11 @@ def _filtered_team_state_payload(
         for key, value in agents.items()
         if key in visible_agent_ids
     }
+    visible_role_ids = {
+        _required_text(value.get("role_id"), "role_id")
+        for value in filtered["agents"].values()
+        if value.get("role_id") is not None
+    }
     filtered["agent_runtimes"] = {
         key: value
         for key, value in filtered.get("agent_runtimes", {}).items()
@@ -2001,6 +2037,35 @@ def _filtered_team_state_payload(
         for key, value in filtered.get("review_requests", {}).items()
         if value.get("deliverable_id") in visible_deliverable_ids
         and value.get("reviewer_agent_id") in visible_agent_ids
+    }
+    filtered["review_profiles"] = {
+        key: {
+            **value,
+            "applicable_role_ids": _filter_ids(
+                value.get("applicable_role_ids"),
+                visible_role_ids,
+            ),
+        }
+        for key, value in filtered.get("review_profiles", {}).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
+    }
+    for profile in filtered["review_profiles"].values():
+        visible_role_ids.update(_string_items(profile.get("applicable_role_ids")))
+    filtered["roles"] = {
+        key: value
+        for key, value in filtered.get("roles", {}).items()
+        if key in visible_role_ids
+        or (
+            value.get("team_id") in visible_team_ids
+            and (
+                value.get("project_id") is None
+                or value.get("project_id") in visible_project_ids
+            )
+        )
     }
     visible_review_ids = set(filtered["review_requests"])
     filtered["deliverables"] = {

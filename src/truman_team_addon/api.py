@@ -124,7 +124,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             manager_agent_id=_required(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
             manager_display_name=_optional(payload, "manager_display_name"),
-            manager_role=_optional(payload, "manager_role") or "manager",
+            manager_role_id=_optional(payload, "manager_role_id"),
+            manager_role_name=_optional(payload, "manager_role_name"),
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
@@ -160,7 +161,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             lead_agent_id=_required(payload, "lead_agent_id"),
             lead_session_id=_required(payload, "lead_session_id"),
             lead_display_name=_optional(payload, "lead_display_name"),
-            lead_role=_optional(payload, "lead_role") or "project_lead",
+            lead_role_id=_optional(payload, "lead_role_id"),
+            lead_role_name=_optional(payload, "lead_role_name"),
             goals=goals,
             git=_optional_git_config(payload),
             expected_revision=_expected_revision(payload),
@@ -188,6 +190,67 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def create_role(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        ephemeral_policy = payload.get("ephemeral_policy")
+        state = repository.create_role(
+            role_id=_required(payload, "id", "role_id"),
+            team_id=_required(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            name=_required(payload, "name"),
+            description=_optional(payload, "description"),
+            permissions=_optional_string_list(payload, "permissions"),
+            ephemeral_policy=(
+                EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                if ephemeral_policy is not None
+                else None
+            ),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_role(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        ephemeral_policy = payload.get("ephemeral_policy")
+        raw_archived = payload.get("archived")
+        state = repository.update_role(
+            role_id=request.path_params["role_id"],
+            name=_optional(payload, "name"),
+            project_id=_optional(payload, "project_id"),
+            set_project_id="project_id" in payload,
+            description=_optional_present_text(payload, "description"),
+            set_description="description" in payload,
+            permissions=(
+                _optional_string_list(payload, "permissions")
+                if "permissions" in payload
+                else None
+            ),
+            ephemeral_policy=(
+                EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                if ephemeral_policy is not None
+                else None
+            ),
+            archived=raw_archived if isinstance(raw_archived, bool) else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def list_roles(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "roles": [role.model_dump(mode="json") for role in state.roles.values()],
+            }
+        )
+
+    async def get_role(request: Request) -> JSONResponse:
+        state = repository.read()
+        role = state.roles.get(request.path_params["role_id"])
+        if role is None:
+            return JSONResponse({"error": "role not found"}, status_code=404)
+        return JSONResponse(role.model_dump(mode="json"))
+
     async def register_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
@@ -195,7 +258,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             agent_id=_required(payload, "id", "agent_id"),
             team_id=_required(payload, "team_id"),
             project_id=_required(payload, "project_id"),
-            role=_required(payload, "role"),
+            role_id=_required(payload, "role_id"),
             session_id=_required(payload, "session_id"),
             reports_to_agent_id=_required(payload, "reports_to_agent_id"),
             display_name=_optional(payload, "display_name"),
@@ -216,7 +279,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             agent_id=request.path_params["agent_id"],
             project_id=_optional(payload, "project_id"),
             set_project_id="project_id" in payload,
-            role=_optional(payload, "role"),
+            role_id=_optional(payload, "role_id"),
             session_id=_optional(payload, "session_id"),
             reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
             set_reports_to_agent_id="reports_to_agent_id" in payload,
@@ -228,6 +291,24 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 else None
             ),
             status=AgentStatus(raw_status) if raw_status else None,
+            auto_context_clearing_enabled=_optional_bool(
+                payload,
+                "auto_context_clearing_enabled",
+            ),
+            set_auto_context_clearing_enabled=(
+                "auto_context_clearing_enabled" in payload
+            ),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def request_agent_context_rotation(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.request_agent_context_rotation(
+            agent_id=request.path_params["agent_id"],
+            requested_by=_optional(payload, "requested_by")
+            or _operator_actor_from_request(context.auth, request),
+            request_note=_optional(payload, "reason"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -363,7 +444,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             project_id=_optional(payload, "project_id"),
             name=_required(payload, "name"),
             description=_optional(payload, "description") or "",
-            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            applicable_role_ids=_optional_string_list(payload, "applicable_role_ids"),
             criteria=criteria,
             expected_revision=_expected_revision(payload),
         )
@@ -386,7 +467,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             profile_id=request.path_params["review_profile_id"],
             name=_optional(payload, "name"),
             description=_optional_present_text(payload, "description"),
-            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            applicable_role_ids=(
+                _optional_string_list(payload, "applicable_role_ids")
+                if "applicable_role_ids" in payload
+                else None
+            ),
             criteria=criteria,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             project_id=_optional(payload, "project_id"),
@@ -487,8 +572,17 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
+        Route("/roles", _with_errors(create_role), methods=["POST"]),
+        Route("/roles", _with_errors(list_roles), methods=["GET"]),
+        Route("/roles/{role_id}", _with_errors(get_role), methods=["GET"]),
+        Route("/roles/{role_id}", _with_errors(patch_role), methods=["PATCH"]),
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
+        Route(
+            "/agents/{agent_id}/context-rotation",
+            _with_errors(request_agent_context_rotation),
+            methods=["POST"],
+        ),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
@@ -685,6 +779,21 @@ def _query_bool(request: Request, field_name: str) -> bool | None:
         return True
     if text in {"0", "false", "no", "off"}:
         return False
+    raise ValueError(f"{field_name} must be true or false")
+
+
+def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
+    if field_name not in payload or payload.get(field_name) is None:
+        return None
+    value = payload[field_name]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
     raise ValueError(f"{field_name} must be true or false")
 
 

@@ -1018,6 +1018,20 @@ button.record-action:hover {
   margin-top: 0.15rem;
 }
 
+.runtime-handoff {
+  margin-top: 0.45rem;
+}
+
+.runtime-handoff pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0.4rem 0 0;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+}
+
 .project-block {
   padding: 0.85rem;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbfa 100%);

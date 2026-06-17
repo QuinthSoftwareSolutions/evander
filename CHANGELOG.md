@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Context Clearing
+
+- Added opt-in automatic context clearing for persistent Team agents when they
+  become truly idle, with per-agent controls disabled by default.
+- Added manual context-clearing requests that generate a Team-state handoff and
+  rotate the agent onto a fresh thread on its next wake without interrupting an
+  active dispatch.
+
 ## 2026-06-16 - Team Add-on Release Operator Authorization
 
 - Allowed a project's scoped `release_operator` agent to create Team release

@@ -17,7 +17,7 @@ from pydantic import (
 from agent_sandbox.models import utc_now
 from truman_team_addon.git_naming import DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class TeamTaskState(str, Enum):
@@ -63,6 +63,10 @@ class AgentStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class RolePermission(str, Enum):
+    REQUEST_RELEASE = "request_release"
+
+
 class TeamInboxItemType(str, Enum):
     OPERATOR_DIRECTIVE = "operator_directive"
     QUESTION = "question"
@@ -90,6 +94,45 @@ class TeamModel(BaseModel):
 
 class EphemeralAgentPolicy(TeamModel):
     max_concurrent: int = Field(default=0, ge=0)
+
+
+class TeamRole(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    name: str
+    description: str = ""
+    permissions: list[RolePermission] = Field(default_factory=list)
+    ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", "name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _description(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def _permissions(cls, value: object) -> list[RolePermission]:
+        if isinstance(value, (list, tuple)):
+            return [
+                item if isinstance(item, RolePermission) else RolePermission(str(item))
+                for item in value
+            ]
+        items = _unique_text_list(value, "permissions")
+        return [RolePermission(item) for item in items]
 
 
 class ProjectGoal(TeamModel):
@@ -217,14 +260,14 @@ class PersistentAgent(TeamModel):
     team_id: str
     project_id: str | None = None
     display_name: str | None = None
-    role: str
+    role_id: str
     session_id: str
     reports_to_agent_id: str | None = None
     subordinate_agent_ids: list[str] = Field(default_factory=list)
     ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
     status: AgentStatus = AgentStatus.ACTIVE
 
-    @field_validator("id", "team_id", "role", "session_id", mode="before")
+    @field_validator("id", "team_id", "role_id", "session_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -257,6 +300,15 @@ class AgentRuntime(TeamModel):
     next_wake_at: datetime | None = None
     no_progress_count: int = Field(default=0, ge=0)
     last_progress_at: datetime | None = None
+    auto_context_clearing_enabled: bool = False
+    context_rotation_pending: bool = False
+    context_rotation_requested_by: str | None = None
+    context_rotation_requested_at: datetime | None = None
+    context_rotation_reason: Literal["idle", "manual"] | None = None
+    context_rotation_request_note: str | None = None
+    last_handoff_summary: str | None = None
+    last_context_rotated_at: datetime | None = None
+    last_thread_id: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("agent_id", mode="before")
@@ -264,7 +316,15 @@ class AgentRuntime(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("active_dispatch_id", "wake_reason", mode="before")
+    @field_validator(
+        "active_dispatch_id",
+        "wake_reason",
+        "context_rotation_requested_by",
+        "context_rotation_request_note",
+        "last_handoff_summary",
+        "last_thread_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -390,7 +450,7 @@ class ReviewProfile(TeamModel):
     project_id: str | None = None
     name: str
     description: str = ""
-    applicable_roles: list[str] = Field(default_factory=list)
+    applicable_role_ids: list[str] = Field(default_factory=list)
     criteria: list[ReviewProfileCriterion] = Field(default_factory=list)
     archived: bool = False
     created_at: datetime = Field(default_factory=utc_now)
@@ -406,10 +466,10 @@ class ReviewProfile(TeamModel):
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
 
-    @field_validator("applicable_roles", mode="before")
+    @field_validator("applicable_role_ids", mode="before")
     @classmethod
-    def _applicable_roles(cls, value: object) -> list[str]:
-        return _unique_text_list(value, "applicable_roles")
+    def _applicable_role_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "applicable_role_ids")
 
     @model_validator(mode="after")
     def _validate_criterion_ids(self) -> "ReviewProfile":
@@ -671,6 +731,7 @@ class TeamState(TeamModel):
     revision: int = Field(default=0, ge=0)
     teams: dict[str, Team] = Field(default_factory=dict)
     projects: dict[str, Project] = Field(default_factory=dict)
+    roles: dict[str, TeamRole] = Field(default_factory=dict)
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
@@ -694,6 +755,7 @@ class TeamState(TeamModel):
         self._validate_key_matches(errors)
         self._validate_teams(errors)
         self._validate_projects(errors)
+        self._validate_roles(errors)
         self._validate_agents(errors)
         self._validate_agent_runtimes(errors)
         self._validate_tasks(errors)
@@ -720,6 +782,7 @@ class TeamState(TeamModel):
         for collection_name in (
             "teams",
             "projects",
+            "roles",
             "agents",
             "agent_runtimes",
             "tasks",
@@ -764,10 +827,32 @@ class TeamState(TeamModel):
             elif lead.project_id != project.id:
                 errors.append(f"project {project.id} lead {lead.id} belongs to project {lead.project_id}")
 
+    def _validate_roles(self, errors: list[str]) -> None:
+        for role in self.roles.values():
+            if role.team_id not in self.teams:
+                errors.append(f"role {role.id} references missing team {role.team_id}")
+            if role.project_id is not None:
+                project = self.projects.get(role.project_id)
+                if project is None:
+                    errors.append(f"role {role.id} references missing project {role.project_id}")
+                elif project.team_id != role.team_id:
+                    errors.append(
+                        f"role {role.id} project {project.id} belongs to team {project.team_id}"
+                    )
+
     def _validate_agents(self, errors: list[str]) -> None:
         for agent in self.agents.values():
             if agent.team_id not in self.teams:
                 errors.append(f"agent {agent.id} references missing team {agent.team_id}")
+            role = self.roles.get(agent.role_id)
+            if role is None:
+                errors.append(f"agent {agent.id} references missing role {agent.role_id}")
+            elif role.team_id != agent.team_id:
+                errors.append(f"agent {agent.id} role {role.id} belongs to team {role.team_id}")
+            elif role.project_id is not None and role.project_id != agent.project_id:
+                errors.append(
+                    f"agent {agent.id} role {role.id} belongs to project {role.project_id}"
+                )
             if agent.project_id is not None:
                 project = self.projects.get(agent.project_id)
                 if project is None:
@@ -1004,6 +1089,22 @@ class TeamState(TeamModel):
                         f"review profile {profile.id} project {project.id} belongs to team "
                         f"{project.team_id}"
                     )
+            for role_id in profile.applicable_role_ids:
+                role = self.roles.get(role_id)
+                if role is None:
+                    errors.append(
+                        f"review profile {profile.id} references missing role {role_id}"
+                    )
+                elif role.team_id != profile.team_id:
+                    errors.append(
+                        f"review profile {profile.id} role {role.id} belongs to team "
+                        f"{role.team_id}"
+                    )
+                elif role.project_id is not None and role.project_id != profile.project_id:
+                    errors.append(
+                        f"review profile {profile.id} role {role.id} belongs to project "
+                        f"{role.project_id}"
+                    )
 
     def _validate_reviews(self, errors: list[str]) -> None:
         for review in self.review_requests.values():
@@ -1200,11 +1301,28 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
 
 def team_state_payload(state: TeamState) -> dict[str, Any]:
     payload = state.model_dump(mode="json")
+    payload["available_role_permissions"] = [permission.value for permission in RolePermission]
+    payload["agents"] = {
+        agent_id: _agent_payload_with_role(state, agent)
+        for agent_id, agent in state.agents.items()
+    }
     payload["tasks"] = {
         task_id: task_payload_with_derived(state, task)
         for task_id, task in state.tasks.items()
     }
     payload["runtime_operations"] = runtime_operations_payload(state)
+    return payload
+
+
+def _agent_payload_with_role(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
+    payload = agent.model_dump(mode="json")
+    role = state.roles.get(agent.role_id)
+    payload["role_name"] = role.name if role is not None else None
+    payload["role_permissions"] = (
+        [permission.value for permission in role.permissions]
+        if role is not None
+        else []
+    )
     return payload
 
 
@@ -1244,6 +1362,9 @@ def _runtime_agent_payload(
     detail_parts = [f"session {agent.session_id}", f"status {agent.status.value}"]
     if agent.project_id is not None:
         detail_parts.append(f"project {agent.project_id}")
+    role = state.roles.get(agent.role_id)
+    if role is not None:
+        detail_parts.append(f"role {role.name}")
     if runtime is None:
         detail_parts.append("no runtime snapshot")
     elif runtime.wake_reason is not None:
@@ -1256,7 +1377,13 @@ def _runtime_agent_payload(
         "detail": "; ".join(detail_parts),
         "team_id": agent.team_id,
         "project_id": agent.project_id,
-        "role": agent.role,
+        "role_id": agent.role_id,
+        "role_name": role.name if role is not None else None,
+        "role_permissions": (
+            [permission.value for permission in role.permissions]
+            if role is not None
+            else []
+        ),
         "session_id": agent.session_id,
         "status": agent.status.value,
         "last_wake_at": _json_datetime(runtime.last_wake_at if runtime is not None else None),
@@ -1265,6 +1392,28 @@ def _runtime_agent_payload(
         "wake_reason": runtime.wake_reason if runtime is not None else None,
         "active_dispatch_id": runtime.active_dispatch_id if runtime is not None else None,
         "no_progress_count": runtime.no_progress_count if runtime is not None else 0,
+        "auto_context_clearing_enabled": (
+            runtime.auto_context_clearing_enabled if runtime is not None else False
+        ),
+        "context_rotation_pending": (
+            runtime.context_rotation_pending if runtime is not None else False
+        ),
+        "context_rotation_reason": (
+            runtime.context_rotation_reason if runtime is not None else None
+        ),
+        "context_rotation_requested_by": (
+            runtime.context_rotation_requested_by if runtime is not None else None
+        ),
+        "context_rotation_requested_at": _json_datetime(
+            runtime.context_rotation_requested_at if runtime is not None else None
+        ),
+        "last_handoff_summary": (
+            runtime.last_handoff_summary if runtime is not None else None
+        ),
+        "last_context_rotated_at": _json_datetime(
+            runtime.last_context_rotated_at if runtime is not None else None
+        ),
+        "last_thread_id": runtime.last_thread_id if runtime is not None else None,
         "wake_due": wake_due,
         "lease_active": lease_active,
     }

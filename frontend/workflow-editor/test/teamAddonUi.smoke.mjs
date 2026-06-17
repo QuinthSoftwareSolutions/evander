@@ -11,11 +11,22 @@ const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/truman_team_addon/ui_static", import.meta.url)),
 );
 
+test("team add-on static UI exposes context clearing controls", async () => {
+  const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
+
+  assert.match(script, /auto_context_clearing_enabled/);
+  assert.match(script, /data-context-rotation-agent-id/);
+  assert.match(script, /context-rotation/);
+  assert.match(script, /Handoff summary/);
+});
+
 function emptyState() {
   return {
     revision: 0,
     teams: {},
     projects: {},
+    roles: {},
+    available_role_permissions: ["request_release"],
     agents: {},
     agent_runtimes: {},
     tasks: {},
@@ -28,6 +39,48 @@ function emptyState() {
     ephemeral_assignments: {},
     git_promotions: {},
   };
+}
+
+function roleId(scopeId, roleKey) {
+  return `${scopeId}__${roleKey.replaceAll("_", "-")}`;
+}
+
+function roleName(roleKey) {
+  return roleKey
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function putRole(
+  state,
+  {
+    id,
+    teamId,
+    projectId = null,
+    roleKey,
+    name = roleName(roleKey),
+    description = "",
+    permissions = [],
+    ephemeralPolicy = { max_concurrent: 0 },
+  },
+) {
+  state.roles[id] = {
+    id,
+    team_id: teamId,
+    project_id: projectId,
+    name,
+    description,
+    permissions,
+    ephemeral_policy: ephemeralPolicy,
+    archived: false,
+    created_at: "2026-06-09T00:00:00Z",
+    updated_at: "2026-06-09T00:00:00Z",
+  };
+  return id;
 }
 
 function autoDevSquadTemplate() {
@@ -931,11 +984,17 @@ async function createTeamAddonServer(t, { conflictOnFirstTeamCreate = false, ini
           project_ids: [],
           archived: false,
         };
+        putRole(state, {
+          id: roleId("existing", "manager"),
+          teamId: "existing",
+          roleKey: "manager",
+          name: "Manager",
+        });
         state.agents["existing-manager"] = {
           id: "existing-manager",
           team_id: "existing",
           project_id: null,
-          role: "manager",
+          role_id: roleId("existing", "manager"),
           session_id: "session-existing-manager",
           reports_to_agent_id: null,
           subordinate_agent_ids: [],
@@ -1015,8 +1074,27 @@ function applyTemplateMaterialization(state, payload, template) {
   const implementer = agents.implementer || {};
   const reviewer = agents.reviewer || {};
   const releaseOperator = agents.release_operator || {};
+  const roleIds = {
+    manager: roleId(team.id, "manager"),
+    project_lead: roleId(project.id, "project_lead"),
+    implementer: roleId(project.id, "implementer"),
+    reviewer: roleId(project.id, "reviewer"),
+    release_operator: roleId(project.id, "release_operator"),
+  };
 
   state.revision += 1;
+  for (const role of template.roles) {
+    putRole(state, {
+      id: roleIds[role.key],
+      teamId: team.id,
+      projectId: role.key === template.root_role_key ? null : project.id,
+      roleKey: role.key,
+      name: role.label,
+      description: role.description,
+      permissions: role.key === "release_operator" ? ["request_release"] : [],
+      ephemeralPolicy: role.ephemeral_policy,
+    });
+  }
   state.teams[team.id] = {
     id: team.id,
     name: team.name,
@@ -1029,7 +1107,7 @@ function applyTemplateMaterialization(state, payload, template) {
     id: manager,
     team_id: team.id,
     project_id: null,
-    role: "manager",
+    role_id: roleIds.manager,
     session_id: team.manager_session_id,
     reports_to_agent_id: null,
     subordinate_agent_ids: [projectLead],
@@ -1052,7 +1130,7 @@ function applyTemplateMaterialization(state, payload, template) {
     id: projectLead,
     team_id: team.id,
     project_id: project.id,
-    role: "project_lead",
+    role_id: roleIds.project_lead,
     session_id: project.lead_session_id,
     reports_to_agent_id: manager,
     subordinate_agent_ids: [implementer.agent_id, reviewer.agent_id, releaseOperator.agent_id],
@@ -1063,7 +1141,7 @@ function applyTemplateMaterialization(state, payload, template) {
     id: implementer.agent_id,
     team_id: team.id,
     project_id: project.id,
-    role: "implementer",
+    role_id: roleIds.implementer,
     session_id: implementer.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
@@ -1074,7 +1152,7 @@ function applyTemplateMaterialization(state, payload, template) {
     id: reviewer.agent_id,
     team_id: team.id,
     project_id: project.id,
-    role: "reviewer",
+    role_id: roleIds.reviewer,
     session_id: reviewer.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
@@ -1085,7 +1163,7 @@ function applyTemplateMaterialization(state, payload, template) {
     id: releaseOperator.agent_id,
     team_id: team.id,
     project_id: project.id,
-    role: "release_operator",
+    role_id: roleIds.release_operator,
     session_id: releaseOperator.session_id,
     reports_to_agent_id: projectLead,
     subordinate_agent_ids: [],
@@ -1102,7 +1180,7 @@ function applyTemplateMaterialization(state, payload, template) {
     name: "Auto-Dev Delivery Review",
     description:
       "Checks that the slice stays in scope, automated tests exist, risk is understood, and the release handoff is ready.",
-    applicable_roles: ["reviewer"],
+    applicable_role_ids: [roleIds.reviewer],
     criteria: template.review_profiles[0].criteria.map((criterion) => ({ ...criterion })),
     archived: false,
     created_at: "2026-06-09T00:00:00Z",
@@ -1154,6 +1232,7 @@ function applyTemplateMaterialization(state, payload, template) {
       reviewer: reviewer.agent_id,
       release_operator: releaseOperator.agent_id,
     },
+    role_ids: roleIds,
     created_review_profile_ids: [reviewProfileId],
     created_task_ids: [implementTaskId, releaseTaskId],
     revision: state.revision,
@@ -1177,6 +1256,13 @@ function applyMutation(state, pathname, payload) {
     return;
   }
   if (pathname === "/api/addons/team-addon/teams") {
+    const managerRoleId = payload.manager_role_id || roleId(payload.id, "manager");
+    putRole(state, {
+      id: managerRoleId,
+      teamId: payload.id,
+      roleKey: "manager",
+      name: payload.manager_role_name || "Manager",
+    });
     state.teams[payload.id] = {
       id: payload.id,
       name: payload.name,
@@ -1190,7 +1276,7 @@ function applyMutation(state, pathname, payload) {
       team_id: payload.id,
       project_id: null,
       display_name: payload.manager_display_name ?? null,
-      role: payload.manager_role || "manager",
+      role_id: managerRoleId,
       session_id: payload.manager_session_id,
       reports_to_agent_id: null,
       subordinate_agent_ids: [],
@@ -1200,6 +1286,15 @@ function applyMutation(state, pathname, payload) {
     return;
   }
   if (pathname === "/api/addons/team-addon/projects") {
+    const leadRoleId = payload.lead_role_id || roleId(payload.id, "project_lead");
+    putRole(state, {
+      id: leadRoleId,
+      teamId: payload.team_id,
+      projectId: payload.id,
+      roleKey: "project_lead",
+      name: payload.lead_role_name || "Project Lead",
+      ephemeralPolicy: { max_concurrent: 0 },
+    });
     state.projects[payload.id] = {
       id: payload.id,
       team_id: payload.team_id,
@@ -1215,7 +1310,7 @@ function applyMutation(state, pathname, payload) {
       team_id: payload.team_id,
       project_id: payload.id,
       display_name: payload.lead_display_name ?? null,
-      role: payload.lead_role || "project_lead",
+      role_id: leadRoleId,
       session_id: payload.lead_session_id,
       reports_to_agent_id: state.teams[payload.team_id].manager_agent_id,
       subordinate_agent_ids: [],
@@ -1227,17 +1322,32 @@ function applyMutation(state, pathname, payload) {
     );
     return;
   }
+  if (pathname === "/api/addons/team-addon/roles") {
+    putRole(state, {
+      id: payload.id || payload.role_id,
+      teamId: payload.team_id,
+      projectId: payload.project_id || null,
+      roleKey: payload.name || payload.id || payload.role_id,
+      name: payload.name,
+      description: payload.description || "",
+      permissions: payload.permissions || [],
+      ephemeralPolicy: payload.ephemeral_policy || { max_concurrent: 0 },
+    });
+    return;
+  }
   if (pathname === "/api/addons/team-addon/agents") {
     state.agents[payload.id] = {
       id: payload.id,
       team_id: payload.team_id,
       project_id: payload.project_id,
       display_name: payload.display_name ?? null,
-      role: payload.role,
+      role_id: payload.role_id,
       session_id: payload.session_id,
       reports_to_agent_id: payload.reports_to_agent_id,
       subordinate_agent_ids: [],
-      ephemeral_policy: payload.ephemeral_policy || { max_concurrent: 0 },
+      ephemeral_policy:
+        payload.ephemeral_policy ||
+        state.roles[payload.role_id]?.ephemeral_policy || { max_concurrent: 0 },
       status: "active",
     };
     state.agents[payload.reports_to_agent_id].subordinate_agent_ids.push(payload.id);
@@ -1390,19 +1500,31 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await page.getByText("Saved revision 2.").waitFor({ state: "visible" });
 
+  await openDetails(page, "Create role");
+  await waitForSelectOption(page, '#create-role-form [name="team_id"]', "team");
+  const roleForm = page.locator("#create-role-form");
+  await roleForm.locator('[name="id"]').fill("project__backend");
+  await roleForm.locator('[name="team_id"]').selectOption("team");
+  await roleForm.locator('[name="project_id"]').selectOption("project");
+  await roleForm.locator('[name="name"]').fill("Backend");
+  await roleForm.locator('[name="max_concurrent"]').fill("2");
+  await roleForm.getByRole("button", { name: "Create role" }).click();
+  await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
+
   await openDetails(page, "Register agent");
   await waitForSelectOption(page, '#register-agent-form [name="reports_to_agent_id"]', "lead");
+  await waitForSelectOption(page, '#register-agent-form [name="role_id"]', "project__backend");
   const agentForm = page.locator("#register-agent-form");
   await agentForm.locator('[name="id"]').fill("backend");
   await agentForm.locator('[name="team_id"]').selectOption("team");
   await agentForm.locator('[name="project_id"]').selectOption("project");
-  await agentForm.locator('[name="role"]').fill("backend");
+  await agentForm.locator('[name="role_id"]').selectOption("project__backend");
   await agentForm.locator('[name="session_id"]').fill("session-backend");
   await agentForm.locator('[name="display_name"]').fill("Backend Agent");
   await agentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
   await agentForm.locator('[name="max_concurrent"]').fill("2");
   await agentForm.getByRole("button", { name: "Register agent" }).click();
-  await page.getByText("Saved revision 3.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
   await page.getByText("Team Manager").first().waitFor({ state: "visible" });
   await page.getByText("Project Lead").first().waitFor({ state: "visible" });
   await page.getByText("Backend Agent").first().waitFor({ state: "visible" });
@@ -1417,7 +1539,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await taskForm.locator('[name="title"]').fill("Build backend");
   await taskForm.locator('[name="description"]').fill("Implement backend work.");
   await taskForm.getByRole("button", { name: "Create task" }).click();
-  await page.getByText("Saved revision 4.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
 
   await openDetails(page, "Update task");
   await waitForSelectOption(page, '#update-task-form [name="task_id"]', "task");
@@ -1425,7 +1547,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await updateForm.locator('[name="task_id"]').selectOption("task");
   await updateForm.locator('[name="state"]').selectOption("waiting_for_review");
   await updateForm.getByRole("button", { name: "Update task" }).click();
-  await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
 
   await openDetails(page, "Record deliverable");
   await waitForSelectOption(page, '#record-deliverable-form [name="task_id"]', "task");
@@ -1436,7 +1558,7 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await deliverableForm.locator('[name="summary"]').fill("Backend task is ready.");
   await deliverableForm.locator('[name="artifact_refs"]').fill("artifacts/backend.tar.gz");
   await deliverableForm.getByRole("button", { name: "Record deliverable" }).click();
-  await page.getByText("Saved revision 6.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
   await openDetails(page, "Request review");
   await waitForSelectOption(page, '#record-review-form [name="deliverable_id"]', "deliverable");
@@ -1445,17 +1567,18 @@ test("team add-on UI renders empty state and submits setup forms with revisions"
   await reviewForm.locator('[name="deliverable_id"]').selectOption("deliverable");
   await reviewForm.locator('[name="reviewer_agent_id"]').selectOption("lead");
   await reviewForm.getByRole("button", { name: "Request review" }).click();
-  await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
+  await page.getByText("Saved revision 8.").waitFor({ state: "visible" });
 
   assert.deepEqual(
     requests.map((request) => request.payload.expected_revision),
-    [0, 1, 2, 3, 4, 5, 6],
+    [0, 1, 2, 3, 4, 5, 6, 7],
   );
   assert.equal(requests[2].payload.ephemeral_policy.max_concurrent, 2);
-  assert.deepEqual(requests[5].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
+  assert.equal(requests[3].payload.ephemeral_policy.max_concurrent, 2);
+  assert.deepEqual(requests[6].payload.artifact_refs, ["artifacts/backend.tar.gz"]);
   assert.equal(requests[0].payload.manager_display_name, "Team Manager");
   assert.equal(requests[1].payload.lead_display_name, "Project Lead");
-  assert.equal(requests[2].payload.display_name, "Backend Agent");
+  assert.equal(requests[3].payload.display_name, "Backend Agent");
   assert.equal(requests[0].payload.operator_communication_target_id, "ops-channel");
   assert.deepEqual(requests[1].payload.git, {
     host_repo_path: "/srv/git/project",
@@ -1644,7 +1767,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
       project_id: "project",
       name: "Archived profile",
       description: "Hidden by default.",
-      applicable_roles: ["backend"],
+      applicable_role_ids: ["project__backend"],
       criteria: [],
       archived: true,
     },
@@ -1779,12 +1902,54 @@ function seededGitState() {
         status: "active",
       },
     },
+    roles: {
+      "team-alpha__manager": {
+        id: "team-alpha__manager",
+        team_id: "team-alpha",
+        project_id: null,
+        name: "Manager",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+      "alpha-project__project-lead": {
+        id: "alpha-project__project-lead",
+        team_id: "team-alpha",
+        project_id: "alpha-project",
+        name: "Project Lead",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+      "team-beta__manager": {
+        id: "team-beta__manager",
+        team_id: "team-beta",
+        project_id: null,
+        name: "Manager",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+      "beta-project__project-lead": {
+        id: "beta-project__project-lead",
+        team_id: "team-beta",
+        project_id: "beta-project",
+        name: "Project Lead",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+    },
     agents: {
       "alpha-manager": {
         id: "alpha-manager",
         team_id: "team-alpha",
         project_id: null,
-        role: "manager",
+        role_id: "team-alpha__manager",
         session_id: "session-alpha-manager",
         reports_to_agent_id: null,
         subordinate_agent_ids: ["alpha-lead"],
@@ -1795,7 +1960,7 @@ function seededGitState() {
         id: "alpha-lead",
         team_id: "team-alpha",
         project_id: "alpha-project",
-        role: "project_lead",
+        role_id: "alpha-project__project-lead",
         session_id: "session-alpha-lead",
         reports_to_agent_id: "alpha-manager",
         subordinate_agent_ids: [],
@@ -1806,7 +1971,7 @@ function seededGitState() {
         id: "beta-manager",
         team_id: "team-beta",
         project_id: null,
-        role: "manager",
+        role_id: "team-beta__manager",
         session_id: "session-beta-manager",
         reports_to_agent_id: null,
         subordinate_agent_ids: ["beta-lead"],
@@ -1817,7 +1982,7 @@ function seededGitState() {
         id: "beta-lead",
         team_id: "team-beta",
         project_id: "beta-project",
-        role: "project_lead",
+        role_id: "beta-project__project-lead",
         session_id: "session-beta-lead",
         reports_to_agent_id: "beta-manager",
         subordinate_agent_ids: [],
@@ -2156,7 +2321,7 @@ function seededGitState() {
         project_id: "alpha-project",
         name: "Alpha review profile",
         description: "Checklist for alpha deliverables.",
-        applicable_roles: ["project_lead"],
+        applicable_role_ids: ["alpha-project__project-lead"],
         criteria: [
           {
             id: "tests",
@@ -2205,13 +2370,55 @@ function seededOrgChartState() {
         status: "active",
       },
     },
+    roles: {
+      team__manager: {
+        id: "team__manager",
+        team_id: "team",
+        project_id: null,
+        name: "Manager",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 2 },
+        archived: false,
+      },
+      "project__project-lead": {
+        id: "project__project-lead",
+        team_id: "team",
+        project_id: "project",
+        name: "Project Lead",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 1 },
+        archived: false,
+      },
+      project__backend: {
+        id: "project__backend",
+        team_id: "team",
+        project_id: "project",
+        name: "Backend",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 3 },
+        archived: false,
+      },
+      project__worker: {
+        id: "project__worker",
+        team_id: "team",
+        project_id: "project",
+        name: "Worker",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+    },
     agents: {
       manager: {
         id: "manager",
         team_id: "team",
         project_id: null,
         display_name: "Ops Manager",
-        role: "manager",
+        role_id: "team__manager",
         session_id: "session-manager",
         reports_to_agent_id: null,
         subordinate_agent_ids: ["lead"],
@@ -2222,7 +2429,7 @@ function seededOrgChartState() {
         id: "lead",
         team_id: "team",
         project_id: "project",
-        role: "project_lead",
+        role_id: "project__project-lead",
         session_id: "session-lead",
         reports_to_agent_id: "manager",
         subordinate_agent_ids: ["backend"],
@@ -2234,7 +2441,7 @@ function seededOrgChartState() {
         team_id: "team",
         project_id: "project",
         display_name: "Backend Worker",
-        role: "backend",
+        role_id: "project__backend",
         session_id: "session-backend",
         reports_to_agent_id: "lead",
         subordinate_agent_ids: ["worker"],
@@ -2245,7 +2452,7 @@ function seededOrgChartState() {
         id: "worker",
         team_id: "team",
         project_id: "project",
-        role: "worker",
+        role_id: "project__worker",
         session_id: "session-worker",
         reports_to_agent_id: "backend",
         subordinate_agent_ids: [],
@@ -2363,12 +2570,34 @@ function seededMalformedHierarchyState() {
         archived: false,
       },
     },
+    roles: {
+      "broken-team__manager": {
+        id: "broken-team__manager",
+        team_id: "broken-team",
+        project_id: null,
+        name: "Manager",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+      "broken-team__worker": {
+        id: "broken-team__worker",
+        team_id: "broken-team",
+        project_id: null,
+        name: "Worker",
+        description: "",
+        permissions: [],
+        ephemeral_policy: { max_concurrent: 0 },
+        archived: false,
+      },
+    },
     agents: {
       alpha: {
         id: "alpha",
         team_id: "broken-team",
         project_id: null,
-        role: "manager",
+        role_id: "broken-team__manager",
         session_id: "session-alpha",
         reports_to_agent_id: null,
         subordinate_agent_ids: ["beta"],
@@ -2379,7 +2608,7 @@ function seededMalformedHierarchyState() {
         id: "beta",
         team_id: "broken-team",
         project_id: null,
-        role: "worker",
+        role_id: "broken-team__worker",
         session_id: "session-beta",
         reports_to_agent_id: "alpha",
         subordinate_agent_ids: ["alpha", "missing-subordinate"],

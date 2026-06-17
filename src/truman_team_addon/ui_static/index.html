@@ -112,6 +112,11 @@
             </div>
           </section>
 
+          <section class="content-panel" aria-labelledby="roles-heading">
+            <h2 id="roles-heading">Roles</h2>
+            <div id="roles-view" class="roles-view"></div>
+          </section>
+
           <section class="content-panel" aria-labelledby="projects-heading">
             <h2 id="projects-heading">Projects</h2>
             <div id="projects-view" class="projects-view"></div>
@@ -303,7 +308,8 @@
                 <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
                 <label>Manager display name <input name="manager_display_name" /></label>
-                <label>Manager role <input name="manager_role" value="manager" /></label>
+                <label>Manager role ID <input name="manager_role_id" /></label>
+                <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
                 <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                 <label>Max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                 <button type="submit">Create team</button>
@@ -332,7 +338,8 @@
                 <label>Lead agent ID <input name="lead_agent_id" required /></label>
                 <label>Lead session ID <input name="lead_session_id" required /></label>
                 <label>Lead display name <input name="lead_display_name" /></label>
-                <label>Lead role <input name="lead_role" value="project_lead" /></label>
+                <label>Lead role ID <input name="lead_role_id" /></label>
+                <label>Lead role name <input name="lead_role_name" value="Project Lead" /></label>
                 <label>Goal ID <input name="goal_id" /></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
                 <p class="subheading">Git config (optional)</p>
@@ -343,6 +350,20 @@
                 <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
                 <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                 <button type="submit">Create project</button>
+              </form>
+            </details>
+
+            <details>
+              <summary>Create role</summary>
+              <form id="create-role-form" data-endpoint="/roles" data-method="POST">
+                <label>Role ID <input name="id" required /></label>
+                <label>Team <select name="team_id" required data-options="teams"></select></label>
+                <label>Project <select name="project_id" data-options="projects"></select></label>
+                <label>Name <input name="name" required /></label>
+                <label>Description <textarea name="description" rows="2"></textarea></label>
+                <label>Permissions <select name="permissions" multiple size="3" data-options="role-permissions"></select></label>
+                <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
+                <button type="submit">Create role</button>
               </form>
             </details>
 
@@ -359,7 +380,7 @@
                     data-id-field="id"
                     data-session-field="session_id"
                     data-display-field="display_name"
-                    data-role-field="role"
+                    data-role-field="role_id"
                     data-project-field="project_id"
                     data-reports-to-field="reports_to_agent_id"
                     data-max-concurrent-field="max_concurrent"
@@ -368,7 +389,7 @@
                 <label>Agent ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
-                <label>Role <input name="role" required /></label>
+                <label>Role <select name="role_id" required data-options="roles"></select></label>
                 <label>Session ID <input name="session_id" required /></label>
                 <label>Display name <input name="display_name" /></label>
                 <label>Reports to <select name="reports_to_agent_id" required data-options="agents"></select></label>
@@ -416,7 +437,7 @@
                 <label>Project <select name="project_id" data-options="projects"></select></label>
                 <label>Name <input name="name" required /></label>
                 <label>Description <textarea name="description" rows="3"></textarea></label>
-                <label>Applicable roles <textarea name="applicable_roles" rows="2"></textarea></label>
+                <label>Applicable roles <select name="applicable_role_ids" multiple size="4" data-options="roles"></select></label>
                 <label>Criteria <textarea name="criteria" rows="4" placeholder="id | label | description | required"></textarea></label>
                 <button type="submit">Create profile</button>
               </form>

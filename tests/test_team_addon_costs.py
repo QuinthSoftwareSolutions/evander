@@ -63,11 +63,23 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    repo.create_role(
+        role_id="project__reviewer",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
@@ -75,7 +87,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         agent_id="reviewer",
         team_id="team",
         project_id="project",
-        role="reviewer",
+        role_id="project__reviewer",
         session_id="session-reviewer",
         reports_to_agent_id="lead",
     )

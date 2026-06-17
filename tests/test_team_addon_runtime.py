@@ -30,6 +30,7 @@ from truman_team_addon.models import (
     Team,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamRole,
     TeamState,
     TeamTaskState,
 )
@@ -348,15 +349,22 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=max_ephemeral),
-        expected_revision=2,
+        expected_revision=3,
     )
     repo.create_or_reprioritize_task(
         task_id="task",
@@ -366,7 +374,7 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         title="Build backend",
         description="Implement backend work.",
         created_by_agent_id="lead",
-        expected_revision=3,
+        expected_revision=4,
     )
     return repo
 
@@ -626,6 +634,123 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         ],
     }
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_rotates_context_when_pending(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="controlled rotation",
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-rotated"})
+    session_store = FakeSessionStore()
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Prior handoff summary from Team state" in prompt
+    assert "controlled rotation" in prompt
+    assert result["dispatches"][0]["context_rotation"] == {
+        "rotated": True,
+        "reason": "manual",
+    }
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_context_rotated_at is not None
+    assert runtime.last_thread_id == "thread-rotated"
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "context_rotation_pending"
+    ] is False
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "last_context_rotated_at"
+    ]
+
+
+def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="idle controlled rotation",
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-idle"})
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    assert "Active tasks: none." in str(resumer.calls[0]["prompt"])
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "thread-idle"
+
+
+def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.request_agent_context_rotation(agent_id="backend", requested_by="operator:test")
+    resumer = FakeResumer(result={"success": False, "message": "resume failed"})
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.last_context_rotated_at is None
 
 
 def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
@@ -1763,11 +1888,59 @@ def _multi_team_state() -> TeamState:
                 lead_agent_id="beta-lead",
             ),
         },
+        roles={
+            "alpha-team__manager": TeamRole(
+                id="alpha-team__manager",
+                team_id="alpha-team",
+                name="Manager",
+            ),
+            "alpha-project__project-lead": TeamRole(
+                id="alpha-project__project-lead",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Project Lead",
+            ),
+            "alpha-project__developer": TeamRole(
+                id="alpha-project__developer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Developer",
+            ),
+            "alpha-project__reviewer": TeamRole(
+                id="alpha-project__reviewer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Reviewer",
+            ),
+            "beta-team__manager": TeamRole(
+                id="beta-team__manager",
+                team_id="beta-team",
+                name="Manager",
+            ),
+            "beta-project__project-lead": TeamRole(
+                id="beta-project__project-lead",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Project Lead",
+            ),
+            "beta-project__developer": TeamRole(
+                id="beta-project__developer",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Developer",
+            ),
+            "beta-project__reviewer": TeamRole(
+                id="beta-project__reviewer",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Reviewer",
+            ),
+        },
         agents={
             "alpha-manager": PersistentAgent(
                 id="alpha-manager",
                 team_id="alpha-team",
-                role="manager",
+                role_id="alpha-team__manager",
                 session_id="session-alpha-manager",
                 subordinate_agent_ids=["alpha-lead"],
             ),
@@ -1775,7 +1948,7 @@ def _multi_team_state() -> TeamState:
                 id="alpha-lead",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="lead",
+                role_id="alpha-project__project-lead",
                 session_id="session-alpha-lead",
                 reports_to_agent_id="alpha-manager",
                 subordinate_agent_ids=["alpha-dev", "alpha-reviewer"],
@@ -1784,7 +1957,7 @@ def _multi_team_state() -> TeamState:
                 id="alpha-dev",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="developer",
+                role_id="alpha-project__developer",
                 session_id="session-alpha-dev",
                 reports_to_agent_id="alpha-lead",
             ),
@@ -1792,14 +1965,14 @@ def _multi_team_state() -> TeamState:
                 id="alpha-reviewer",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="reviewer",
+                role_id="alpha-project__reviewer",
                 session_id="session-alpha-reviewer",
                 reports_to_agent_id="alpha-lead",
             ),
             "beta-manager": PersistentAgent(
                 id="beta-manager",
                 team_id="beta-team",
-                role="manager",
+                role_id="beta-team__manager",
                 session_id="session-beta-manager",
                 subordinate_agent_ids=["beta-lead"],
             ),
@@ -1807,7 +1980,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-lead",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="lead",
+                role_id="beta-project__project-lead",
                 session_id="session-beta-lead",
                 reports_to_agent_id="beta-manager",
                 subordinate_agent_ids=["beta-dev", "beta-reviewer"],
@@ -1816,7 +1989,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-dev",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="developer",
+                role_id="beta-project__developer",
                 session_id="session-beta-dev",
                 reports_to_agent_id="beta-lead",
             ),
@@ -1824,7 +1997,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-reviewer",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="reviewer",
+                role_id="beta-project__reviewer",
                 session_id="session-beta-reviewer",
                 reports_to_agent_id="beta-lead",
             ),

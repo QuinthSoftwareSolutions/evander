@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -44,10 +44,12 @@ from .models import (
     ReviewProfile,
     ReviewProfileCriterion,
     ReviewRequest,
+    RolePermission,
     Team,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
+    TeamRole,
     TeamState,
     TeamTaskState,
     task_payload_with_derived,
@@ -167,7 +169,8 @@ class TeamStateRepository:
         manager_agent_id: str,
         manager_session_id: str,
         manager_display_name: str | None = None,
-        manager_role: str = "manager",
+        manager_role_id: str | None = None,
+        manager_role_name: str | None = None,
         operator_communication_target_id: str | None = None,
         max_cost_usd: object | None = None,
         expected_revision: int | None = None,
@@ -175,14 +178,29 @@ class TeamStateRepository:
         def _mutate(state: TeamState) -> TeamState:
             _require_absent(state.teams, team_id, "team")
             _require_absent(state.agents, manager_agent_id, "agent")
+            role_id = _optional_text(manager_role_id) or _default_role_id(
+                team_id=team_id,
+                project_id=None,
+                role_key="manager",
+            )
+            _require_absent(state.roles, role_id, "role")
             now = utc_now()
+            role = TeamRole(
+                id=role_id,
+                team_id=team_id,
+                name=_optional_text(manager_role_name) or "Manager",
+                created_at=now,
+                updated_at=now,
+            )
+            state.roles[role.id] = role
             manager = PersistentAgent(
                 id=manager_agent_id,
                 team_id=team_id,
                 display_name=manager_display_name,
-                role=manager_role,
+                role_id=role.id,
                 session_id=manager_session_id,
                 reports_to_agent_id=None,
+                ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[manager.id] = manager
             state.teams[team_id] = Team(
@@ -240,22 +258,39 @@ class TeamStateRepository:
         lead_display_name: str | None = None,
         goals: list[ProjectGoal] | None = None,
         git: ProjectGitConfig | None = None,
-        lead_role: str = "project_lead",
+        lead_role_id: str | None = None,
+        lead_role_name: str | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, team_id, "team")
             _require_absent(state.projects, project_id, "project")
             _require_absent(state.agents, lead_agent_id, "agent")
+            role_id = _optional_text(lead_role_id) or _default_role_id(
+                team_id=team_id,
+                project_id=project_id,
+                role_key="project_lead",
+            )
+            _require_absent(state.roles, role_id, "role")
             now = utc_now()
+            role = TeamRole(
+                id=role_id,
+                team_id=team_id,
+                project_id=project_id,
+                name=_optional_text(lead_role_name) or "Project Lead",
+                created_at=now,
+                updated_at=now,
+            )
+            state.roles[role.id] = role
             lead = PersistentAgent(
                 id=lead_agent_id,
                 team_id=team_id,
                 project_id=project_id,
                 display_name=lead_display_name,
-                role=lead_role,
+                role_id=role.id,
                 session_id=lead_session_id,
                 reports_to_agent_id=team.manager_agent_id,
+                ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[lead.id] = lead
             manager = state.agents[team.manager_agent_id]
@@ -302,13 +337,100 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def create_role(
+        self,
+        *,
+        role_id: str,
+        team_id: str,
+        name: str,
+        project_id: str | None = None,
+        description: str | None = None,
+        permissions: list[RolePermission | str] | None = None,
+        ephemeral_policy: EphemeralAgentPolicy | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            _require_absent(state.roles, role_id, "role")
+            _require_present(state.teams, team_id, "team")
+            normalized_project_id = _optional_text(project_id)
+            if normalized_project_id is not None:
+                project = _require_present(state.projects, normalized_project_id, "project")
+                if project.team_id != team_id:
+                    raise ValueError(f"project {normalized_project_id} does not belong to team {team_id}")
+            now = utc_now()
+            role = TeamRole(
+                id=role_id,
+                team_id=team_id,
+                project_id=normalized_project_id,
+                name=name,
+                description=description or "",
+                permissions=_normalize_role_permissions(permissions),
+                ephemeral_policy=ephemeral_policy or EphemeralAgentPolicy(),
+                created_at=now,
+                updated_at=now,
+            )
+            state.roles[role.id] = role
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def update_role(
+        self,
+        *,
+        role_id: str,
+        name: str | None = None,
+        project_id: str | None = None,
+        set_project_id: bool = False,
+        description: str | None = None,
+        set_description: bool = False,
+        permissions: list[RolePermission | str] | None = None,
+        ephemeral_policy: EphemeralAgentPolicy | None = None,
+        archived: bool | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _mutate(state: TeamState) -> TeamState:
+            role = _require_present(state.roles, role_id, "role")
+            if name is not None:
+                role.name = name
+            if set_project_id:
+                normalized_project_id = _optional_text(project_id)
+                if normalized_project_id is not None:
+                    project = _require_present(state.projects, normalized_project_id, "project")
+                    if project.team_id != role.team_id:
+                        raise ValueError(
+                            f"project {normalized_project_id} does not belong to team {role.team_id}"
+                        )
+                role.project_id = normalized_project_id
+            if set_description:
+                role.description = description or ""
+            if permissions is not None:
+                role.permissions = _normalize_role_permissions(permissions)
+            if ephemeral_policy is not None:
+                role.ephemeral_policy = ephemeral_policy
+            if archived is not None:
+                role.archived = archived
+            role.updated_at = utc_now()
+            for agent in state.agents.values():
+                if agent.role_id == role.id:
+                    _validate_role_assignment(
+                        role,
+                        team_id=agent.team_id,
+                        project_id=agent.project_id,
+                    )
+            for profile in state.review_profiles.values():
+                if role.id in profile.applicable_role_ids:
+                    _validate_role_filter_assignment(role, profile=profile)
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def register_agent(
         self,
         *,
         agent_id: str,
         team_id: str,
         project_id: str,
-        role: str,
+        role_id: str,
         session_id: str,
         reports_to_agent_id: str,
         display_name: str | None = None,
@@ -321,6 +443,8 @@ class TeamStateRepository:
             project = _require_present(state.projects, project_id, "project")
             if project.team_id != team_id:
                 raise ValueError(f"project {project_id} does not belong to team {team_id}")
+            role = _require_present(state.roles, role_id, "role")
+            _validate_role_assignment(role, team_id=team_id, project_id=project_id)
             superior = _require_present(state.agents, reports_to_agent_id, "superior agent")
             if superior.team_id != team_id:
                 raise ValueError(f"superior agent {reports_to_agent_id} is not in team {team_id}")
@@ -329,10 +453,14 @@ class TeamStateRepository:
                 team_id=team_id,
                 project_id=project_id,
                 display_name=display_name,
-                role=role,
+                role_id=role.id,
                 session_id=session_id,
                 reports_to_agent_id=reports_to_agent_id,
-                ephemeral_policy=ephemeral_policy or EphemeralAgentPolicy(),
+                ephemeral_policy=(
+                    ephemeral_policy
+                    if ephemeral_policy is not None
+                    else role.ephemeral_policy.model_copy(deep=True)
+                ),
             )
             state.agents[agent.id] = agent
             superior.subordinate_agent_ids = _append_unique(superior.subordinate_agent_ids, agent.id)
@@ -346,7 +474,7 @@ class TeamStateRepository:
         agent_id: str,
         project_id: str | None = None,
         set_project_id: bool = False,
-        role: str | None = None,
+        role_id: str | None = None,
         session_id: str | None = None,
         reports_to_agent_id: str | None = None,
         set_reports_to_agent_id: bool = False,
@@ -354,9 +482,12 @@ class TeamStateRepository:
         set_display_name: bool = False,
         ephemeral_policy: EphemeralAgentPolicy | None = None,
         status: AgentStatus | None = None,
+        auto_context_clearing_enabled: bool | None = None,
+        set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
+            now = utc_now()
             agent = _require_present(state.agents, agent_id, "agent")
             if set_project_id:
                 if project_id is not None:
@@ -366,8 +497,21 @@ class TeamStateRepository:
                             f"project {project_id} does not belong to team {agent.team_id}"
                         )
                 agent.project_id = project_id
-            if role is not None:
-                agent.role = role
+            if role_id is not None:
+                role = _require_present(state.roles, role_id, "role")
+                _validate_role_assignment(
+                    role,
+                    team_id=agent.team_id,
+                    project_id=agent.project_id,
+                )
+                agent.role_id = role.id
+            elif set_project_id:
+                role = _require_present(state.roles, agent.role_id, "role")
+                _validate_role_assignment(
+                    role,
+                    team_id=agent.team_id,
+                    project_id=agent.project_id,
+                )
             if session_id is not None:
                 agent.session_id = session_id
             if set_display_name:
@@ -376,6 +520,18 @@ class TeamStateRepository:
                 agent.ephemeral_policy = ephemeral_policy
             if status is not None:
                 agent.status = status
+            if set_auto_context_clearing_enabled:
+                runtime = state.agent_runtimes.setdefault(
+                    agent.id,
+                    AgentRuntime(agent_id=agent.id),
+                )
+                runtime.auto_context_clearing_enabled = bool(auto_context_clearing_enabled)
+                runtime.updated_at = now
+                _maybe_mark_idle_context_rotation_due(
+                    state,
+                    agent_id=agent.id,
+                    now=now,
+                )
             if set_reports_to_agent_id:
                 old_superior_id = agent.reports_to_agent_id
                 if reports_to_agent_id is not None:
@@ -400,6 +556,71 @@ class TeamStateRepository:
             return state
 
         return self.update(_mutate, expected_revision=expected_revision)
+
+    def request_agent_context_rotation(
+        self,
+        *,
+        agent_id: str,
+        requested_by: str | None = None,
+        request_note: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_requested_by = _optional_text(requested_by)
+        normalized_request_note = _optional_text(request_note)
+
+        def _mutate(state: TeamState) -> TeamState:
+            now = utc_now()
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            if agent.status == AgentStatus.ARCHIVED:
+                raise ValueError(f"agent {agent.id} is archived")
+            runtime = state.agent_runtimes.setdefault(
+                agent.id,
+                AgentRuntime(agent_id=agent.id),
+            )
+            _mark_context_rotation_pending(
+                state,
+                agent=agent,
+                runtime=runtime,
+                reason="manual",
+                requested_by=normalized_requested_by,
+                requested_at=now,
+                request_note=normalized_request_note,
+            )
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
+    def record_context_rotation_dispatch_started(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        thread_id: str | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_thread_id = _optional_text(thread_id)
+
+        def _mutate(state: TeamState) -> TeamState:
+            now = utc_now()
+            _require_present(state.agents, normalized_agent_id, "agent")
+            runtime = _require_present(
+                state.agent_runtimes,
+                normalized_agent_id,
+                "agent runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError("dispatch_id does not match active team runtime lease")
+            if runtime.context_rotation_pending:
+                runtime.context_rotation_pending = False
+                runtime.last_context_rotated_at = now
+                if normalized_thread_id is not None:
+                    runtime.last_thread_id = normalized_thread_id
+                runtime.updated_at = now
+            return state
+
+        return self.update(_mutate)
 
     def create_or_reprioritize_task(
         self,
@@ -436,6 +657,12 @@ class TeamStateRepository:
                         agent_id=task.owner_agent_id,
                         now=now,
                     )
+                else:
+                    _maybe_mark_idle_context_rotation_due(
+                        state_model,
+                        agent_id=task.owner_agent_id,
+                        now=now,
+                    )
                 return state_model
             state_model.tasks[task_id] = AgentTask(
                 id=task_id,
@@ -454,6 +681,12 @@ class TeamStateRepository:
             )
             if state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(state_model, agent_id=owner_agent_id, now=now)
+            else:
+                _maybe_mark_idle_context_rotation_due(
+                    state_model,
+                    agent_id=owner_agent_id,
+                    now=now,
+                )
             return state_model
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -488,6 +721,12 @@ class TeamStateRepository:
             task.updated_at = utc_now()
             if task.state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(
+                    state_model,
+                    agent_id=task.owner_agent_id,
+                    now=task.updated_at,
+                )
+            else:
+                _maybe_mark_idle_context_rotation_due(
                     state_model,
                     agent_id=task.owner_agent_id,
                     now=task.updated_at,
@@ -645,24 +884,33 @@ class TeamStateRepository:
         project_id: str | None = None,
         name: str,
         description: str = "",
-        applicable_roles: list[str] | None = None,
+        applicable_role_ids: list[str] | None = None,
         criteria: list[ReviewProfileCriterion] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         def _mutate(state: TeamState) -> TeamState:
             _require_absent(state.review_profiles, profile_id, "review profile")
+            _require_present(state.teams, team_id, "team")
+            normalized_project_id = _optional_text(project_id)
+            if normalized_project_id is not None:
+                project = _require_present(state.projects, normalized_project_id, "project")
+                if project.team_id != team_id:
+                    raise ValueError(f"project {normalized_project_id} does not belong to team {team_id}")
             now = utc_now()
             profile = ReviewProfile(
                 id=profile_id,
                 team_id=team_id,
-                project_id=project_id,
+                project_id=normalized_project_id,
                 name=name,
                 description=description,
-                applicable_roles=applicable_roles or [],
+                applicable_role_ids=applicable_role_ids or [],
                 criteria=criteria or [],
                 created_at=now,
                 updated_at=now,
             )
+            for role_id in profile.applicable_role_ids:
+                role = _require_present(state.roles, role_id, "role")
+                _validate_role_filter_assignment(role, profile=profile)
             state.review_profiles[profile.id] = profile
             return state
 
@@ -674,7 +922,7 @@ class TeamStateRepository:
         profile_id: str,
         name: str | None = None,
         description: str | None = None,
-        applicable_roles: list[str] | None = None,
+        applicable_role_ids: list[str] | None = None,
         criteria: list[ReviewProfileCriterion] | None = None,
         archived: bool | None = None,
         project_id: str | None = None,
@@ -687,8 +935,8 @@ class TeamStateRepository:
                 profile.name = name
             if description is not None:
                 profile.description = description
-            if applicable_roles is not None:
-                profile.applicable_roles = applicable_roles
+            if applicable_role_ids is not None:
+                profile.applicable_role_ids = applicable_role_ids
             if criteria is not None:
                 profile.criteria = [
                     ReviewProfileCriterion.model_validate(criterion) for criterion in criteria
@@ -696,7 +944,17 @@ class TeamStateRepository:
             if archived is not None:
                 profile.archived = archived
             if set_project_id:
-                profile.project_id = project_id
+                normalized_project_id = _optional_text(project_id)
+                if normalized_project_id is not None:
+                    project = _require_present(state.projects, normalized_project_id, "project")
+                    if project.team_id != profile.team_id:
+                        raise ValueError(
+                            f"project {normalized_project_id} does not belong to team {profile.team_id}"
+                        )
+                profile.project_id = normalized_project_id
+            for role_id in profile.applicable_role_ids:
+                role = _require_present(state.roles, role_id, "role")
+                _validate_role_filter_assignment(role, profile=profile)
             profile.updated_at = utc_now()
             return state
 
@@ -742,9 +1000,18 @@ class TeamStateRepository:
             task.id: _materialized_template_record_id(project_id, task.id)
             for task in template.tasks
         }
+        role_ids = {
+            role.key: _default_role_id(
+                team_id=team_id,
+                project_id=None if role.key == template.root_role_key else project_id,
+                role_key=role.key,
+            )
+            for role in template.roles
+        }
         concrete_ids = [
             team_id,
             project_id,
+            *role_ids.values(),
             *[role_input["agent_id"] for role_input in role_inputs.values()],
             *goal_ids.values(),
             *review_profile_ids.values(),
@@ -762,6 +1029,7 @@ class TeamStateRepository:
             "template_name": template.name,
             "team_id": team_id,
             "project_id": project_id,
+            "role_ids": role_ids,
             "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
             "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
             "review_profile_ids": [
@@ -780,6 +1048,8 @@ class TeamStateRepository:
         def _mutate(state: TeamState) -> TeamState:
             _require_absent(state.teams, team_id, "team")
             _require_absent(state.projects, project_id, "project")
+            for role_key, role_id in role_ids.items():
+                _require_absent(state.roles, role_id, "role")
             for role_key, role_input in role_inputs.items():
                 _require_absent(state.agents, role_input["agent_id"], "agent")
             for profile in template.review_profiles:
@@ -792,11 +1062,24 @@ class TeamStateRepository:
                 _require_absent(state.tasks, task_ids[task.id], "task")
 
             now = utc_now()
+            for role in template.roles:
+                role_project_id = None if role.key == root_role_key else project_id
+                state.roles[role_ids[role.key]] = TeamRole(
+                    id=role_ids[role.key],
+                    team_id=team_id,
+                    project_id=role_project_id,
+                    name=role.label,
+                    description=role.description,
+                    permissions=_normalize_role_permissions(role.permissions),
+                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
+                    created_at=now,
+                    updated_at=now,
+                )
             manager_role_input = role_inputs[root_role_key]
             manager = PersistentAgent(
                 id=manager_role_input["agent_id"],
                 team_id=team_id,
-                role=root_role_key,
+                role_id=role_ids[root_role_key],
                 session_id=manager_role_input["session_id"],
                 reports_to_agent_id=None,
                 ephemeral_policy=root_role.ephemeral_policy.model_copy(deep=True),
@@ -853,7 +1136,7 @@ class TeamStateRepository:
                     id=role_agent_ids[role.key],
                     team_id=team_id,
                     project_id=project_id,
-                    role=role.key,
+                    role_id=role_ids[role.key],
                     session_id=role_inputs[role.key]["session_id"],
                     reports_to_agent_id=superior.id,
                     ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
@@ -875,7 +1158,10 @@ class TeamStateRepository:
                     project_id=project_id if profile_template.project_scoped else None,
                     name=profile_template.name,
                     description=profile_template.description,
-                    applicable_roles=list(profile_template.applicable_role_keys),
+                    applicable_role_ids=[
+                        role_ids[role_key]
+                        for role_key in profile_template.applicable_role_keys
+                    ],
                     criteria=[
                         criterion.model_copy(deep=True)
                         for criterion in profile_template.criteria
@@ -1011,6 +1297,11 @@ class TeamStateRepository:
             )
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, project_id)
+            _maybe_mark_idle_context_rotation_due(
+                state_model,
+                agent_id=review.reviewer_agent_id,
+                now=utc_now(),
+            )
             return state_model
 
         return self.update(_mutate, expected_revision=expected_revision)
@@ -1410,8 +1701,10 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                rotation_pending = runtime.context_rotation_pending
                 wake_eligible = (
-                    bool(pending_inbox)
+                    rotation_pending
+                    or bool(pending_inbox)
                     or any(
                         state_model.dependency_status(task.id) == "satisfied"
                         for task in active_tasks
@@ -1427,12 +1720,13 @@ class TeamStateRepository:
                     runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
-                if not pending_inbox and not due_by_time:
+                if not pending_inbox and not rotation_pending and not due_by_time:
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
                     and not pending_inbox
+                    and not rotation_pending
                 ):
                     continue
 
@@ -1446,7 +1740,7 @@ class TeamStateRepository:
                 runtime.updated_at = effective_now
                 leases.append(
                     {
-                        "agent": agent.model_dump(mode="json"),
+                        "agent": _agent_payload(state_model, agent),
                         "runtime": runtime.model_dump(mode="json"),
                         "dispatch_id": dispatch_id,
                         "reason": reason,
@@ -1473,18 +1767,37 @@ class TeamStateRepository:
         agent_id: str,
     ) -> dict[str, Any]:
         agent = _require_present(state.agents, agent_id, "agent")
+        runtime = state.agent_runtimes.get(agent_id)
         active_task_ids = [task.id for task in _active_tasks_for_agent(state, agent_id)]
         pending_inbox_ids = [item.id for item in _pending_inbox_for_agent(state, agent_id)]
+        role = state.roles.get(agent.role_id)
         return {
             "team_addon": {
                 "agent_id": agent.id,
                 "team_id": agent.team_id,
                 "project_id": agent.project_id,
-                "role": agent.role,
+                "role_id": agent.role_id,
+                "role_name": role.name if role is not None else None,
+                "role_permissions": (
+                    [permission.value for permission in role.permissions]
+                    if role is not None
+                    else []
+                ),
                 "reports_to_agent_id": agent.reports_to_agent_id,
                 "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                 "active_task_ids": active_task_ids,
                 "pending_inbox_item_ids": pending_inbox_ids,
+                "auto_context_clearing_enabled": (
+                    runtime.auto_context_clearing_enabled if runtime is not None else False
+                ),
+                "context_rotation_pending": (
+                    runtime.context_rotation_pending if runtime is not None else False
+                ),
+                "last_context_rotated_at": (
+                    runtime.last_context_rotated_at.isoformat()
+                    if runtime is not None and runtime.last_context_rotated_at is not None
+                    else None
+                ),
             }
         }
 
@@ -2018,6 +2331,11 @@ class TeamStateRepository:
             if progress:
                 runtime.last_progress_at = utc_now()
             runtime.updated_at = utc_now()
+            _maybe_mark_idle_context_rotation_due(
+                state_model,
+                agent_id=agent.id,
+                now=runtime.updated_at,
+            )
             result["success"] = progress or not result["errors"]
             result["applied"] = progress
             return state_model
@@ -2189,6 +2507,64 @@ def _remove_value(values: list[str], value: str) -> list[str]:
     return [item for item in values if item != value]
 
 
+def _default_role_id(
+    *,
+    team_id: str,
+    project_id: str | None,
+    role_key: str,
+) -> str:
+    scope = project_id or team_id
+    return f"{scope}__{_role_id_part(role_key)}"
+
+
+def _role_id_part(value: str) -> str:
+    return _required_text(value, "role_key").replace("_", "-")
+
+
+def _normalize_role_permissions(
+    permissions: list[RolePermission | str] | None,
+) -> list[RolePermission]:
+    if permissions is None:
+        return []
+    normalized: list[RolePermission] = []
+    for permission in permissions:
+        item = permission if isinstance(permission, RolePermission) else RolePermission(str(permission))
+        if item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
+def _validate_role_assignment(
+    role: TeamRole,
+    *,
+    team_id: str,
+    project_id: str | None,
+) -> None:
+    if role.team_id != team_id:
+        raise ValueError(f"role {role.id} does not belong to team {team_id}")
+    if role.project_id is not None and role.project_id != project_id:
+        raise ValueError(f"role {role.id} does not belong to project {project_id}")
+
+
+def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) -> None:
+    if role.team_id != profile.team_id:
+        raise ValueError(f"role {role.id} does not belong to team {profile.team_id}")
+    if role.project_id is not None and role.project_id != profile.project_id:
+        raise ValueError(f"role {role.id} does not apply to project {profile.project_id}")
+
+
+def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
+    payload = agent.model_dump(mode="json")
+    role = state.roles.get(agent.role_id)
+    payload["role_name"] = role.name if role is not None else None
+    payload["role_permissions"] = (
+        [permission.value for permission in role.permissions]
+        if role is not None
+        else []
+    )
+    return payload
+
+
 def _mapping(value: object, field_name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a JSON object")
@@ -2331,6 +2707,217 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     return tasks
 
 
+def _maybe_mark_idle_context_rotation_due(
+    state: TeamState,
+    *,
+    agent_id: str,
+    now: datetime,
+) -> None:
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return
+    runtime = state.agent_runtimes.setdefault(agent.id, AgentRuntime(agent_id=agent.id))
+    if not runtime.auto_context_clearing_enabled or runtime.context_rotation_pending:
+        return
+    if not _is_agent_truly_idle(state, agent=agent, runtime=runtime, now=now):
+        return
+    _mark_context_rotation_pending(
+        state,
+        agent=agent,
+        runtime=runtime,
+        reason="idle",
+        requested_by=None,
+        requested_at=now,
+        request_note=None,
+    )
+
+
+def _is_agent_truly_idle(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    now: datetime,
+) -> bool:
+    if agent.status != AgentStatus.ACTIVE:
+        return False
+    if runtime.active_dispatch_id:
+        return False
+    if runtime.wake_leased_until is not None and _ensure_utc(runtime.wake_leased_until) > now:
+        return False
+    if _pending_inbox_for_agent(state, agent.id):
+        return False
+    if _active_tasks_for_agent(state, agent.id):
+        return False
+    if _pending_reviews_for_agent(state, agent.id):
+        return False
+    if _pending_ephemeral_acceptances_for_agent(state, agent.id):
+        return False
+    return True
+
+
+def _mark_context_rotation_pending(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    runtime: AgentRuntime,
+    reason: Literal["idle", "manual"],
+    requested_by: str | None,
+    requested_at: datetime,
+    request_note: str | None,
+) -> None:
+    if reason not in {"idle", "manual"}:
+        raise ValueError("context rotation reason must be idle or manual")
+    runtime.context_rotation_pending = True
+    runtime.context_rotation_reason = reason
+    runtime.context_rotation_requested_by = requested_by
+    runtime.context_rotation_requested_at = requested_at
+    runtime.context_rotation_request_note = request_note
+    runtime.next_wake_at = requested_at
+    runtime.last_handoff_summary = _build_context_handoff_summary(
+        state,
+        agent=agent,
+        now=requested_at,
+        reason=reason,
+        request_note=request_note,
+    )
+    runtime.updated_at = requested_at
+
+
+def _build_context_handoff_summary(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    now: datetime,
+    reason: Literal["idle", "manual"],
+    request_note: str | None,
+) -> str:
+    display = agent.display_name or agent.id
+    project_label = agent.project_id or "none"
+    superior_label = agent.reports_to_agent_id or "none"
+    subordinate_label = ", ".join(agent.subordinate_agent_ids) or "none"
+    role = state.roles.get(agent.role_id)
+    role_label = role.name if role is not None else agent.role_id
+    lines = [
+        f"Context rotation handoff for {display} ({agent.id}).",
+        f"Generated at {now.isoformat()} for {reason} context clearing.",
+        (
+            f"Role: {role_label} ({agent.role_id}); team: {agent.team_id}; project: {project_label}; "
+            f"session: {agent.session_id}; reports_to: {superior_label}; "
+            f"subordinates: {subordinate_label}."
+        ),
+    ]
+    if request_note:
+        lines.append(f"Operator note: {request_note}.")
+
+    active_tasks = _active_tasks_for_agent(state, agent.id)
+    if active_tasks:
+        lines.append("Active tasks:")
+        for task in active_tasks[:8]:
+            lines.append(
+                f"- {task.id}: {task.state.value}, priority {task.priority}, {task.title}"
+            )
+    else:
+        lines.append("Active tasks: none.")
+
+    pending_inbox = _pending_inbox_for_agent(state, agent.id)
+    if pending_inbox:
+        lines.append("Pending inbox:")
+        for item in pending_inbox[:8]:
+            task_suffix = f", task {item.task_id}" if item.task_id else ""
+            sender_suffix = f", from {item.sender_agent_id}" if item.sender_agent_id else ""
+            lines.append(f"- {item.id}: {item.item_type.value}{task_suffix}{sender_suffix}")
+    else:
+        lines.append("Pending inbox: none.")
+
+    pending_reviews = _pending_reviews_for_agent(state, agent.id)
+    if pending_reviews:
+        lines.append("Pending reviews:")
+        for review in pending_reviews[:8]:
+            lines.append(
+                f"- {review.id}: {review.state.value}, deliverable {review.deliverable_id}"
+            )
+    else:
+        lines.append("Pending reviews: none.")
+
+    pending_ephemeral = _pending_ephemeral_acceptances_for_agent(state, agent.id)
+    if pending_ephemeral:
+        lines.append("Pending ephemeral acceptances:")
+        for assignment in pending_ephemeral[:8]:
+            lines.append(
+                f"- {assignment.id}: task {assignment.task_id}, session {assignment.session_id}"
+            )
+    else:
+        lines.append("Pending ephemeral acceptances: none.")
+
+    recent_deliverables = sorted(
+        [
+            deliverable
+            for deliverable in state.deliverables.values()
+            if deliverable.producer_agent_id == agent.id
+        ],
+        key=lambda item: (item.created_at, item.id),
+        reverse=True,
+    )
+    if recent_deliverables:
+        lines.append("Recent deliverables:")
+        for deliverable in recent_deliverables[:5]:
+            lines.append(
+                f"- {deliverable.id}: {deliverable.state.value}, task {deliverable.task_id}, "
+                f"{deliverable.summary}"
+            )
+    else:
+        lines.append("Recent deliverables: none.")
+
+    recent_actions = sorted(
+        [
+            record
+            for record in state.action_records.values()
+            if record.agent_id == agent.id
+        ],
+        key=lambda item: (item.created_at, item.id),
+        reverse=True,
+    )
+    if recent_actions:
+        lines.append("Recent action records:")
+        for record in recent_actions[:5]:
+            status = "success" if record.success else f"failed: {record.error or 'unknown'}"
+            lines.append(f"- {record.id}: {status}, dispatch {record.dispatch_id}")
+    else:
+        lines.append("Recent action records: none.")
+
+    return "\n".join(lines)
+
+
+def _pending_reviews_for_agent(state: TeamState, agent_id: str) -> list[ReviewRequest]:
+    pending_states = {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+    }
+    reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.reviewer_agent_id == agent_id and review.state in pending_states
+    ]
+    reviews.sort(key=lambda item: (item.created_at or datetime.min.replace(tzinfo=UTC), item.id))
+    return reviews
+
+
+def _pending_ephemeral_acceptances_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> list[EphemeralAssignment]:
+    assignments = [
+        assignment
+        for assignment in state.ephemeral_assignments.values()
+        if assignment.parent_agent_id == agent_id
+        and assignment.state == EphemeralAssignmentState.COMPLETED
+    ]
+    assignments.sort(key=lambda item: (item.updated_at, item.id))
+    return assignments
+
+
 def _mark_agent_work_due(
     state: TeamState,
     *,
@@ -2399,6 +2986,7 @@ def _mark_action_failure(
     runtime.wake_reason = None
     runtime.no_progress_count += 1
     runtime.updated_at = utc_now()
+    _maybe_mark_idle_context_rotation_due(state, agent_id=agent_id, now=runtime.updated_at)
     state.action_records[action_id] = AgentActionRecord(
         id=action_id,
         agent_id=agent_id,
@@ -2426,18 +3014,21 @@ def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bo
     return project is not None and project.lead_agent_id == agent_id
 
 
-def _is_project_release_operator_for(
+def _agent_has_role_permission_for_project(
     state: TeamState,
     actor: PersistentAgent,
+    permission: RolePermission,
     project_id: str,
 ) -> bool:
     project = state.projects.get(project_id)
-    return (
-        project is not None
-        and actor.role == "release_operator"
-        and actor.project_id == project_id
-        and actor.team_id == project.team_id
-    )
+    role = state.roles.get(actor.role_id)
+    if project is None or role is None:
+        return False
+    if actor.team_id != project.team_id or role.team_id != project.team_id:
+        return False
+    if role.project_id is not None and role.project_id != project_id:
+        return False
+    return permission in role.permissions
 
 
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
@@ -2869,8 +3460,8 @@ def _review_profile_for_request(
         return None, f"review profile {profile_id} is not in the same team as reviewer {reviewer.id}"
     if profile.project_id is not None and profile.project_id != project_id:
         return None, f"review profile {profile_id} does not apply to project {project_id}"
-    if profile.applicable_roles and reviewer.role not in profile.applicable_roles:
-        return None, f"review profile {profile_id} does not apply to reviewer role {reviewer.role}"
+    if profile.applicable_role_ids and reviewer.role_id not in profile.applicable_role_ids:
+        return None, f"review profile {profile_id} does not apply to reviewer role {reviewer.role_id}"
     return profile, None
 
 
@@ -3520,7 +4111,12 @@ def _apply_git_release_request(
         return None
     permitted = (
         _is_project_lead_for(state, actor.id, project_id)
-        or _is_project_release_operator_for(state, actor, project_id)
+        or _agent_has_role_permission_for_project(
+            state,
+            actor,
+            RolePermission.REQUEST_RELEASE,
+            project_id,
+        )
         or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
     )
     if not permitted:

@@ -50,15 +50,22 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=0),
-        expected_revision=2,
+        expected_revision=3,
     )
     repo.create_or_reprioritize_task(
         task_id="task",
@@ -68,7 +75,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         title="Build backend",
         description="Implement backend work.",
         created_by_agent_id="lead",
-        expected_revision=3,
+        expected_revision=4,
     )
     return repo
 
