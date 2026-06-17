@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Focused Org Chart
+
+- Added a top-level Team Add-on tab for a focused org-chart view that keeps the
+  existing dense workspace intact.
+- Made focused org-chart agent cards show awake/due/idle state, current work,
+  waiting/blocker context, and open the existing agent edit dialog when
+  selected.
+
 ## 2026-06-17 - Team Add-on SQLite State Store
 
 - Migrated canonical Team Add-on state from `runtime/addons/team-addon/state.json`

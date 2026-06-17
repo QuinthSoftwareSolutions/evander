@@ -29,6 +29,7 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let costsRequestId = 0;
 let showArchived = false;
+let activeTeamView = "workspace";
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -78,6 +79,10 @@ const elements = {
   timelineAttentionFilter: document.querySelector("#timeline-attention-filter"),
   showArchivedToggle: document.querySelector("#show-archived-toggle"),
   refreshButton: document.querySelector("#refresh-button"),
+  teamViewButtons: Array.from(document.querySelectorAll("[data-team-view]")),
+  teamViewPanels: Array.from(document.querySelectorAll("[data-team-view-panel]")),
+  orgFocusSummary: document.querySelector("#org-focus-summary"),
+  orgFocusView: document.querySelector("#org-focus-view"),
   editModal: document.querySelector("#edit-modal"),
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
@@ -259,6 +264,7 @@ const fieldTooltips = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  bindTopLevelTabs();
   bindForms();
   bindRecordEditing();
   bindGeneratedIds();
@@ -353,6 +359,34 @@ const timelineTypeOrder = [
   "release_package",
 ];
 
+function bindTopLevelTabs() {
+  elements.teamViewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setTeamView(button.dataset.teamView || "workspace");
+    });
+  });
+  updateTeamViewTabs();
+}
+
+function setTeamView(view) {
+  activeTeamView = view === "org" ? "org" : "workspace";
+  renderFocusedOrgChartIfActive();
+  updateTeamViewTabs();
+}
+
+function updateTeamViewTabs() {
+  elements.teamViewButtons.forEach((button) => {
+    const active = (button.dataset.teamView || "workspace") === activeTeamView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  elements.teamViewPanels.forEach((panel) => {
+    const active = (panel.dataset.teamViewPanel || "workspace") === activeTeamView;
+    panel.hidden = !active;
+  });
+}
+
 function bindForms() {
   document.querySelectorAll("form[data-endpoint], form[data-template-endpoint]").forEach((form) => {
     form.addEventListener("submit", (event) => {
@@ -422,7 +456,20 @@ function bindRecordEditing() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && elements.editModal && !elements.editModal.hidden) {
       closeEditDialog();
+      return;
     }
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    if (elements.editModal?.contains(event.target)) {
+      return;
+    }
+    const editTarget = event.target.closest("[data-edit-type][data-edit-id]");
+    if (!editTarget || editTarget.tagName === "BUTTON") {
+      return;
+    }
+    event.preventDefault();
+    openEditDialog(editTarget.dataset.editType, editTarget.dataset.editId);
   });
 
   elements.editForm?.addEventListener("submit", (event) => {
@@ -805,6 +852,7 @@ function render() {
   renderRuntimeOperations();
   renderReviewDeliveryWorkspace();
   renderHierarchy();
+  renderFocusedOrgChartIfActive();
   renderAgents();
   renderRoles();
   renderProjects();
@@ -814,6 +862,20 @@ function render() {
   refreshSelects();
   renderTimeline();
   decorateFieldTooltips(document);
+  updateTeamViewTabs();
+}
+
+function renderFocusedOrgChartIfActive() {
+  if (activeTeamView === "org") {
+    renderFocusedOrgChart();
+    return;
+  }
+  if (elements.orgFocusSummary) {
+    elements.orgFocusSummary.innerHTML = "";
+  }
+  if (elements.orgFocusView) {
+    elements.orgFocusView.innerHTML = "";
+  }
 }
 
 function setDeliveryFilter(filter) {
@@ -1376,6 +1438,93 @@ function renderRuntimeSection({ title, count, emptyMessage, body }) {
   `;
 }
 
+function renderFocusedOrgChart() {
+  if (!elements.orgFocusView) {
+    return;
+  }
+
+  const teams = values(state.teams);
+  const visibleTeams = teams.filter(isVisibleTeam);
+  const visibleAgents = values(state.agents).filter(isVisibleAgent);
+  const awakeCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+  const attentionCount = visibleAgents.filter((agent) => {
+    const details = agentCardData(agent);
+    return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+  }).length;
+  const dueCount = visibleAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "due").length;
+
+  if (elements.orgFocusSummary) {
+    elements.orgFocusSummary.innerHTML = [
+      ["Teams", visibleTeams.length],
+      ["Agents", visibleAgents.length],
+      ["Awake", awakeCount],
+      ["Due", dueCount],
+      ["Attention", attentionCount],
+    ]
+      .map(
+        ([label, value]) => `
+          <div class="org-focus-metric">
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(label)}</span>
+          </div>
+        `,
+      )
+      .join("");
+  }
+
+  if (!teams.length) {
+    elements.orgFocusView.innerHTML = `<p class="empty-state">No teams registered.</p>`;
+    return;
+  }
+  if (!visibleTeams.length) {
+    elements.orgFocusView.innerHTML = `<p class="empty-state">No active team.</p>`;
+    return;
+  }
+
+  elements.orgFocusView.innerHTML = visibleTeams
+    .map((team) => {
+      const hierarchy = teamHierarchyGraph(team);
+      const teamAgents = values(state.agents).filter(
+        (agent) => text(agent.team_id) === text(team.id) && isVisibleAgent(agent),
+      );
+      const teamAwakeCount = teamAgents.filter((agent) => agentAwakeState(agentCardData(agent)).kind === "awake").length;
+      const teamAttentionCount = teamAgents.filter((agent) => {
+        const details = agentCardData(agent);
+        return details.taskStats.blockedWaitingCount || details.inboxCount || agentRuntimeAttentionRows(agent.id).length;
+      }).length;
+      return `
+        <article class="org-focus-team">
+          <div class="org-focus-team-header">
+            <div>
+              <p class="section-label">${escapeHtml(team.id)}</p>
+              <h3>${escapeHtml(team.name)}</h3>
+              ${renderTeamCostCounter(team.id)}
+            </div>
+            <div class="org-focus-team-status">
+              ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+              <span class="state-pill info">${teamAwakeCount} awake</span>
+              <span class="state-pill ${teamAttentionCount ? "warning" : "accepted"}">${teamAttentionCount} attention</span>
+            </div>
+          </div>
+          <div class="org-focus-chart">
+            ${renderHierarchyForest(hierarchy.roots, { focused: true })}
+            ${
+              hierarchy.orphanRoots.length
+                ? `
+                  <section class="hierarchy-fallbacks" aria-label="Unreached agents">
+                    <p class="subheading">Unreached agents</p>
+                    ${renderHierarchyForest(hierarchy.orphanRoots, { focused: true })}
+                  </section>
+                `
+                : ""
+            }
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function renderHierarchy() {
   const teams = values(state.teams);
   const visibleTeams = teams.filter(isVisibleTeam);
@@ -1423,28 +1572,40 @@ function renderHierarchy() {
     .join("");
 }
 
-function renderHierarchyForest(nodes) {
+function renderHierarchyForest(nodes, options = {}) {
   if (!nodes.length) {
     return `<p class="empty-state">No reporting tree.</p>`;
   }
   return `
     <ol class="hierarchy-tree">
-      ${nodes.map((node) => renderHierarchyNode(node)).join("")}
+      ${nodes.map((node) => renderHierarchyNode(node, options)).join("")}
     </ol>
   `;
 }
 
-function renderHierarchyNode(node) {
+function renderHierarchyNode(node, options = {}) {
   if (!node) {
     return "";
   }
   if (node.kind === "agent") {
     const children = (node.children || []).length
-      ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child)).join("")}</ol>`
+      ? `<ol class="hierarchy-children">${node.children.map((child) => renderHierarchyNode(child, options)).join("")}</ol>`
+      : "";
+    const focused = Boolean(options.focused);
+    const cardClasses = [
+      "hierarchy-node-card",
+      focused ? "org-focus-node-card" : "",
+      focused ? `org-focus-node-card--${agentAwakeState(node.agentData).kind}` : "",
+      node.agentData.taskStats.blockedWaitingCount || node.agentData.inboxCount ? "org-focus-node-card--attention" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const actionAttrs = focused
+      ? `role="button" data-edit-type="agent" data-edit-id="${escapeAttr(node.agentData.id)}" aria-label="Edit ${escapeAttr(node.agentData.label)}"`
       : "";
     return `
       <li class="hierarchy-branch">
-        <article class="hierarchy-node-card" tabindex="0">
+        <article class="${cardClasses}" tabindex="0" ${actionAttrs}>
           <div class="hierarchy-node-summary">
             <div class="hierarchy-node-title">
               <strong>${escapeHtml(node.agentData.label)}</strong>
@@ -1457,9 +1618,11 @@ function renderHierarchyNode(node) {
             <div class="hierarchy-node-subtitle">
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
               <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
+              ${focused ? renderAgentAwakePill(node.agentData) : ""}
             </div>
           </div>
-          <div class="hierarchy-node-details">${renderHierarchyDetails(node.agentData)}</div>
+          ${focused ? renderOrgNodeWorkSummary(node.agentData) : ""}
+          <div class="hierarchy-node-details${focused ? " org-node-hover-panel" : ""}">${renderHierarchyDetails(node.agentData, { focused })}</div>
         </article>
         ${children}
       </li>
@@ -1728,8 +1891,159 @@ function runtimeSummary(agentId) {
   };
 }
 
-function renderHierarchyDetails(agentData) {
+function runtimeOperationForAgent(agentId) {
+  return (state.runtime_operations?.agents || []).find((row) => {
+    return text(row?.id || row?.agent_id) === text(agentId);
+  }) || null;
+}
+
+function agentAwakeState(agentData) {
+  const runtimeRow = runtimeOperationForAgent(agentData.id);
+  const activeDispatchId = text(runtimeRow?.active_dispatch_id || agentData.runtime?.activeDispatchId);
+  if (activeDispatchId) {
+    return {
+      kind: "awake",
+      label: "Awake",
+      detail: `dispatch ${activeDispatchId}`,
+    };
+  }
+  if (Boolean(runtimeRow?.lease_active) || isFutureTimestamp(agentData.runtime?.wakeLeasedUntil)) {
+    return {
+      kind: "awake",
+      label: "Awake",
+      detail: "lease active",
+    };
+  }
+  if (Boolean(runtimeRow?.wake_due)) {
+    return {
+      kind: "due",
+      label: "Due",
+      detail: "wake due",
+    };
+  }
+  if (agentData.runtime?.present) {
+    return {
+      kind: "idle",
+      label: "Idle",
+      detail: "runtime idle",
+    };
+  }
+  return {
+    kind: "unknown",
+    label: "No runtime",
+    detail: "no runtime snapshot",
+  };
+}
+
+function isFutureTimestamp(value) {
+  const raw = text(value);
+  if (!raw) {
+    return false;
+  }
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+function renderAgentAwakePill(agentData) {
+  const awake = agentAwakeState(agentData);
+  return `
+    <span class="awake-indicator awake-indicator--${escapeAttr(awake.kind)}" title="${escapeAttr(awake.detail)}">
+      <span class="awake-dot" aria-hidden="true"></span>
+      ${escapeHtml(awake.label)}
+    </span>
+  `;
+}
+
+function agentWorkSnapshot(agentData) {
+  const openTasks = agentData.taskStats.openTasks || [];
+  const waitingTasks = openTasks.filter(isTaskWaitingOrBlocked);
+  const currentTask = openTasks.find((task) => !isTaskWaitingOrBlocked(task)) || openTasks[0] || null;
+  const inboxItems = pendingInboxForAgent(agentData.id);
+  const runtimeAttention = agentRuntimeAttentionRows(agentData.id);
+  const activeAssignments = activeEphemeralAssignmentsForAgent(agentData.id);
+  const primary = currentTask
+    ? `${currentTask.title} (${humanizeToken(currentTask.state)})`
+    : inboxItems[0]
+      ? `${inboxItemLabels[inboxItems[0].item_type] || inboxItems[0].item_type}: ${inboxItemDetail(inboxItems[0]) || inboxItems[0].id}`
+      : activeAssignments[0]
+        ? `${activeAssignments[0].title || activeAssignments[0].id} (${humanizeToken(activeAssignments[0].state)})`
+        : "No open work";
+  const waiting = [];
+  waitingTasks.slice(0, 2).forEach((task) => {
+    waiting.push(`${task.title} (${humanizeToken(task.state)})`);
+  });
+  runtimeAttention.slice(0, 2).forEach((row) => {
+    const label = row.title || row.id;
+    if (label && !waiting.includes(label)) {
+      waiting.push(`${label} (${humanizeToken(row.kind)})`);
+    }
+  });
+  return {
+    primary,
+    waiting,
+    inboxItems,
+    runtimeAttention,
+    activeAssignments,
+  };
+}
+
+function isTaskWaitingOrBlocked(task) {
+  return (
+    task.state === "blocked" ||
+    task.state === "waiting_for_review" ||
+    task.dependency_status === "waiting" ||
+    task.dependency_status === "blocked" ||
+    Boolean((task.blocked_by_task_ids || []).length)
+  );
+}
+
+function agentRuntimeAttentionRows(agentId) {
+  return (state.runtime_operations?.attention || []).filter((row) => {
+    return text(row.agent_id) === text(agentId);
+  });
+}
+
+function renderOrgNodeWorkSummary(agentData) {
+  const snapshot = agentWorkSnapshot(agentData);
+  const waitingLabel = snapshot.waiting.length
+    ? snapshot.waiting[0]
+    : snapshot.inboxItems.length
+      ? `${snapshot.inboxItems.length} pending inbox`
+      : "Clear";
+  return `
+    <div class="org-node-work">
+      <div class="org-node-work-line">
+        <span>Now</span>
+        <strong>${escapeHtml(snapshot.primary)}</strong>
+      </div>
+      <div class="org-node-work-line org-node-work-line--waiting">
+        <span>Waiting</span>
+        <strong>${escapeHtml(waitingLabel)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderHierarchyDetails(agentData, { focused = false } = {}) {
   const lines = [];
+  const awake = agentAwakeState(agentData);
+  const snapshot = agentWorkSnapshot(agentData);
+
+  if (focused) {
+    lines.push(`Awake status ${awake.label} - ${awake.detail}`);
+    lines.push(`Current work ${snapshot.primary}`);
+    if (snapshot.waiting.length) {
+      lines.push(`Waiting on ${snapshot.waiting.join("; ")}`);
+    }
+    if (snapshot.inboxItems.length) {
+      lines.push(
+        `Inbox ${snapshot.inboxItems
+          .slice(0, 2)
+          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxItemDetail(item) || item.id}`)
+          .join("; ")}`,
+      );
+    }
+  }
 
   if (agentData.id) {
     lines.push(`Agent ${agentData.id}`);

@@ -26,7 +26,38 @@
 
       <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
 
-      <main class="team-layout">
+      <nav class="team-view-tabs" role="tablist" aria-label="Team Add-on views">
+        <button
+          id="team-view-workspace-tab"
+          class="team-view-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="team-workspace-page"
+          data-team-view="workspace"
+        >
+          Workspace
+        </button>
+        <button
+          id="team-view-org-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-org-page"
+          data-team-view="org"
+        >
+          Org chart
+        </button>
+      </nav>
+
+      <main
+        id="team-workspace-page"
+        class="team-layout"
+        role="tabpanel"
+        aria-labelledby="team-view-workspace-tab"
+        data-team-view-panel="workspace"
+      >
         <section class="team-main">
           <section class="summary-panel" aria-labelledby="summary-heading">
             <h2 id="summary-heading">Overview</h2>
@@ -482,6 +513,24 @@
             </details>
           </div>
         </aside>
+      </main>
+
+      <main
+        id="team-org-page"
+        class="org-focus-page"
+        role="tabpanel"
+        aria-labelledby="team-view-org-tab"
+        data-team-view-panel="org"
+        hidden
+      >
+        <section class="org-focus-header" aria-labelledby="org-focus-heading">
+          <div>
+            <p class="section-label">Focus</p>
+            <h2 id="org-focus-heading">Org chart</h2>
+          </div>
+          <div id="org-focus-summary" class="org-focus-summary"></div>
+        </section>
+        <section id="org-focus-view" class="org-focus-view" aria-label="Focused team org chart"></section>
       </main>
       <div id="edit-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
         <div class="edit-modal-backdrop" data-edit-close></div>
