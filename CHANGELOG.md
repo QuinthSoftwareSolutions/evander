@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Batched Task Mandates
+
+- Enforced ordinary-agent task mandate checks against batch-local parent tasks
+  so agents cannot create child tasks under newly-created subordinate-owned
+  parents in the same action.
+
 ## 2026-06-17 - Team Add-on Focused Workspace Tabs
 
 - Added focused Team Add-on tabs for overview, operations, delivery, people,

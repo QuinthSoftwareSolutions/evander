@@ -2168,6 +2168,7 @@ class TeamStateRepository:
             graph_errors = _task_creation_batch_graph_errors(
                 state_model,
                 task_creation_plans,
+                actor=agent,
             )
             for plan in task_creation_plans:
                 graph_error = graph_errors.get(plan.task_id)
@@ -3615,6 +3616,8 @@ def _apply_task_creation_plan(
 def _task_creation_batch_graph_errors(
     state: TeamState,
     plans: list[_TaskCreationPlan],
+    *,
+    actor: PersistentAgent,
 ) -> dict[str, str]:
     errors: dict[str, str] = {}
     while True:
@@ -3622,6 +3625,10 @@ def _task_creation_batch_graph_errors(
         if not valid_plans:
             return errors
         task_projects = {task_id: task.project_id for task_id, task in state.tasks.items()}
+        task_owners = {
+            task_id: task.owner_agent_id for task_id, task in state.tasks.items()
+        }
+        task_states = {task_id: task.state for task_id, task in state.tasks.items()}
         parent_map = {
             task_id: task.parent_task_id for task_id, task in state.tasks.items()
         }
@@ -3631,6 +3638,8 @@ def _task_creation_batch_graph_errors(
         }
         for plan in valid_plans:
             task_projects[plan.task_id] = plan.project_id
+            task_owners[plan.task_id] = plan.owner_id
+            task_states[plan.task_id] = plan.task_state
             parent_map[plan.task_id] = plan.parent_task_id
             dependency_map[plan.task_id] = list(plan.dependency_task_ids)
 
@@ -3644,10 +3653,63 @@ def _task_creation_batch_graph_errors(
             )
             if graph_error is not None:
                 next_errors[plan.task_id] = graph_error
+                continue
+            mandate_error = _task_creation_plan_batch_mandate_error(
+                state,
+                actor=actor,
+                plan=plan,
+                task_projects=task_projects,
+                task_owners=task_owners,
+                task_states=task_states,
+            )
+            if mandate_error is not None:
+                next_errors[plan.task_id] = mandate_error
         if not next_errors:
             return errors
         for task_id, graph_error in next_errors.items():
             errors.setdefault(task_id, graph_error)
+
+
+def _task_creation_plan_batch_mandate_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    plan: _TaskCreationPlan,
+    task_projects: dict[str, str],
+    task_owners: dict[str, str],
+    task_states: dict[str, TeamTaskState],
+) -> str | None:
+    parent_task_id = plan.parent_task_id
+    can_create_root = _agent_has_role_permission_for_project(
+        state,
+        actor,
+        RolePermission.CREATE_ROOT_TASK,
+        plan.project_id,
+    )
+    if parent_task_id is None:
+        if can_create_root:
+            return None
+        return (
+            f"agent {actor.id} cannot create a top-level task without "
+            f"{RolePermission.CREATE_ROOT_TASK.value} permission"
+        )
+    parent_project_id = task_projects.get(parent_task_id)
+    parent_owner_id = task_owners.get(parent_task_id)
+    parent_state = task_states.get(parent_task_id)
+    if parent_project_id is None or parent_owner_id is None or parent_state is None:
+        return None
+    if parent_state not in _NON_TERMINAL_TASK_STATES:
+        return f"task parent {parent_task_id} is not active"
+    if parent_project_id != plan.project_id:
+        return None
+    if can_create_root:
+        return None
+    if parent_owner_id == actor.id:
+        return None
+    return (
+        f"agent {actor.id} can only create child tasks under its own active tasks "
+        f"without {RolePermission.CREATE_ROOT_TASK.value} permission"
+    )
 
 
 def _task_creation_plan_graph_error(

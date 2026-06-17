@@ -2850,6 +2850,47 @@ def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path)
     assert state.child_task_ids("parent") == ["child"]
 
 
+def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-parent", owner_agent_id="backend")
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "worker-parent",
+                    "owner_agent_id": "worker",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Worker parent",
+                    "description": "Subordinate-owned parent task.",
+                    "parent_task_id": "backend-parent",
+                },
+                {
+                    "id": "worker-child",
+                    "owner_agent_id": "worker",
+                    "project_id": "project",
+                    "priority": 2,
+                    "title": "Worker child",
+                    "description": "Must not bypass mandate through batch-local parent.",
+                    "parent_task_id": "worker-parent",
+                },
+            ],
+        },
+    )
+
+    assert result["created_task_ids"] == ["worker-parent"]
+    assert any(
+        "can only create child tasks under its own active tasks" in error
+        for error in result["errors"]
+    )
+    assert "worker-parent" in state.tasks
+    assert "worker-child" not in state.tasks
+
+
 def test_apply_agent_action_task_creation_rejects_missing_parent(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 
