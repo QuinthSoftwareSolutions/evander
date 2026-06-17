@@ -132,9 +132,9 @@ class GmailEmailProvider:
                 provider=self.provider_name,
                 operation="send_draft",
                 method="POST",
-                url=self._url(f"drafts/{draft_id}/send"),
+                url=self._url("drafts/send"),
                 headers=self._headers(),
-                json={},
+                json={"id": draft_id},
             )
             data = response.json()
 

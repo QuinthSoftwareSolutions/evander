@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.models import DraftMessage
-from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
 from agent_sandbox.repositories.records import JsonEmailRecordsRepository
 from agent_sandbox.runtime import _build_email_provider
 from agent_sandbox.storage import JsonStore
@@ -104,17 +103,31 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         runtime = getattr(admin_service, "runtime", None)
         config = self._gateway_config()
         if runtime is not None:
-            return _build_email_provider(config, runtime.emails, runtime.drafts, runtime.email_cursors)
+            return _build_email_provider(config, runtime.emails, runtime.drafts, None)
         return _build_email_provider(
             config,
             JsonEmailRecordsRepository(config.email_store_path),
             JsonStore(config.draft_store_path, DraftMessage),
-            JsonEmailCursorRepository(config.email_cursor_store_path),
+            None,
         )
 
     def _gateway_config(self) -> GatewayConfig:
         if self.runtime_context is None:
             raise RuntimeError("EmailNewMessageTriggerProvider has no runtime context")
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        if admin_service is None:
+            admin_service = self.runtime_context.metadata.get("admin_service")
+        runtime = getattr(admin_service, "runtime", None)
+        runtime_provider_config = getattr(runtime, "provider_config", None)
+        resolve_for_directory = getattr(runtime_provider_config, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            return resolve_for_directory(self._directory_path())
+
+        resolver = getattr(self.runtime_context, "provider_config_resolver", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            return resolve_for_directory(self._directory_path())
+
         provider_config = getattr(self.runtime_context, "provider_config", None)
         if provider_config:
             return GatewayConfig.model_validate(dict(provider_config))
@@ -123,6 +136,12 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         if callable(model_dump):
             return GatewayConfig.model_validate(model_dump(mode="json"))
         return GatewayConfig.model_validate(vars(resolved_config))
+
+    def _directory_path(self) -> str:
+        if self.runtime_context is None:
+            raise RuntimeError("EmailNewMessageTriggerProvider has no runtime context")
+        text = str(self.runtime_context.metadata.get("directory_path") or "root").strip()
+        return text or "root"
 
 
 def _parse_dt(value: object) -> datetime | None:

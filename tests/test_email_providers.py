@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from email import message_from_bytes, policy
 
 import httpx
@@ -281,8 +282,9 @@ def test_gmail_send_draft_posts_to_provider_send_endpoint(
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path.endswith("/users/me/drafts/draft-123/send")
+        assert request.url.path.endswith("/users/me/drafts/send")
         assert request.headers["Authorization"] == "Bearer token"
+        assert json.loads(request.content.decode("utf-8")) == {"id": "draft-123"}
         return httpx.Response(
             200,
             json={"id": "gmail-message-1", "threadId": "thread-1"},

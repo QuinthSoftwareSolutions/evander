@@ -20,7 +20,6 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope, DraftMessage
-from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
 from agent_sandbox.repositories.records import JsonEmailRecordsRepository
 from agent_sandbox.runtime import _build_email_provider
 from agent_sandbox.services import (
@@ -652,12 +651,12 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         runtime = getattr(admin_service, "runtime", None)
         config = self._gateway_config(directory_path=directory_path)
         if runtime is not None:
-            return _build_email_provider(config, runtime.emails, runtime.drafts, runtime.email_cursors)
+            return _build_email_provider(config, runtime.emails, runtime.drafts, None)
         return _build_email_provider(
             config,
             JsonEmailRecordsRepository(config.email_store_path),
             JsonStore(config.draft_store_path, DraftMessage),
-            JsonEmailCursorRepository(config.email_cursor_store_path),
+            None,
         )
 
     def _gateway_config(self, *, directory_path: str) -> GatewayConfig:

@@ -14,6 +14,10 @@ material. Newer entries are added incrementally as changes land.
   retaining the older approved-tool names as compatibility aliases.
 - Switched email triggers to configured mailbox provider definitions and added
   email support to generic communication message query, trigger, and send flows.
+- Fixed review follow-ups so email attachment sends enforce exact file-send
+  approval, Gmail draft sends use the provider `drafts/send` endpoint, and
+  trigger/query email reads do not advance durable Gmail/Graph cursors before
+  workflow acknowledgement.
 
 ## 2026-06-17 - Team Add-on Timeline UTC Sorting
 

@@ -11,6 +11,7 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
@@ -23,6 +24,7 @@ from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
 )
 from agent_sandbox.models import (
+    ApprovalStatus,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
     LocalIssueRecord,
@@ -2352,6 +2354,93 @@ def test_email_send_rejects_recipient_mismatch(tmp_path: Path) -> None:
                 },
             )
         )
+
+
+def test_email_send_with_attachments_requires_exact_file_send_approval(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+            ],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            communication_file_send_enabled=True,
+            communication_file_require_approval_for_send=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(context.config.runtime_dir).stage(
+        provider="email",
+        session_id="session-1",
+        content=b"report contents",
+        original_filename="report.txt",
+        mime_type="text/plain",
+        source_mailbox="primary",
+    )
+    server = create_server(context)
+    draft = call_tool(
+        server,
+        "email_create_draft_with_attachments",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+    send_arguments = {
+        "session_id": "session-1",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "subject": "Status",
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(server.call_tool("email_send_with_attachments", send_arguments))
+
+    approval_payload = {
+        "session_id": "session-1",
+        "provider": "email",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+        "subject": "Status",
+    }
+    approval = context.policy.create_approval(
+        "session-1",
+        ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value,
+        approval_payload,
+        "Send Status with report.txt",
+    )
+    approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(approval.request_id, approval)
+
+    result = call_tool(
+        server,
+        "email_send_with_attachments",
+        {**send_arguments, "approval_request_id": approval.request_id},
+    )
+
+    assert result["status"] == "local_sent"
+    assert result["artifact_ids"] == [artifact.artifact_id]
+    events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] == ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value
+    ]
+    assert [event["decision"] for event in events] == ["denied", "allowed"]
+    assert events[-1]["approval_request_id"] == approval.request_id
+    assert events[-1]["result"]["approval_decision"] == ApprovalStatus.APPROVED.value
 
 
 def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, MailboxConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.pr_feedback import AzureDevOpsFeedbackAdapter
 from agent_sandbox.models import (
     DiscordMessageEnvelope,
@@ -21,6 +22,8 @@ from agent_sandbox.models import (
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
@@ -381,9 +384,8 @@ def test_conformance_schema_accepts_required_trigger_shapes(
                 "display_name": "Email",
                 "type": "trigger:email:new-message",
                 "provider": "gmail",
-                "mailbox_ids": ["default"],
             },
-            "account_identifier",
+            "mailbox_ids",
             "trigger:email:new-message",
         ),
         (
@@ -879,6 +881,95 @@ def test_conformance_email_new_message_acknowledges_after_publish(tmp_path: Path
     provider.acknowledge_published_event(second_events[0])
     final_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
     assert final_payload["email-gmail"]["recent_message_ids"] == ["msg-1", "msg-2"]
+
+
+def test_email_new_message_resolves_full_mailbox_config_without_provider_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="gmail",
+                account_identifier="me",
+                auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+            )
+        ],
+    )
+    resolver = ProviderConfigResolver(config)
+    captured: dict[str, object] = {}
+
+    class FakeEmailProvider:
+        def list_unread(
+            self, mailbox_id: str, folder: str, limit: int
+        ) -> list[EmailMessageSummary]:
+            captured["list_unread"] = {
+                "mailbox_id": mailbox_id,
+                "folder": folder,
+                "limit": limit,
+            }
+            return [
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder=folder,
+                    message_id="gmail-msg-1",
+                    thread_id="thread-1",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                    unread=True,
+                    body_snippet="hello",
+                )
+            ]
+
+    def fake_build_email_provider(config_arg, emails, drafts, email_cursors):
+        captured["mailbox_ids"] = [mailbox.mailbox_id for mailbox in config_arg.email_mailboxes]
+        captured["mailbox_providers"] = [mailbox.provider for mailbox in config_arg.email_mailboxes]
+        captured["email_cursors"] = email_cursors
+        return FakeEmailProvider()
+
+    monkeypatch.setattr(
+        "agent_sandbox.triggers.providers.email_new_message._build_email_provider",
+        fake_build_email_provider,
+    )
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "me",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        TriggerRuntimeContext(
+            provider_config=trigger_provider_config_blob(
+                resolver.resolve_trigger_provider_config("root")
+            ),
+            provider_config_resolver=resolver,
+            env={"GMAIL_ACCESS_TOKEN": "secret"},
+            metadata={"directory_path": "root"},
+        ),
+    )
+
+    events = provider.poll()
+
+    assert captured["mailbox_ids"] == ["mailbox-1"]
+    assert captured["mailbox_providers"] == ["gmail"]
+    assert captured["email_cursors"] is None
+    assert captured["list_unread"] == {
+        "mailbox_id": "mailbox-1",
+        "folder": "inbox",
+        "limit": 200,
+    }
+    assert events[0].payload["message"]["mailbox_id"] == "mailbox-1"
 
 
 def test_email_new_message_skips_messages_older_than_cursor(tmp_path: Path) -> None:

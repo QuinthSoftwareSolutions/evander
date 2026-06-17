@@ -429,7 +429,7 @@ def _build_email_provider(
     config: GatewayConfig,
     emails: EmailRecordsRepository,
     drafts: JsonStore[DraftMessage],
-    email_cursors: EmailCursorRepository,
+    email_cursors: EmailCursorRepository | None,
 ) -> JsonEmailProvider | MultiMailboxEmailProvider:
     mailbox_configs = config.email_mailboxes or [
         MailboxConfig(mailbox_id="default", provider="json_store", account_identifier="default")

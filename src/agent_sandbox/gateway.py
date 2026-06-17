@@ -9423,6 +9423,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
             context.policy.require_communication_file_artifacts(
                 session, artifacts, provider="email", mailbox_id=mailbox_id
             )
+            approval_payload: dict[str, Any] = {
+                "session_id": session_id,
+                "provider": "email",
+                "mailbox_id": mailbox_id,
+                "draft_id": draft_id,
+                "recipients": recipients,
+                "artifact_ids": artifact_ids,
+            }
+            if subject is not None:
+                approval_payload["subject"] = subject
+            approval = context.policy.require_communication_file_send_approval(
+                session,
+                request_id=approval_request_id,
+                payload=approval_payload,
+            )
             result = _send_email_draft(
                 session_id=session_id,
                 session=session,
@@ -9441,6 +9456,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         provider="email",
                         mailbox_id=mailbox_id,
                         approval_request_id=approval_request_id,
+                        approval_decision=None if approval is None else approval.status.value,
                     ),
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                     **result,
@@ -10012,13 +10028,25 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 arguments=sanitized_arguments,
                 call_context=call_context,
             )
+            dispatch_arguments = dict(sanitized_arguments)
+            tool = server._tool_manager._tools.get(raw_tool_name)
+            arg_model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+            model_fields = getattr(arg_model, "model_fields", {})
+            if (
+                isinstance(model_fields, dict)
+                and "approval_request_id" in model_fields
+                and "approval_request_id" in raw_arguments
+            ):
+                dispatch_arguments["approval_request_id"] = raw_arguments.get(
+                    "approval_request_id"
+                )
             dispatch_call_args = list(call_args)
             dispatch_call_kwargs = dict(call_kwargs)
             if len(dispatch_call_args) > 1:
-                dispatch_call_args[1] = sanitized_arguments
+                dispatch_call_args[1] = dispatch_arguments
                 dispatch_call_kwargs.pop("arguments", None)
             else:
-                dispatch_call_kwargs["arguments"] = sanitized_arguments
+                dispatch_call_kwargs["arguments"] = dispatch_arguments
             approval_context_token = set_tool_approval_context(
                 session_id=call_context.session_id,
                 workflow_run_id=call_context.workflow_run_id,
