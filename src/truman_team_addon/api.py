@@ -27,6 +27,7 @@ from .models import (
     TeamTaskState,
     team_state_payload,
 )
+from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
@@ -105,6 +106,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         }
         return JSONResponse(payload)
 
+    async def get_costs(request: Request) -> JSONResponse:
+        state = repository.read()
+        backfill = _query_bool(request, "backfill")
+        service = TeamCostService(
+            runtime_dir=context.runtime_dir,
+            state=state,
+            session_repository=_session_repository_from_context(context),
+        )
+        return JSONResponse(service.costs_payload(backfill_transcripts=backfill is not False))
+
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         state = repository.create_team(
@@ -113,10 +124,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             manager_agent_id=_required(payload, "manager_agent_id"),
             manager_session_id=_required(payload, "manager_session_id"),
             manager_display_name=_optional(payload, "manager_display_name"),
-            manager_role=_optional(payload, "manager_role") or "manager",
+            manager_role_id=_optional(payload, "manager_role_id"),
+            manager_role_name=_optional(payload, "manager_role_name"),
             operator_communication_target_id=_optional(
                 payload, "operator_communication_target_id"
             ),
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state), status_code=201)
@@ -131,6 +144,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 payload, "operator_communication_target_id"
             ),
             set_operator_communication_target_id="operator_communication_target_id" in payload,
+            max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+            set_max_cost_usd="max_cost_usd" in payload,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             expected_revision=_expected_revision(payload),
         )
@@ -146,7 +161,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             lead_agent_id=_required(payload, "lead_agent_id"),
             lead_session_id=_required(payload, "lead_session_id"),
             lead_display_name=_optional(payload, "lead_display_name"),
-            lead_role=_optional(payload, "lead_role") or "project_lead",
+            lead_role_id=_optional(payload, "lead_role_id"),
+            lead_role_name=_optional(payload, "lead_role_name"),
             goals=goals,
             git=_optional_git_config(payload),
             expected_revision=_expected_revision(payload),
@@ -174,6 +190,67 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def create_role(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        ephemeral_policy = payload.get("ephemeral_policy")
+        state = repository.create_role(
+            role_id=_required(payload, "id", "role_id"),
+            team_id=_required(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            name=_required(payload, "name"),
+            description=_optional(payload, "description"),
+            permissions=_optional_string_list(payload, "permissions"),
+            ephemeral_policy=(
+                EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                if ephemeral_policy is not None
+                else None
+            ),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state), status_code=201)
+
+    async def patch_role(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        ephemeral_policy = payload.get("ephemeral_policy")
+        raw_archived = payload.get("archived")
+        state = repository.update_role(
+            role_id=request.path_params["role_id"],
+            name=_optional(payload, "name"),
+            project_id=_optional(payload, "project_id"),
+            set_project_id="project_id" in payload,
+            description=_optional_present_text(payload, "description"),
+            set_description="description" in payload,
+            permissions=(
+                _optional_string_list(payload, "permissions")
+                if "permissions" in payload
+                else None
+            ),
+            ephemeral_policy=(
+                EphemeralAgentPolicy.model_validate(ephemeral_policy)
+                if ephemeral_policy is not None
+                else None
+            ),
+            archived=raw_archived if isinstance(raw_archived, bool) else None,
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def list_roles(_request: Request) -> JSONResponse:
+        state = repository.read()
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "roles": [role.model_dump(mode="json") for role in state.roles.values()],
+            }
+        )
+
+    async def get_role(request: Request) -> JSONResponse:
+        state = repository.read()
+        role = state.roles.get(request.path_params["role_id"])
+        if role is None:
+            return JSONResponse({"error": "role not found"}, status_code=404)
+        return JSONResponse(role.model_dump(mode="json"))
+
     async def register_agent(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         ephemeral_policy = payload.get("ephemeral_policy")
@@ -181,7 +258,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             agent_id=_required(payload, "id", "agent_id"),
             team_id=_required(payload, "team_id"),
             project_id=_required(payload, "project_id"),
-            role=_required(payload, "role"),
+            role_id=_required(payload, "role_id"),
             session_id=_required(payload, "session_id"),
             reports_to_agent_id=_required(payload, "reports_to_agent_id"),
             display_name=_optional(payload, "display_name"),
@@ -202,7 +279,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             agent_id=request.path_params["agent_id"],
             project_id=_optional(payload, "project_id"),
             set_project_id="project_id" in payload,
-            role=_optional(payload, "role"),
+            role_id=_optional(payload, "role_id"),
             session_id=_optional(payload, "session_id"),
             reports_to_agent_id=_optional(payload, "reports_to_agent_id"),
             set_reports_to_agent_id="reports_to_agent_id" in payload,
@@ -214,6 +291,24 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 else None
             ),
             status=AgentStatus(raw_status) if raw_status else None,
+            auto_context_clearing_enabled=_optional_bool(
+                payload,
+                "auto_context_clearing_enabled",
+            ),
+            set_auto_context_clearing_enabled=(
+                "auto_context_clearing_enabled" in payload
+            ),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
+    async def request_agent_context_rotation(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.request_agent_context_rotation(
+            agent_id=request.path_params["agent_id"],
+            requested_by=_optional(payload, "requested_by")
+            or _operator_actor_from_request(context.auth, request),
+            request_note=_optional(payload, "reason"),
             expected_revision=_expected_revision(payload),
         )
         return JSONResponse(team_state_payload(state))
@@ -221,6 +316,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
+        created_by_agent_id = _optional(payload, "created_by_agent_id")
         state = repository.create_or_reprioritize_task(
             task_id=_required(payload, "id", "task_id"),
             owner_agent_id=_required(payload, "owner_agent_id"),
@@ -228,7 +324,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             priority=_required_int(payload, "priority"),
             title=_required(payload, "title"),
             description=_required(payload, "description"),
-            created_by_agent_id=_required(payload, "created_by_agent_id"),
+            created_by_agent_id=created_by_agent_id,
+            created_by_actor=(
+                None
+                if created_by_agent_id is not None
+                else _operator_actor_from_request(context.auth, request)
+            ),
             state=TeamTaskState(raw_state) if raw_state else TeamTaskState.PENDING,
             parent_task_id=_optional(payload, "parent_task_id"),
             set_parent_task_id="parent_task_id" in payload,
@@ -298,6 +399,39 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return JSONResponse(team_state_payload(state))
 
+    async def create_operator_directive(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        created_by = _optional(payload, "created_by") or _operator_actor_from_request(
+            context.auth,
+            request,
+        )
+        state, item = repository.create_operator_directive(
+            team_id=_required(payload, "team_id"),
+            message=_required(payload, "message"),
+            recipient_agent_id=_optional(payload, "recipient_agent_id"),
+            project_id=_optional(payload, "project_id"),
+            task_id=_optional(payload, "task_id"),
+            title=_optional(payload, "title"),
+            source=_optional(payload, "source"),
+            source_message_id=_optional(payload, "source_message_id"),
+            created_by=created_by,
+            requesting_session_id=_optional(payload, "requesting_session_id"),
+            expected_revision=_expected_revision(payload),
+        )
+        response_payload = team_state_payload(state)
+        response_payload["operator_directive"] = item.model_dump(mode="json")
+        return JSONResponse(response_payload, status_code=201)
+
+    async def dismiss_action_record(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.dismiss_action_record_attention(
+            action_record_id=request.path_params["action_record_id"],
+            dismissed_by=_optional(payload, "dismissed_by"),
+            dismissed_reason=_optional(payload, "dismissed_reason"),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(team_state_payload(state))
+
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         criteria = [
@@ -310,7 +444,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             project_id=_optional(payload, "project_id"),
             name=_required(payload, "name"),
             description=_optional(payload, "description") or "",
-            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            applicable_role_ids=_optional_string_list(payload, "applicable_role_ids"),
             criteria=criteria,
             expected_revision=_expected_revision(payload),
         )
@@ -333,7 +467,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             profile_id=request.path_params["review_profile_id"],
             name=_optional(payload, "name"),
             description=_optional_present_text(payload, "description"),
-            applicable_roles=_optional_string_list(payload, "applicable_roles"),
+            applicable_role_ids=(
+                _optional_string_list(payload, "applicable_role_ids")
+                if "applicable_role_ids" in payload
+                else None
+            ),
             criteria=criteria,
             archived=raw_archived if isinstance(raw_archived, bool) else None,
             project_id=_optional(payload, "project_id"),
@@ -429,12 +567,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         Route("/timeline", _with_errors(get_timeline), methods=["GET"]),
+        Route("/costs", _with_errors(get_costs), methods=["GET"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/projects", _with_errors(create_project), methods=["POST"]),
         Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
+        Route("/roles", _with_errors(create_role), methods=["POST"]),
+        Route("/roles", _with_errors(list_roles), methods=["GET"]),
+        Route("/roles/{role_id}", _with_errors(get_role), methods=["GET"]),
+        Route("/roles/{role_id}", _with_errors(patch_role), methods=["PATCH"]),
         Route("/agents", _with_errors(register_agent), methods=["POST"]),
         Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
+        Route(
+            "/agents/{agent_id}/context-rotation",
+            _with_errors(request_agent_context_rotation),
+            methods=["POST"],
+        ),
         Route("/tasks", _with_errors(create_task), methods=["POST"]),
         Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
         Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
@@ -442,6 +590,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         Route(
             "/review-requests/{review_request_id}/decision",
             _with_errors(decide_review_request),
+            methods=["POST"],
+        ),
+        Route(
+            "/operator-directives",
+            _with_errors(create_operator_directive),
+            methods=["POST"],
+        ),
+        Route(
+            "/action-records/{action_record_id}/dismiss",
+            _with_errors(dismiss_action_record),
             methods=["POST"],
         ),
         Route("/review-profiles", _with_errors(create_review_profile), methods=["POST"]),
@@ -489,6 +647,15 @@ def _with_errors(handler):
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     return _wrapped
+
+
+def _session_repository_from_context(context: AddonContext) -> Any | None:
+    service = getattr(context, "service", None)
+    runtime = getattr(service, "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    if repository is not None:
+        return repository
+    return getattr(service, "session_repository", None)
 
 
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:
@@ -554,6 +721,26 @@ def _optional(payload: Mapping[str, Any], field_name: str) -> str | None:
     return text or None
 
 
+def _operator_actor_from_request(auth: Any | None, request: Request) -> str:
+    session: Mapping[str, Any] | None = None
+    read_session = getattr(auth, "read_session", None)
+    if callable(read_session):
+        raw_session = read_session(request)
+        if isinstance(raw_session, Mapping):
+            session = raw_session
+    if session is None:
+        require = getattr(auth, "require", None)
+        if callable(require):
+            raw_session = require(request)
+            if isinstance(raw_session, Mapping):
+                session = raw_session
+    for key in ("login", "preferred_username", "username", "name", "sub"):
+        value = str((session or {}).get(key) or "").strip()
+        if value:
+            return f"operator:{value}"
+    return "operator"
+
+
 def _optional_present_text(payload: Mapping[str, Any], field_name: str) -> str | None:
     if field_name not in payload or payload.get(field_name) is None:
         return None
@@ -592,6 +779,21 @@ def _query_bool(request: Request, field_name: str) -> bool | None:
         return True
     if text in {"0", "false", "no", "off"}:
         return False
+    raise ValueError(f"{field_name} must be true or false")
+
+
+def _optional_bool(payload: Mapping[str, Any], field_name: str) -> bool | None:
+    if field_name not in payload or payload.get(field_name) is None:
+        return None
+    value = payload[field_name]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
     raise ValueError(f"{field_name} must be true or false")
 
 

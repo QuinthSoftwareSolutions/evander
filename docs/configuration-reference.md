@@ -163,7 +163,7 @@ For the bundled Team Add-on, prefer explicit module loading:
 config to expose Admin Web routes/navigation, and in
 `config/trigger-orchestrator/config.json` to make `effect:team:*` and
 `query:team:*` workflow providers available to the trigger/effect workers. The
-team runtime loop is still opt-in; materialize
+team runtime loop is still opt-in; write the current-schema payload from
 `truman_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.

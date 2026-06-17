@@ -105,7 +105,35 @@ if target.exists():
 else:
     lines = []
 
-managed = {
+def repair_missing_profile_fi(profile_lines):
+    out = []
+    changed = False
+    in_managed_block = False
+    indent = ""
+    for line in profile_lines:
+        stripped = line.strip()
+        if in_managed_block and stripped == "fi":
+            in_managed_block = False
+        elif in_managed_block and line == line.lstrip() and stripped.startswith("export "):
+            out.append(f"{indent}fi")
+            changed = True
+            in_managed_block = False
+        out.append(line)
+        if stripped in {
+            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            'if [ -f "$HOME/.claude/settings.json" ]; then',
+        }:
+            in_managed_block = True
+            indent = line[: len(line) - len(line.lstrip())]
+    return out if changed else profile_lines
+
+
+def _is_if_start(stripped_line):
+    return stripped_line.startswith("if ") and stripped_line.endswith("then")
+
+
+playwright_block_start = 'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then'
+managed_exports = {
     'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
@@ -114,14 +142,38 @@ managed = {
     'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
     'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
     'export PLAYWRIGHT_MCP_SANDBOX="0"',
-    'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
-    '  if _agent_sandbox_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_agent_sandbox_playwright_chromium" ]; then',
-    '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_agent_sandbox_playwright_chromium"',
-    '  fi',
-    '  unset _agent_sandbox_playwright_chromium',
-    'fi',
 }
-filtered = [line for line in lines if line.strip() not in managed]
+
+
+def remove_managed_playwright_lines(profile_lines):
+    filtered_lines = []
+    i = 0
+    while i < len(profile_lines):
+        stripped = profile_lines[i].strip()
+        if stripped == playwright_block_start:
+            depth = 0
+            while i < len(profile_lines):
+                current = profile_lines[i].strip()
+                if _is_if_start(current):
+                    depth += 1
+                elif current == "fi":
+                    depth -= 1
+                    i += 1
+                    if depth <= 0:
+                        break
+                    continue
+                i += 1
+            continue
+        if stripped in managed_exports:
+            i += 1
+            continue
+        filtered_lines.append(profile_lines[i])
+        i += 1
+    return filtered_lines
+
+
+lines = repair_missing_profile_fi(lines)
+filtered = remove_managed_playwright_lines(lines)
 filtered.extend(
     [
         'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',

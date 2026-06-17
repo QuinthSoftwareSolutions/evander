@@ -625,9 +625,6 @@ button.runtime-filter-button.active {
   margin-top: 0.9rem;
 }
 
-.delivery-team,
-.delivery-project,
-.delivery-bucket,
 .delivery-row,
 .delivery-detail {
   border: 1px solid var(--line);
@@ -638,19 +635,32 @@ button.runtime-filter-button.active {
 .delivery-team,
 .delivery-project,
 .delivery-bucket {
-  padding: 0.8rem;
+  min-width: 0;
 }
 
 .delivery-team {
-  background: linear-gradient(180deg, rgba(23, 111, 122, 0.06) 0%, rgba(255, 255, 255, 0) 100%);
+  display: grid;
+  gap: 0.75rem;
 }
 
 .delivery-team + .delivery-team {
-  margin-top: 0.15rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.delivery-project-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.delivery-project {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
 }
 
 .delivery-project + .delivery-project,
-.delivery-bucket + .delivery-bucket,
 .delivery-row + .delivery-row,
 .delivery-detail + .delivery-detail {
   margin-top: 0.55rem;
@@ -658,15 +668,14 @@ button.runtime-filter-button.active {
 
 .delivery-buckets {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  align-items: start;
+  gap: 0.75rem;
 }
 
 .delivery-bucket {
   display: grid;
-  gap: 0.45rem;
-  background: var(--panel-alt);
+  gap: 0.5rem;
 }
 
 .delivery-bucket h3,
@@ -687,6 +696,13 @@ button.runtime-filter-button.active {
   justify-content: space-between;
   gap: 0.55rem;
   flex-wrap: wrap;
+}
+
+.delivery-bucket-title {
+  padding: 0.42rem 0.55rem;
+  border-radius: 6px;
+  background: var(--panel-alt);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .delivery-bucket-title strong,
@@ -886,6 +902,49 @@ button.record-action:hover {
   overflow-wrap: anywhere;
 }
 
+.cost-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 0.45rem;
+  border: 1px solid rgba(36, 112, 75, 0.28);
+  border-radius: 6px;
+  padding: 0.34rem 0.5rem;
+  background: rgba(36, 112, 75, 0.08);
+  color: var(--green);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.cost-counter strong {
+  font-size: 0.95rem;
+  line-height: 1.1;
+}
+
+.cost-counter small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.cost-counter--warning {
+  border-color: rgba(154, 107, 19, 0.36);
+  background: rgba(154, 107, 19, 0.1);
+  color: var(--amber);
+}
+
+.cost-counter--compact {
+  margin-top: 0.35rem;
+  padding: 0.28rem 0.45rem;
+  font-size: 0.74rem;
+}
+
+.cost-counter--compact strong {
+  font-size: 0.86rem;
+}
+
 .projects-view {
   display: grid;
   gap: 0.8rem;
@@ -957,6 +1016,20 @@ button.record-action:hover {
 
 .runtime-generated-at {
   margin-top: 0.15rem;
+}
+
+.runtime-handoff {
+  margin-top: 0.45rem;
+}
+
+.runtime-handoff pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0.4rem 0 0;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
 }
 
 .project-block {
@@ -1434,17 +1507,8 @@ label textarea {
   }
 
   .review-delivery-panel,
-  .delivery-team,
   .delivery-row,
   .delivery-detail {
     background: var(--panel);
-  }
-
-  .delivery-team {
-    background: linear-gradient(180deg, rgba(68, 166, 180, 0.12) 0%, rgba(0, 0, 0, 0) 100%);
-  }
-
-  .delivery-bucket {
-    background: var(--panel-alt);
   }
 }

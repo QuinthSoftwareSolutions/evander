@@ -8,10 +8,13 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
+from agent_sandbox.model_usage.store import ModelUsageStore
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
     AgentRuntime,
+    AgentStatus,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -52,6 +55,27 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
 def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
     return TestClient(create_app(AdminService(_write_config(tmp_path, enable_team_addon=enable_team_addon))))
 
+
+def _post_backend_role(
+    client: TestClient,
+    *,
+    expected_revision: int | None = None,
+    role_id: str = "project__backend",
+    project_id: str = "project",
+) -> dict:
+    payload: dict[str, object] = {
+        "id": role_id,
+        "team_id": "team",
+        "project_id": project_id,
+        "name": "Backend",
+    }
+    if expected_revision is not None:
+        payload["expected_revision"] = expected_revision
+    response = client.post("/api/addons/team-addon/roles", json=payload)
+    assert response.status_code == 201
+    return response.json()
+
+
 def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
     repo = TeamStateRepository(runtime_dir)
     repo.create_team(
@@ -67,11 +91,17 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
         lead_agent_id="lead",
         lead_session_id="session-lead",
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
     )
@@ -368,8 +398,16 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "refreshSelects({ includeEditForm = false } = {})" in script.text
     assert "elements.editForm?.contains(select)" in script.text
     assert "gitToBareRepo" in script.text
+    assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
+    assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
+    assert "data-dismiss-action-id" in script.text
+    assert 'fetch(`${API_BASE}/costs`' in script.text
+    assert "renderTeamCostCounter" in script.text
+    assert "renderProjectCostCounter" in script.text
+    assert "max_cost_usd" in script.text
+    assert "cost_limit_reached" in script.text
 
     stylesheet = enabled.get("/addons/team-addon/team-ui.css")
     assert stylesheet.status_code == 200
@@ -383,6 +421,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".record-actions" in stylesheet.text
     assert ".field-tooltip" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
+    assert ".cost-counter" in stylesheet.text
+    assert ".cost-counter--warning" in stylesheet.text
+
+    html = enabled.get("/addons/team-addon/")
+    assert html.status_code == 200
+    assert 'name="max_cost_usd"' in html.text
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
@@ -436,6 +480,70 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
 
 
+def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="usage-1",
+            occurred_at=datetime(2026, 6, 16, 12, 0, tzinfo=UTC),
+            provider="openai",
+            provider_endpoint_identifier="responses",
+            model="gpt-5.2-codex",
+            input_tokens=1000,
+            output_tokens=500,
+            total_tokens=1500,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "total_tokens": 1500,
+                }
+            },
+            session_id="session-backend",
+        )
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/costs?backfill=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["team_costs"]["team"]["events_count"] == 1
+    assert payload["project_costs"]["project"]["events_count"] == 1
+    assert payload["project_costs"]["project"]["estimated_cost"] is not None
+
+
+def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    client = _client(tmp_path)
+    revision = client.get("/api/addons/team-addon/state").json()["revision"]
+
+    response = client.post(
+        "/api/addons/team-addon/action-records/action-1/dismiss",
+        json={
+            "dismissed_by": "operator",
+            "dismissed_reason": "Superseded by follow-up wake.",
+            "expected_revision": revision,
+        },
+    )
+
+    assert response.status_code == 200
+    state = response.json()
+    record = state["action_records"]["action-1"]
+    assert record["success"] is False
+    assert record["dismissed_by"] == "operator"
+    assert record["dismissed_reason"] == "Superseded by follow-up wake."
+    assert record["dismissed_at"]
+    assert all(
+        row["kind"] != "failed_action_record"
+        for row in state["runtime_operations"]["attention"]
+    )
+
+
 def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -460,16 +568,17 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "expected_revision": 1,
         },
     )
+    _post_backend_role(client, expected_revision=2)
     client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
-            "expected_revision": 2,
+            "expected_revision": 3,
         },
     )
     response = client.post(
@@ -483,7 +592,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
             "state": "accepted",
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 201
@@ -491,7 +600,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
         "/api/addons/team-addon/tasks/task",
         json={
             "title": "Build backend v2",
-            "expected_revision": 4,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 200
@@ -502,7 +611,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "task_id": "task",
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -514,7 +623,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
             "reviewer_agent_id": "lead",
             "state": "accepted",
             "decision_at": "2026-01-01T12:00:00",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 201
@@ -587,22 +696,24 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     assert response.json()["revision"] == 2
     assert response.json()["agents"]["lead"]["display_name"] == "Project Lead"
 
+    _post_backend_role(client, expected_revision=2)
+
     response = client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
             "display_name": "  Backend Agent  ",
             "ephemeral_policy": {"max_concurrent": 2},
-            "expected_revision": 2,
+            "expected_revision": 3,
         },
     )
     assert response.status_code == 201
-    assert response.json()["revision"] == 3
+    assert response.json()["revision"] == 4
     assert response.json()["agents"]["backend"]["display_name"] == "Backend Agent"
 
     response = client.post(
@@ -615,7 +726,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 201
@@ -625,7 +736,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
         "/api/addons/team-addon/tasks/task",
         json={
             "state": "waiting_for_review",
-            "expected_revision": 4,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 200
@@ -639,7 +750,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
             "artifact_refs": ["artifacts/backend.tar.gz"],
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -651,12 +762,12 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 201
     state = response.json()
-    assert state["revision"] == 7
+    assert state["revision"] == 8
     assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
     assert "runtime_operations" in state
     assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
@@ -664,6 +775,66 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
         "lead",
         "manager",
     }
+
+
+def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+    _post_backend_role(client)
+    client.post(
+        "/api/addons/team-addon/agents",
+        json={
+            "id": "backend",
+            "team_id": "team",
+            "project_id": "project",
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "reports_to_agent_id": "lead",
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/tasks",
+        json={
+            "id": "task",
+            "owner_agent_id": "backend",
+            "project_id": "project",
+            "priority": 10,
+            "title": "Build backend",
+            "description": "Implement the backend task.",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()["tasks"]["task"]
+    assert task["created_by_agent_id"] is None
+    assert task["created_by_actor"] == "operator:admin"
+
+    timeline = client.get("/api/addons/team-addon/timeline?type=task").json()
+    created = next(
+        entry for entry in timeline["entries"] if entry["id"] == "task:task:created"
+    )
+    assert created["actor_agent_id"] is None
+    assert created["actor_subject"] == "operator:admin"
 
 
 def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
@@ -692,16 +863,17 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
         },
     )
     assert response.status_code == 201
+    _post_backend_role(client, expected_revision=2)
     response = client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
-            "expected_revision": 2,
+            "expected_revision": 3,
         },
     )
     assert response.status_code == 201
@@ -712,12 +884,12 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
             "name": "Renamed Team",
             "operator_communication_target_id": None,
             "archived": True,
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["revision"] == 4
+    assert body["revision"] == 5
     assert body["teams"]["team"]["name"] == "Renamed Team"
     assert body["teams"]["team"]["operator_communication_target_id"] is None
     assert body["teams"]["team"]["archived"] is True
@@ -736,37 +908,50 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
                 "bare_repo": "/srv/git/repo.git",
                 "provider": "github",
             },
-            "expected_revision": 4,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 200
     body = response.json()
     project = body["projects"]["project"]
-    assert body["revision"] == 5
+    assert body["revision"] == 6
     assert project["name"] == "Renamed Project"
     assert project["status"] == "blocked"
     assert project["goals"][0]["id"] == "goal"
     assert project["git"]["bare_repo_path"] == "/srv/git/repo.git"
     assert project["git"]["provider"] == "github"
 
+    response = client.post(
+        "/api/addons/team-addon/roles",
+        json={
+            "id": "project__implementer",
+            "team_id": "team",
+            "project_id": "project",
+            "name": "Implementer",
+            "expected_revision": 6,
+        },
+    )
+    assert response.status_code == 201
+
     response = client.patch(
         "/api/addons/team-addon/agents/backend",
         json={
             "project_id": "project",
-            "role": "implementer",
+            "role_id": "project__implementer",
             "session_id": "session-backend-2",
             "reports_to_agent_id": "manager",
             "display_name": None,
             "ephemeral_policy": {"max_concurrent": 4},
             "status": "paused",
-            "expected_revision": 5,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 200
     body = response.json()
     backend = body["agents"]["backend"]
-    assert body["revision"] == 6
-    assert backend["role"] == "implementer"
+    assert body["revision"] == 8
+    assert backend["role_id"] == "project__implementer"
+    assert backend["role_name"] == "Implementer"
     assert backend["session_id"] == "session-backend-2"
     assert backend["reports_to_agent_id"] == "manager"
     assert backend["display_name"] is None
@@ -774,6 +959,145 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     assert backend["status"] == "paused"
     assert body["agents"]["lead"]["subordinate_agent_ids"] == []
     assert body["agents"]["manager"]["subordinate_agent_ids"] == ["lead", "backend"]
+
+
+def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/backend",
+        json={
+            "role_id": "project__backend",
+            "session_id": "session-backend",
+            "auto_context_clearing_enabled": True,
+            "expected_revision": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["auto_context_clearing_enabled"] is True
+    assert runtime["context_rotation_pending"] is True
+    assert runtime["context_rotation_reason"] == "idle"
+    assert "Active tasks: none." in runtime["last_handoff_summary"]
+
+
+def test_team_addon_admin_api_manual_context_rotation_request(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+    repo.create_or_reprioritize_task(
+        task_id="active-work",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Active work",
+        description="Manual context clearing should still queue.",
+        created_by_agent_id="lead",
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/context-rotation",
+        json={
+            "reason": "controlled smoke",
+            "requested_by": "operator:test",
+            "expected_revision": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["agent_runtimes"]["backend"]
+    assert runtime["auto_context_clearing_enabled"] is False
+    assert runtime["context_rotation_pending"] is True
+    assert runtime["context_rotation_reason"] == "manual"
+    assert runtime["context_rotation_requested_by"] == "operator:test"
+    assert runtime["context_rotation_request_note"] == "controlled smoke"
+    assert "active-work" in runtime["last_handoff_summary"]
+
+
+def test_team_addon_admin_api_manual_context_rotation_rejects_archived_agent(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    repo.create_team(team_id="team", name="Team", manager_agent_id="manager", manager_session_id="session-manager")
+    repo.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+    )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+    )
+    repo.register_agent(
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend",
+        reports_to_agent_id="lead",
+    )
+    repo.update_agent(agent_id="backend", status=AgentStatus.ARCHIVED)
+
+    response = client.post(
+        "/api/addons/team-addon/agents/backend/context-rotation",
+        json={"expected_revision": 5},
+    )
+
+    assert response.status_code == 400
+    assert "archived" in response.json()["error"]
 
 
 def test_team_addon_admin_api_materializes_auto_dev_squad(tmp_path: Path) -> None:
@@ -884,6 +1208,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
             "operator_communication_target_id": "ops-channel",
+            "max_cost_usd": 10.5,
         },
     )
     assert response.status_code == 201
@@ -891,16 +1216,25 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         response.json()["teams"]["team"]["operator_communication_target_id"]
         == "ops-channel"
     )
+    assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"operator_communication_target_id": "ops-channel-2"},
+        json={"operator_communication_target_id": "ops-channel-2", "max_cost_usd": 12.25},
     )
     assert response.status_code == 200
     assert (
         response.json()["teams"]["team"]["operator_communication_target_id"]
         == "ops-channel-2"
     )
+    assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
+
+    response = client.patch(
+        "/api/addons/team-addon/teams/team",
+        json={"max_cost_usd": None},
+    )
+    assert response.status_code == 200
+    assert response.json()["teams"]["team"]["max_cost_usd"] is None
 
     response = client.post(
         "/api/addons/team-addon/projects",
@@ -951,6 +1285,53 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert "exactly one" in response.json()["error"]
 
 
+def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+        },
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/operator-directives",
+        json={
+            "team_id": "team",
+            "project_id": "project",
+            "title": "Status report",
+            "message": "Ask the lead for a status report.",
+            "source": "discord",
+            "source_message_id": "discord-msg-1",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    item = body["operator_directive"]
+    assert item["recipient_agent_id"] == "manager"
+    assert item["item_type"] == "operator_directive"
+    assert item["payload"]["title"] == "Status report"
+    assert item["payload"]["message"] == "Ask the lead for a status report."
+    assert item["payload"]["project_id"] == "project"
+    assert item["payload"]["source_message_id"] == "discord-msg-1"
+    assert item["payload"]["created_by"] == "operator:admin"
+    assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
+
+
 def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -983,13 +1364,14 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "lead_session_id": "session-other-lead",
         },
     )
+    _post_backend_role(client)
     client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
         },
@@ -1141,13 +1523,14 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "git": {"host_repo_path": "/srv/repo", "bare_repo_name": "repo.git"},
         },
     )
+    _post_backend_role(client)
     client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
         },
@@ -1266,13 +1649,14 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "lead_session_id": "session-lead",
         },
     )
+    _post_backend_role(client)
     client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
         },
@@ -1308,7 +1692,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "project_id": "project",
             "name": "Security review",
             "description": "Checklist for security-sensitive work.",
-            "applicable_roles": ["reviewer", "project_lead"],
+            "applicable_role_ids": ["project__project-lead", "project__backend"],
             "criteria": [
                 {"id": "authz", "label": "Authorization", "required": True},
                 {"id": "logging", "label": "Logging", "description": "No secrets", "required": False},
@@ -1437,13 +1821,14 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "lead_session_id": "session-lead",
         },
     )
+    _post_backend_role(client)
     client.post(
         "/api/addons/team-addon/agents",
         json={
             "id": "backend",
             "team_id": "team",
             "project_id": "project",
-            "role": "backend",
+            "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
         },

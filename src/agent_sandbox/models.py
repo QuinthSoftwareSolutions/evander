@@ -84,6 +84,7 @@ class ToolName(str, Enum):
     COMPLETE_ISSUE = "complete_issue"
     GET_AGENT_STATUS = "get_agent_status"
     GET_AGENT_LOGS = "get_agent_logs"
+    TEAM_CREATE_OPERATOR_DIRECTIVE = "team_create_operator_directive"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
     COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"

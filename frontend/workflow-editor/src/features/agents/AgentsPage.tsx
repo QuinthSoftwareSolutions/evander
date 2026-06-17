@@ -499,6 +499,75 @@ function hostRecord(
   return null;
 }
 
+type AgentStatusDisplay = {
+  status: string;
+  label: string;
+  className: string;
+  isActive: boolean;
+};
+
+function normalizeStatusText(status: string | null | undefined): string {
+  return String(status ?? "").trim().toLowerCase();
+}
+
+function statusLabel(status: string | null | undefined): string {
+  const normalized = normalizeStatusText(status);
+  if (!normalized) return "Unknown";
+  return normalized
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function executionStatusDisplay(status: string | null | undefined): AgentStatusDisplay {
+  const normalized = normalizeStatusText(status) || "unknown";
+  return {
+    status: normalized,
+    label: statusLabel(normalized),
+    className: statusClass(normalized),
+    isActive: isActiveStatus(normalized),
+  };
+}
+
+function agentExecutionDisplay(agent: AgentRecord): AgentStatusDisplay {
+  if (agent.backend === "libvirt_vm") {
+    const guestAgent = hostRecord(agent.host, "agent");
+    const agentState = normalizeStatusText(hostString(guestAgent, "state"));
+    if (agentState === "running" || agentState === "starting" || agentState === "preparing") {
+      return executionStatusDisplay(agentState);
+    }
+    if (agent.status === "stale") return executionStatusDisplay("stale");
+    if (agentState === "disabled") return executionStatusDisplay("disabled");
+    if (agentState === "failed") return executionStatusDisplay("failed");
+    if (agentState === "inactive_vm") return executionStatusDisplay("stopped");
+    if (agentState === "idle" || agentState === "stopped") return executionStatusDisplay(agentState);
+    if (normalizeStatusText(agent.status) === "stopped") return executionStatusDisplay("stopped");
+    if (!agentState || agentState === "omitted" || agentState === "unknown") {
+      return executionStatusDisplay("unknown");
+    }
+    return executionStatusDisplay(agentState);
+  }
+  return executionStatusDisplay(agent.status);
+}
+
+function agentTargetStateText(agent: AgentRecord): string {
+  if (agent.backend === "libvirt_vm") {
+    const state =
+      hostString(agent.host, "power_state") ??
+      hostString(agent.host, "libvirt_state") ??
+      hostString(agent.host, "provider_state") ??
+      "unknown";
+    return `VM: ${statusLabel(state)}`;
+  }
+  const latestStatus = hostString(agent.host, "last_status") ?? agent.status;
+  const activeRuns = hostNumber(agent.host, "active_execution_count") ?? 0;
+  if (activeRuns > 0) {
+    return `Worker: ${activeRuns} active, latest ${statusLabel(latestStatus)}`;
+  }
+  return `Worker: latest ${statusLabel(latestStatus)}`;
+}
+
 function hostRuntimeImage(host: Record<string, unknown> | null | undefined): RuntimeImageInfo | null {
   const value = host?.runtime_image;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1105,7 +1174,7 @@ export function AgentsPage() {
       .filter((item) => backendFilter === "all" || item.backend === backendFilter)
       .filter((item) => {
         if (statusFilter === "all") return true;
-        const active = isActiveStatus(item.status);
+        const active = agentExecutionDisplay(item).isActive;
         return statusFilter === "active" ? active : !active;
       })
       .sort((left, right) => {
@@ -1223,7 +1292,7 @@ export function AgentsPage() {
   }, [backendFilter, selectedDirectoryPath]);
 
   const refreshSummaryAgents = useCallback(async () => {
-    await refreshAgents({ summaryOnly: true, dashboardCache: true });
+    await refreshAgents({ summaryOnly: true, dashboardCache: true, omitVmState: false });
   }, [refreshAgents]);
 
   const refreshSummaryCache = useCallback(async () => {
@@ -1819,6 +1888,8 @@ export function AgentsPage() {
   const selectedLabels = labelsForAgent(selectedAgent);
   const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
   const selectedPromptQueue = promptQueueForAgent(selectedAgent);
+  const selectedExecutionDisplay = selectedAgent ? agentExecutionDisplay(selectedAgent) : null;
+  const selectedTargetStateText = selectedAgent ? agentTargetStateText(selectedAgent) : null;
   const canMutate = busyAction === null && privilegedUnlocked;
   const showStart = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.start && powerState !== "running";
   const showShutdown = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.shutdown && powerState === "running";
@@ -2012,6 +2083,8 @@ export function AgentsPage() {
                 {group.map((item) => {
                   const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
                   const queueSummary = promptQueueForAgent(item);
+                  const executionDisplay = agentExecutionDisplay(item);
+                  const targetStateText = agentTargetStateText(item);
                   return (
                     <button
                       key={agentKey(item)}
@@ -2027,13 +2100,14 @@ export function AgentsPage() {
                     >
                       <div className="feature-list-title-row vm-list-item-row">
                         <strong>{item.target_name || item.agent_id}</strong>
-                        <span className={`status-pill vm-status-pill state-${statusClass(item.status)}`}>
-                          {item.status}
+                        <span className={`status-pill vm-status-pill state-${executionDisplay.className}`}>
+                          {executionDisplay.label}
                         </span>
                       </div>
                       <div className="feature-list-meta agent-list-item-meta">
                         {item.session_id ?? "No session"} / {item.directory_path}
                       </div>
+                      <div className="feature-list-meta agent-list-item-meta">{targetStateText}</div>
                       {runtimeImageSummary ? (
                         <div className="feature-list-meta agent-list-item-meta">{runtimeImageSummary}</div>
                       ) : null}
@@ -2064,9 +2138,9 @@ export function AgentsPage() {
           </div>
           {selectedAgent ? (
             <div className="feature-toolbar-actions icon-actions">
-              <Tooltip content={`Current status: ${selectedAgent.status}.`}>
-                <span className={`status-pill state-${statusClass(selectedAgent.status)}`}>
-                  {selectedAgent.status}
+              <Tooltip content={`Agent execution status: ${selectedExecutionDisplay?.label ?? "Unknown"}. ${selectedTargetStateText ?? ""}`}>
+                <span className={`status-pill state-${selectedExecutionDisplay?.className ?? "idle"}`}>
+                  {selectedExecutionDisplay?.label ?? "Unknown"}
                 </span>
               </Tooltip>
               <Tooltip content="Edit the selected session policy.">
@@ -2991,7 +3065,7 @@ export function AgentsPage() {
               <article className="panel">
                 <div className="panel-header">
                   <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker session" : "VM host"}</h3>
-                  <span className="panel-meta">{selectedAgent.status}</span>
+                  <span className="panel-meta">{selectedTargetStateText}</span>
                 </div>
                 <dl className="property-grid">
                   {selectedAgent.backend === "container_worker_vm" ? (

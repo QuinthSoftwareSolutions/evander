@@ -46,6 +46,7 @@ from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
 from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
+from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import (
     EffectProviderBase,
     EffectProviderExecutionError,
@@ -5375,3 +5376,58 @@ def test_agent_copy_files_vm_name_only_uses_resolved_vm_name_as_copy_target(
     assert admin_service.calls[0]["target"] == "vm-standalone"
     assert output["session_id"] == "session-vm-standalone"
     assert output["vm_name"] == "vm-standalone"
+
+
+def test_agent_copy_files_explicit_vm_ip_bypasses_admin_copy_helper(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+
+    class CopyAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+
+        def vm_copy_files(self, **kwargs):
+            raise AssertionError(f"vm_copy_files should not be used: {kwargs}")
+
+    direct_calls: list[dict[str, object]] = []
+
+    def fake_direct_copy(self, *, resolved_config=None):
+        payload = dict(resolved_config or {})
+        direct_calls.append(payload)
+        return {
+            "success": True,
+            "message": "direct copied",
+            "vm_name": payload["target"],
+            "vm_ip": payload["vm_ip"],
+            "copied_count": len(payload["files"]),
+            "copied_paths": [entry["destination_path"] for entry in payload["files"]],
+        }
+
+    monkeypatch.setattr(VmCopyFilesEffectProvider, "execute", fake_direct_copy)
+
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=CopyAdminStub(),
+    )
+
+    output = factory.build(
+        AgentCopyFilesEffectDefinition(
+            id="agent-copy",
+            display_name="Copy",
+            type="effect:agent:copy-files",
+            vm_name="vm-standalone",
+            files=[{"destination_path": "/home/agent/hello.txt", "content": "hello"}],
+        )
+    ).execute(resolved_config={"vm_ip": "192.168.250.161"})
+
+    assert direct_calls[0]["target"] == "vm-standalone"
+    assert direct_calls[0]["vm_ip"] == "192.168.250.161"
+    assert output["session_id"] == "session-vm-standalone"
+    assert output["vm_name"] == "vm-standalone"
+    assert output["vm_ip"] == "192.168.250.161"

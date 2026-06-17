@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
-TEAM_RUNTIME_V1: dict[str, Any] = {
+_TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
     "id": "team-runtime.v1",
     "name": "Team Runtime v1",
     "description": "Optional team add-on runtime loop for persistent team agents.",
@@ -180,6 +181,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "display_name": "Route completed team session",
                 "type": "query:team:session-routing",
                 "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
+                "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
             },
             {
                 "id": "team-read-persistent-action",
@@ -296,8 +298,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "id": "team-git-promote-review-branch",
-                "display_name": "Promote agent branch to review branch",
-                "type": "effect:git:promote-agent-branch",
+                "display_name": "Publish Team review branch",
+                "type": "effect:team:publish-review-branch",
                 "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
                 "bare_repo_name": (
                     "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
@@ -305,8 +307,9 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "bare_repo_path": (
                     "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
                 ),
-                "agent_branch": "${{team-git-promotion-requested.payload.source_branch}}",
-                "review_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "source_branch": "${{team-git-promotion-requested.payload.source_branch ?? null}}",
+                "commit_sha": "${{team-git-promotion-requested.payload.commit_sha ?? null}}",
+                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
             },
             {
                 "id": "team-record-review-promotion",
@@ -316,7 +319,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "success": "${{team-git-promote-review-branch.success}}",
                 "commit_sha": "${{team-git-promote-review-branch.commit_sha ?? null}}",
                 "error": "${{team-git-promote-review-branch.error ?? null}}",
-                "outputs": {
+                "result_outputs": {
                     "review_branch": (
                         "${{team-git-promote-review-branch.review_branch ?? null}}"
                     ),
@@ -343,7 +346,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "success": "${{team-consolidate-feature-branches.success}}",
                 "commit_sha": "${{team-consolidate-feature-branches.commit_sha ?? null}}",
                 "error": "${{team-consolidate-feature-branches.error ?? null}}",
-                "outputs": {
+                "result_outputs": {
                     "merged_branches": (
                         "${{team-consolidate-feature-branches.merged_branches ?? null}}"
                     ),
@@ -370,7 +373,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "success": "${{team-consolidate-release-branches.success}}",
                 "commit_sha": "${{team-consolidate-release-branches.commit_sha ?? null}}",
                 "error": "${{team-consolidate-release-branches.error ?? null}}",
-                "outputs": {
+                "result_outputs": {
                     "merged_branches": (
                         "${{team-consolidate-release-branches.merged_branches ?? null}}"
                     ),
@@ -399,9 +402,9 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "type": "effect:team:record-git-promotion",
                 "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
                 "success": "${{team-push-canonical-branch.success}}",
-                "commit_sha": "${{team-push-canonical-branch.commit_sha ?? null}}",
+                "commit_sha": "${{team-push-canonical-branch.destination_commit ?? null}}",
                 "error": "${{team-push-canonical-branch.error ?? null}}",
-                "outputs": {
+                "result_outputs": {
                     "origin_branch": (
                         "${{team-push-canonical-branch.origin_branch ?? null}}"
                     ),
@@ -418,10 +421,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "success": "${{team-push-canonical-branch.success}}",
                 "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "published_commit_sha": (
-                    "${{team-push-canonical-branch.commit_sha ?? null}}"
+                    "${{team-push-canonical-branch.destination_commit ?? null}}"
                 ),
                 "error": "${{team-push-canonical-branch.error ?? null}}",
-                "outputs": {
+                "result_outputs": {
                     "origin_branch": (
                         "${{team-push-canonical-branch.origin_branch ?? null}}"
                     ),
@@ -463,5 +466,40 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
 }
 
 
+def _pack_from_legacy_config(source: dict[str, Any]) -> dict[str, Any]:
+    config = source["config"]
+    nodes: list[dict[str, Any]] = []
+    for section_name in ("triggers", "gates", "queries", "effects"):
+        for node in config.get(section_name, []):
+            nodes.append({"node": _ir_node_from_legacy_node(node)})
+    return {
+        "pack_id": "team-runtime",
+        "pack_version": "v1",
+        "description": source.get("description"),
+        "graphs": deepcopy(source.get("graphs", [])),
+        "ir": {
+            "version": "v1",
+            "nodes": nodes,
+            "edges": deepcopy(config.get("edges", [])),
+        },
+    }
+
+
+def _ir_node_from_legacy_node(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": node["id"],
+        "display_name": node["display_name"],
+        "type": node["type"],
+        "config": {
+            key: deepcopy(value)
+            for key, value in node.items()
+            if key not in {"id", "display_name", "type"}
+        },
+    }
+
+
+TEAM_RUNTIME_V1: dict[str, Any] = _pack_from_legacy_config(_TEAM_RUNTIME_V1_LEGACY)
+
+
 def team_runtime_v1() -> dict[str, Any]:
-    return dict(TEAM_RUNTIME_V1)
+    return deepcopy(TEAM_RUNTIME_V1)

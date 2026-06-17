@@ -524,17 +524,21 @@ def _collect_refs_from_mapping(
             next_path = f"{path}.{key_text}" if path else key_text
             if key_text == "communication_target_id":
                 ref = str(nested or "").strip().lower()
-                if ref:
+                if ref and not _is_dynamic_communication_target_ref(ref):
                     refs.append((context, next_path, ref))
             elif key_text == "communication_target_ids" and isinstance(nested, list):
                 for index, item in enumerate(nested):
                     ref = str(item or "").strip().lower()
-                    if ref:
+                    if ref and not _is_dynamic_communication_target_ref(ref):
                         refs.append((context, f"{next_path}[{index}]", ref))
             _collect_refs_from_mapping(nested, refs, context=context, path=next_path)
     elif isinstance(value, list):
         for index, item in enumerate(value):
             _collect_refs_from_mapping(item, refs, context=context, path=f"{path}[{index}]")
+
+
+def _is_dynamic_communication_target_ref(value: str) -> bool:
+    return "${{" in value and "}}" in value
 
 
 def _datetime_to_storage(value: datetime) -> str:

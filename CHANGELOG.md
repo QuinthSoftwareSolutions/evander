@@ -5,6 +5,173 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Playwright VM Profile Repair
+
+- Fixed `bootstrap_playwright_vm.sh` so rerunning it removes only its managed
+  Playwright shell block instead of stripping unrelated `fi` lines from
+  `.profile`.
+- Added repair handling for profiles already damaged by the old Playwright
+  bootstrap rewrite.
+
+## 2026-06-17 - Team Add-on First-Class Roles
+
+- Added first-class Team role records with role IDs, display names, project
+  scope, default ephemeral policy, and configurable permissions.
+- Moved agent assignment and review-profile filtering from raw role strings to
+  `role_id` / `applicable_role_ids`, and changed release authorization to use
+  the `request_release` role permission instead of an exact role name.
+- Added Admin API and bundled UI support for creating and editing roles, plus a
+  migration script for existing Team Add-on state files.
+
+## 2026-06-17 - Team Add-on Context Clearing
+
+- Added opt-in automatic context clearing for persistent Team agents when they
+  become truly idle, with per-agent controls disabled by default.
+- Added manual context-clearing requests that generate a Team-state handoff and
+  rotate the agent onto a fresh thread on its next wake without interrupting an
+  active dispatch.
+- Prevented idle auto-clearing from immediately re-arming after a fresh context
+  produces no progress and no new work has arrived.
+
+## 2026-06-16 - Team Add-on Release Operator Authorization
+
+- Allowed a project's scoped `release_operator` agent to create Team release
+  packages through `git_release_requests`, matching the Team template's release
+  handoff role while keeping unrelated implementers blocked from release
+  requests.
+- Tightened the seeded Team action schema for `git_release_requests` so agents
+  use `project_id` plus `deliverable_ids` and do not invent source branch or
+  commit fields for release package creation.
+
+## 2026-06-16 - Agents Page Execution Status Badges
+
+- Changed the Agents page status badge and Status filter to use actual agent
+  execution state instead of VM power state, while showing VM or worker state
+  as separate target metadata in the list and selected-agent details.
+- Kept the Agents page's visible summary refresh from omitting VM guest state,
+  avoiding `Unknown` badges for reachable VM-backed agents.
+
+## 2026-06-16 - Team Add-on Dispatch Routing Guard
+
+- Required completed persistent Team sessions to match the active Team dispatch
+  lease before routing into action application, including completions that omit
+  a dispatch id while a Team lease is active.
+
+## 2026-06-16 - Team Add-on Cost Counter
+
+- Added a Team Add-on cost API and UI counters that show lifetime team-level
+  model cost totals first, with project breakdowns only when usage can be
+  confidently tied to a project agent or project-scoped session.
+- Added Claude transcript usage backfill for Team agents, importing usage-only
+  metadata into `model-usage.db` with stable request deduplication and no
+  prompt or response content.
+- Fixed Claude transcript backfill for libvirt Team agents by scanning
+  VM-local transcripts via the session's last-known VM IP with the configured
+  VM SSH key and agent-sandbox known-hosts alias, and made transcript rows
+  supersede duplicate Anthropic relay rows only for the same provider request.
+- Made Team cost loading non-blocking so the Team page renders state and
+  templates immediately while cost counters fill in asynchronously.
+- Added an operator-configurable lifetime Team max-cost guard that marks
+  over-budget teams in cost payloads and prevents future Team wake dispatches
+  once the limit is reached.
+- Improved relay metering coverage by preserving provider request IDs and
+  keeping streaming usage-recording failures warning-only.
+- Omitted absent provider request IDs from relay usage metadata instead of
+  serializing them as `null`.
+
+## 2026-06-16 - Team Add-on Operator Directives
+
+- Added durable Team operator directives that turn out-of-band operator chat
+  requests into pending manager inbox items, waking the manager through the
+  normal Team runtime instead of requiring ad hoc `team-action.json` writes.
+- Exposed the directive path through the Team Admin API,
+  `effect:team:create-operator-directive`, and the manager-facing
+  `team_create_operator_directive` MCP tool.
+
+## 2026-06-16 - Team Add-on Project Repo Wake Prep
+
+- Prepared configured Team project repositories during persistent-agent wakes
+  through `effect:agent:clone-repo`, so agents receive a guest checkout path
+  instead of trying to work against host-only repo paths.
+- Exposed Team wake repo-preparation results through `prepared_project_repos`
+  and `failed_project_repo_preparations` workflow outputs for run inspection.
+- Made the libvirt repo clone helper retry-safe when the guest checkout already
+  exists, refreshing remotes/helpers without resetting or switching active work.
+
+## 2026-06-16 - Review Regression Fixes
+
+- Ignored agent-run completion comparisons when VM state summaries are missing
+  a usable `last_state_update_at`, avoiding trigger poll crashes on stale or
+  incomplete idle summaries.
+- Sent the Team Add-on create-task form's selected creator agent in the API
+  payload, keeping task and timeline attribution aligned with the visible form.
+
+## 2026-06-16 - Team Add-on Failed Action Resolution
+
+- Resolved failed-action runtime attention rows after any later successful action
+  from the same agent, avoiding permanently sticky critical cards after a failed
+  dispatch has closed.
+- Added operator dismissal for failed-action runtime attention cards while
+  preserving the action record for audit.
+
+## 2026-06-16 - Team Add-on Review Action Guidance
+
+- Clarified the Team agent wake prompt and seeded action contract so agents use
+  `review_requests` and `review_decisions` for deliverable acceptance instead of
+  trying to accept another agent's task through owner-only `task_updates`.
+
+## 2026-06-16 - Agent Completion Dispatch Identity
+
+- Tracked `trigger:agent:run:completed` cursor emissions by dispatch id as well
+  as timestamp, so overlapping ordinary wakes and Team Add-on wakes for the same
+  VM cannot cause the later Team dispatch completion to be skipped.
+
+## 2026-06-16 - Team Add-on Review Delivery Layout
+
+- Flattened the Review & Delivery workspace styling so team, project, and
+  status groups read as sections instead of nested cards, and made filtered
+  single-status deliverables expand to the available workspace width.
+
+## 2026-06-16 - Team Add-on Task Wake UX
+
+- Reset a persistent Team agent's no-progress throttle when an operator creates
+  or updates non-terminal work for that agent, so adding a task in the Teams UI
+  is enough to make the next wake cycle pick it up.
+- Let operator-created Team tasks be attributed to the Admin operator instead
+  of forcing the UI to choose an agent as "Created by."
+- Treat malformed entries inside Team agent action lists as per-item errors
+  instead of aborting `effect:team:apply-agent-action`, so valid delegation
+  items in the same action still apply.
+- Let a Team agent create a batch of tasks whose dependency graph references
+  sibling tasks in the same action, then validate the combined graph before
+  applying it. `task_creations` now accepts `task_id` as the preferred task
+  identifier field, with `id` retained as a compatibility alias. Runtime
+  attention now also hides an old failed action once a later successful retry
+  for the same agent dispatch exists.
+- Seed `team-action.schema.json` and `team-action.example.json` into Team agent
+  sessions before their first Team wake, so agents have a local action contract
+  instead of guessing the artifact shape from prose. Team wakes also persist and
+  reuse a last-known VM IP for the seed copy, so schema seeding does not depend
+  on a fresh libvirt lookup when a running agent is already reachable.
+
+## 2026-06-16 - Team Runtime Pack Materialization
+
+- Made `truman_team_addon.workflow_packs.team_runtime_v1()` emit a current-schema
+  workflow pack directly, so operators can write it to `config/workflow-packs/`
+  and list it in `workflow_packs` without local schema conversion.
+- Allowed workflow bindings in communication target references and Git promotion
+  bare-repo selectors, while preserving static validation for unknown
+  communication targets and mutually exclusive static repo selectors.
+- Loaded configured add-on provider output schemas before serving workflow
+  editor documents, so Team runtime nodes do not show false missing-output
+  binding diagnostics in Admin Web.
+- Renamed Team Git result metadata config from reserved `outputs` to
+  `result_outputs` in the generated runtime pack, while still accepting legacy
+  `outputs` in existing Team packs.
+- Routed completed persistent Team sessions only when the completed dispatch id
+  matches the active Team runtime lease, preventing ordinary Discord wake
+  replies from being recorded as missing `team-action.json` failures.
+=======
 ## 2026-06-16 - DIDWW Barge-In Fade
 
 - Added a configurable `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS` setting to the DIDWW SIP bridge

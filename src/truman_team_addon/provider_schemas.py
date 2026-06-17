@@ -38,6 +38,21 @@ class TeamApplyAgentActionEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:apply-agent-action action must be a JSON object")
 
 
+class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-operator-directive"]
+    team_id: ConfigValue
+    message: ConfigValue
+    recipient_agent_id: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    task_id: ConfigValue | None = None
+    title: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_message_id: ConfigValue | None = None
+    created_by: ConfigValue | None = None
+    requesting_session_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+
 class TeamRequestEphemeralAgentsEffectDefinition(EffectDefinition):
     type: Literal["effect:team:request-ephemeral-agents"]
     parent_agent_id: ConfigValue
@@ -114,17 +129,29 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
     type: Literal["effect:team:record-git-promotion"]
     promotion_id: ConfigValue
     success: ConfigValue | None = None
-    outputs: ConfigValue | None = None
+    result_outputs: ConfigValue | None = None
     error: ConfigValue | None = None
     commit_sha: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
-    @field_validator("outputs")
+    @field_validator("result_outputs")
     @classmethod
-    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+    def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError("effect:team:record-git-promotion outputs must be a JSON object")
+        raise ValueError(
+            "effect:team:record-git-promotion result_outputs must be a JSON object"
+        )
+
+
+class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:publish-review-branch"]
+    host_repo_path: ConfigValue
+    target_branch: ConfigValue
+    bare_repo_name: ConfigValue | None = None
+    bare_repo_path: ConfigValue | None = None
+    source_branch: ConfigValue | None = None
+    commit_sha: ConfigValue | None = None
 
 
 class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
@@ -133,16 +160,18 @@ class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
     success: ConfigValue | None = None
     canonical_branch: ConfigValue | None = None
     published_commit_sha: ConfigValue | None = None
-    outputs: ConfigValue | None = None
+    result_outputs: ConfigValue | None = None
     error: ConfigValue | None = None
     expected_revision: ConfigValue | None = None
 
-    @field_validator("outputs")
+    @field_validator("result_outputs")
     @classmethod
-    def validate_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
+    def validate_result_outputs(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
-        raise ValueError("effect:team:mark-release-published outputs must be a JSON object")
+        raise ValueError(
+            "effect:team:mark-release-published result_outputs must be a JSON object"
+        )
 
 
 class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
@@ -180,6 +209,7 @@ class TeamAgentActionArtifactQueryDefinition(QueryDefinition):
 class TeamSessionRoutingQueryDefinition(QueryDefinition):
     type: Literal["query:team:session-routing"]
     session_id: ConfigValue
+    dispatch_id: ConfigValue | None = None
 
 
 TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
@@ -189,6 +219,10 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "leased_count": {"type": "integer"},
         "leases": {"type": "array"},
         "dispatches": {"type": "array"},
+        "prepared_project_repos": {"type": "array"},
+        "failed_project_repo_preparations": {"type": "array"},
+        "cost_guard_blocked_team_ids": {"type": "array"},
+        "cost_guard_blocked_teams": {"type": "array"},
         "errors": {"type": "array"},
     },
     "effect:team:apply-agent-action": {
@@ -212,6 +246,16 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "accepted_ephemeral_assignment_ids": {"type": "array"},
         "rejected_ephemeral_assignment_ids": {"type": "array"},
         "updated_task_ids": {"type": "array"},
+    },
+    "effect:team:create-operator-directive": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "inbox_item_id": {"type": ["string", "null"]},
+        "recipient_agent_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "task_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
     },
     "effect:team:request-ephemeral-agents": {
         "success": {"type": "boolean"},
@@ -265,6 +309,15 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "created_inbox_item_ids": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
+    "effect:team:publish-review-branch": {
+        "success": {"type": "boolean"},
+        "review_branch": {"type": ["string", "null"]},
+        "target_branch": {"type": ["string", "null"]},
+        "commit_sha": {"type": ["string", "null"]},
+        "host_repo_path": {"type": ["string", "null"]},
+        "message": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
     "effect:team:mark-release-published": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
@@ -302,10 +355,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     "query:team:session-routing": {
         "success": {"type": "boolean"},
         "session_id": {"type": "string"},
+        "dispatch_id": {"type": ["string", "null"]},
         "kind": {"type": "string"},
         "agent_id": {"type": ["string", "null"]},
         "assignment_id": {"type": ["string", "null"]},
         "persistent": {"type": "boolean"},
         "ephemeral": {"type": "boolean"},
+        "ignored": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "expected_dispatch_id": {"type": ["string", "null"]},
     },
 }

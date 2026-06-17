@@ -1011,7 +1011,14 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
             raise ValueError(
                 "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
             )
-        if self.bare_repo_path is not None and self.bare_repo_name is not None:
+        if (
+            self.bare_repo_path is not None
+            and self.bare_repo_name is not None
+            and not (
+                _is_binding_config_value(self.bare_repo_path)
+                or _is_binding_config_value(self.bare_repo_name)
+            )
+        ):
             raise ValueError(
                 "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
             )
@@ -1028,6 +1035,10 @@ class GitPushBranchEffectDefinition(EffectDefinition):
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
+
+
+def _is_binding_config_value(value: ConfigValue | None) -> bool:
+    return isinstance(value, str) and "${{" in value and "}}" in value
 
 
 class PrCreateEffectDefinition(EffectDefinition):

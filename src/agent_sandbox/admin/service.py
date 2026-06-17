@@ -1600,6 +1600,12 @@ def _workflow_config_for_legacy_mutation_response(config: dict[str, object]) -> 
     return response
 
 
+def _looks_like_declared_output_schema(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    return all(isinstance(entry, Mapping) for entry in value.values())
+
+
 def _is_system_managed_workflow_node_id(node_id: str) -> bool:
     return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
@@ -14978,6 +14984,26 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
+    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
+        from agent_sandbox.provider_profiles import resolve_provider_module_names
+        from agent_sandbox.workflow.plugins import load_provider_plugins
+
+        loader_payload = {
+            key: payload[key]
+            for key in ("provider_loader", "addon_loader")
+            if key in payload
+        }
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(loader_payload)
+        load_provider_plugins(
+            module_names=resolve_provider_module_names(
+                profile_name=worker_config.provider_profile,
+                extra_modules=worker_config.provider_loader.provider_modules,
+            ),
+            include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
+            include_builtin=worker_config.provider_include_builtin,
+            addon_loader=worker_config.addon_loader,
+        )
+
     def assistant_settings_path(self) -> Path:
         return self.config.runtime_dir / "assistant-settings.json"
 
@@ -16141,6 +16167,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             config=normalized_config,
             graphs=self._workflow_editor_stored_graphs(raw_config),
         )
+        self._load_workflow_provider_output_schemas(normalized_config)
+        output_schemas = derive_workflow_output_schemas(normalized_config)
         saved_at = (
             datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC) if config_exists else None
         )
@@ -16157,7 +16185,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             config=normalized_config,
             layout=layout,
             graphs=graphs,
-            output_schemas=derive_workflow_output_schemas(normalized_config),
+            output_schemas=output_schemas,
             saved_at=saved_at,
             revision=revision,
         )
@@ -16365,6 +16393,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             graphs=graph_source,
             strict=graphs is not None,
         )
+        self._load_workflow_provider_output_schemas(editable_normalized_config)
         output_schemas = derive_workflow_output_schemas(editable_normalized_config)
         binding_diagnostics = _workflow_binding_diagnostics_for_graphs(
             editable_normalized_config,
@@ -20892,6 +20921,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if not isinstance(edges, list):
             return candidate
 
+        self._nest_runtime_outputs_config(candidate)
+        self._load_workflow_provider_output_schemas(candidate)
         output_schemas = derive_workflow_output_schemas(candidate)
         for gate in gates:
             if not isinstance(gate, dict):
@@ -20917,6 +20948,24 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 gate["outputs"] = output_schemas.get(gate_id, {})
 
         return candidate
+
+    def _nest_runtime_outputs_config(self, config: dict[str, object]) -> None:
+        for collection_name in ("triggers", "effects", "queries"):
+            entries = config.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or "outputs" not in entry:
+                    continue
+                outputs = entry.get("outputs")
+                if _looks_like_declared_output_schema(outputs):
+                    continue
+                nested_config = entry.get("config")
+                if not isinstance(nested_config, dict):
+                    nested_config = {}
+                    entry["config"] = nested_config
+                nested_config.setdefault("outputs", outputs)
+                entry.pop("outputs", None)
 
     def _validate_workflow_editor_layout(
         self,

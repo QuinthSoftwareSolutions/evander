@@ -69,13 +69,36 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
             )
             previous_updated_at = self._normalize_dt(previous.get("last_state_update_at"))
             previous_emitted_at = self._normalize_dt(previous.get("last_emitted_state_update_at"))
+            current_dispatch_id = self._normalize_optional_string(summary.dispatch_id)
+            previous_dispatch_id = self._normalize_optional_string(previous.get("last_dispatch_id"))
+            previous_emitted_dispatch_id = self._normalize_optional_string(
+                previous.get("last_emitted_dispatch_id")
+            )
 
-            should_emit = (
-                current_state == "idle"
-                and current_updated_at is not None
+            has_current_update = current_updated_at is not None
+            state_transition_completed = (
+                has_current_update
                 and previous_state == "running"
                 and (previous_updated_at is None or current_updated_at > previous_updated_at)
-                and (previous_emitted_at is None or current_updated_at > previous_emitted_at)
+            )
+            idle_dispatch_completed = (
+                has_current_update
+                and previous_state == "idle"
+                and current_dispatch_id is not None
+                and previous_dispatch_id is not None
+                and current_dispatch_id != previous_dispatch_id
+                and (previous_updated_at is None or current_updated_at >= previous_updated_at)
+            )
+            should_emit = (
+                current_state == "idle"
+                and has_current_update
+                and (state_transition_completed or idle_dispatch_completed)
+                and not self._already_emitted_completion(
+                    current_updated_at=current_updated_at,
+                    current_dispatch_id=current_dispatch_id,
+                    previous_emitted_at=previous_emitted_at,
+                    previous_emitted_dispatch_id=previous_emitted_dispatch_id,
+                )
             )
             if should_emit:
                 events.append(
@@ -98,8 +121,13 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
                 "last_agent_state": current_state,
                 "last_state_update_at": self._format_dt(current_updated_at),
             }
+            stored_dispatch_id = current_dispatch_id or previous_dispatch_id
+            if stored_dispatch_id is not None:
+                seen_entry["last_dispatch_id"] = stored_dispatch_id
             if previous_emitted_at is not None:
                 seen_entry["last_emitted_state_update_at"] = self._format_dt(previous_emitted_at)
+            if previous_emitted_dispatch_id is not None:
+                seen_entry["last_emitted_dispatch_id"] = previous_emitted_dispatch_id
             updated_seen_by_vm[vm_name] = seen_entry
 
         if updated_seen_by_vm != seen_by_vm:
@@ -124,6 +152,7 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         vm_name = self._normalize_optional_string(payload.get("vm_name"))
         current_state = self._normalize_optional_string(payload.get("agent_state")) or "unknown"
         current_updated_at = self._normalize_dt(payload.get("last_state_update_at"))
+        current_dispatch_id = self._normalize_optional_string(payload.get("dispatch_id"))
         if not vm_name or current_updated_at is None:
             return
         scope = payload.get("scope")
@@ -134,6 +163,7 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
                 vm_name=vm_name,
                 current_state=current_state,
                 current_updated_at=current_updated_at,
+                current_dispatch_id=current_dispatch_id,
                 scope=scope if isinstance(scope, dict) else None,
             ),
         )
@@ -267,7 +297,11 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         target_session_id: str | None,
     ) -> TriggerEvent:
         vm_name = self._normalize_optional_string(summary.vm_name) or "unknown-vm"
-        event_id = f"{trigger_id}:{vm_name}:{updated_at.isoformat()}"
+        dispatch_id = self._normalize_optional_string(summary.dispatch_id)
+        completion_id = updated_at.isoformat()
+        if dispatch_id is not None:
+            completion_id = f"{dispatch_id}:{completion_id}"
+        event_id = f"{trigger_id}:{vm_name}:{completion_id}"
         payload: dict[str, Any] = {
             "vm": summary.model_dump(mode="json"),
             "vm_name": vm_name,
@@ -292,8 +326,8 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         }
         if summary.ip_address is not None:
             payload["ip_address"] = summary.ip_address
-        if summary.dispatch_id is not None:
-            payload["dispatch_id"] = summary.dispatch_id
+        if dispatch_id is not None:
+            payload["dispatch_id"] = dispatch_id
         return TriggerEvent(
             event_id=event_id,
             trigger_id=trigger_id,
@@ -334,6 +368,23 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
             return None
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
+    @staticmethod
+    def _already_emitted_completion(
+        *,
+        current_updated_at: datetime,
+        current_dispatch_id: str | None,
+        previous_emitted_at: datetime | None,
+        previous_emitted_dispatch_id: str | None,
+    ) -> bool:
+        if previous_emitted_at is None:
+            return False
+        if current_dispatch_id is not None:
+            return (
+                previous_emitted_dispatch_id == current_dispatch_id
+                and current_updated_at <= previous_emitted_at
+            )
+        return current_updated_at <= previous_emitted_at
+
 
 def _acknowledge_vm(
     state: dict[str, Any],
@@ -341,6 +392,7 @@ def _acknowledge_vm(
     vm_name: str,
     current_state: str,
     current_updated_at: datetime,
+    current_dispatch_id: str | None,
     scope: dict[str, Any] | None,
 ) -> dict[str, Any]:
     seen_by_vm = state.get("seen_by_vm", {})
@@ -362,6 +414,9 @@ def _acknowledge_vm(
         .isoformat()
         .replace("+00:00", "Z"),
     }
+    if current_dispatch_id is not None:
+        seen_entry["last_dispatch_id"] = current_dispatch_id
+        seen_entry["last_emitted_dispatch_id"] = current_dispatch_id
     updated_seen_by_vm[vm_name] = seen_entry
     state["seen_by_vm"] = updated_seen_by_vm
 

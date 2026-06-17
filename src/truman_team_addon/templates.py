@@ -8,6 +8,7 @@ from truman_team_addon.models import (
     EphemeralAgentPolicy,
     ProjectGoal,
     ReviewProfileCriterion,
+    RolePermission,
     TeamModel,
     TeamTaskState,
     _ensure_unique,
@@ -41,6 +42,7 @@ class TemplateRole(TemplateModel):
     label: str
     description: str = ""
     reports_to_role_key: str | None = None
+    permissions: list[RolePermission] = Field(default_factory=list)
     ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
 
     @field_validator("key", "label", mode="before")
@@ -57,6 +59,17 @@ class TemplateRole(TemplateModel):
     @classmethod
     def _optional_role_key(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def _permissions(cls, value: object) -> list[RolePermission]:
+        if isinstance(value, (list, tuple)):
+            return [
+                item if isinstance(item, RolePermission) else RolePermission(str(item))
+                for item in value
+            ]
+        items = _unique_text_list(value, "permissions")
+        return [RolePermission(item) for item in items]
 
 
 class TemplateTask(TemplateModel):
@@ -261,6 +274,7 @@ _AUTO_DEV_SQUAD_TEMPLATE = {
             "label": "Release Operator",
             "description": "Handles release handoff and publication.",
             "reports_to_role_key": "project_lead",
+            "permissions": ["request_release"],
             "ephemeral_policy": {"max_concurrent": 1},
         },
     ],

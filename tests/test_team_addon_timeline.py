@@ -18,6 +18,7 @@ from truman_team_addon.models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
+    TeamRole,
     TeamState,
     TeamTaskState,
 )
@@ -59,11 +60,53 @@ def _timeline_state() -> TeamState:
                 lead_agent_id="beta-lead",
             ),
         },
+        roles={
+            "alpha-team__manager": TeamRole(
+                id="alpha-team__manager",
+                team_id="alpha-team",
+                name="Manager",
+            ),
+            "alpha-project__project-lead": TeamRole(
+                id="alpha-project__project-lead",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Project Lead",
+            ),
+            "alpha-project__developer": TeamRole(
+                id="alpha-project__developer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Developer",
+            ),
+            "alpha-project__reviewer": TeamRole(
+                id="alpha-project__reviewer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Reviewer",
+            ),
+            "beta-team__manager": TeamRole(
+                id="beta-team__manager",
+                team_id="beta-team",
+                name="Manager",
+            ),
+            "beta-project__project-lead": TeamRole(
+                id="beta-project__project-lead",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Project Lead",
+            ),
+            "beta-project__developer": TeamRole(
+                id="beta-project__developer",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Developer",
+            ),
+        },
         agents={
             "alpha-manager": PersistentAgent(
                 id="alpha-manager",
                 team_id="alpha-team",
-                role="manager",
+                role_id="alpha-team__manager",
                 session_id="session-alpha-manager",
                 subordinate_agent_ids=["alpha-lead"],
             ),
@@ -71,7 +114,7 @@ def _timeline_state() -> TeamState:
                 id="alpha-lead",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="lead",
+                role_id="alpha-project__project-lead",
                 session_id="session-alpha-lead",
                 reports_to_agent_id="alpha-manager",
                 subordinate_agent_ids=["alpha-dev", "alpha-reviewer"],
@@ -80,7 +123,7 @@ def _timeline_state() -> TeamState:
                 id="alpha-dev",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="developer",
+                role_id="alpha-project__developer",
                 session_id="session-alpha-dev",
                 reports_to_agent_id="alpha-lead",
             ),
@@ -88,14 +131,14 @@ def _timeline_state() -> TeamState:
                 id="alpha-reviewer",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="reviewer",
+                role_id="alpha-project__reviewer",
                 session_id="session-alpha-reviewer",
                 reports_to_agent_id="alpha-lead",
             ),
             "beta-manager": PersistentAgent(
                 id="beta-manager",
                 team_id="beta-team",
-                role="manager",
+                role_id="beta-team__manager",
                 session_id="session-beta-manager",
                 subordinate_agent_ids=["beta-lead"],
             ),
@@ -103,7 +146,7 @@ def _timeline_state() -> TeamState:
                 id="beta-lead",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="lead",
+                role_id="beta-project__project-lead",
                 session_id="session-beta-lead",
                 reports_to_agent_id="beta-manager",
                 subordinate_agent_ids=["beta-dev"],
@@ -112,7 +155,7 @@ def _timeline_state() -> TeamState:
                 id="beta-dev",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="developer",
+                role_id="beta-project__developer",
                 session_id="session-beta-dev",
                 reports_to_agent_id="beta-lead",
             ),
@@ -277,6 +320,7 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
         "timestamp_source": "created_at",
         "timestamp_missing": False,
         "actor_agent_id": "alpha-lead",
+        "actor_subject": "alpha-lead",
         "related_agent_ids": ["alpha-dev", "alpha-lead"],
         "team_id": "alpha-team",
         "project_id": "alpha-project",
@@ -356,6 +400,26 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     beta_view = derive_team_timeline(state, team_id="beta-team")
     assert [entry["id"] for entry in beta_view["entries"]] == ["task:beta-task:created"]
     assert all(entry["team_id"] == "beta-team" for entry in beta_view["entries"])
+
+
+def test_derive_team_timeline_keeps_dismissed_failed_action_out_of_attention() -> None:
+    state = _timeline_state()
+    state.action_records["alpha-action"].dismissed_at = _dt(1, 14)
+    state.action_records["alpha-action"].dismissed_by = "operator"
+
+    attention_view = derive_team_timeline(state, attention_needed=True)
+    all_entries = derive_team_timeline(state)
+    action_entry = next(
+        entry
+        for entry in all_entries["entries"]
+        if entry["id"] == "action:alpha-action:created"
+    )
+
+    assert action_entry["status"] == "failed"
+    assert action_entry["attention_needed"] is False
+    assert "action:alpha-action:created" not in [
+        entry["id"] for entry in attention_view["entries"]
+    ]
 
 
 def test_derive_team_timeline_normalizes_naive_timestamps_for_sorting() -> None:

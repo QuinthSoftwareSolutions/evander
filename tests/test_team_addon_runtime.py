@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
+from agent_sandbox.workflow.packs import WorkflowPack
+from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from truman_team_addon.models import (
     AgentActionRecord,
     AgentInboxItem,
@@ -18,12 +23,14 @@ from truman_team_addon.models import (
     GitPromotionRecord,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
     Team,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamRole,
     TeamState,
     TeamTaskState,
 )
@@ -31,6 +38,7 @@ from truman_team_addon.provider_schemas import (
     TeamAgentActionArtifactQueryDefinition,
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
+    TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamSessionRoutingQueryDefinition,
@@ -41,6 +49,7 @@ from truman_team_addon.providers import (
     TeamAgentActionArtifactQueryProvider,
     TeamApplyAgentActionEffectProvider,
     TeamApplyEphemeralActionEffectProvider,
+    TeamCreateOperatorDirectiveEffectProvider,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamSessionRoutingQueryProvider,
@@ -49,6 +58,180 @@ from truman_team_addon.providers import (
 )
 from truman_team_addon.repository import TeamStateRepository
 from truman_team_addon.workflow_packs import team_runtime_v1
+
+
+def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
+    pack = WorkflowPack.model_validate(team_runtime_v1())
+    sections: dict[str, list[dict[str, object]]] = {
+        "triggers": [],
+        "gates": [],
+        "queries": [],
+        "effects": [],
+        "edges": [edge.model_dump(mode="json") for edge in pack.ir.edges],
+    }
+    for ir_node in pack.ir.nodes:
+        node = ir_node.node.model_dump(mode="json")
+        config = node.pop("config", {}) or {}
+        node.update(config)
+        node_type = str(node["type"])
+        if node_type.startswith("trigger:"):
+            sections["triggers"].append(node)
+        elif node_type.startswith("gate:"):
+            sections["gates"].append(node)
+        elif node_type.startswith("query:"):
+            sections["queries"].append(node)
+        elif node_type.startswith("effect:"):
+            sections["effects"].append(node)
+    return sections
+
+
+def _flatten_workflow_config_for_editor(
+    config: dict[str, object],
+) -> dict[str, object]:
+    flattened = json.loads(json.dumps(config))
+    for collection_name in ("triggers", "gates", "queries", "effects"):
+        entries = flattened.get(collection_name)
+        if not isinstance(entries, list):
+            continue
+        next_entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                next_entries.append(entry)
+                continue
+            nested_config = entry.pop("config", None)
+            if isinstance(nested_config, dict):
+                entry = {**nested_config, **entry}
+            next_entries.append(entry)
+        flattened[collection_name] = next_entries
+    return flattened
+
+
+def _legacy_outputs_config(config: dict[str, object]) -> dict[str, object]:
+    legacy = json.loads(json.dumps(config))
+    effects = legacy.get("effects")
+    if not isinstance(effects, list):
+        return legacy
+    for effect in effects:
+        if not isinstance(effect, dict):
+            continue
+        if effect.get("type") not in {
+            "effect:team:record-git-promotion",
+            "effect:team:mark-release-published",
+        }:
+            continue
+        if "result_outputs" in effect and "outputs" not in effect:
+            effect["outputs"] = effect.pop("result_outputs")
+    return legacy
+
+
+def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "team-runtime.v1.json").write_text(
+        json.dumps(team_runtime_v1(), indent=2),
+        encoding="utf-8",
+    )
+    config_dir = tmp_path / "config" / "trigger-orchestrator"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["team-runtime.v1.json"],
+                "addon_loader": {
+                    "modules": ["truman_team_addon"],
+                    "enabled_entry_points": False,
+                    "enabled_addon_ids": ["team-addon"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        tmp_path,
+        base_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+    )
+
+    assert _node_ids(config.triggers) == [
+        "team-cron",
+        "team-agent-run-completed",
+        "team-ephemeral-requested",
+        "team-operator-escalation",
+        "team-git-promotion-requested",
+        "system.chat_assistant",
+    ]
+    assert "team-wake-due-agents" in _node_ids(config.effects)
+    assert "team-notify-operator" in _node_ids(config.effects)
+    assert "team-git-promote-review-branch" in _node_ids(config.effects)
+
+    service = AdminService(tmp_path / "runtime")
+    document = service.read_workflow_editor_document()
+    assert service.read_workflow_editor_document().revision == document.revision
+    assert document.output_schemas["team-route-completed-session"]["persistent"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-route-completed-session"]["ignored"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-read-persistent-action"]["valid"] == {
+        "type": "boolean"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"][
+        "failed_project_repo_preparations"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "cost_guard_blocked_team_ids"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-wake-due-agents"][
+        "cost_guard_blocked_teams"
+    ] == {"type": "array"}
+    assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
+        "type": ["string", "null"]
+    }
+    graphs = [
+        graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
+        for graph in document.graphs
+    ]
+    flattened_config = _flatten_workflow_config_for_editor(document.config)
+    effects = {
+        str(effect["id"]): effect
+        for effect in flattened_config.get("effects", [])
+        if isinstance(effect, dict)
+    }
+    assert "outputs" not in effects["team-record-review-promotion"]
+    assert effects["team-record-review-promotion"]["result_outputs"] == {
+        "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
+        "host_repo_path": "${{team-git-promote-review-branch.host_repo_path ?? null}}",
+        "message": "${{team-git-promote-review-branch.message ?? null}}",
+    }
+    validation = service.validate_workflow_editor_document(
+        config=flattened_config,
+        layout=document.layout,
+        graphs=graphs,
+    )
+    assert validation.validation_diagnostics == []
+    legacy_validation = service.validate_workflow_editor_document(
+        config=_legacy_outputs_config(flattened_config),
+        layout=document.layout,
+        graphs=graphs,
+    )
+    assert legacy_validation.validation_diagnostics == []
+    current_document = service.read_workflow_editor_document()
+    save = service.save_workflow_editor_document(
+        config=flattened_config,
+        layout=document.layout,
+        graphs=graphs,
+        expected_revision=current_document.revision,
+    )
+    assert save.validation_diagnostics == []
+
+
+def _node_ids(nodes: object) -> list[str]:
+    return [str(getattr(node, "id")) for node in nodes]
 
 
 class FakeResumer:
@@ -70,12 +253,82 @@ class FakeMetadataUpdater:
         return {"success": True}
 
 
+class FakeSessionStore(FakeMetadataUpdater):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sessions = {
+            "session-backend": SimpleNamespace(
+                session_id="session-backend",
+                vm_id="vm-backend",
+                vm_provider="libvirt",
+                directory_path="root",
+                metadata={},
+            )
+        }
+
+    def read_all_sessions(self) -> dict[str, object]:
+        return self.sessions
+
+    def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
+        super().session_update_metadata(**kwargs)
+        target = str(kwargs["target"])
+        metadata = kwargs["metadata"]
+        session = self.sessions[target]
+        session.metadata = _deep_merge(dict(session.metadata), metadata)
+        return {"success": True, "metadata": session.metadata}
+
+
+class FakeFileCopier:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def vm_copy_files(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        files = list(kwargs.get("files") or [])
+        return {
+            "success": True,
+            "vm_name": kwargs.get("target"),
+            "copied_count": len(files),
+            "copied_paths": [file["destination_path"] for file in files],
+        }
+
+
+class FakeRepoCloner:
+    def __init__(self, *, success: bool = True, message: str = "repo prepared") -> None:
+        self.calls: list[dict[str, object]] = []
+        self.success = success
+        self.message = message
+
+    def clone_repo_into_vm(self, **kwargs: object) -> SimpleNamespace:
+        self.calls.append(dict(kwargs))
+        return SimpleNamespace(
+            success=self.success,
+            vm_name=str(kwargs.get("vm_name") or "vm-backend"),
+            message=self.message,
+            target_dir="/home/agent/Truman",
+            guest_repo_name="Truman",
+            remote_url="ssh://agent-sandbox-git-host/git-remotes/Truman.git",
+        )
+
+
 class FakeArtifactReader:
     def __init__(self, content: str) -> None:
         self.content = content
 
     def read_session_artifact_text(self, **_: object) -> dict[str, object]:
         return {"content": self.content}
+
+
+def _deep_merge(base: dict[str, object], update: object) -> dict[str, object]:
+    if not isinstance(update, dict):
+        return base
+    merged = dict(base)
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateRepository:
@@ -96,15 +349,22 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=max_ephemeral),
-        expected_revision=2,
+        expected_revision=3,
     )
     repo.create_or_reprioritize_task(
         task_id="task",
@@ -114,7 +374,7 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         title="Build backend",
         description="Implement backend work.",
         created_by_agent_id="lead",
-        expected_revision=3,
+        expected_revision=4,
     )
     return repo
 
@@ -274,7 +534,8 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
     _seed_team(tmp_path)
     resumer = FakeResumer()
-    metadata_updater = FakeMetadataUpdater()
+    session_store = FakeSessionStore()
+    file_copier = FakeFileCopier()
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
@@ -285,7 +546,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
             agent_resumer=resumer,
-            session_metadata_updater=metadata_updater,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
         ),
     )
 
@@ -293,10 +556,53 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
 
     assert result["success"] is True
     assert result["leased_count"] == 1
+    assert len(file_copier.calls) == 1
+    copied_files = file_copier.calls[0]["files"]
+    assert [file["destination_path"] for file in copied_files] == [
+        "/artifacts/team-action.schema.json",
+        "/artifacts/team-action.example.json",
+    ]
+    schema = json.loads(str(copied_files[0]["content"]))
+    assert schema["properties"]["task_updates"]["items"]["required"] == ["task_id"]
+    assert "task_id" in schema["properties"]["task_creations"]["items"]["properties"]
+    assert "instructions" in schema["properties"]["review_requests"]["items"]["properties"]
+    assert schema["properties"]["review_decisions"]["items"]["properties"]["state"]["enum"] == [
+        "accepted",
+        "rejected",
+        "blocked",
+    ]
+    review_promotion_shapes = schema["properties"]["git_review_promotions"]["items"]["oneOf"]
+    assert review_promotion_shapes[0]["required"] == ["assignment_id"]
+    assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
+    assert "commit_sha" in review_promotion_shapes[1]["properties"]
+    assert "source_branch" in review_promotion_shapes[1]["properties"]
+    release_request_schema = schema["properties"]["git_release_requests"]["items"]
+    assert release_request_schema["additionalProperties"] is False
+    assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
+    assert set(release_request_schema["properties"]) == {
+        "id",
+        "project_id",
+        "deliverable_ids",
+        "release_branch",
+        "canonical_branch",
+        "summary",
+    }
+    example = json.loads(str(copied_files[1]["content"]))
+    assert example["schema_version"] == 4
+    assert example["review_requests"][0]["instructions"]
+    assert example["review_decisions"][0]["state"] == "accepted"
+    assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
+    assert "commit_sha" in example["git_review_promotions"][0]
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
     prompt = str(resumer.calls[0]["prompt"])
     assert "team-action.json" in prompt
+    assert "team-action.schema.json" in prompt
+    assert "team-action.example.json" in prompt
+    assert "Do not accept or reject someone else's task with task_updates" in prompt
+    assert "Use review_decisions only for review requests assigned to you" in prompt
+    assert "item_type operator_directive" in prompt
     for field_name in (
         "task_creations",
         "status_requests",
@@ -316,15 +622,32 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         assert field_name in prompt
     assert "do not start tasks" in prompt.lower()
     assert "creating child tasks via task_creations with parent_task_id" in prompt
-    assert metadata_updater.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
+        "seeded": True,
+        "schema_version": 4,
+        "schema_path": "/artifacts/team-action.schema.json",
+        "example_path": "/artifacts/team-action.example.json",
+        "action_artifact_path": "/artifacts/team-action.json",
+        "copied_paths": [
+            "/artifacts/team-action.schema.json",
+            "/artifacts/team-action.example.json",
+        ],
+    }
+    assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
 
 
-def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
+def test_wake_due_agents_provider_rotates_context_when_pending(
     tmp_path: Path,
 ) -> None:
-    _seed_team(tmp_path)
-    resumer = FakeResumer({"success": False, "message": "vm not ready"})
-    metadata_updater = FakeMetadataUpdater()
+    repo = _seed_team(tmp_path)
+    repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="controlled rotation",
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-rotated"})
+    session_store = FakeSessionStore()
+    file_copier = FakeFileCopier()
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
@@ -335,7 +658,315 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
             agent_resumer=resumer,
-            session_metadata_updater=metadata_updater,
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Prior handoff summary from Team state" in prompt
+    assert "controlled rotation" in prompt
+    assert result["dispatches"][0]["context_rotation"] == {
+        "rotated": True,
+        "reason": "manual",
+    }
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_context_rotated_at is not None
+    assert runtime.last_thread_id == "thread-rotated"
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "context_rotation_pending"
+    ] is False
+    assert session_store.sessions["session-backend"].metadata["team_addon"][
+        "last_context_rotated_at"
+    ]
+
+
+def test_wake_due_agents_provider_rotates_idle_agent_when_only_rotation_pending(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_task(task_id="task", state=TeamTaskState.ACCEPTED)
+    repo.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+        request_note="idle controlled rotation",
+    )
+    resumer = FakeResumer(result={"thread_id": "thread-idle"})
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    assert "Active tasks: none." in str(resumer.calls[0]["prompt"])
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is False
+    assert runtime.last_thread_id == "thread-idle"
+
+
+def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.request_agent_context_rotation(agent_id="backend", requested_by="operator:test")
+    resumer = FakeResumer(result={"success": False, "message": "resume failed"})
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert resumer.calls[0]["resume_mode"] == "new_context"
+    runtime = TeamStateRepository(tmp_path).read().agent_runtimes["backend"]
+    assert runtime.context_rotation_pending is True
+    assert runtime.last_context_rotated_at is None
+
+
+def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    repo.update_team(
+        team_id="team",
+        max_cost_usd=0,
+        set_max_cost_usd=True,
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["dispatches"] == []
+    assert resumer.calls == []
+    assert result["cost_guard_blocked_team_ids"] == ["team"]
+    assert result["cost_guard_blocked_teams"][0]["team_id"] == "team"
+    assert result["cost_guard_blocked_teams"][0]["max_cost_usd"] == 0.0
+    assert result["cost_guard_blocked_teams"][0]["estimated_cost"] == 0.0
+
+
+def test_wake_due_agents_provider_prepares_project_repo_when_configured(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    repo_cloner = FakeRepoCloner()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert repo_cloner.calls == [
+        {
+            "vm_name": "vm-backend",
+            "session_id": "session-backend",
+            "repo_source": "/opt/repos/Truman",
+            "clone_branch": "main",
+            "vm_user": "agent",
+            "directory_path": "root",
+            "git_author_name": None,
+            "git_author_email": None,
+            "git_committer_name": None,
+            "git_committer_email": None,
+        }
+    ]
+    project_repo = result["dispatches"][0]["project_repo"]
+    assert project_repo["target_dir"] == "/home/agent/Truman"
+    assert project_repo["base_branch"] == "main"
+    assert result["prepared_project_repos"] == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "project_id": "project",
+            "dispatch_id": result["dispatches"][0]["dispatch_id"],
+            "project_repo": project_repo,
+            "target_dir": "/home/agent/Truman",
+        }
+    ]
+    assert result["failed_project_repo_preparations"] == []
+    prompt = str(resumer.calls[0]["prompt"])
+    assert '"project_repo"' in prompt
+    assert "/home/agent/Truman" in prompt
+    assert "The project host checkout is not mounted in the guest" in prompt
+    assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
+    assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_skips_already_seeded_action_contract(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 4,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            }
+        }
+    }
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["action_contract"]["seeded"] is False
+    assert result["dispatches"][0]["action_contract"]["reason"] == "already_seeded"
+    assert file_copier.calls == []
+    assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
+
+
+def test_wake_due_agents_provider_reseeds_stale_action_contract(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    session_store = FakeSessionStore()
+    session_store.sessions["session-backend"].metadata = {
+        "team_addon": {
+            "action_contract": {
+                "seeded": True,
+                "schema_version": 3,
+                "schema_path": "/artifacts/team-action.schema.json",
+                "example_path": "/artifacts/team-action.example.json",
+                "action_artifact_path": "/artifacts/team-action.json",
+            }
+        }
+    }
+    file_copier = FakeFileCopier()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            vm_file_copier=file_copier,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"][0]["action_contract"]["seeded"] is True
+    assert result["dispatches"][0]["action_contract"]["schema_version"] == 4
+    assert len(file_copier.calls) == 1
+    assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"][
+        "schema_version"
+    ] == 4
+
+
+def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
+    tmp_path: Path,
+) -> None:
+    _seed_team(tmp_path)
+    resumer = FakeResumer({"success": False, "message": "vm not ready"})
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
         ),
     )
 
@@ -351,7 +982,66 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     assert runtime.wake_leased_until is None
     assert runtime.no_progress_count == 1
     assert [record.error for record in reread.action_records.values()] == ["vm not ready"]
-    assert metadata_updater.calls == []
+    assert len(session_store.calls) == 1
+    assert "action_contract" in session_store.calls[0]["metadata"]["team_addon"]
+
+
+def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+        )
+        return state
+
+    repo.update(_set_git)
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=FakeRepoCloner(success=False, message="repo missing"),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["dispatches"] == []
+    assert result["prepared_project_repos"] == []
+    reread = TeamStateRepository(tmp_path).read()
+    failed_repo_preparation = result["failed_project_repo_preparations"][0]
+    assert {
+        key: value
+        for key, value in failed_repo_preparation.items()
+        if key != "dispatch_id"
+    } == {
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "project_id": "project",
+        "error": "repo missing",
+    }
+    assert str(failed_repo_preparation["dispatch_id"]).startswith("team-dispatch-")
+    assert result["errors"] == ["backend: repo missing"]
+    assert resumer.calls == []
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert [record.error for record in reread.action_records.values()] == ["repo missing"]
 
 
 def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
@@ -407,6 +1097,126 @@ def test_action_artifact_query_and_apply_provider(tmp_path: Path) -> None:
     reread = TeamStateRepository(tmp_path).read()
     assert len(reread.deliverables) == 1
     assert reread.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
+    _seed_team(tmp_path)
+    provider = TeamCreateOperatorDirectiveEffectProvider()
+    provider.initialize(
+        TeamCreateOperatorDirectiveEffectDefinition(
+            id="directive",
+            display_name="Create operator directive",
+            type="effect:team:create-operator-directive",
+            team_id="team",
+            project_id="project",
+            message="Ask the lead for a status report.",
+            title="Status report",
+            source="discord",
+            source_message_id="discord-msg-1",
+            created_by="operator:jonathan",
+            requesting_session_id="session-manager",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["recipient_agent_id"] == "manager"
+    assert result["team_id"] == "team"
+    assert result["project_id"] == "project"
+    assert result["error"] is None
+    reread = TeamStateRepository(tmp_path).read()
+    item = reread.inbox[result["inbox_item_id"]]
+    assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+    assert item.payload["message"] == "Ask the lead for a status report."
+    assert reread.agent_runtimes["manager"].next_wake_at is None
+
+
+def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+            dispatch_id="wake-123-session-backend",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "ignored"
+    assert result["persistent"] is False
+    assert result["ignored"] is True
+    assert result["reason"] == "dispatch_id does not match active team runtime lease"
+    assert result["expected_dispatch_id"] == team_dispatch_id
+
+
+def test_session_routing_ignores_missing_dispatch_for_active_team_lease(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "ignored"
+    assert result["dispatch_id"] is None
+    assert result["persistent"] is False
+    assert result["ignored"] is True
+    assert result["reason"] == "dispatch_id does not match active team runtime lease"
+    assert result["expected_dispatch_id"] == team_dispatch_id
+
+
+def test_session_routing_accepts_active_team_dispatch_for_persistent_agent(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = repo.lease_due_agents(now=datetime(2026, 1, 1, tzinfo=UTC))
+    team_dispatch_id = leases[0]["dispatch_id"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route",
+            display_name="Route",
+            type="query:team:session-routing",
+            session_id="session-backend",
+            dispatch_id=team_dispatch_id,
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "persistent"
+    assert result["persistent"] is True
+    assert result["ignored"] is False
+    assert result["expected_dispatch_id"] == team_dispatch_id
 
 
 def test_invalid_action_artifact_increments_no_progress(tmp_path: Path) -> None:
@@ -862,7 +1672,7 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
 
 
 def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     queries = {node["id"]: node for node in pack["queries"]}
@@ -888,6 +1698,9 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
         "effect:team:mark-ephemeral-cleaned-up"
     )
     assert queries["team-route-completed-session"]["type"] == "query:team:session-routing"
+    assert queries["team-route-completed-session"]["dispatch_id"] == (
+        "${{team-agent-run-completed.dispatch_id ?? null}}"
+    )
     assert gates["team-completed-ephemeral"]["when"]["all"][0] == {
         "equals": True,
         "left": "${{team-route-completed-session.ephemeral}}",
@@ -906,7 +1719,7 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
 
 
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
@@ -928,7 +1741,7 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
     gates = {node["id"]: node for node in pack["gates"]}
@@ -954,11 +1767,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         }
         assert ("team-git-promotion-requested", gate_id) in edges
 
-    # review -> promote-agent-branch -> record-git-promotion
+    # review -> publish-review-branch -> record-git-promotion
     promote = effects["team-git-promote-review-branch"]
-    assert promote["type"] == "effect:git:promote-agent-branch"
-    assert promote["agent_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert promote["review_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert promote["type"] == "effect:team:publish-review-branch"
+    assert promote["source_branch"] == (
+        "${{team-git-promotion-requested.payload.source_branch ?? null}}"
+    )
+    assert promote["commit_sha"] == "${{team-git-promotion-requested.payload.commit_sha ?? null}}"
+    assert promote["target_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
     assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
     assert effects["team-record-review-promotion"]["promotion_id"] == (
         "${{team-git-promotion-requested.payload.promotion_id}}"
@@ -1018,7 +1834,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
 
 
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
-    pack = team_runtime_v1()["config"]
+    pack = _team_runtime_sections()
     push_nodes = [
         node for node in pack["effects"] if node["type"] == "effect:git:push-branch"
     ]
@@ -1072,11 +1888,59 @@ def _multi_team_state() -> TeamState:
                 lead_agent_id="beta-lead",
             ),
         },
+        roles={
+            "alpha-team__manager": TeamRole(
+                id="alpha-team__manager",
+                team_id="alpha-team",
+                name="Manager",
+            ),
+            "alpha-project__project-lead": TeamRole(
+                id="alpha-project__project-lead",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Project Lead",
+            ),
+            "alpha-project__developer": TeamRole(
+                id="alpha-project__developer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Developer",
+            ),
+            "alpha-project__reviewer": TeamRole(
+                id="alpha-project__reviewer",
+                team_id="alpha-team",
+                project_id="alpha-project",
+                name="Reviewer",
+            ),
+            "beta-team__manager": TeamRole(
+                id="beta-team__manager",
+                team_id="beta-team",
+                name="Manager",
+            ),
+            "beta-project__project-lead": TeamRole(
+                id="beta-project__project-lead",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Project Lead",
+            ),
+            "beta-project__developer": TeamRole(
+                id="beta-project__developer",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Developer",
+            ),
+            "beta-project__reviewer": TeamRole(
+                id="beta-project__reviewer",
+                team_id="beta-team",
+                project_id="beta-project",
+                name="Reviewer",
+            ),
+        },
         agents={
             "alpha-manager": PersistentAgent(
                 id="alpha-manager",
                 team_id="alpha-team",
-                role="manager",
+                role_id="alpha-team__manager",
                 session_id="session-alpha-manager",
                 subordinate_agent_ids=["alpha-lead"],
             ),
@@ -1084,7 +1948,7 @@ def _multi_team_state() -> TeamState:
                 id="alpha-lead",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="lead",
+                role_id="alpha-project__project-lead",
                 session_id="session-alpha-lead",
                 reports_to_agent_id="alpha-manager",
                 subordinate_agent_ids=["alpha-dev", "alpha-reviewer"],
@@ -1093,7 +1957,7 @@ def _multi_team_state() -> TeamState:
                 id="alpha-dev",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="developer",
+                role_id="alpha-project__developer",
                 session_id="session-alpha-dev",
                 reports_to_agent_id="alpha-lead",
             ),
@@ -1101,14 +1965,14 @@ def _multi_team_state() -> TeamState:
                 id="alpha-reviewer",
                 team_id="alpha-team",
                 project_id="alpha-project",
-                role="reviewer",
+                role_id="alpha-project__reviewer",
                 session_id="session-alpha-reviewer",
                 reports_to_agent_id="alpha-lead",
             ),
             "beta-manager": PersistentAgent(
                 id="beta-manager",
                 team_id="beta-team",
-                role="manager",
+                role_id="beta-team__manager",
                 session_id="session-beta-manager",
                 subordinate_agent_ids=["beta-lead"],
             ),
@@ -1116,7 +1980,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-lead",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="lead",
+                role_id="beta-project__project-lead",
                 session_id="session-beta-lead",
                 reports_to_agent_id="beta-manager",
                 subordinate_agent_ids=["beta-dev", "beta-reviewer"],
@@ -1125,7 +1989,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-dev",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="developer",
+                role_id="beta-project__developer",
                 session_id="session-beta-dev",
                 reports_to_agent_id="beta-lead",
             ),
@@ -1133,7 +1997,7 @@ def _multi_team_state() -> TeamState:
                 id="beta-reviewer",
                 team_id="beta-team",
                 project_id="beta-project",
-                role="reviewer",
+                role_id="beta-project__reviewer",
                 session_id="session-beta-reviewer",
                 reports_to_agent_id="beta-lead",
             ),

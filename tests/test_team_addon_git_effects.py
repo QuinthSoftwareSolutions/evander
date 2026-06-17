@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.internal import InternalEventBus, internal_event_store_path
+from agent_sandbox.events.models import WorkflowNodeEnvelope
 from truman_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
@@ -19,11 +20,13 @@ from truman_team_addon.models import (
 from truman_team_addon.provider_schemas import (
     TeamConsolidateGitBranchesEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
 )
 from truman_team_addon.providers import (
     TeamConsolidateGitBranchesEffectProvider,
     TeamMarkReleasePublishedEffectProvider,
+    TeamPublishReviewBranchEffectProvider,
     TeamRecordGitPromotionEffectProvider,
 )
 from truman_team_addon.repository import TeamStateRepository
@@ -47,15 +50,22 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         goals=[ProjectGoal(id="goal", description="Ship work")],
         expected_revision=1,
     )
+    repo.create_role(
+        role_id="project__backend",
+        team_id="team",
+        project_id="project",
+        name="Backend",
+        expected_revision=2,
+    )
     repo.register_agent(
         agent_id="backend",
         team_id="team",
         project_id="project",
-        role="backend",
+        role_id="project__backend",
         session_id="session-backend",
         reports_to_agent_id="lead",
         ephemeral_policy=EphemeralAgentPolicy(max_concurrent=0),
-        expected_revision=2,
+        expected_revision=3,
     )
     repo.create_or_reprioritize_task(
         task_id="task",
@@ -65,7 +75,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
         title="Build backend",
         description="Implement backend work.",
         created_by_agent_id="lead",
-        expected_revision=3,
+        expected_revision=4,
     )
     return repo
 
@@ -125,7 +135,7 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
         promotion_id="promotion-1",
         success=True,
         commit_sha="deadbeef",
-        outputs={"review_branch": "team/team/reviews/ephemeral-1"},
+        result_outputs={"review_branch": "team/team/reviews/ephemeral-1"},
     )
 
     assert result["success"] is True
@@ -139,6 +149,33 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
     assert refs.agent_branch == "agents/eph-1/ephemeral-1"
     assert refs.commit_sha == "deadbeef"
     assert "promotion-1" in refs.promotion_record_ids
+
+
+def test_record_git_promotion_accepts_legacy_outputs_config(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_review_promotion(repo)
+    provider = TeamRecordGitPromotionEffectProvider()
+    provider.initialize(
+        WorkflowNodeEnvelope(
+            id="record",
+            display_name="Record",
+            type="effect:team:record-git-promotion",
+            config={
+                "promotion_id": "promotion-1",
+                "success": True,
+                "commit_sha": "deadbeef",
+                "outputs": {"review_branch": "team/team/reviews/ephemeral-1"},
+            },
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert repo.read().git_promotions["promotion-1"].outputs == {
+        "review_branch": "team/team/reviews/ephemeral-1"
+    }
 
 
 def test_record_git_promotion_failure_blocks_and_notifies(tmp_path: Path) -> None:
@@ -253,7 +290,7 @@ def test_record_canonical_promotion_success_updates_record(
         promotion_id="canonical-promotion",
         success=True,
         commit_sha="cafef00d",
-        outputs={"origin_branch": "releases/project/release-1"},
+        result_outputs={"origin_branch": "releases/project/release-1"},
     )
 
     assert result["success"] is True
@@ -444,6 +481,82 @@ def _consolidate_provider(tmp_path: Path, **config: object) -> dict[str, object]
         EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
     )
     return provider.execute()
+
+
+def _publish_review_provider(tmp_path: Path, **config: object) -> dict[str, object]:
+    provider = TeamPublishReviewBranchEffectProvider()
+    provider.initialize(
+        TeamPublishReviewBranchEffectDefinition(
+            id="publish-review",
+            display_name="Publish Review",
+            type="effect:team:publish-review-branch",
+            **config,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    return provider.execute()
+
+
+def _git_dir(git_dir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", f"--git-dir={git_dir}", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise AssertionError(f"git --git-dir={git_dir} {' '.join(args)} failed: {result.stderr}")
+    return result
+
+
+def test_publish_review_branch_imports_unreachable_bare_commit(tmp_path: Path) -> None:
+    bare = tmp_path / "dropbox.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    source = tmp_path / "source"
+    _init_repo(source)
+    _git(source, "remote", "add", "origin", str(bare))
+    _git(source, "push", "-u", "origin", "main")
+    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    _branch_with(source, "agents/session-1/work", "agent work\n")
+    commit_sha = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
+    _git(source, "push", "origin", "agents/session-1/work")
+    _git_dir(bare, "update-ref", "-d", "refs/heads/agents/session-1/work")
+    trusted = tmp_path / "trusted"
+    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
+    (trusted / "file.txt").write_text("local dirty state\n")
+
+    result = _publish_review_provider(
+        tmp_path,
+        host_repo_path=str(trusted),
+        bare_repo_path=str(bare),
+        commit_sha=commit_sha,
+        target_branch="team/team/reviews/deliverable",
+    )
+
+    assert result["success"] is True
+    assert result["review_branch"] == "team/team/reviews/deliverable"
+    assert result["commit_sha"] == commit_sha
+    ref = _git(trusted, "rev-parse", "refs/heads/team/team/reviews/deliverable")
+    assert ref.stdout.strip() == commit_sha
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
+    assert (trusted / "file.txt").read_text(encoding="utf-8") == "local dirty state\n"
+
+
+def test_publish_review_branch_reports_missing_source(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    bare = tmp_path / "dropbox.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+
+    result = _publish_review_provider(
+        tmp_path,
+        host_repo_path=str(repo),
+        bare_repo_path=str(bare),
+        target_branch="team/team/reviews/missing",
+    )
+
+    assert result["success"] is False
+    assert "source_branch or commit_sha is required" in str(result["error"])
 
 
 def test_consolidate_git_branches_merges_in_order(tmp_path: Path) -> None:

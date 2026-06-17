@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
+from agent_sandbox.events.provider_models import (
+    AgentCloneRepoEffectDefinition,
+    AgentCopyFilesEffectDefinition,
+)
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.workflow.contracts import register_node_output_schema
 from agent_sandbox.workflow.plugins import ProviderPluginRegistration
 
 from .git_naming import validate_branch_name
+from .costs import TeamCostService
 from .models import team_state_payload
 from .provider_schemas import (
     TEAM_OUTPUT_SCHEMAS,
@@ -22,9 +30,11 @@ from .provider_schemas import (
     TeamApplyAgentActionEffectDefinition,
     TeamApplyEphemeralActionEffectDefinition,
     TeamConsolidateGitBranchesEffectDefinition,
+    TeamCreateOperatorDirectiveEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
@@ -34,6 +44,9 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
+ACTION_CONTRACT_SCHEMA_VERSION = 4
+ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
+ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 
 
 class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
@@ -64,6 +77,18 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        current_state = repo.read()
+        cost_guard_blocked_teams = _cost_guard_blocked_teams(
+            context,
+            state=current_state,
+            team_id=_optional_text(payload.get("team_id")),
+            project_id=_optional_text(payload.get("project_id")),
+            agent_id=_optional_text(payload.get("agent_id")),
+        )
+        blocked_team_ids = {
+            _required_text(record["team_id"], "team_id")
+            for record in cost_guard_blocked_teams
+        }
         state, leases = repo.lease_due_agents(
             team_id=_optional_text(payload.get("team_id")),
             project_id=_optional_text(payload.get("project_id")),
@@ -75,19 +100,52 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 payload.get("max_no_progress_count"),
                 default=3,
             ),
+            blocked_team_ids=blocked_team_ids,
         )
         action_path = _optional_text(payload.get("action_artifact_path")) or DEFAULT_ACTION_ARTIFACT_PATH
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         dispatches: list[dict[str, Any]] = []
+        prepared_project_repos: list[dict[str, Any]] = []
+        failed_project_repo_preparations: list[dict[str, Any]] = []
         errors: list[str] = []
         for lease in leases:
             agent = lease["agent"]
-            prompt = _build_prompt(lease, action_artifact_path=action_path)
             try:
+                seed_result = _seed_action_contract_files(
+                    context,
+                    agent=agent,
+                    action_artifact_path=action_path,
+                )
+                try:
+                    project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                except Exception as exc:
+                    failed_project_repo_preparations.append(
+                        _project_repo_prepare_record(
+                            agent=agent,
+                            dispatch_id=lease["dispatch_id"],
+                            error=str(exc),
+                        )
+                    )
+                    raise
+                if project_repo is not None:
+                    lease = {**lease, "project_repo": project_repo}
+                    prepared_project_repos.append(
+                        _project_repo_prepare_record(
+                            agent=agent,
+                            dispatch_id=lease["dispatch_id"],
+                            project_repo=project_repo,
+                        )
+                    )
+                runtime_payload = lease.get("runtime")
+                context_rotation_pending = (
+                    isinstance(runtime_payload, Mapping)
+                    and bool(runtime_payload.get("context_rotation_pending"))
+                )
+                prompt = _build_prompt(lease, action_artifact_path=action_path)
                 result = resumer.resume_agent(
                     target=agent["session_id"],
                     prompt=prompt,
-                    resume_mode=resume_mode,
+                    resume_mode="new_context" if context_rotation_pending else resume_mode,
                     dispatch_id=lease["dispatch_id"],
                 )
                 result_payload = _coerce_mapping(result)
@@ -96,14 +154,29 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
-                dispatches.append(
-                    {
-                        "agent_id": agent["id"],
-                        "session_id": agent["session_id"],
-                        "dispatch_id": lease["dispatch_id"],
-                        "result": result_payload,
+                dispatch_payload = {
+                    "agent_id": agent["id"],
+                    "session_id": agent["session_id"],
+                    "dispatch_id": lease["dispatch_id"],
+                    "action_contract": seed_result,
+                    "result": result_payload,
+                }
+                if project_repo is not None:
+                    dispatch_payload["project_repo"] = project_repo
+                if context_rotation_pending:
+                    thread_id = _optional_text(result_payload.get("thread_id"))
+                    state = repo.record_context_rotation_dispatch_started(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        thread_id=thread_id,
+                    )
+                    dispatch_payload["context_rotation"] = {
+                        "rotated": True,
+                        "reason": runtime_payload.get("context_rotation_reason")
+                        if isinstance(runtime_payload, Mapping)
+                        else None,
                     }
-                )
+                dispatches.append(dispatch_payload)
                 _mirror_session_metadata(
                     context,
                     repo=repo,
@@ -124,6 +197,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "leased_count": len(leases),
             "leases": leases,
             "dispatches": dispatches,
+            "prepared_project_repos": prepared_project_repos,
+            "failed_project_repo_preparations": failed_project_repo_preparations,
+            "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
+            "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
         }
 
@@ -184,6 +261,82 @@ class TeamApplyAgentActionEffectProvider(EffectProviderBase):
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
         return {**result, "state": team_state_payload(state)}
+
+
+class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamCreateOperatorDirectiveEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "team_id",
+            "message",
+            "recipient_agent_id",
+            "project_id",
+            "task_id",
+            "title",
+            "source",
+            "source_message_id",
+            "created_by",
+            "requesting_session_id",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        try:
+            state, item = repo.create_operator_directive(
+                team_id=_required_text(payload.get("team_id"), "team_id"),
+                message=_required_text(payload.get("message"), "message"),
+                recipient_agent_id=_optional_text(payload.get("recipient_agent_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                task_id=_optional_text(payload.get("task_id")),
+                title=_optional_text(payload.get("title")),
+                source=_optional_text(payload.get("source")),
+                source_message_id=_optional_text(payload.get("source_message_id")),
+                created_by=_optional_text(payload.get("created_by")),
+                requesting_session_id=_optional_text(payload.get("requesting_session_id")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return {
+                "success": False,
+                "revision": exc.current_revision,
+                "inbox_item_id": None,
+                "recipient_agent_id": None,
+                "team_id": _optional_text(payload.get("team_id")),
+                "project_id": _optional_text(payload.get("project_id")),
+                "task_id": _optional_text(payload.get("task_id")),
+                "error": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
+            }
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "revision": repo.read().revision,
+                "inbox_item_id": None,
+                "recipient_agent_id": None,
+                "team_id": _optional_text(payload.get("team_id")),
+                "project_id": _optional_text(payload.get("project_id")),
+                "task_id": _optional_text(payload.get("task_id")),
+                "error": str(exc),
+            }
+        project_id = item.payload.get("project_id")
+        return {
+            "success": True,
+            "revision": state.revision,
+            "inbox_item_id": item.id,
+            "recipient_agent_id": item.recipient_agent_id,
+            "team_id": item.payload.get("team_id"),
+            "project_id": project_id if isinstance(project_id, str) else None,
+            "task_id": item.task_id,
+            "error": None,
+        }
 
 
 class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
@@ -383,7 +536,7 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             self.effect_definition,
             "promotion_id",
             "success",
-            "outputs",
+            "result_outputs",
             "error",
             "commit_sha",
             "expected_revision",
@@ -395,7 +548,10 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
             _state, result = repo.record_git_promotion_result(
                 promotion_id=_required_text(payload.get("promotion_id"), "promotion_id"),
                 success=_optional_bool(payload.get("success"), default=True),
-                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                outputs=_optional_mapping(
+                    _result_outputs_payload(payload), "result_outputs"
+                )
+                or {},
                 error=_optional_text(payload.get("error")),
                 commit_sha=_optional_text(payload.get("commit_sha")),
                 expected_revision=_optional_int(payload.get("expected_revision"), default=None),
@@ -416,6 +572,54 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
         return result
 
 
+class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamPublishReviewBranchEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "host_repo_path",
+            "bare_repo_name",
+            "bare_repo_path",
+            "source_branch",
+            "commit_sha",
+            "target_branch",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        try:
+            host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
+            target_branch = validate_branch_name(
+                _required_text(payload.get("target_branch"), "target_branch")
+            )
+            bare_repo_path = _resolve_bare_repo_path(
+                _optional_text(payload.get("bare_repo_path")),
+                _optional_text(payload.get("bare_repo_name")),
+            )
+            source_branch_value = _optional_text(payload.get("source_branch"))
+            source_branch = (
+                validate_branch_name(source_branch_value)
+                if source_branch_value is not None
+                else None
+            )
+            commit_sha = _optional_text(payload.get("commit_sha"))
+            if source_branch is None and commit_sha is None:
+                raise ValueError("source_branch or commit_sha is required")
+        except ValueError as exc:
+            return _review_publish_failure(None, None, str(exc))
+        return _publish_review_branch(
+            host_repo_path=host_repo_path,
+            bare_repo_path=bare_repo_path,
+            target_branch=target_branch,
+            source_branch=source_branch,
+            commit_sha=commit_sha,
+        )
+
+
 class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -430,7 +634,7 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
             "success",
             "canonical_branch",
             "published_commit_sha",
-            "outputs",
+            "result_outputs",
             "error",
             "expected_revision",
         )
@@ -445,7 +649,10 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
                 success=_optional_bool(payload.get("success"), default=True),
                 canonical_branch=_optional_text(payload.get("canonical_branch")),
                 published_commit_sha=_optional_text(payload.get("published_commit_sha")),
-                outputs=_optional_mapping(payload.get("outputs"), "outputs") or {},
+                outputs=_optional_mapping(
+                    _result_outputs_payload(payload), "result_outputs"
+                )
+                or {},
                 error=_optional_text(payload.get("error")),
                 expected_revision=_optional_int(payload.get("expected_revision"), default=None),
             )
@@ -588,41 +795,81 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
         return query_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        payload = _definition_payload(self.query_definition, "session_id")
+        payload = _definition_payload(self.query_definition, "session_id", "dispatch_id")
         if resolved_config:
             payload.update(dict(resolved_config))
         session_id = _required_text(payload.get("session_id"), "session_id")
+        dispatch_id = _optional_text(payload.get("dispatch_id"))
         state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
         for agent in state.agents.values():
             if agent.session_id == session_id:
+                runtime = state.agent_runtimes.get(agent.id)
+                expected_dispatch_id = (
+                    _optional_text(runtime.active_dispatch_id)
+                    if runtime is not None
+                    else None
+                )
+                dispatch_mismatch = (
+                    expected_dispatch_id is not None
+                    and dispatch_id != expected_dispatch_id
+                ) or (
+                    expected_dispatch_id is None
+                    and dispatch_id is not None
+                )
+                if dispatch_mismatch:
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "dispatch_id": dispatch_id,
+                        "kind": "ignored",
+                        "agent_id": agent.id,
+                        "assignment_id": None,
+                        "persistent": False,
+                        "ephemeral": False,
+                        "ignored": True,
+                        "reason": "dispatch_id does not match active team runtime lease",
+                        "expected_dispatch_id": expected_dispatch_id,
+                    }
                 return {
                     "success": True,
                     "session_id": session_id,
+                    "dispatch_id": dispatch_id,
                     "kind": "persistent",
                     "agent_id": agent.id,
                     "assignment_id": None,
                     "persistent": True,
                     "ephemeral": False,
+                    "ignored": False,
+                    "reason": None,
+                    "expected_dispatch_id": expected_dispatch_id,
                 }
         for assignment in state.ephemeral_assignments.values():
             if assignment.session_id == session_id:
                 return {
                     "success": True,
                     "session_id": session_id,
+                    "dispatch_id": dispatch_id,
                     "kind": "ephemeral",
                     "agent_id": None,
                     "assignment_id": assignment.id,
                     "persistent": False,
                     "ephemeral": True,
+                    "ignored": False,
+                    "reason": None,
+                    "expected_dispatch_id": None,
                 }
         return {
             "success": False,
             "session_id": session_id,
+            "dispatch_id": dispatch_id,
             "kind": "unknown",
             "agent_id": None,
             "assignment_id": None,
             "persistent": False,
             "ephemeral": False,
+            "ignored": False,
+            "reason": None,
+            "expected_dispatch_id": None,
         }
 
 
@@ -633,6 +880,9 @@ def register_providers() -> ProviderPluginRegistration:
         effect_providers={
             "effect:team:wake-due-agents": TeamWakeDueAgentsEffectProvider,
             "effect:team:apply-agent-action": TeamApplyAgentActionEffectProvider,
+            "effect:team:create-operator-directive": (
+                TeamCreateOperatorDirectiveEffectProvider
+            ),
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
             "effect:team:apply-ephemeral-action": TeamApplyEphemeralActionEffectProvider,
@@ -643,6 +893,7 @@ def register_providers() -> ProviderPluginRegistration:
                 TeamMarkEphemeralCleanedUpEffectProvider
             ),
             "effect:team:record-git-promotion": TeamRecordGitPromotionEffectProvider,
+            "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
             "effect:team:consolidate-git-branches": (
                 TeamConsolidateGitBranchesEffectProvider
@@ -659,6 +910,12 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:apply-agent-action": (
                 lambda node: _materialize(TeamApplyAgentActionEffectDefinition, node)
+            ),
+            "effect:team:create-operator-directive": (
+                lambda node: _materialize(
+                    TeamCreateOperatorDirectiveEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:request-ephemeral-agents": (
                 lambda node: _materialize(TeamRequestEphemeralAgentsEffectDefinition, node)
@@ -677,6 +934,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:record-git-promotion": (
                 lambda node: _materialize(TeamRecordGitPromotionEffectDefinition, node)
+            ),
+            "effect:team:publish-review-branch": (
+                lambda node: _materialize(TeamPublishReviewBranchEffectDefinition, node)
             ),
             "effect:team:mark-release-published": (
                 lambda node: _materialize(TeamMarkReleasePublishedEffectDefinition, node)
@@ -707,6 +967,21 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "inbox": lease["inbox"],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
+    project_repo = lease.get("project_repo")
+    if isinstance(project_repo, Mapping):
+        context["project_repo"] = dict(project_repo)
+    runtime = lease.get("runtime")
+    handoff_summary = (
+        _optional_text(runtime.get("last_handoff_summary"))
+        if isinstance(runtime, Mapping)
+        else None
+    )
+    handoff_section = (
+        "Prior handoff summary from Team state:\n"
+        f"{handoff_summary}\n\n"
+        if handoff_summary
+        else ""
+    )
     schema = {
         "agent_id": agent["id"],
         "dispatch_id": lease["dispatch_id"],
@@ -728,6 +1003,8 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "handled_inbox_item_ids": [],
         "notes": "",
     }
+    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
+    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
     return (
         "Continue your assigned team-agent work.\n"
         "Use the provided team context and update only your own assigned tasks. "
@@ -743,11 +1020,662 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "clear. Decompose large work by creating child tasks via task_creations with "
         "parent_task_id instead of ad hoc checklists in descriptions, and declare "
         "ordering between tasks with dependency_task_ids.\n\n"
+        f"{_project_repo_prompt_guidance(project_repo)}"
+        "Action surface guide:\n"
+        "- Use task_updates for tasks you own. State, priority, title, and "
+        "description edits are owner-only. Do not accept or reject someone else's "
+        "task with task_updates.\n"
+        "- Use review_requests to ask a specific same-team agent to review a "
+        "deliverable. Include instructions when the reviewer needs a focused "
+        "check.\n"
+        "- Use review_decisions only for review requests assigned to you. Accepting "
+        "a review is the action that cascades to deliverable/task acceptance once "
+        "all attached reviews are accepted.\n"
+        "- If a deliverable should be reviewed by another agent, create a "
+        "review_requests item for that reviewer; do not mark the task accepted "
+        "yourself unless the task is actually yours.\n"
+        "- Inbox items with item_type operator_directive are durable operator "
+        "instructions that were relayed from an out-of-band channel. Handle them "
+        "through this Team dispatch by writing the appropriate task/status/review "
+        "actions to team-action.json, then include their ids in "
+        "handled_inbox_item_ids.\n\n"
+        f"{handoff_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
+        f"Team action contract files have been seeded at {schema_path} and "
+        f"{example_path}. Read {schema_path} for the JSON Schema contract and "
+        f"use {example_path} as a writable template. Do not infer required fields "
+        "from memory; follow the schema file.\n\n"
         "Before finishing, write a UTF-8 JSON action object to "
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
     )
+
+
+def _project_repo_prompt_guidance(project_repo: object) -> str:
+    if not isinstance(project_repo, Mapping):
+        return ""
+    target_dir = _optional_text(project_repo.get("target_dir"))
+    if target_dir is None:
+        return ""
+    return (
+        f"Project repository: work in the prepared guest checkout at {target_dir}. "
+        "The project host checkout is not mounted in the guest; use this guest "
+        "repo and its configured Git helpers for code changes.\n\n"
+    )
+
+
+def _prepare_project_repo(
+    context: Any,
+    *,
+    state: Any,
+    agent: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    project_id = _optional_text(agent.get("project_id"))
+    if project_id is None:
+        return None
+    projects = getattr(state, "projects", None)
+    if not isinstance(projects, Mapping):
+        return None
+    project = projects.get(project_id)
+    git = getattr(project, "git", None)
+    if git is None:
+        return None
+
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    repo_source = _required_text(getattr(git, "host_repo_path", None), "project.git.host_repo_path")
+    clone_branch = _optional_text(getattr(git, "base_branch", None))
+    provider = AgentCloneRepoEffectProvider()
+    provider.initialize(
+        AgentCloneRepoEffectDefinition(
+            id="team-prepare-project-repo",
+            display_name="Prepare Team project repository",
+            type="effect:agent:clone-repo",
+            session_id=session_id,
+            repo_source=repo_source,
+            clone_branch=clone_branch,
+            vm_user="agent",
+        ),
+        context,
+    )
+    clone_result = provider.execute()
+    if not bool(clone_result.get("success")):
+        message = (
+            _optional_text(clone_result.get("message"))
+            or _optional_text(clone_result.get("error"))
+            or "failed to prepare Team project repository"
+        )
+        raise RuntimeError(message)
+    project_repo = _project_repo_payload(
+        project_id=project_id,
+        clone_result=clone_result,
+        base_branch=clone_branch,
+    )
+    _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
+    return project_repo
+
+
+def _project_repo_payload(
+    *,
+    project_id: str,
+    clone_result: Mapping[str, Any],
+    base_branch: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "prepared": True,
+        "project_id": project_id,
+    }
+    for key in (
+        "target_dir",
+        "guest_repo_name",
+        "remote_url",
+        "pr_notes_ref",
+        "execution_backend",
+        "vm_name",
+        "message",
+    ):
+        value = _optional_text(clone_result.get(key))
+        if value is not None:
+            payload[key] = value
+    if base_branch is not None:
+        payload["base_branch"] = base_branch
+    return payload
+
+
+def _project_repo_prepare_record(
+    *,
+    agent: Mapping[str, Any],
+    dispatch_id: str,
+    project_repo: Mapping[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "agent_id": agent.get("id"),
+        "session_id": agent.get("session_id"),
+        "project_id": agent.get("project_id"),
+        "dispatch_id": dispatch_id,
+    }
+    if project_repo is not None:
+        record["project_repo"] = dict(project_repo)
+        target_dir = _optional_text(project_repo.get("target_dir"))
+        if target_dir is not None:
+            record["target_dir"] = target_dir
+    if error is not None:
+        record["error"] = error
+    return record
+
+
+def _seed_action_contract_files(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    action_artifact_path: str,
+) -> dict[str, Any]:
+    session_id = _required_text(agent.get("session_id"), "session_id")
+    schema_path = f"/artifacts/{ACTION_CONTRACT_SCHEMA_PATH}"
+    example_path = f"/artifacts/{ACTION_CONTRACT_EXAMPLE_PATH}"
+    metadata = _session_metadata(context, session_id=session_id)
+    known_vm_ip = _session_known_vm_ip(metadata)
+    if _metadata_has_current_action_contract(
+        metadata,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=f"/artifacts/{action_artifact_path}",
+    ):
+        return {
+            "seeded": False,
+            "reason": "already_seeded",
+            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+            "schema_path": schema_path,
+            "example_path": example_path,
+        }
+
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(
+        AgentCopyFilesEffectDefinition(
+            id="team-seed-action-contract",
+            display_name="Seed Team action contract",
+            type="effect:agent:copy-files",
+            session_id=session_id,
+            vm_user="agent",
+            files=[
+                {
+                    "content": _json_dumps(_persistent_action_schema()),
+                    "destination_path": schema_path,
+                    "mode": "0644",
+                    "overwrite": True,
+                },
+                {
+                    "content": _json_dumps(_persistent_action_example()),
+                    "destination_path": example_path,
+                    "mode": "0644",
+                    "overwrite": True,
+                },
+            ],
+        ),
+        context,
+    )
+    resolved_config = {"vm_ip": known_vm_ip} if known_vm_ip else None
+    copy_result = provider.execute(resolved_config=resolved_config)
+    if not bool(copy_result.get("success")):
+        message = str(copy_result.get("message") or copy_result.get("error") or "").strip()
+        raise RuntimeError(message or "failed to seed Team action contract files")
+
+    copied_vm_ip = _optional_text(copy_result.get("vm_ip")) or known_vm_ip
+    _mark_action_contract_seeded(
+        context,
+        session_id=session_id,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=f"/artifacts/{action_artifact_path}",
+        copy_result=copy_result,
+        vm_ip=copied_vm_ip,
+    )
+    return {
+        "seeded": True,
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "schema_path": schema_path,
+        "example_path": example_path,
+        "vm_ip": copied_vm_ip,
+        "copied_paths": list(copy_result.get("copied_paths") or []),
+    }
+
+
+def _session_has_current_action_contract(
+    context: Any,
+    *,
+    session_id: str,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+) -> bool:
+    metadata = _session_metadata(context, session_id=session_id)
+    return _metadata_has_current_action_contract(
+        metadata,
+        schema_path=schema_path,
+        example_path=example_path,
+        action_artifact_path=action_artifact_path,
+    )
+
+
+def _metadata_has_current_action_contract(
+    metadata: Mapping[str, Any],
+    *,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+) -> bool:
+    team_addon = metadata.get("team_addon")
+    if not isinstance(team_addon, Mapping):
+        return False
+    contract = team_addon.get("action_contract")
+    if not isinstance(contract, Mapping):
+        return False
+    return (
+        int(contract.get("schema_version") or 0) == ACTION_CONTRACT_SCHEMA_VERSION
+        and contract.get("schema_path") == schema_path
+        and contract.get("example_path") == example_path
+        and contract.get("action_artifact_path") == action_artifact_path
+        and contract.get("seeded") is True
+    )
+
+
+def _session_known_vm_ip(metadata: Mapping[str, Any]) -> str | None:
+    team_addon = metadata.get("team_addon")
+    if isinstance(team_addon, Mapping):
+        for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
+            value = _optional_text(team_addon.get(key))
+            if value:
+                return value
+    for key in ("last_known_vm_ip", "vm_ip", "ip_address"):
+        value = _optional_text(metadata.get(key))
+        if value:
+            return value
+    return None
+
+
+def _session_metadata(context: Any, *, session_id: str) -> dict[str, Any]:
+    lookup = getattr(context, "session_lookup", None)
+    read_all = getattr(lookup, "read_all_sessions", None)
+    if not callable(read_all):
+        return {}
+    sessions = read_all()
+    if not isinstance(sessions, Mapping):
+        return {}
+    session = sessions.get(session_id)
+    if session is None:
+        return {}
+    metadata = None
+    if isinstance(session, Mapping):
+        metadata = session.get("metadata")
+    else:
+        metadata = getattr(session, "metadata", None)
+    return dict(metadata) if isinstance(metadata, Mapping) else {}
+
+
+def _mark_action_contract_seeded(
+    context: Any,
+    *,
+    session_id: str,
+    schema_path: str,
+    example_path: str,
+    action_artifact_path: str,
+    copy_result: Mapping[str, Any],
+    vm_ip: str | None,
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    team_metadata: dict[str, Any] = {
+        "action_contract": {
+            "seeded": True,
+            "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+            "schema_path": schema_path,
+            "example_path": example_path,
+            "action_artifact_path": action_artifact_path,
+            "copied_paths": list(copy_result.get("copied_paths") or []),
+        }
+    }
+    if vm_ip:
+        team_metadata["last_known_vm_ip"] = vm_ip
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": team_metadata},
+    )
+
+
+def _mark_project_repo_prepared(
+    context: Any,
+    *,
+    session_id: str,
+    project_repo: Mapping[str, Any],
+) -> None:
+    updater = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(updater, "session_update_metadata", None)
+    if not callable(update_fn):
+        return
+    update_fn(
+        target=session_id,
+        metadata={"team_addon": {"project_repo": dict(project_repo)}},
+    )
+
+
+def _persistent_action_schema() -> dict[str, Any]:
+    text_or_null = {"type": ["string", "null"]}
+    string_array = {"type": "array", "items": {"type": "string"}, "default": []}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://agent-sandbox.local/team-addon/team-action.v1.schema.json",
+        "title": "Team Add-on persistent agent action",
+        "description": (
+            "Action artifact written by a persistent Team agent to "
+            "/artifacts/team-action.json after a Team wake."
+        ),
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["agent_id"],
+        "properties": {
+            "schema_version": {"type": "integer", "const": ACTION_CONTRACT_SCHEMA_VERSION},
+            "agent_id": {"type": "string", "minLength": 1},
+            "dispatch_id": {"type": "string", "minLength": 1},
+            "task_updates": {
+                "type": "array",
+                "description": (
+                    "Update tasks owned by this agent. State, priority, title, "
+                    "and description are owner-only. Supervisors/leads/managers "
+                    "may maintain dependency_task_ids, but must use "
+                    "review_decisions to accept or reject deliverables and the "
+                    "tasks they satisfy."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id"],
+                    "properties": {
+                        "task_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review", "finished", "accepted", "rejected"]},
+                        "priority": {"type": "integer", "minimum": 0},
+                        "title": {"type": "string", "minLength": 1},
+                        "description": {"type": "string", "minLength": 1},
+                        "dependency_task_ids": string_array,
+                    },
+                },
+            },
+            "task_creations": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["owner_agent_id", "project_id", "title", "description"],
+                    "properties": {
+                        "task_id": {"type": "string", "minLength": 1},
+                        "id": {"type": "string", "minLength": 1},
+                        "owner_agent_id": {"type": "string", "minLength": 1},
+                        "project_id": {"type": "string", "minLength": 1},
+                        "priority": {"type": "integer", "minimum": 0},
+                        "title": {"type": "string", "minLength": 1},
+                        "description": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "blocked", "waiting_for_review"]},
+                        "parent_task_id": text_or_null,
+                        "dependency_task_ids": string_array,
+                    },
+                },
+            },
+            "status_requests": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "required": ["recipient_agent_id"],
+                    "properties": {
+                        "recipient_agent_id": {"type": "string", "minLength": 1},
+                        "task_id": text_or_null,
+                        "question": {"type": "string"},
+                    },
+                },
+            },
+            "questions": {
+                "type": "array",
+                "default": [],
+                "items": _message_item_schema(),
+            },
+            "status_reports": {
+                "type": "array",
+                "default": [],
+                "items": _message_item_schema(),
+            },
+            "operator_escalations": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["title", "message"],
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "message": {"type": "string", "minLength": 1},
+                        "urgency": {"type": "string"},
+                        "project_id": text_or_null,
+                        "task_id": text_or_null,
+                    },
+                },
+            },
+            "deliverables": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id", "summary"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "task_id": {"type": "string", "minLength": 1},
+                        "summary": {"type": "string", "minLength": 1},
+                        "artifact_refs": string_array,
+                        "artifact_space_ref": text_or_null,
+                        "git_refs": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "agent_branch": text_or_null,
+                                "commit_sha": text_or_null,
+                            },
+                        },
+                    },
+                },
+            },
+            "review_requests": {
+                "type": "array",
+                "description": (
+                    "Request review of a deliverable from a specific same-team "
+                    "reviewer. This is how leads route deliverable review to a "
+                    "reviewer agent instead of directly accepting subordinate work."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["deliverable_id", "reviewer_agent_id"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "deliverable_id": {"type": "string", "minLength": 1},
+                        "reviewer_agent_id": {"type": "string", "minLength": 1},
+                        "review_profile_id": text_or_null,
+                        "instructions": text_or_null,
+                    },
+                },
+            },
+            "review_decisions": {
+                "type": "array",
+                "description": (
+                    "Decide review requests assigned to this agent. Accepted "
+                    "review decisions cascade to deliverable/task acceptance only "
+                    "after every review attached to the deliverable is accepted."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "required": ["review_request_id", "state"],
+                    "properties": {
+                        "review_request_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["accepted", "rejected", "blocked"]},
+                        "findings": string_array,
+                        "criteria": {"type": "array"},
+                    },
+                },
+            },
+            "goal_updates": {
+                "type": "array",
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["project_id", "goal_id", "state"],
+                    "properties": {
+                        "project_id": {"type": "string", "minLength": 1},
+                        "goal_id": {"type": "string", "minLength": 1},
+                        "state": {"enum": ["pending", "in_progress", "accepted", "rejected", "blocked"]},
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+            "git_review_promotions": {
+                "type": "array",
+                "description": (
+                    "Publish a durable Team review branch. Use assignment_id for "
+                    "completed ephemeral assignments, or deliverable_id with "
+                    "source_branch/commit_sha for persistent-agent deliverables."
+                ),
+                "default": [],
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["assignment_id"],
+                            "properties": {
+                                "assignment_id": {"type": "string", "minLength": 1},
+                                "deliverable_id": text_or_null,
+                            },
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["deliverable_id"],
+                            "properties": {
+                                "deliverable_id": {"type": "string", "minLength": 1},
+                                "source_branch": text_or_null,
+                                "commit_sha": text_or_null,
+                            },
+                        },
+                    ]
+                },
+            },
+            "git_feature_updates": {"type": "array", "default": [], "items": {"type": "object"}},
+            "git_release_requests": {
+                "type": "array",
+                "description": (
+                    "Create a release package from accepted deliverables. The "
+                    "repository derives source branches from deliverable git_refs; "
+                    "do not provide source_branch, target_branch, or commit_sha here."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["project_id", "deliverable_ids"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "project_id": {"type": "string", "minLength": 1},
+                        "deliverable_ids": string_array,
+                        "release_branch": text_or_null,
+                        "canonical_branch": text_or_null,
+                        "summary": text_or_null,
+                    },
+                },
+            },
+            "ephemeral_requests": {"type": "array", "default": [], "items": {"type": "object"}},
+            "ephemeral_acceptances": {"type": "array", "default": [], "items": {"type": "object"}},
+            "handled_inbox_item_ids": string_array,
+            "notes": {"type": "string"},
+        },
+    }
+
+
+def _message_item_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "recipient_agent_id": {"type": ["string", "null"]},
+            "task_id": {"type": ["string", "null"]},
+            "message": {"type": "string"},
+            "summary": {"type": "string"},
+            "question": {"type": "string"},
+        },
+    }
+
+
+def _persistent_action_example() -> dict[str, Any]:
+    return {
+        "schema_version": ACTION_CONTRACT_SCHEMA_VERSION,
+        "agent_id": "replace-with-current-agent-id",
+        "dispatch_id": "replace-with-current-dispatch-id",
+        "task_updates": [],
+        "task_creations": [
+            {
+                "task_id": "optional-stable-task-id",
+                "owner_agent_id": "target-agent-id",
+                "project_id": "project-id",
+                "priority": 10,
+                "title": "Short task title",
+                "description": "Complete task instructions.",
+                "state": "pending",
+                "parent_task_id": None,
+                "dependency_task_ids": [],
+            }
+        ],
+        "status_requests": [],
+        "questions": [],
+        "status_reports": [],
+        "operator_escalations": [],
+        "deliverables": [],
+        "review_requests": [
+            {
+                "deliverable_id": "deliverable-id",
+                "reviewer_agent_id": "reviewer-agent-id",
+                "instructions": "Review this deliverable for the criteria needed to unblock dependent work.",
+            }
+        ],
+        "review_decisions": [
+            {
+                "review_request_id": "review-request-assigned-to-this-agent",
+                "state": "accepted",
+                "findings": [],
+            }
+        ],
+        "goal_updates": [],
+        "git_review_promotions": [
+            {
+                "deliverable_id": "deliverable-id",
+                "commit_sha": "commit-sha-or-use-source_branch",
+            }
+        ],
+        "git_feature_updates": [],
+        "git_release_requests": [],
+        "ephemeral_requests": [],
+        "ephemeral_acceptances": [],
+        "handled_inbox_item_ids": [],
+        "notes": "",
+    }
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, indent=2)
 
 
 def _mirror_session_metadata(
@@ -766,6 +1694,106 @@ def _mirror_session_metadata(
         target=session_id,
         metadata=repo.mirror_session_metadata_payload(state=state, agent_id=agent_id),
     )
+
+
+def _cost_guard_blocked_teams(
+    context: Any,
+    *,
+    state: Any,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+) -> list[dict[str, Any]]:
+    candidate_team_ids = _cost_guard_candidate_team_ids(
+        state,
+        team_id=team_id,
+        project_id=project_id,
+        agent_id=agent_id,
+    )
+    limited_team_ids = {
+        candidate_team_id
+        for candidate_team_id in candidate_team_ids
+        if _number_or_none(getattr(state.teams.get(candidate_team_id), "max_cost_usd", None))
+        is not None
+    }
+    if not limited_team_ids:
+        return []
+
+    service = TeamCostService(
+        runtime_dir=_runtime_dir(context),
+        state=state,
+        session_repository=_session_repository_from_context(context),
+    )
+    cost_payload = service.costs_payload(backfill_transcripts=True)
+    team_costs = cost_payload.get("team_costs")
+    team_costs = team_costs if isinstance(team_costs, Mapping) else {}
+
+    blocked: list[dict[str, Any]] = []
+    for blocked_team_id in sorted(limited_team_ids):
+        team = state.teams.get(blocked_team_id)
+        if team is None:
+            continue
+        cost = team_costs.get(blocked_team_id)
+        cost = cost if isinstance(cost, Mapping) else {}
+        max_cost = _number_or_none(cost.get("max_cost_usd"))
+        if max_cost is None:
+            max_cost = _number_or_none(getattr(team, "max_cost_usd", None))
+        if max_cost is None:
+            continue
+        estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        limit_reached = bool(cost.get("cost_limit_reached"))
+        if not limit_reached:
+            limit_reached = estimated_cost >= max_cost
+        if not limit_reached:
+            continue
+        blocked.append(
+            {
+                "team_id": blocked_team_id,
+                "team_name": getattr(team, "name", blocked_team_id),
+                "estimated_cost": estimated_cost,
+                "max_cost_usd": max_cost,
+                "remaining_cost_usd": _number_or_none(cost.get("remaining_cost_usd")),
+                "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",
+                "coverage_status": cost.get("coverage_status"),
+                "coverage_reasons": list(cost.get("coverage_reasons") or []),
+            }
+        )
+    return blocked
+
+
+def _cost_guard_candidate_team_ids(
+    state: Any,
+    *,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+) -> set[str]:
+    candidate_team_ids = set(state.teams)
+    if team_id is not None:
+        candidate_team_ids &= {team_id}
+    if project_id is not None:
+        project = state.projects.get(project_id)
+        candidate_team_ids &= {project.team_id} if project is not None else set()
+    if agent_id is not None:
+        agent = state.agents.get(agent_id)
+        candidate_team_ids &= {agent.team_id} if agent is not None else set()
+    return candidate_team_ids
+
+
+def _session_repository_from_context(context: Any) -> Any | None:
+    repository = getattr(context, "session_lookup", None)
+    if repository is not None:
+        return repository
+    repository = getattr(context, "session_repository", None)
+    if repository is not None:
+        return repository
+    runtime = getattr(context, "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    if repository is not None:
+        return repository
+    service = getattr(context, "admin_service", None)
+    service_runtime = getattr(service, "runtime", None)
+    return getattr(service_runtime, "session_repository", None)
 
 
 def _record_wake_failure(
@@ -821,13 +1849,20 @@ def _internal_event_bus(context: Any) -> InternalEventBus:
 
 
 def _materialize(model_class: type[Any], node: WorkflowNodeEnvelope) -> Any:
+    config = dict(node.config)
+    if (
+        "outputs" in config
+        and "result_outputs" not in config
+        and "result_outputs" in getattr(model_class, "model_fields", {})
+    ):
+        config["result_outputs"] = config.pop("outputs")
     return model_class.model_validate(
         {
             "id": node.id,
             "display_name": node.display_name,
             "type": node.type,
             "outputs": node.outputs,
-            **dict(node.config),
+            **config,
         }
     )
 
@@ -838,6 +1873,12 @@ def _definition_payload(definition: Any, *field_names: str) -> dict[str, Any]:
         for field_name in field_names
         if definition is not None and hasattr(definition, field_name)
     }
+
+
+def _result_outputs_payload(payload: Mapping[str, Any]) -> Any:
+    if "result_outputs" in payload:
+        return payload.get("result_outputs")
+    return payload.get("outputs")
 
 
 def _runtime_dir(context: Any) -> Path:
@@ -967,6 +2008,11 @@ def _filtered_team_state_payload(
         for key, value in agents.items()
         if key in visible_agent_ids
     }
+    visible_role_ids = {
+        _required_text(value.get("role_id"), "role_id")
+        for value in filtered["agents"].values()
+        if value.get("role_id") is not None
+    }
     filtered["agent_runtimes"] = {
         key: value
         for key, value in filtered.get("agent_runtimes", {}).items()
@@ -991,6 +2037,35 @@ def _filtered_team_state_payload(
         for key, value in filtered.get("review_requests", {}).items()
         if value.get("deliverable_id") in visible_deliverable_ids
         and value.get("reviewer_agent_id") in visible_agent_ids
+    }
+    filtered["review_profiles"] = {
+        key: {
+            **value,
+            "applicable_role_ids": _filter_ids(
+                value.get("applicable_role_ids"),
+                visible_role_ids,
+            ),
+        }
+        for key, value in filtered.get("review_profiles", {}).items()
+        if value.get("team_id") in visible_team_ids
+        and (
+            value.get("project_id") is None
+            or value.get("project_id") in visible_project_ids
+        )
+    }
+    for profile in filtered["review_profiles"].values():
+        visible_role_ids.update(_string_items(profile.get("applicable_role_ids")))
+    filtered["roles"] = {
+        key: value
+        for key, value in filtered.get("roles", {}).items()
+        if key in visible_role_ids
+        or (
+            value.get("team_id") in visible_team_ids
+            and (
+                value.get("project_id") is None
+                or value.get("project_id") in visible_project_ids
+            )
+        )
     }
     visible_review_ids = set(filtered["review_requests"])
     filtered["deliverables"] = {
@@ -1237,6 +2312,20 @@ def _optional_int(value: object, *, default: int | None) -> int | None:
     return int(value)
 
 
+def _number_or_none(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def _number_or_zero(value: object) -> float:
+    return _number_or_none(value) or 0.0
+
+
 def _optional_bool(value: object, *, default: bool) -> bool:
     if value is None:
         return default
@@ -1293,8 +2382,105 @@ def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, A
     }
 
 
+def _review_publish_failure(
+    target_branch: str | None,
+    host_repo_path: str | None,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "review_branch": target_branch,
+        "target_branch": target_branch,
+        "commit_sha": None,
+        "host_repo_path": host_repo_path,
+        "message": None,
+        "error": error,
+    }
+
+
 def _git_text(proc: subprocess.CompletedProcess[str]) -> str:
     return (proc.stdout or "") + (proc.stderr or "")
+
+
+def _resolve_bare_repo_path(
+    bare_repo_path: str | None,
+    bare_repo_name: str | None,
+) -> Path:
+    if bare_repo_path and bare_repo_name:
+        raise ValueError("bare_repo_path and bare_repo_name are mutually exclusive")
+    if bare_repo_path:
+        return Path(bare_repo_path)
+    if not bare_repo_name:
+        raise ValueError("bare_repo_path or bare_repo_name is required")
+    normalized = bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
+    git_root = os.environ.get("AGENT_SANDBOX_GIT_ROOT")
+    root = Path(git_root) if git_root else Path(__file__).resolve().parents[2] / "git-remotes"
+    return root / normalized
+
+
+def _publish_review_branch(
+    *,
+    host_repo_path: str,
+    bare_repo_path: Path,
+    target_branch: str,
+    source_branch: str | None,
+    commit_sha: str | None,
+) -> dict[str, Any]:
+    repo_path = Path(host_repo_path)
+    if not (repo_path / ".git").exists():
+        return _review_publish_failure(
+            target_branch,
+            host_repo_path,
+            f"{host_repo_path} is not a git repository",
+        )
+    if not bare_repo_path.exists():
+        return _review_publish_failure(
+            target_branch,
+            host_repo_path,
+            f"bare repo not found: {bare_repo_path}",
+        )
+
+    def _git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    source_ref = commit_sha if commit_sha is not None else f"refs/heads/{source_branch}"
+    temp_ref = f"refs/agent-sandbox/team-promotions/{target_branch}"
+    target_ref = f"refs/heads/{target_branch}"
+    fetch = _git(
+        "fetch",
+        "--no-tags",
+        str(bare_repo_path),
+        f"+{source_ref}:{temp_ref}",
+    )
+    if fetch.returncode != 0:
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(fetch))
+
+    resolved = _git("rev-parse", "--verify", f"{temp_ref}^{{commit}}")
+    if resolved.returncode != 0:
+        _git("update-ref", "-d", temp_ref)
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(resolved))
+
+    resolved_commit = resolved.stdout.strip()
+    update = _git("update-ref", target_ref, resolved_commit)
+    _git("update-ref", "-d", temp_ref)
+    if update.returncode != 0:
+        return _review_publish_failure(target_branch, host_repo_path, _git_text(update))
+
+    return {
+        "success": True,
+        "review_branch": target_branch,
+        "target_branch": target_branch,
+        "commit_sha": resolved_commit,
+        "host_repo_path": host_repo_path,
+        "message": f"Published {resolved_commit} to {target_branch}",
+        "error": None,
+    }
 
 
 def _consolidate_git_branches(

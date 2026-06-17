@@ -42,7 +42,9 @@ class _AnthropicUsageStream(httpx.AsyncByteStream):
         yield (
             b'data: {"type":"message_start","message":{"id":"msg-stream",'
             b'"type":"message","model":"claude-sonnet-4-6",'
-            b'"usage":{"input_tokens":7}}}\n\n'
+            b'"usage":{"input_tokens":7,"cache_creation_input_tokens":5,'
+            b'"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":2,'
+            b'"ephemeral_1h_input_tokens":3}}}}\n\n'
         )
         yield b'data: {"type":"content_block_delta","delta":{"text":"secret completion text"}}\n\n'
         yield b'data: {"type":"message_delta","usage":{"output_tokens":8}}\n\n'
@@ -457,6 +459,47 @@ def test_openai_relay_returns_non_streaming_response_when_usage_recording_fails(
     assert response.json()["id"] == "resp-usage-failure"
     assert any(
         record.message.startswith("relay_http_model_usage_record_failed")
+        for record in caplog.records
+    )
+    assert ModelUsageStore(runtime_dir / "model-usage.db").list_events() == []
+
+
+def test_openai_relay_returns_streaming_response_when_usage_recording_fails(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = make_config(runtime_dir)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_UsageStream(),
+        )
+
+    def fail_record_usage(self: OpenAIRelay, **_: object) -> None:
+        raise OSError("usage store locked")
+
+    monkeypatch.setattr(OpenAIRelay, "_record_stream_model_usage_event", fail_record_usage)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    caplog.set_level("WARNING", logger="agent_sandbox.relays.openai")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-1/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"secret completion text" in body
+    assert any(
+        record.message.startswith("relay_stream_model_usage_record_failed")
         for record in caplog.records
     )
     assert ModelUsageStore(runtime_dir / "model-usage.db").list_events() == []
@@ -980,7 +1023,7 @@ def test_openai_relay_records_anthropic_streaming_usage(tmp_path: Path, monkeypa
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            headers={"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream", "request-id": "req-anthropic-stream"},
             stream=_AnthropicUsageStream(),
         )
 
@@ -1011,8 +1054,15 @@ def test_openai_relay_records_anthropic_streaming_usage(tmp_path: Path, monkeypa
     assert event.input_tokens == 7
     assert event.output_tokens == 8
     assert event.total_tokens is None
+    assert event.request_id == "req-anthropic-stream"
     assert event.normalized_usage_status == "available"
     assert event.raw_usage_metadata["request_metadata"]["stream"] is True
+    assert event.raw_usage_metadata["usage"]["cache_creation_input_tokens"] == 5
+    assert event.raw_usage_metadata["usage"]["cache_read_input_tokens"] == 3
+    assert event.raw_usage_metadata["usage"]["cache_creation"] == {
+        "ephemeral_5m_input_tokens": 2,
+        "ephemeral_1h_input_tokens": 3,
+    }
     assert event.agent_harness == "claude"
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
@@ -1056,6 +1106,7 @@ def test_openai_relay_records_streaming_final_usage_without_raw_text(
     assert event.total_tokens == 15
     assert event.normalized_usage_status == "available"
     assert event.raw_usage_metadata["request_metadata"]["stream"] is True
+    assert "provider_request_id" not in event.raw_usage_metadata["response_metadata"]
     assert event.response_body_sha256 is not None
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
@@ -1110,6 +1161,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
             "type": "response.completed",
             "response": {
                 "id": "resp-websocket",
+                "request_id": "req-websocket",
                 "type": "response",
                 "model": "gpt-5.2-codex",
                 "output_text": "secret completion text",
@@ -1146,6 +1198,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
     assert event.execution_backend == "container_worker_vm"
     assert event.directory_path == "root/team-a"
     assert event.trace_id == "trace-websocket"
+    assert event.request_id == "req-websocket"
     assert event.request_body_sha256 is None
     assert event.response_body_sha256 is not None
     assert event.raw_usage_metadata["request_metadata"] == {
@@ -1213,6 +1266,7 @@ def test_openai_relay_records_websocket_usage_unavailable(
     assert event.output_tokens is None
     assert event.total_tokens is None
     assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.done"
+    assert "provider_request_id" not in event.raw_usage_metadata["response_metadata"]
     assert "secret completion text" not in event_json
 
 

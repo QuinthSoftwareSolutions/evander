@@ -266,7 +266,7 @@ test("admin shell agents page forwards the selected log view through executions,
       assert.equal(url.searchParams.get("backend"), "all");
       assert.equal(url.searchParams.get("summary_only"), "true");
       assert.equal(url.searchParams.get("reconcile_containers"), "false");
-      assert.equal(url.searchParams.get("omit_vm_state"), "true");
+      assert.equal(url.searchParams.get("omit_vm_state"), "false");
       assert.equal(url.searchParams.get("_dashboard"), "1");
       await route.fulfill(jsonResponse(agentsResponse));
       return;

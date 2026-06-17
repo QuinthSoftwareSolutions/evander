@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -1111,10 +1112,44 @@ def _libvirt_create_vm(
             success=False, vm_name=resolved_vm_name, action="create_vm", message=detail
         )
 
+    setup_vm_ip = _extract_setup_guest_ipv4(message)
+    if setup_vm_ip:
+        _persist_session_last_known_vm_ip(
+            session_repository,
+            session_id=resolved_session_id,
+            vm_ip=setup_vm_ip,
+        )
+
     summary = message or f"Created VM {resolved_vm_name}"
+    provider_details = {"ip_address": setup_vm_ip} if setup_vm_ip else {}
     return VmActionResult(
-        success=True, vm_name=resolved_vm_name, action="create_vm", message=summary
+        success=True,
+        vm_name=resolved_vm_name,
+        action="create_vm",
+        message=summary,
+        provider_details=provider_details,
     )
+
+
+def _extract_setup_guest_ipv4(message: str) -> str | None:
+    match = re.search(r"Guest IPv4 detected:\s*([0-9]+(?:\.[0-9]+){3})", message or "")
+    return match.group(1) if match else None
+
+
+def _persist_session_last_known_vm_ip(
+    session_repository: SessionManifestRepository,
+    *,
+    session_id: str,
+    vm_ip: str,
+) -> None:
+    session = session_repository.get_session(session_id)
+    if session is None:
+        return
+    metadata = admin_service_module._deep_merge_mapping(
+        getattr(session, "metadata", {}) or {},
+        {"last_known_vm_ip": vm_ip},
+    )
+    session_repository.upsert_session(session.model_copy(update={"metadata": metadata}))
 
 
 def _libvirt_start_vm(target: str) -> VmActionResult:

@@ -20,12 +20,14 @@ const terminalTaskStates = new Set(["finished", "accepted", "rejected"]);
 const terminalRecordStates = new Set(["accepted", "rejected"]);
 
 let state = emptyState();
+let costState = emptyCostState();
 let runtimeFilter = null;
 let runtimeFilterTouched = false;
 let templates = [];
 let timelineState = emptyTimelineState();
 let timelineLoading = false;
 let timelineRequestId = 0;
+let costsRequestId = 0;
 let showArchived = false;
 
 const runtimeFilterChoices = [
@@ -59,6 +61,7 @@ const elements = {
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
+  rolesView: document.querySelector("#roles-view"),
   projectsView: document.querySelector("#projects-view"),
   reviewProfilesView: document.querySelector("#review-profiles-view"),
   releasesView: document.querySelector("#releases-view"),
@@ -109,6 +112,7 @@ const fieldTooltips = {
   "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
+  "setup-template-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
   "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
@@ -130,8 +134,10 @@ const fieldTooltips = {
   "create-team-form:manager_agent_id": "Persistent ID for the manager agent created with this team.",
   "create-team-form:manager_session_id": "Session ID used to resume or wake the manager agent.",
   "create-team-form:manager_display_name": "Optional display name. If blank, the agent ID is shown.",
-  "create-team-form:manager_role": "Role label for the manager. Keep this as manager unless you have a specific routing convention.",
+  "create-team-form:manager_role_id": "Optional role record ID for the manager role. Leave blank to let the backend derive one.",
+  "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
+  "create-team-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
 
   "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
@@ -140,7 +146,8 @@ const fieldTooltips = {
   "create-project-form:lead_agent_id": "Persistent project lead agent ID. The lead reports to the team's manager.",
   "create-project-form:lead_session_id": "Session ID used to resume or wake the project lead agent.",
   "create-project-form:lead_display_name": "Optional display name. If blank, the lead agent ID is shown.",
-  "create-project-form:lead_role": "Role label for the lead. Keep this as project_lead unless you have a specific routing convention.",
+  "create-project-form:lead_role_id": "Optional role record ID for the project lead role. Leave blank to let the backend derive one.",
+  "create-project-form:lead_role_name": "Human-readable role name for the project lead role.",
   "create-project-form:goal_id": "Optional goal identifier. If blank, the UI derives one from the project ID.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
@@ -148,11 +155,12 @@ const fieldTooltips = {
   "register-agent-form:id": "Immutable agent identifier. The UI suggests one from project and role, but you can edit it before creation.",
   "register-agent-form:team_id": "Team this persistent agent belongs to.",
   "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
-  "register-agent-form:role": "Routing and responsibility label for this agent.",
+  "register-agent-form:role_id": "First-class role assigned to this agent.",
   "register-agent-form:session_id": "Session ID used when this agent is woken or resumed.",
   "register-agent-form:display_name": "Optional display name. If blank, the agent ID is shown.",
   "register-agent-form:reports_to_agent_id": "Supervisor for routing, permissions, status requests, and hierarchy display.",
   "register-agent-form:max_concurrent": "Maximum ephemeral worker agents this persistent agent may spawn at the same time.",
+  "edit:agent:auto_context_clearing_enabled": "When enabled, the Team runtime marks this agent for fresh context after it becomes idle.",
 
   "create-task-form:id": "Immutable task identifier. The UI suggests one from project and title.",
   "create-task-form:owner_agent_id": "Persistent agent responsible for completing this task.",
@@ -160,7 +168,7 @@ const fieldTooltips = {
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
-  "create-task-form:created_by_agent_id": "Agent credited as the creator for routing and timeline context.",
+  "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
@@ -178,7 +186,15 @@ const fieldTooltips = {
   "create-review-profile-form:project_id": "Optional project scope. Blank makes the profile team-wide.",
   "create-review-profile-form:name": "Human-readable profile name shown when requesting reviews.",
   "create-review-profile-form:description": "Optional summary of when this profile should be used.",
-  "create-review-profile-form:applicable_roles": "Optional reviewer roles, one per line or comma-separated. Blank allows all reviewer roles.",
+  "create-role-form:id": "Immutable role identifier.",
+  "create-role-form:team_id": "Team that owns this role.",
+  "create-role-form:project_id": "Optional project scope. Blank makes the role team-wide.",
+  "create-role-form:name": "Human-readable role name shown in the UI and wake prompts.",
+  "create-role-form:description": "Optional role responsibility summary.",
+  "create-role-form:permissions": "Selectable permissions granted to agents assigned this role.",
+  "create-role-form:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
+
+  "create-review-profile-form:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
   "create-review-profile-form:criteria": "Criteria rows in id | label | description | required format.",
 
   "record-deliverable-form:id": "Immutable deliverable identifier.",
@@ -203,12 +219,13 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
+  "edit:team:max_cost_usd": "Set or clear the lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
   "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
-  "edit:agent:role": "Routing and responsibility label for this persistent agent.",
+  "edit:agent:role_id": "First-class role assigned to this persistent agent.",
   "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
   "edit:agent:display_name": "Optional display name. Clear it to fall back to the agent ID.",
   "edit:agent:reports_to_agent_id": "Supervisor in the same team. The backend rejects reporting cycles.",
@@ -223,7 +240,13 @@ const fieldTooltips = {
   "edit:review-profile:project_id": "Optional project scope. Clear it to make the profile team-wide.",
   "edit:review-profile:name": "Rename the review profile without changing its immutable ID.",
   "edit:review-profile:description": "Optional summary of when this profile should be used.",
-  "edit:review-profile:applicable_roles": "Optional reviewer roles, one per line or comma-separated. Blank allows all reviewer roles.",
+  "edit:role:name": "Rename the role without changing its immutable ID.",
+  "edit:role:project_id": "Optional project scope. Clear it to make the role team-wide.",
+  "edit:role:description": "Optional role responsibility summary.",
+  "edit:role:permissions": "Selectable permissions granted to this role.",
+  "edit:role:max_concurrent": "Default maximum ephemeral worker agents for agents created with this role.",
+  "edit:role:archived": "Archived roles stay in state but should not be assigned to new agents.",
+  "edit:review-profile:applicable_role_ids": "Optional reviewer roles. Blank allows all reviewer roles.",
   "edit:review-profile:criteria": "Replace criteria using id | label | description | required rows.",
   "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
 
@@ -259,6 +282,7 @@ function emptyState() {
     revision: 0,
     teams: {},
     projects: {},
+    roles: {},
     agents: {},
     agent_runtimes: {},
     tasks: {},
@@ -275,6 +299,7 @@ function emptyState() {
       agents: [],
       attention: [],
     },
+    available_role_permissions: [],
   };
 }
 
@@ -288,6 +313,23 @@ function emptyTimelineState() {
     filters: {},
     timestampless_count: 0,
     entries: [],
+  };
+}
+
+function emptyCostState() {
+  return {
+    generated_at: null,
+    coverage_status: "partial",
+    coverage_reasons: ["costs_not_loaded"],
+    team_costs: {},
+    project_costs: {},
+    unattributed_costs: null,
+    source_counts: {},
+    events_count: 0,
+    priced_events_count: 0,
+    unpriced_events_count: 0,
+    backfill: null,
+    error: null,
   };
 }
 
@@ -337,6 +379,26 @@ function bindForms() {
 
 function bindRecordEditing() {
   document.addEventListener("click", (event) => {
+    const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
+    if (contextRotationButton) {
+      event.preventDefault();
+      void requestContextRotation(
+        contextRotationButton,
+        contextRotationButton.dataset.contextRotationAgentId,
+      );
+      return;
+    }
+
+    const dismissActionButton = event.target.closest("[data-dismiss-action-id]");
+    if (dismissActionButton) {
+      event.preventDefault();
+      void dismissActionRecordAttention(
+        dismissActionButton,
+        dismissActionButton.dataset.dismissActionId,
+      );
+      return;
+    }
+
     const closeTarget = event.target.closest("[data-edit-close]");
     if (closeTarget) {
       if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
@@ -440,8 +502,14 @@ function bindGeneratedIds() {
     {
       form: "#register-agent-form",
       target: "id",
-      sources: ["project_id", "role"],
-      build: (form) => joinIdParts([fieldText(form, "project_id"), fieldText(form, "role") || "agent"]),
+      sources: ["project_id", "role_id"],
+      build: (form) => joinIdParts([fieldText(form, "project_id"), roleLabel(fieldText(form, "role_id")) || "agent"]),
+    },
+    {
+      form: "#create-role-form",
+      target: "id",
+      sources: ["team_id", "project_id", "name"],
+      build: (form) => joinIdParts([fieldText(form, "project_id") || fieldText(form, "team_id") || "role", fieldText(form, "name")]),
     },
     {
       form: "#create-task-form",
@@ -516,7 +584,7 @@ function applyExistingAgentDefaults(select) {
 
   setFieldValue(form, select.dataset.sessionField, sourceAgent.session_id);
   setFieldValue(form, select.dataset.displayField, sourceAgent.display_name || agentLabel(sourceAgent));
-  setFieldValue(form, select.dataset.roleField, sourceAgent.role);
+  setFieldValue(form, select.dataset.roleField, sourceAgent.role_id);
   setFieldValue(form, select.dataset.projectField, sourceAgent.project_id || "");
   setFieldValue(form, select.dataset.reportsToField, sourceAgent.reports_to_agent_id || "");
   if (select.dataset.maxConcurrentField) {
@@ -526,9 +594,9 @@ function applyExistingAgentDefaults(select) {
   const idField = select.dataset.idField ? form.elements[select.dataset.idField] : null;
   if (idField && (!idField.value || idField.dataset.autogenerated === "true")) {
     const role =
-      fieldText(form, select.dataset.roleField) ||
+      roleLabel(fieldText(form, select.dataset.roleField)) ||
       text(select.dataset.suggestedRole) ||
-      sourceAgent.role ||
+      agentRoleLabel(sourceAgent) ||
       "agent";
     const scope =
       fieldText(form, select.dataset.projectField) ||
@@ -679,10 +747,42 @@ async function loadState({ preserveForms = false } = {}) {
       renderTemplatePreview();
     }
     setStatus(`Loaded revision ${state.revision}.`, "ok");
+    void loadCosts();
     void loadTimeline();
   } catch (error) {
     timelineLoading = false;
     setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
+  }
+}
+
+async function loadCosts() {
+  const requestId = ++costsRequestId;
+  try {
+    const response = await fetch(`${API_BASE}/costs`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== costsRequestId) {
+      return;
+    }
+    const drafts = captureFormDrafts();
+    costState = normalizeCosts(payload);
+    render();
+    restoreFormDrafts(drafts);
+  } catch (error) {
+    if (requestId !== costsRequestId) {
+      return;
+    }
+    const drafts = captureFormDrafts();
+    costState = normalizeCosts({
+      ...emptyCostState(),
+      error: error instanceof Error ? error.message : "Cost data failed to load.",
+    });
+    render();
+    restoreFormDrafts(drafts);
   }
 }
 
@@ -694,6 +794,10 @@ function normalizeTemplates(payload) {
   return Array.isArray(payload?.templates) ? payload.templates : [];
 }
 
+function normalizeCosts(payload) {
+  return { ...emptyCostState(), ...(payload || {}) };
+}
+
 function render() {
   elements.revisionBadge.textContent = `Revision ${state.revision}`;
   updateArchivedVisibilityToggle();
@@ -702,6 +806,7 @@ function render() {
   renderReviewDeliveryWorkspace();
   renderHierarchy();
   renderAgents();
+  renderRoles();
   renderProjects();
   renderReviewProfiles();
   renderReleases();
@@ -795,8 +900,111 @@ function renderSummary() {
         ? `<p class="empty-state summary-empty-state">No teams registered.</p>`
         : !visibleTeams.length
           ? `<p class="empty-state summary-empty-state">No active team.</p>`
-          : "",
+      : "",
     );
+}
+
+function renderTeamCostCounter(teamId) {
+  const cost = costState.team_costs?.[teamId];
+  if (!cost) {
+    return costState.error
+      ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
+      : "";
+  }
+  return renderCostCounter(cost, { label: "Team cost", compact: false });
+}
+
+function renderProjectCostCounter(projectId) {
+  const cost = costState.project_costs?.[projectId];
+  if (!cost) {
+    return "";
+  }
+  return renderCostCounter(cost, { label: "Project cost", compact: true });
+}
+
+function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
+  if (!cost) {
+    return `
+      <div class="cost-counter cost-counter--warning${compact ? " cost-counter--compact" : ""}">
+        <strong>${escapeHtml(label || "Cost")}</strong>
+        <span>${escapeHtml(error || "unavailable")}</span>
+      </div>
+    `;
+  }
+  const coverageStatus = text(cost.coverage_status || costState.coverage_status);
+  const unpriced = numberOrZero(cost.unpriced_events_count);
+  const events = numberOrZero(cost.events_count);
+  const limitReached = Boolean(cost.cost_limit_reached);
+  const className =
+    coverageStatus === "complete" && !unpriced && !limitReached
+      ? "cost-counter"
+      : "cost-counter cost-counter--warning";
+  const parts = [];
+  const maxCost = numberOrNull(cost.max_cost_usd);
+  if (maxCost !== null) {
+    parts.push(
+      limitReached
+        ? `limit reached ${formatUsd(maxCost)}`
+        : `${formatUsd(cost.remaining_cost_usd)} remaining`,
+    );
+  }
+  if (events) {
+    parts.push(`${events} event${events === 1 ? "" : "s"}`);
+  }
+  if (unpriced) {
+    parts.push(`${unpriced} unpriced`);
+  }
+  const sourceSummary = costSourceSummary(cost.source_counts || {});
+  if (sourceSummary) {
+    parts.push(sourceSummary);
+  }
+  return `
+    <div class="${className}${compact ? " cost-counter--compact" : ""}">
+      <span>${escapeHtml(label || "Cost")}</span>
+      <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
+    </div>
+  `;
+}
+
+function costSourceSummary(sourceCounts) {
+  const entries = Object.entries(sourceCounts || {})
+    .filter(([, count]) => numberOrZero(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) {
+    return "";
+  }
+  return entries
+    .map(([source, count]) => `${source}:${numberOrZero(count)}`)
+    .join(", ");
+}
+
+function formatUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return "$0.00";
+  }
+  if (Math.abs(amount) >= 1000) {
+    return amount.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    });
+  }
+  if (Math.abs(amount) >= 10) {
+    return amount.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+  return amount.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  });
 }
 
 function bindArchivedVisibilityToggle() {
@@ -830,6 +1038,10 @@ function isArchivedReviewProfile(profile) {
   return Boolean(profile?.archived);
 }
 
+function isArchivedRole(role) {
+  return Boolean(role?.archived);
+}
+
 function isVisibleTeam(team) {
   return showArchived || !isArchivedTeam(team);
 }
@@ -840,6 +1052,10 @@ function isVisibleProject(project) {
 
 function isVisibleAgent(agent) {
   return showArchived || !isArchivedAgent(agent);
+}
+
+function isVisibleRole(role) {
+  return showArchived || !isArchivedRole(role);
 }
 
 function isVisibleReviewProfile(profile) {
@@ -909,6 +1125,18 @@ function renderRuntimeAttentionRow(row) {
   const stateLine = row.state ? `State ${escapeHtml(row.state)}` : "";
   const errorLine = row.error ? `Error ${escapeHtml(row.error)}` : "";
   const detail = row.detail ? `<div class="meta-line">${escapeHtml(row.detail)}</div>` : "";
+  const actions =
+    row.kind === "failed_action_record" && row.action_record_id
+      ? `
+        <div class="record-actions runtime-attention-actions">
+          <button
+            type="button"
+            class="record-action"
+            data-dismiss-action-id="${escapeAttr(row.action_record_id)}"
+          >Dismiss</button>
+        </div>
+      `
+      : "";
   return `
     <li class="record-item runtime-item runtime-attention-item runtime-severity-${escapeHtml(row.severity || "info")}">
       <div class="record-line">
@@ -923,6 +1151,7 @@ function renderRuntimeAttentionRow(row) {
           : ""
       }
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
+      ${actions}
     </li>
   `;
 }
@@ -946,15 +1175,28 @@ function renderRuntimeAgentRow(agent) {
   const nextWake = runtimeText(agent.next_wake_at);
   const wakeLease = runtimeText(agent.wake_leased_until);
   const dispatchId = runtimeText(agent.active_dispatch_id);
+  const contextPending = Boolean(agent.context_rotation_pending);
+  const contextAuto = Boolean(agent.auto_context_clearing_enabled);
+  const lastRotated = runtimeText(agent.last_context_rotated_at);
+  const handoffSummary = text(agent.last_handoff_summary);
   return `
     <li class="record-item runtime-item runtime-agent-item">
       <div class="record-line">
         <strong>${escapeHtml(agent.id)}</strong>
-        <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+          <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
+        </div>
       </div>
-      <div class="meta-line">${escapeHtml(agent.role)} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</div>
+      <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(agent.session_id)}${agent.project_id ? ` - project ${escapeHtml(agent.project_id)}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
+      <div class="meta-line">Context clearing ${escapeHtml(contextAuto ? "auto on" : "auto off")} - ${escapeHtml(contextPending ? "pending" : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+      ${
+        handoffSummary
+          ? `<details class="runtime-handoff"><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
+          : ""
+      }
       <div class="meta-line">Flags ${escapeHtml(runtimeBooleanLabel(agent.wake_due, "wake due"))} - ${escapeHtml(runtimeBooleanLabel(agent.lease_active, "lease active"))}</div>
       ${refs ? `<div class="meta-line">${refs}</div>` : ""}
     </li>
@@ -1155,6 +1397,7 @@ function renderHierarchy() {
               <div>
                 <p class="section-label">${escapeHtml(team.id)}</p>
                 <h3>${escapeHtml(team.name)}</h3>
+                ${renderTeamCostCounter(team.id)}
               </div>
               <div class="record-actions">
                 ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
@@ -1277,6 +1520,7 @@ function renderAgents() {
                   <strong>${escapeHtml(details.label)}</strong>
                   <div class="record-actions">
                     <span class="state-pill ${escapeHtml(details.status)}">${escapeHtml(details.status)}</span>
+                    <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                     ${editButton("agent", details.id)}
                   </div>
                 </div>
@@ -1302,6 +1546,48 @@ function renderAgentOpenTasks(openTasks) {
       ${openTasks
         .map((task) => {
           return `<li>${escapeHtml(task.title)} <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderRoles() {
+  if (!elements.rolesView) {
+    return;
+  }
+  const allRoles = values(state.roles).sort(byId);
+  const roles = allRoles.filter(isVisibleRole);
+  if (!allRoles.length) {
+    elements.rolesView.innerHTML = `<p class="empty-state">No roles registered.</p>`;
+    return;
+  }
+  if (!roles.length) {
+    elements.rolesView.innerHTML = `<p class="empty-state">No visible roles.</p>`;
+    return;
+  }
+  elements.rolesView.innerHTML = `
+    <ul class="review-list">
+      ${roles
+        .map((role) => {
+          const scope = role.project_id ? `project ${role.project_id}` : `team ${role.team_id}`;
+          const permissions = (role.permissions || []).length
+            ? role.permissions.map(permissionLabel).join(", ")
+            : "no special permissions";
+          return `
+            <li class="record-item">
+              <div class="record-line">
+                <strong>${escapeHtml(role.name)}</strong>
+                <div class="record-actions">
+                  <span class="state-pill ${role.archived ? "blocked" : "accepted"}">${role.archived ? "archived" : "active"}</span>
+                  ${editButton("role", role.id)}
+                </div>
+              </div>
+              <div class="meta-line">${escapeHtml(role.id)} - ${escapeHtml(scope)} - ${escapeHtml(permissions)}</div>
+              ${role.description ? `<div class="meta-line">${escapeHtml(role.description)}</div>` : ""}
+              <div class="meta-line">Max ephemeral ${escapeHtml(role.ephemeral_policy?.max_concurrent ?? 0)}</div>
+            </li>
+          `;
         })
         .join("")}
     </ul>
@@ -1362,7 +1648,8 @@ function agentCardData(agent) {
   return {
     id: text(agent?.id),
     label: agentLabel(agent),
-    role: text(agent?.role),
+    role: agentRoleLabel(agent),
+    roleId: text(agent?.role_id),
     status: agentStatus(agent),
     sessionId: text(agent?.session_id),
     projectId: projectId || null,
@@ -1389,6 +1676,10 @@ function runtimeSummary(agentId) {
       nextWakeAt: null,
       wakeLeasedUntil: null,
       lastWakeAt: null,
+      autoContextClearingEnabled: false,
+      contextRotationPending: false,
+      lastContextRotatedAt: null,
+      lastHandoffSummary: null,
     };
   }
   const activeDispatchId = text(runtime.active_dispatch_id);
@@ -1396,6 +1687,9 @@ function runtimeSummary(agentId) {
   const nextWakeAt = text(runtime.next_wake_at);
   const wakeLeasedUntil = text(runtime.wake_leased_until);
   const lastWakeAt = text(runtime.last_wake_at);
+  const contextRotationPending = Boolean(runtime.context_rotation_pending);
+  const autoContextClearingEnabled = Boolean(runtime.auto_context_clearing_enabled);
+  const lastContextRotatedAt = text(runtime.last_context_rotated_at);
   const parts = [];
   if (activeDispatchId) {
     parts.push(`dispatch ${activeDispatchId}`);
@@ -1412,6 +1706,12 @@ function runtimeSummary(agentId) {
   if (lastWakeAt) {
     parts.push(`last wake ${lastWakeAt}`);
   }
+  if (contextRotationPending) {
+    parts.push("context clearing pending");
+  }
+  if (lastContextRotatedAt) {
+    parts.push(`last context ${lastContextRotatedAt}`);
+  }
   return {
     present: true,
     status: activeDispatchId ? "busy" : wakeReason ? `wake ${wakeReason}` : "idle",
@@ -1421,6 +1721,10 @@ function runtimeSummary(agentId) {
     nextWakeAt: nextWakeAt || null,
     wakeLeasedUntil: wakeLeasedUntil || null,
     lastWakeAt: lastWakeAt || null,
+    autoContextClearingEnabled,
+    contextRotationPending,
+    lastContextRotatedAt: lastContextRotatedAt || null,
+    lastHandoffSummary: text(runtime.last_handoff_summary) || null,
   };
 }
 
@@ -1452,6 +1756,11 @@ function renderHierarchyDetails(agentData) {
     }
     lines.push(runtimeParts.join(" - "));
   }
+  lines.push(
+    `Context clearing ${agentData.runtime?.autoContextClearingEnabled ? "auto on" : "auto off"}${
+      agentData.runtime?.contextRotationPending ? " - pending" : ""
+    }`,
+  );
   lines.push(`Ephemeral ${agentData.ephemeralCurrentCount} / ${agentData.ephemeralCapacity}`);
 
   return lines.map((line) => `<div class="meta-line">${escapeHtml(line)}</div>`).join("");
@@ -1660,6 +1969,7 @@ function renderProjects() {
               <div>
                 <strong>${escapeHtml(project.name)}</strong>
                 <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+                ${renderProjectCostCounter(project.id)}
                 ${renderProjectGit(project.git)}
               </div>
               <div class="record-actions">
@@ -1980,8 +2290,8 @@ function renderReviewProfiles() {
       ${profiles
         .map((profile) => {
           const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
-          const roles = (profile.applicable_roles || []).length
-            ? `roles ${profile.applicable_roles.join(", ")}`
+          const roles = (profile.applicable_role_ids || []).length
+            ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
             : "all reviewer roles";
           return `
               <li class="record-item">
@@ -2505,6 +2815,7 @@ function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
         <div>
           <p class="section-label">Team</p>
           <h3>${teamLabel}</h3>
+          ${teamGroup.team ? renderTeamCostCounter(teamGroup.team.id) : ""}
         </div>
         <span class="delivery-bucket-count">${visibleRowCount} deliverable${visibleRowCount === 1 ? "" : "s"}</span>
       </div>
@@ -2540,6 +2851,7 @@ function renderDeliveryProjectGroup(projectGroup, bucketStatuses) {
         <div>
           <p class="section-label">Project</p>
           <h4>${projectLabel}</h4>
+          ${project ? renderProjectCostCounter(project.id) : ""}
           ${project ? `<div class="meta-line">Team ${escapeHtml(project.team_id)}</div>` : ""}
         </div>
         <span class="delivery-bucket-count">${projectCount} deliverable${projectCount === 1 ? "" : "s"}</span>
@@ -2697,15 +3009,16 @@ function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPr
 
 function renderTimelineEntry(entry) {
   const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
+  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
   const actorLine = [
-    entry.actor_agent_id ? `Actor ${entry.actor_agent_id}` : "Actor unknown",
+    actorSubject ? `Actor ${actorSubject}` : "Actor unknown",
     entry.team_id ? `team ${entry.team_id}` : "",
     entry.project_id ? `project ${entry.project_id}` : "",
   ]
     .filter(Boolean)
     .join(" - ");
   const relatedAgents = [
-    entry.actor_agent_id ? `actor ${entry.actor_agent_id}` : null,
+    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
     (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
   ]
     .filter(Boolean)
@@ -2820,7 +3133,8 @@ function refreshSelects({ includeEditForm = false } = {}) {
 function buildSelectOptionSets() {
   const teams = values(state.teams).filter(isVisibleTeam).sort(byId).map((team) => [team.id, `${team.name} (${team.id})`]);
   const projects = values(state.projects).filter(isVisibleProject).sort(byId).map((project) => [project.id, `${project.name} (${project.id})`]);
-  const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agent.role}`]);
+  const roles = values(state.roles).filter(isVisibleRole).sort(byId).map((role) => [role.id, `${role.name} (${role.id})`]);
+  const agents = values(state.agents).filter(isVisibleAgent).sort(byId).map((agent) => [agent.id, `${agent.id} - ${agentRoleLabel(agent)}`]);
   const tasks = values(state.tasks).sort(byPriority).map((task) => [task.id, `${task.title} (${task.id})`]);
   const deliverables = values(state.deliverables).sort(byId).map((deliverable) => [deliverable.id, `${deliverable.summary} (${deliverable.id})`]);
   const reviewRequests = values(state.review_requests)
@@ -2837,6 +3151,7 @@ function buildSelectOptionSets() {
   return {
     teams,
     projects,
+    roles,
     agents,
     tasks,
     deliverables,
@@ -2849,6 +3164,7 @@ function buildSelectOptionSets() {
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
     "git-providers": gitProviders,
+    "role-permissions": (state.available_role_permissions || []).map((permission) => [permission, permissionLabel(permission)]),
     "timeline-teams": timelineOptions.teams,
     "timeline-projects": timelineOptions.projects,
     "timeline-agents": timelineOptions.agents,
@@ -2867,6 +3183,14 @@ function fillSelect(select, options) {
   select.innerHTML = `<option value="">${placeholder}</option>${options
     .map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`)
     .join("")}`;
+  if (select.multiple) {
+    const currentValues = new Set(splitList(currentValue));
+    Array.from(select.options).forEach((option) => {
+      option.selected = currentValues.has(option.value);
+    });
+    delete select.dataset.currentValue;
+    return;
+  }
   if (options.some(([value]) => value === currentValue)) {
     select.value = currentValue;
   } else if (!currentValue) {
@@ -2962,6 +3286,109 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     }
 }
 
+async function requestContextRotation(button, agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    setStatus("No agent selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Requesting context clearing.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/agents/${encodeURIComponent(normalizedAgentId)}/context-rotation`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+          reason: "manual operator request",
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; request context clearing again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Context clearing queued for ${normalizedAgentId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Context clearing request failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function dismissActionRecordAttention(button, actionRecordId) {
+  if (!actionRecordId) {
+    setStatus("No action record selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus("Dismissing failed action.", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE}/action-records/${encodeURIComponent(actionRecordId)}/dismiss`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_revision: state.revision,
+          dismissed_by: "operator",
+        }),
+      },
+    );
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await loadState();
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(`Revision conflict. Reloaded revision ${current}; review and dismiss again.`, "warning");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    state = normalizeState(await response.json());
+    render();
+    restoreFormDrafts(drafts);
+    void loadTimeline();
+    setStatus(`Dismissed failed action ${actionRecordId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Dismiss failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
 function endpointForForm(form, data) {
   const templateEndpoint = form.dataset.templateEndpoint;
   if (templateEndpoint) {
@@ -3010,6 +3437,10 @@ function payloadForForm(form, data = formData(form)) {
     if (operatorTarget) {
       payload.team.operator_communication_target_id = operatorTarget;
     }
+    const maxCost = numberOrNull(data.max_cost_usd);
+    if (maxCost !== null) {
+      payload.team.max_cost_usd = maxCost;
+    }
     const git = gitConfigForForm(data);
     if (git) {
       payload.project.git = git;
@@ -3022,8 +3453,15 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       manager_agent_id: text(data.manager_agent_id),
       manager_session_id: text(data.manager_session_id),
-      manager_role: text(data.manager_role) || "manager",
     };
+    const managerRoleId = text(data.manager_role_id);
+    const managerRoleName = text(data.manager_role_name);
+    if (managerRoleId) {
+      payload.manager_role_id = managerRoleId;
+    }
+    if (managerRoleName) {
+      payload.manager_role_name = managerRoleName;
+    }
     const managerDisplayName = text(data.manager_display_name);
     if (managerDisplayName) {
       payload.manager_display_name = managerDisplayName;
@@ -3031,6 +3469,10 @@ function payloadForForm(form, data = formData(form)) {
     const operatorTarget = text(data.operator_communication_target_id);
     if (operatorTarget) {
       payload.operator_communication_target_id = operatorTarget;
+    }
+    const maxCost = numberOrNull(data.max_cost_usd);
+    if (maxCost !== null) {
+      payload.max_cost_usd = maxCost;
     }
     return payload;
   }
@@ -3049,9 +3491,16 @@ function payloadForForm(form, data = formData(form)) {
       name: text(data.name),
       lead_agent_id: text(data.lead_agent_id),
       lead_session_id: text(data.lead_session_id),
-      lead_role: text(data.lead_role) || "project_lead",
       goals,
     };
+    const leadRoleId = text(data.lead_role_id);
+    const leadRoleName = text(data.lead_role_name);
+    if (leadRoleId) {
+      payload.lead_role_id = leadRoleId;
+    }
+    if (leadRoleName) {
+      payload.lead_role_name = leadRoleName;
+    }
     const leadDisplayName = text(data.lead_display_name);
     if (leadDisplayName) {
       payload.lead_display_name = leadDisplayName;
@@ -3062,12 +3511,27 @@ function payloadForForm(form, data = formData(form)) {
     }
     return payload;
   }
+  if (formId === "create-role-form") {
+    const payload = {
+      id: text(data.id),
+      team_id: text(data.team_id),
+      name: text(data.name),
+      description: text(data.description),
+      permissions: splitList(data.permissions),
+      ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
+    };
+    const projectId = text(data.project_id);
+    if (projectId) {
+      payload.project_id = projectId;
+    }
+    return payload;
+  }
   if (formId === "register-agent-form") {
     const payload = {
       id: text(data.id),
       team_id: text(data.team_id),
       project_id: text(data.project_id),
-      role: text(data.role),
+      role_id: text(data.role_id),
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id),
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
@@ -3104,7 +3568,7 @@ function payloadForForm(form, data = formData(form)) {
       team_id: text(data.team_id),
       name: text(data.name),
       description: text(data.description),
-      applicable_roles: splitList(data.applicable_roles),
+      applicable_role_ids: splitList(data.applicable_role_ids),
       criteria: parseCriteria(data.criteria),
     };
     const projectId = text(data.project_id);
@@ -3263,6 +3727,7 @@ async function submitEditForm(form) {
 function recordForEdit(type, id) {
   if (type === "team") return state.teams[id] || null;
   if (type === "project") return state.projects[id] || null;
+  if (type === "role") return state.roles[id] || null;
   if (type === "agent") return state.agents[id] || null;
   if (type === "task") return state.tasks[id] || null;
   if (type === "review-profile") return state.review_profiles[id] || null;
@@ -3272,6 +3737,7 @@ function recordForEdit(type, id) {
 function editEndpoint(type, id) {
   if (type === "team") return `/teams/${encodeURIComponent(id)}`;
   if (type === "project") return `/projects/${encodeURIComponent(id)}`;
+  if (type === "role") return `/roles/${encodeURIComponent(id)}`;
   if (type === "agent") return `/agents/${encodeURIComponent(id)}`;
   if (type === "task") return `/tasks/${encodeURIComponent(id)}`;
   if (type === "review-profile") return `/review-profiles/${encodeURIComponent(id)}`;
@@ -3282,6 +3748,7 @@ function editDialogTitle(type, record) {
   const labels = {
     team: "team",
     project: "project",
+    role: "role",
     agent: "agent",
     task: "task",
     "review-profile": "review profile",
@@ -3295,6 +3762,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${numberField("Max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -3320,16 +3788,30 @@ function renderEditFields(type, record) {
     `;
   }
   if (type === "agent") {
+    const runtime = state.agent_runtimes?.[record.id] || {};
     return `
       ${readonlyField("Agent ID", record.id)}
       ${readonlyField("Team", record.team_id)}
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "No project" })}
-      ${textField("Role", "role", record.role, { required: true })}
+      ${selectField("Role", "role_id", "roles", record.role_id || "", { required: true })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
       ${selectField("Reports to", "reports_to_agent_id", "agents", record.reports_to_agent_id || "", { placeholder: "Operator" })}
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
+      ${checkboxField("Automatic context clearing", "auto_context_clearing_enabled", Boolean(runtime.auto_context_clearing_enabled))}
+    `;
+  }
+  if (type === "role") {
+    return `
+      ${readonlyField("Role ID", record.id)}
+      ${readonlyField("Team", record.team_id)}
+      ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
+      ${textField("Name", "name", record.name, { required: true })}
+      ${textareaField("Description", "description", record.description || "", { rows: 3 })}
+      ${multiSelectField("Permissions", "permissions", "role-permissions", record.permissions || [], { size: 3 })}
+      ${numberField("Max ephemeral agents", "max_concurrent", record.ephemeral_policy?.max_concurrent ?? 0, { min: 0 })}
+      ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
   if (type === "task") {
@@ -3352,7 +3834,7 @@ function renderEditFields(type, record) {
       ${selectField("Project", "project_id", "projects", record.project_id || "", { placeholder: "Team-wide" })}
       ${textField("Name", "name", record.name, { required: true })}
       ${textareaField("Description", "description", record.description || "", { rows: 3 })}
-      ${textareaField("Applicable roles", "applicable_roles", (record.applicable_roles || []).join("\n"), { rows: 2 })}
+      ${multiSelectField("Applicable roles", "applicable_role_ids", "roles", record.applicable_role_ids || [], { size: 4 })}
       ${textareaField("Criteria", "criteria", criteriaToText(record.criteria || []), {
         rows: 4,
         placeholder: "id | label | description | required",
@@ -3369,6 +3851,7 @@ function editPayloadForForm(type, form) {
     return {
       name: text(data.name),
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
+      max_cost_usd: numberOrNull(data.max_cost_usd),
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -3383,12 +3866,23 @@ function editPayloadForForm(type, form) {
   if (type === "agent") {
     return {
       project_id: text(data.project_id) || null,
-      role: text(data.role),
+      role_id: text(data.role_id),
       session_id: text(data.session_id),
       reports_to_agent_id: text(data.reports_to_agent_id) || null,
       display_name: text(data.display_name) || null,
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
+      auto_context_clearing_enabled: Boolean(form.elements.auto_context_clearing_enabled?.checked),
+    };
+  }
+  if (type === "role") {
+    return {
+      project_id: text(data.project_id) || null,
+      name: text(data.name),
+      description: text(data.description),
+      permissions: splitList(data.permissions),
+      ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
+      archived: Boolean(form.elements.archived?.checked),
     };
   }
   if (type === "task") {
@@ -3406,7 +3900,7 @@ function editPayloadForForm(type, form) {
       project_id: text(data.project_id) || null,
       name: text(data.name),
       description: text(data.description),
-      applicable_roles: splitList(data.applicable_roles),
+      applicable_role_ids: splitList(data.applicable_role_ids),
       criteria: parseCriteria(data.criteria),
       archived: Boolean(form.elements.archived?.checked),
     };
@@ -3422,8 +3916,8 @@ function textField(label, name, value, { required = false, placeholder = "" } = 
   return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" value="${escapeAttr(value)}"${required ? " required" : ""}${placeholder ? ` placeholder="${escapeAttr(placeholder)}"` : ""} /></label>`;
 }
 
-function numberField(label, name, value, { min = null, required = false } = {}) {
-  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${required ? " required" : ""} /></label>`;
+function numberField(label, name, value, { min = null, step = null, required = false } = {}) {
+  return `<label>${escapeHtml(label)}<input name="${escapeAttr(name)}" type="number" value="${escapeAttr(value)}"${min !== null ? ` min="${escapeAttr(min)}"` : ""}${step !== null ? ` step="${escapeAttr(step)}"` : ""}${required ? " required" : ""} /></label>`;
 }
 
 function textareaField(label, name, value, { rows = 3, required = false, placeholder = "" } = {}) {
@@ -3432,6 +3926,10 @@ function textareaField(label, name, value, { rows = 3, required = false, placeho
 
 function selectField(label, name, optionsKey, value, { required = false, placeholder = "Default" } = {}) {
   return `<label>${escapeHtml(label)}<select name="${escapeAttr(name)}" data-options="${escapeAttr(optionsKey)}" data-current-value="${escapeAttr(value)}" data-placeholder="${escapeAttr(placeholder)}"${required ? " required" : ""}></select></label>`;
+}
+
+function multiSelectField(label, name, optionsKey, values, { size = 4 } = {}) {
+  return `<label>${escapeHtml(label)}<select name="${escapeAttr(name)}" multiple size="${escapeAttr(size)}" data-options="${escapeAttr(optionsKey)}" data-current-value="${escapeAttr((values || []).join("\n"))}"></select></label>`;
 }
 
 function checkboxField(label, name, checked) {
@@ -3465,7 +3963,13 @@ function syncTaskUpdateForm(form, { keepEditedValues = false } = {}) {
 }
 
 function formData(form) {
-  return Object.fromEntries(new FormData(form).entries());
+  const values = Object.fromEntries(new FormData(form).entries());
+  form.querySelectorAll("select[multiple][name]").forEach((field) => {
+    values[field.name] = Array.from(field.selectedOptions)
+      .map((option) => option.value)
+      .filter(Boolean);
+  });
+  return values;
 }
 
 function formIdentifier(form) {
@@ -3500,6 +4004,13 @@ function restoreFormDrafts(drafts) {
       }
       if (field instanceof HTMLInputElement && field.type === "checkbox") {
         field.checked = value === true || value === "true" || value === "on";
+        return;
+      }
+      if (field instanceof HTMLSelectElement && field.multiple) {
+        const selected = new Set(Array.isArray(value) ? value.map(text) : splitList(value));
+        Array.from(field.options).forEach((option) => {
+          option.selected = selected.has(option.value);
+        });
         return;
       }
       field.value = value;
@@ -3582,7 +4093,7 @@ function buildTimelineSelectOptions() {
   values(state.agents)
     .sort(byId)
     .forEach((agent) => {
-      agentLabels.set(agent.id, `${agent.id} - ${agent.role}`);
+      agentLabels.set(agent.id, `${agent.id} - ${agentRoleLabel(agent)}`);
     });
 
   timelineState.entries.forEach((entry) => {
@@ -3677,12 +4188,44 @@ function agentLabel(agent) {
   return text(agent?.display_name) || text(agent?.name) || text(agent?.id);
 }
 
+function roleLabel(roleOrId) {
+  const roleId = text(roleOrId?.id ?? roleOrId);
+  const role =
+    roleOrId && typeof roleOrId === "object"
+      ? roleOrId
+      : state.roles[roleId];
+  if (!role) {
+    return roleId;
+  }
+  return text(role.name) || text(role.id) || roleId;
+}
+
+function agentRoleLabel(agent) {
+  return text(agent?.role_name) || roleLabel(agent?.role_id);
+}
+
+function permissionLabel(permission) {
+  return humanizeToken(permission);
+}
+
 function numberOrZero(value) {
   const parsed = Number.parseInt(text(value), 10);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function numberOrNull(value) {
+  const raw = text(value);
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function splitList(value) {
+  if (Array.isArray(value)) {
+    return value.map(text).filter(Boolean);
+  }
   return text(value)
     .split(/[\n,]/)
     .map((item) => item.trim())

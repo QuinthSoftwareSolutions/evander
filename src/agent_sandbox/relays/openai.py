@@ -657,17 +657,26 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
-                self._record_stream_model_usage_event(
-                    session_id=session_id,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                    upstream_response=upstream_response,
-                    response_body_bytes=bytes_sent,
-                    response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
-                    response_payload=stream_payload,
-                    duration_ms=self._duration_ms_since(started_at),
-                    provider_name=provider_name,
-                )
+                try:
+                    self._record_stream_model_usage_event(
+                        session_id=session_id,
+                        upstream_path=upstream_path,
+                        request_body=request_body,
+                        upstream_response=upstream_response,
+                        response_body_bytes=bytes_sent,
+                        response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                        response_payload=stream_payload,
+                        duration_ms=self._duration_ms_since(started_at),
+                        provider_name=provider_name,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
                 await upstream_stream.__aexit__(None, None, None)
                 await client.aclose()
 
@@ -936,10 +945,16 @@ class OpenAIRelay:
                 "method": "POST",
                 "path": f"/v1/{upstream_path}",
             },
-            response_metadata={
-                "status_code": upstream_response.status_code,
-                "content_type": upstream_response.headers.get("content-type"),
-            },
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                },
+                provider_request_id=self._provider_request_id_from_response(
+                    upstream_response=upstream_response,
+                    response_payload=response_payload,
+                ),
+            ),
             duration_ms=duration_ms,
             provider_name=provider_name,
         )
@@ -973,11 +988,17 @@ class OpenAIRelay:
                 "path": f"/v1/{upstream_path}",
                 "stream": True,
             },
-            response_metadata={
-                "status_code": upstream_response.status_code,
-                "content_type": upstream_response.headers.get("content-type"),
-                "stream": True,
-            },
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "status_code": upstream_response.status_code,
+                    "content_type": upstream_response.headers.get("content-type"),
+                    "stream": True,
+                },
+                provider_request_id=self._provider_request_id_from_response(
+                    upstream_response=upstream_response,
+                    response_payload=response_payload,
+                ),
+            ),
             duration_ms=duration_ms,
             provider_name=provider_name,
         )
@@ -1012,11 +1033,14 @@ class OpenAIRelay:
                 "path": f"/v1/{upstream_path}",
                 "websocket": True,
             },
-            response_metadata={
-                "websocket": True,
-                "event_type": event_type,
-                "message_bytes": len(message_body),
-            },
+            response_metadata=self._response_metadata_with_provider_request_id(
+                {
+                    "websocket": True,
+                    "event_type": event_type,
+                    "message_bytes": len(message_body),
+                },
+                provider_request_id=self._provider_request_id_from_payload(response_payload),
+            ),
             duration_ms=duration_ms,
         )
 
@@ -1063,9 +1087,71 @@ class OpenAIRelay:
                 request_metadata=request_metadata,
                 response_metadata=response_metadata,
                 correlation_context=correlation_context,
+                request_id=self._provider_request_id_from_metadata(
+                    response_metadata=response_metadata,
+                    response_payload=response_payload,
+                ),
             )
         )
         self.model_usage_store.upsert_event(result.event)
+
+    @classmethod
+    def _provider_request_id_from_response(
+        cls,
+        *,
+        upstream_response: httpx.Response,
+        response_payload: dict[str, Any],
+    ) -> str | None:
+        for header_name in (
+            "request-id",
+            "x-request-id",
+            "openai-request-id",
+            "anthropic-request-id",
+        ):
+            value = upstream_response.headers.get(header_name)
+            if value:
+                text = value.strip()
+                if text:
+                    return text
+        return cls._provider_request_id_from_payload(response_payload)
+
+    @staticmethod
+    def _response_metadata_with_provider_request_id(
+        response_metadata: dict[str, Any], *, provider_request_id: str | None
+    ) -> dict[str, Any]:
+        if provider_request_id is not None:
+            response_metadata["provider_request_id"] = provider_request_id
+        return response_metadata
+
+    @staticmethod
+    def _provider_request_id_from_payload(response_payload: dict[str, Any]) -> str | None:
+        for key in (
+            "request_id",
+            "requestId",
+            "provider_request_id",
+            "providerRequestId",
+        ):
+            value = response_payload.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _provider_request_id_from_metadata(
+        cls,
+        *,
+        response_metadata: dict[str, Any],
+        response_payload: dict[str, Any],
+    ) -> str | None:
+        value = response_metadata.get("provider_request_id")
+        if value is not None:
+            text = str(value).strip()
+            if text:
+                return text
+        return cls._provider_request_id_from_payload(response_payload)
 
     @classmethod
     def _capture_stream_usage_payload(
@@ -1103,7 +1189,15 @@ class OpenAIRelay:
             candidate = event_payload.get("message")
         if not isinstance(candidate, dict):
             candidate = event_payload
-        for key in ("id", "model", "deployment"):
+        for key in (
+            "id",
+            "model",
+            "deployment",
+            "request_id",
+            "requestId",
+            "provider_request_id",
+            "providerRequestId",
+        ):
             value = candidate.get(key)
             if value is not None:
                 payload[key] = value
