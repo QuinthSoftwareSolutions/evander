@@ -51,7 +51,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 5
+ACTION_CONTRACT_SCHEMA_VERSION = 6
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -943,8 +943,11 @@ def _prepare_deliverable_artifacts(
     normalized_dispatch_id = _optional_text(dispatch_id) or _optional_text(
         normalized_action.get("dispatch_id")
     )
-    agent_id = _optional_text(normalized_action.get("agent_id"))
-    agent = state.agents.get(agent_id) if agent_id is not None else None
+    agent = _artifact_preflight_agent(
+        state,
+        action=normalized_action,
+        session_id=normalized_session_id,
+    )
     runtime = state.agent_runtimes.get(agent.id) if agent is not None else None
     if (
         agent is None
@@ -972,7 +975,9 @@ def _prepare_deliverable_artifacts(
         try:
             artifact_paths = _string_list(deliverable.get("artifact_paths"), "artifact_paths")
             if not artifact_paths:
-                raise ValueError("artifact_paths must contain at least one path")
+                deliverable.pop("artifact_paths", None)
+                next_deliverables.append(deliverable)
+                continue
             task_id = _required_text(deliverable.get("task_id"), "task_id")
             task = state.tasks.get(task_id)
             if task is None or task.owner_agent_id != agent.id:
@@ -1000,6 +1005,23 @@ def _prepare_deliverable_artifacts(
             errors.append(f"deliverables[{index}]: failed to publish artifact_paths: {exc}")
     normalized_action["deliverables"] = next_deliverables
     return normalized_action, records, errors
+
+
+def _artifact_preflight_agent(
+    state: Any,
+    *,
+    action: Mapping[str, Any],
+    session_id: str | None,
+) -> Any | None:
+    agent_id = _optional_text(action.get("agent_id"))
+    if agent_id is not None:
+        return state.agents.get(agent_id)
+    if session_id is None:
+        return None
+    for agent in state.agents.values():
+        if agent.session_id == session_id:
+            return agent
+    return None
 
 
 def _publish_deliverable_artifact_bundle(
@@ -1651,6 +1673,11 @@ def _mark_project_repo_prepared(
 def _persistent_action_schema() -> dict[str, Any]:
     text_or_null = {"type": ["string", "null"]}
     string_array = {"type": "array", "items": {"type": "string"}, "default": []}
+    non_empty_string_array = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "minItems": 1,
+    }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://agent-sandbox.local/team-addon/team-action.v1.schema.json",
@@ -1762,7 +1789,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "id": {"type": "string", "minLength": 1},
                         "task_id": {"type": "string", "minLength": 1},
                         "summary": {"type": "string", "minLength": 1},
-                        "artifact_paths": string_array,
+                        "artifact_paths": non_empty_string_array,
                         "artifact_refs": string_array,
                         "artifact_space_ref": text_or_null,
                         "git_refs": {

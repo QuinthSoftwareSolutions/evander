@@ -40,6 +40,9 @@ material. Newer entries are added incrementally as changes land.
   error after consuming the dispatch.
 - Encoded unsafe Team, project, deliverable, and dispatch IDs in Team artifact
   space paths so otherwise valid identifiers with spaces still publish.
+- Resolved Team deliverable artifact publishing through the action session
+  fallback and treated empty `artifact_paths` as omitted so Git-only
+  deliverables from schema-driven agents do not fail publication preflight.
 
 ## 2026-06-17 - Team Add-on Focused Org Chart
 
