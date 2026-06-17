@@ -2426,6 +2426,20 @@ def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bo
     return project is not None and project.lead_agent_id == agent_id
 
 
+def _is_project_release_operator_for(
+    state: TeamState,
+    actor: PersistentAgent,
+    project_id: str,
+) -> bool:
+    project = state.projects.get(project_id)
+    return (
+        project is not None
+        and actor.role == "release_operator"
+        and actor.project_id == project_id
+        and actor.team_id == project.team_id
+    )
+
+
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
     agent = state.agents.get(agent_id)
     return agent is not None and agent.project_id == project_id
@@ -3504,8 +3518,10 @@ def _apply_git_release_request(
             f"git release request references missing project {project_id}"
         )
         return None
-    permitted = _is_project_lead_for(state, actor.id, project_id) or (
-        _is_team_manager(state, actor) and project.team_id == actor.team_id
+    permitted = (
+        _is_project_lead_for(state, actor.id, project_id)
+        or _is_project_release_operator_for(state, actor, project_id)
+        or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
     )
     if not permitted:
         result["errors"].append(

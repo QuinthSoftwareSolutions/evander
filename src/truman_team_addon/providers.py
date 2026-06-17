@@ -44,7 +44,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 3
+ACTION_CONTRACT_SCHEMA_VERSION = 4
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 
@@ -1545,7 +1545,28 @@ def _persistent_action_schema() -> dict[str, Any]:
                 },
             },
             "git_feature_updates": {"type": "array", "default": [], "items": {"type": "object"}},
-            "git_release_requests": {"type": "array", "default": [], "items": {"type": "object"}},
+            "git_release_requests": {
+                "type": "array",
+                "description": (
+                    "Create a release package from accepted deliverables. The "
+                    "repository derives source branches from deliverable git_refs; "
+                    "do not provide source_branch, target_branch, or commit_sha here."
+                ),
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["project_id", "deliverable_ids"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "project_id": {"type": "string", "minLength": 1},
+                        "deliverable_ids": string_array,
+                        "release_branch": text_or_null,
+                        "canonical_branch": text_or_null,
+                        "summary": text_or_null,
+                    },
+                },
+            },
             "ephemeral_requests": {"type": "array", "default": [], "items": {"type": "object"}},
             "ephemeral_acceptances": {"type": "array", "default": [], "items": {"type": "object"}},
             "handled_inbox_item_ids": string_array,

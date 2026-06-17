@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-16 - Team Add-on Release Operator Authorization
+
+- Allowed a project's scoped `release_operator` agent to create Team release
+  packages through `git_release_requests`, matching the Team template's release
+  handoff role while keeping unrelated implementers blocked from release
+  requests.
+- Tightened the seeded Team action schema for `git_release_requests` so agents
+  use `project_id` plus `deliverable_ids` and do not invent source branch or
+  commit fields for release package creation.
+
 ## 2026-06-16 - Agents Page Execution Status Badges
 
 - Changed the Agents page status badge and Status filter to use actual agent

@@ -568,8 +568,19 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert review_promotion_shapes[1]["required"] == ["deliverable_id"]
     assert "commit_sha" in review_promotion_shapes[1]["properties"]
     assert "source_branch" in review_promotion_shapes[1]["properties"]
+    release_request_schema = schema["properties"]["git_release_requests"]["items"]
+    assert release_request_schema["additionalProperties"] is False
+    assert release_request_schema["required"] == ["project_id", "deliverable_ids"]
+    assert set(release_request_schema["properties"]) == {
+        "id",
+        "project_id",
+        "deliverable_ids",
+        "release_branch",
+        "canonical_branch",
+        "summary",
+    }
     example = json.loads(str(copied_files[1]["content"]))
-    assert example["schema_version"] == 3
+    assert example["schema_version"] == 4
     assert example["review_requests"][0]["instructions"]
     assert example["review_decisions"][0]["state"] == "accepted"
     assert example["git_review_promotions"][0]["deliverable_id"] == "deliverable-id"
@@ -605,7 +616,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "creating child tasks via task_creations with parent_task_id" in prompt
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"] == {
         "seeded": True,
-        "schema_version": 3,
+        "schema_version": 4,
         "schema_path": "/artifacts/team-action.schema.json",
         "example_path": "/artifacts/team-action.example.json",
         "action_artifact_path": "/artifacts/team-action.json",
@@ -735,7 +746,7 @@ def test_wake_due_agents_provider_skips_already_seeded_action_contract(
         "team_addon": {
             "action_contract": {
                 "seeded": True,
-                "schema_version": 3,
+                "schema_version": 4,
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",
@@ -777,7 +788,7 @@ def test_wake_due_agents_provider_reseeds_stale_action_contract(
         "team_addon": {
             "action_contract": {
                 "seeded": True,
-                "schema_version": 2,
+                "schema_version": 3,
                 "schema_path": "/artifacts/team-action.schema.json",
                 "example_path": "/artifacts/team-action.example.json",
                 "action_artifact_path": "/artifacts/team-action.json",
@@ -805,11 +816,11 @@ def test_wake_due_agents_provider_reseeds_stale_action_contract(
 
     assert result["success"] is True
     assert result["dispatches"][0]["action_contract"]["seeded"] is True
-    assert result["dispatches"][0]["action_contract"]["schema_version"] == 3
+    assert result["dispatches"][0]["action_contract"]["schema_version"] == 4
     assert len(file_copier.calls) == 1
     assert session_store.calls[0]["metadata"]["team_addon"]["action_contract"][
         "schema_version"
-    ] == 3
+    ] == 4
 
 
 def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(

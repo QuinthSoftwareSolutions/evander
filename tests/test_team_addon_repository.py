@@ -67,6 +67,22 @@ def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
     return repo
 
 
+def _register_release_operator(
+    repo: TeamStateRepository,
+    *,
+    role: str = "release_operator",
+) -> None:
+    repo.register_agent(
+        agent_id="release-operator",
+        team_id="team",
+        project_id="project",
+        role=role,
+        session_id="session-release-operator",
+        reports_to_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+
 def _auto_dev_squad_inputs(
     *,
     suffix: str = "auto-dev-squad",
@@ -2231,6 +2247,39 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert release.git_promotion_record_ids == []
     assert result["git_promotion_event_ids"] == []
     assert state.git_promotions == {}
+
+
+def test_apply_agent_action_git_release_request_allows_project_release_operator(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _register_release_operator(repo)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "release-operator",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["release_package_ids"] == ["rel-1"]
+    release = state.release_packages["rel-1"]
+    assert release.feature_branches == ["team/team/features/task-backend"]
+    assert release.release_branch == "team/team/releases/rel-1"
 
 
 def test_apply_agent_action_git_release_request_rejects_unaccepted(tmp_path: Path) -> None:
