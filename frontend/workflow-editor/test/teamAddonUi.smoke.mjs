@@ -819,7 +819,7 @@ function compareTimelineEntries(left, right) {
   const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NEGATIVE_INFINITY;
   const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NEGATIVE_INFINITY;
   if (leftTime !== rightTime) {
-    return leftTime - rightTime;
+    return rightTime - leftTime;
   }
   return (
     String(left.category || "").localeCompare(String(right.category || "")) ||
@@ -2743,6 +2743,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     state: "visible",
   });
   assert.equal(await page.locator(".delivery-row").count(), 5);
+  assert.equal(await page.locator("#team-delivery-page .delivery-row[open]").count(), 0);
   assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
   await page.locator("#team-delivery-page .review-profiles-view .record-item").first().waitFor({
     state: "visible",
@@ -2762,6 +2763,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Planning" }).click();
   await page.locator("#team-planning-page").waitFor({ state: "visible" });
   assert.equal(await page.locator(".project-block").count(), 2);
+  assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
+  await page.locator("#team-planning-page .planning-project-card").first().locator(":scope > details > summary").click();
   await page.locator("#team-planning-page").getByText("Git: host /srv/git/alpha-project").waitFor({
     state: "visible",
   });
@@ -2776,7 +2779,15 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.getByRole("tab", { name: "Timeline" }).click();
   await page.locator("#team-timeline-page").waitFor({ state: "visible" });
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
-  assert.ok((await page.locator(".timeline-entry").count()) >= 10);
+  assert.equal(await page.locator("#team-timeline-page .timeline-entry").count(), 10);
+  await page.locator("#team-timeline-page .timeline-pagination").getByText(/1-10 of/).waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.locator("#team-timeline-page .timeline-entry details[open]").count(), 0);
+  await page.locator("#team-timeline-page .timeline-entry").first().locator("summary").click();
+  await page.locator("#team-timeline-page .timeline-entry details[open]").first().waitFor({
+    state: "visible",
+  });
   await page.locator("#focused-timeline-type-filter").selectOption("review");
   await page.locator("#team-timeline-page .timeline-entry").first().waitFor({ state: "visible" });
   assert.equal(await page.locator("#timeline-type-filter").inputValue(), "review");

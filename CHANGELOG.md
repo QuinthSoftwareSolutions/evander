@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Focused Tab Density
+
+- Sorted the derived Team Add-on timeline newest-first and paged the focused
+  Timeline tab into compact expandable rows.
+- Collapsed focused Delivery and Planning records into summary-first drill-down
+  cards while keeping the existing Workspace tab layout unchanged.
+
 ## 2026-06-17 - Team Add-on Batched Task Mandates
 
 - Enforced ordinary-agent task mandate checks against batch-local parent tasks

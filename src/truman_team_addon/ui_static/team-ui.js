@@ -27,6 +27,7 @@ let templates = [];
 let timelineState = emptyTimelineState();
 let timelineLoading = false;
 let timelineRequestId = 0;
+let timelinePage = 1;
 let costsRequestId = 0;
 let showArchived = false;
 let activeTeamView = "workspace";
@@ -63,6 +64,7 @@ const ephemeralWorkKinds = new Set([
   "cleanup_pending_ephemeral_assignment",
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
+const timelinePageSize = 10;
 
 const elements = {
   revisionBadge: document.querySelector("#revision-badge"),
@@ -290,6 +292,7 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTemplatePreview();
   });
   bindTimelineFilters();
+  bindTimelinePagination();
   elements.refreshButton?.addEventListener("click", () => {
     void loadState({ preserveForms: true });
   });
@@ -2531,6 +2534,9 @@ function renderProjects() {
           const task = state.tasks[deliverable.task_id];
           return task?.project_id === project.id;
         });
+        if (activeTeamView === "planning") {
+          return renderPlanningProjectBlock(project, projectTasks, projectDeliverables);
+        }
         return `
         <article class="project-block">
             <div class="project-header">
@@ -2564,6 +2570,66 @@ function renderProjects() {
   );
 }
 
+function renderPlanningProjectBlock(project, projectTasks, projectDeliverables) {
+  const openTasks = projectTasks.filter((task) => !terminalTaskStates.has(task.state));
+  const blockedTasks = projectTasks.filter((task) => task.state === "blocked");
+  const waitingTasks = projectTasks.filter((task) => task.state === "waiting_for_review");
+  const goals = project.goals || [];
+  const detailBits = [
+    `${openTasks.length} open task${openTasks.length === 1 ? "" : "s"}`,
+    `${projectDeliverables.length} deliverable${projectDeliverables.length === 1 ? "" : "s"}`,
+    `${goals.length} goal${goals.length === 1 ? "" : "s"}`,
+  ];
+  if (blockedTasks.length) {
+    detailBits.push(`${blockedTasks.length} blocked`);
+  }
+  if (waitingTasks.length) {
+    detailBits.push(`${waitingTasks.length} waiting review`);
+  }
+  return `
+    <article class="project-block planning-project-card">
+      <details>
+        <summary class="planning-project-summary">
+          <span class="planning-project-main">
+            <strong>${escapeHtml(project.name)}</strong>
+            <span>${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</span>
+          </span>
+          <span class="planning-project-meta">
+            <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+            <span>${escapeHtml(detailBits.join(" - "))}</span>
+          </span>
+        </summary>
+        <div class="planning-project-body">
+          <div class="project-header">
+            <div>
+              <strong>${escapeHtml(project.name)}</strong>
+              <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
+              ${renderProjectCostCounter(project.id)}
+              ${renderProjectGit(project.git)}
+            </div>
+            <div class="record-actions">
+              <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
+              ${editButton("project", project.id)}
+            </div>
+          </div>
+          <div class="project-columns planning-project-columns">
+            <div>
+              <p class="subheading">Goals</p>
+              ${renderGoals(goals, { compact: true })}
+              <p class="subheading">Deliverables</p>
+              ${renderDeliverables(projectDeliverables, { compact: true })}
+            </div>
+            <div>
+              <p class="subheading">Tasks</p>
+              ${renderTasks(projectTasks, { compact: true })}
+            </div>
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
 function renderProjectGit(git) {
   if (!git || !git.host_repo_path) {
     return "";
@@ -2576,9 +2642,36 @@ function renderProjectGit(git) {
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
-function renderGoals(goals) {
+function renderGoals(goals, { compact = false } = {}) {
   if (!goals.length) {
     return `<p class="empty-state">No goals.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="goal-list compact-record-list">
+        ${goals
+          .map((goal) => {
+            return `
+              <li class="record-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(goal.description)}</strong>
+                      <span>${escapeHtml(goal.id)}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(goal.state)}">${escapeHtml(goal.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="meta-line">${escapeHtml(goal.id)}</div>
+                    <div class="meta-line">${escapeHtml(goal.description)}</div>
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="goal-list">
@@ -2599,9 +2692,40 @@ function renderGoals(goals) {
   `;
 }
 
-function renderTasks(tasks) {
+function renderTasks(tasks, { compact = false } = {}) {
   if (!tasks.length) {
     return `<p class="empty-state">No tasks.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="task-list compact-record-list">
+        ${tasks
+          .map((task) => {
+            return `
+              <li class="task-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(task.title)}</strong>
+                      <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - priority ${task.priority}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="record-actions">
+                      ${editButton("task", task.id)}
+                    </div>
+                    <div class="meta-line">${escapeHtml(task.id)} - priority ${task.priority} - owner ${escapeHtml(task.owner_agent_id)}</div>
+                    ${renderTaskGraph(task)}
+                    <div class="meta-line">${escapeHtml(task.description)}</div>
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="task-list">
@@ -2657,9 +2781,38 @@ function renderTaskGraph(task) {
   `;
 }
 
-function renderDeliverables(deliverables) {
+function renderDeliverables(deliverables, { compact = false } = {}) {
   if (!deliverables.length) {
     return `<p class="empty-state">No deliverables.</p>`;
+  }
+  if (compact) {
+    return `
+      <ul class="deliverable-list compact-record-list">
+        ${deliverables
+          .map((deliverable) => {
+            return `
+              <li class="record-item compact-record-card">
+                <details>
+                  <summary class="compact-record-summary">
+                    <span class="compact-record-main">
+                      <strong>${escapeHtml(deliverable.summary)}</strong>
+                      <span>${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</span>
+                    </span>
+                    <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+                  </summary>
+                  <div class="compact-record-body">
+                    <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
+                    ${renderReviewSummary(deliverable.review_request_ids || [])}
+                    ${renderArtifactRefs(deliverable.artifact_refs || [])}
+                    ${renderGitRefs(deliverable.git_refs)}
+                  </div>
+                </details>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
   }
   return `
     <ul class="deliverable-list">
@@ -2854,6 +3007,14 @@ function renderReviewProfiles() {
     renderIntoActiveTargets("[data-review-profiles-view]", `<p class="empty-state">No visible review profiles.</p>`);
     return;
   }
+  if (activeTeamView === "delivery") {
+    renderIntoActiveTargets("[data-review-profiles-view]", `
+      <ul class="review-list compact-record-list">
+        ${profiles.map((profile) => renderCompactReviewProfile(profile)).join("")}
+      </ul>
+    `);
+    return;
+  }
   renderIntoActiveTargets("[data-review-profiles-view]", `
     <ul class="review-list">
       ${profiles
@@ -2882,6 +3043,35 @@ function renderReviewProfiles() {
   `);
 }
 
+function renderCompactReviewProfile(profile) {
+  const scope = profile.project_id ? `project ${profile.project_id}` : `team ${profile.team_id}`;
+  const roles = (profile.applicable_role_ids || []).length
+    ? `roles ${profile.applicable_role_ids.map(roleLabel).join(", ")}`
+    : "all reviewer roles";
+  const criteria = profile.criteria || [];
+  return `
+    <li class="record-item compact-record-card">
+      <details>
+        <summary class="compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(profile.name)}</strong>
+            <span>${escapeHtml(scope)} - ${criteria.length} criteria</span>
+          </span>
+          <span class="state-pill ${profile.archived ? "blocked" : "accepted"}">${profile.archived ? "archived" : "active"}</span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="record-actions">
+            ${editButton("review-profile", profile.id)}
+          </div>
+          <div class="meta-line">${escapeHtml(profile.id)} - ${escapeHtml(scope)} - ${escapeHtml(roles)}</div>
+          ${profile.description ? `<div class="meta-line">${escapeHtml(profile.description)}</div>` : ""}
+          ${renderProfileCriteria(criteria)}
+        </div>
+      </details>
+    </li>
+  `;
+}
+
 function renderProfileCriteria(criteria) {
   if (!criteria.length) {
     return "";
@@ -2906,6 +3096,14 @@ function renderReleases() {
   const releases = values(state.release_packages).sort(byId);
   if (!releases.length) {
     renderIntoActiveTargets("[data-releases-view]", `<p class="empty-state">No release packages.</p>`);
+    return;
+  }
+  if (activeTeamView === "delivery") {
+    renderIntoActiveTargets("[data-releases-view]", `
+      <ul class="release-list compact-record-list">
+        ${releases.map((release) => renderCompactRelease(release)).join("")}
+      </ul>
+    `);
     return;
   }
   renderIntoActiveTargets("[data-releases-view]", `
@@ -2933,6 +3131,33 @@ function renderReleases() {
         .join("")}
     </ul>
   `);
+}
+
+function renderCompactRelease(release) {
+  const deliverables = (release.deliverable_ids || []).join(", ");
+  const lines = [];
+  if (release.release_branch) lines.push(`release ${release.release_branch}`);
+  if (release.canonical_branch) lines.push(`canonical ${release.canonical_branch}`);
+  if (release.published_commit_sha) lines.push(`commit ${release.published_commit_sha}`);
+  return `
+    <li class="record-item compact-record-card">
+      <details>
+        <summary class="compact-record-summary">
+          <span class="compact-record-main">
+            <strong>${escapeHtml(release.id)}</strong>
+            <span>Project ${escapeHtml(release.project_id)}${deliverables ? ` - ${escapeHtml(deliverables)}` : ""}</span>
+          </span>
+          <span class="state-pill ${escapeHtml(release.state)}">${escapeHtml(release.state)}</span>
+        </summary>
+        <div class="compact-record-body">
+          <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
+          ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
+          ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
+          ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+        </div>
+      </details>
+    </li>
+  `;
 }
 
 function renderTemplateSetup() {
@@ -3126,8 +3351,27 @@ function bindTimelineFilters() {
   document.querySelectorAll("[data-timeline-filter]").forEach((filter) => {
     filter.addEventListener("change", () => {
       syncTimelineFilterControls(filter.dataset.timelineFilter, filter.value);
+      timelinePage = 1;
       void loadTimeline();
     });
+  });
+}
+
+function bindTimelinePagination() {
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-timeline-page-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.timelinePageAction;
+    if (action === "next") {
+      timelinePage += 1;
+    } else if (action === "previous") {
+      timelinePage = Math.max(1, timelinePage - 1);
+    } else {
+      return;
+    }
+    renderTimeline();
   });
 }
 
@@ -3201,11 +3445,36 @@ async function loadTimeline() {
 }
 
 function normalizeTimeline(payload) {
+  const entries = Array.isArray(payload?.entries)
+    ? payload.entries.slice().sort(compareTimelineEntriesNewestFirst)
+    : [];
   return {
     ...emptyTimelineState(),
     ...(payload || {}),
-    entries: Array.isArray(payload?.entries) ? payload.entries : [],
+    entries,
   };
+}
+
+function compareTimelineEntriesNewestFirst(left, right) {
+  const leftTime = timelineEntrySortTime(left);
+  const rightTime = timelineEntrySortTime(right);
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  return (
+    String(left.category || "").localeCompare(String(right.category || "")) ||
+    String(left.type || "").localeCompare(String(right.type || "")) ||
+    String(left.id || "").localeCompare(String(right.id || ""))
+  );
+}
+
+function timelineEntrySortTime(entry) {
+  const timestamp = entry?.timestamp;
+  if (!timestamp) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
 function renderTimeline() {
@@ -3213,10 +3482,17 @@ function renderTimeline() {
     return;
   }
 
-  const entries = timelineState.entries || [];
+  const entries = (timelineState.entries || []).slice().sort(compareTimelineEntriesNewestFirst);
+  if (activeTeamView === "timeline") {
+    const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+    timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+  }
   const summaryParts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
+  }
+  if (activeTeamView === "timeline" && entries.length > timelinePageSize) {
+    summaryParts.push(`page ${timelinePage} of ${Math.ceil(entries.length / timelinePageSize)}`);
   }
   document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
     summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
@@ -3232,11 +3508,53 @@ function renderTimeline() {
     return;
   }
 
+  if (activeTeamView === "timeline") {
+    renderFocusedTimeline(entries);
+    return;
+  }
+
   renderIntoActiveTargets("[data-timeline-view]", `
     <ul class="timeline-list">
       ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
     </ul>
   `);
+}
+
+function renderFocusedTimeline(entries) {
+  const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+  timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+  const start = (timelinePage - 1) * timelinePageSize;
+  const pageEntries = entries.slice(start, start + timelinePageSize);
+  const pagination = entries.length > timelinePageSize
+    ? renderTimelinePagination(pageCount, start, pageEntries.length, entries.length)
+    : "";
+
+  renderIntoActiveTargets("[data-timeline-view]", `
+    ${pagination}
+    <ul class="timeline-list timeline-list-compact">
+      ${pageEntries.map((entry) => renderCompactTimelineEntry(entry)).join("")}
+    </ul>
+  `);
+}
+
+function renderTimelinePagination(pageCount, start, pageLength, total) {
+  const first = start + 1;
+  const last = start + pageLength;
+  return `
+    <div class="timeline-pagination" aria-label="Timeline pages">
+      <button
+        type="button"
+        data-timeline-page-action="previous"
+        ${timelinePage <= 1 ? "disabled" : ""}
+      >Previous</button>
+      <span>${first}-${last} of ${total}</span>
+      <button
+        type="button"
+        data-timeline-page-action="next"
+        ${timelinePage >= pageCount ? "disabled" : ""}
+      >Next</button>
+    </div>
+  `;
 }
 
 function selectedTemplate() {
@@ -3458,6 +3776,9 @@ function renderDeliveryBucket(status, rows) {
 }
 
 function renderDeliveryRow(row) {
+  if (activeTeamView === "delivery") {
+    return renderCompactDeliveryRow(row);
+  }
   const deliverable = row.deliverable;
   const task = row.task;
   const project = row.project;
@@ -3504,17 +3825,84 @@ function renderDeliveryRow(row) {
             </div>
           </div>
         </div>
-        <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
-        ${renderArtifactRefs(deliverable.artifact_refs || [])}
-        ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
-        ${
-          reviewIds.length
-            ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
-            : ""
-        }
-        ${releaseSummaries}
+        ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
       </div>
     </article>
+  `;
+}
+
+function renderCompactDeliveryRow(row) {
+  const deliverable = row.deliverable;
+  const task = row.task;
+  const project = row.project;
+  const team = row.team;
+  const reviewIds = row.reviewRequests.map((review) => review.id);
+  const releaseSummaries = renderReleaseSummary(row.releasePackages);
+  const gitPromotionIds = uniqueTextList([
+    ...(deliverable.git_refs?.promotion_record_ids || []),
+    ...row.releasePackages.flatMap((release) => release.git_promotion_record_ids || []),
+  ]);
+  const scope = [
+    team ? team.name || team.id : "Unknown team",
+    project ? project.name || project.id : "Unknown project",
+  ].join(" - ");
+  const reviewText = `${reviewIds.length} review${reviewIds.length === 1 ? "" : "s"}`;
+  const releaseText = `${row.releasePackages.length} release${row.releasePackages.length === 1 ? "" : "s"}`;
+  return `
+    <details class="delivery-row delivery-row-compact" data-deliverable-id="${escapeAttr(deliverable.id)}" data-status="${escapeAttr(row.effectiveStatus)}">
+      <summary class="delivery-row-summary">
+        <span class="delivery-summary-main">
+          <strong>${escapeHtml(deliverable.summary || deliverable.id)}</strong>
+          <span>${escapeHtml(deliverable.id)}${task ? ` - ${escapeHtml(task.title)}` : ""}</span>
+        </span>
+        <span class="delivery-summary-meta">
+          <span class="state-pill ${escapeAttr(row.effectiveStatus)}">${escapeHtml(row.effectiveStatus)}</span>
+          <span>${escapeHtml(reviewText)}</span>
+          <span>${escapeHtml(releaseText)}</span>
+        </span>
+      </summary>
+      <div class="delivery-row-body">
+        <div class="meta-line">${escapeHtml(scope)}</div>
+        <div class="delivery-detail-grid">
+          <div>
+            <div class="delivery-detail-label">Deliverable</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Task</div>
+            <div class="delivery-detail-value">
+              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(task.state)}` : "missing"}
+            </div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Producer</div>
+            <div class="delivery-detail-value">${escapeHtml(deliverable.producer_agent_id)}</div>
+          </div>
+          <div>
+            <div class="delivery-detail-label">Deliverable state</div>
+            <div class="delivery-detail-value">
+              <span class="state-pill ${escapeAttr(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
+            </div>
+          </div>
+        </div>
+        ${renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds })}
+      </div>
+    </details>
+  `;
+}
+
+function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitPromotionIds }) {
+  const deliverable = row.deliverable;
+  return `
+    <div class="delivery-row-meta">${escapeHtml(deliverable.summary)}</div>
+    ${renderArtifactRefs(deliverable.artifact_refs || [])}
+    ${renderGitRefs(deliverable.git_refs, gitPromotionIds)}
+    ${
+      reviewIds.length
+        ? `<div class="delivery-row-reviews"><div class="meta-line">Reviews: ${escapeHtml(reviewIds.join(", "))}</div>${renderReviewSummary(reviewIds, { interactive: true })}</div>`
+        : ""
+    }
+    ${releaseSummaries}
   `;
 }
 
@@ -3623,6 +4011,52 @@ function renderTimelineEntry(entry) {
         <p class="timeline-summary-text">${escapeHtml(entry.summary)}</p>
         ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
       </article>
+    </li>
+  `;
+}
+
+function renderCompactTimelineEntry(entry) {
+  const timestamp = entry.timestamp ? formatTimelineTimestamp(entry.timestamp) : "Timestamp unavailable";
+  const actorSubject = text(entry.actor_subject || entry.actor_agent_id);
+  const relatedIds = renderTimelineRelatedIds(entry);
+  const relatedAgents = [
+    entry.actor_agent_id ? `actor agent ${entry.actor_agent_id}` : actorSubject ? `actor ${actorSubject}` : null,
+    (entry.related_agent_ids || []).length ? `related agents ${entry.related_agent_ids.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const scope = [
+    entry.team_id ? `team ${entry.team_id}` : "",
+    entry.project_id ? `project ${entry.project_id}` : "",
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  return `
+    <li class="timeline-entry timeline-entry-compact">
+      <details>
+        <summary class="timeline-entry-summary">
+          <span class="timeline-summary-main">
+            <span class="timeline-timestamp">${escapeHtml(timestamp)}</span>
+            <span class="timeline-summary-text">${escapeHtml(entry.summary)}</span>
+          </span>
+          <span class="timeline-summary-pills">
+            <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.type))}</span>
+            <span class="state-pill ${escapeHtml(entry.status || "pending")}">${escapeHtml(entry.status || "pending")}</span>
+          </span>
+        </summary>
+        <div class="timeline-entry-details">
+          <div class="timeline-pills">
+            <span class="state-pill timeline-pill">${escapeHtml(humanizeToken(entry.category))}</span>
+            ${entry.attention_needed ? `<span class="state-pill blocked">attention needed</span>` : ""}
+          </div>
+          <div class="timeline-meta">
+            <div class="meta-line">${escapeHtml(actorSubject ? `Actor ${actorSubject}` : "Actor unknown")}</div>
+            ${scope ? `<div class="meta-line">${escapeHtml(scope)}</div>` : ""}
+            ${relatedAgents ? `<div class="meta-line">${escapeHtml(relatedAgents)}</div>` : ""}
+          </div>
+          ${relatedIds ? `<div class="timeline-related">${relatedIds}</div>` : ""}
+        </div>
+      </details>
     </li>
   `;
 }

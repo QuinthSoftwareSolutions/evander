@@ -73,7 +73,8 @@ def derive_team_timeline(
             attention_needed=attention_needed,
         )
     ]
-    filtered_entries.sort(key=_timeline_sort_key)
+    filtered_entries.sort(key=_timeline_tiebreaker_key)
+    filtered_entries.sort(key=_timeline_timestamp_sort_key, reverse=True)
 
     return {
         "revision": state.revision,
@@ -570,10 +571,12 @@ def _entry_agent_ids(entry: TimelineEntry) -> list[str]:
     return _unique_agent_ids(ids)
 
 
-def _timeline_sort_key(entry: TimelineEntry) -> tuple[int, datetime, str, str, str]:
-    missing = entry.timestamp is None
-    timestamp = _normalized_sort_timestamp(entry.timestamp)
-    return (1 if missing else 0, timestamp, entry.category, entry.type, entry.id)
+def _timeline_timestamp_sort_key(entry: TimelineEntry) -> datetime:
+    return _normalized_sort_timestamp(entry.timestamp)
+
+
+def _timeline_tiebreaker_key(entry: TimelineEntry) -> tuple[str, str, str]:
+    return (entry.category, entry.type, entry.id)
 
 
 def _normalized_sort_timestamp(timestamp: datetime | None) -> datetime:
