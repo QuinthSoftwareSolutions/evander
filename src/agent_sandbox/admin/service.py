@@ -16217,7 +16217,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 if provider == "discord" and "write" not in capabilities:
                     continue
-                if provider not in {"teams", "discord"}:
+                if provider == "email" and "write" not in capabilities:
+                    continue
+                if provider not in {"teams", "discord", "email"}:
                     continue
             elif purpose == "notification":
                 if provider not in {"teams", "discord", "email"}:
@@ -16225,7 +16227,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if "notify" not in capabilities:
                     continue
             elif purpose == "read-message":
-                if provider not in {"teams", "discord"}:
+                if provider not in {"teams", "discord", "email"}:
                     continue
                 if "read" not in capabilities:
                     continue

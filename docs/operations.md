@@ -1554,8 +1554,9 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
    send.
 3. If sending an email attachment, keep draft creation separate from actual send: use
    `email_create_draft_with_attachments` first, then `email_send_with_attachments` only after
-   `email_send_enabled: true` and any required MCP approval are present. The older
-   `email_send_approved_with_attachments` tool remains available for compatibility.
+   `email_send_enabled: true`. Pass the exact file-send approval as `request_id`; if the tool
+   invocation itself also requires MCP approval, pass that separate request as `approval_request_id`.
+   The older `email_send_approved_with_attachments` tool remains available for compatibility.
 4. For Discord and Teams, submit/approve the exact payload expected by `discord_post_file` or
    `teams_post_file`, including destination, message, and `artifact_ids`; then pass the approval
    `request_id` to the send tool.

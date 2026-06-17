@@ -25,6 +25,9 @@ material. Newer entries are added incrementally as changes land.
   approval, Gmail draft sends use the provider `drafts/send` endpoint, and
   trigger/query email reads do not advance durable Gmail/Graph cursors before
   workflow acknowledgement.
+- Blocked plain email sends for drafts with attachments, split email attachment
+  file-send approval IDs from generic MCP approval IDs, and exposed email targets
+  in generic communication workflow pickers.
 
 ## 2026-06-17 - Team Add-on Timeline UTC Sorting
 

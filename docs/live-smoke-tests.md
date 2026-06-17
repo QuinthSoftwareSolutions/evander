@@ -238,7 +238,8 @@ the same dedicated test destinations.
    as signed control-plane download links when the public base URL and link secret are configured.
 6. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
    `email_send_with_attachments` only if `email_send_enabled: true` is intentionally set
-   and any required MCP approval policy has been satisfied. The older
+   and the exact file-send approval is passed as `request_id`. If MCP tool approval is also
+   required, pass that separate approval as `approval_request_id`. The older
    `email_send_approved_with_attachments` compatibility tool can still be used for legacy smokes.
 7. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
 

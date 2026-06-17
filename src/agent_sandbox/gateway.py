@@ -1339,7 +1339,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise PolicyError("Email send recipients must match the recorded draft recipients.")
         if subject is not None and subject != snapshot.subject:
             raise PolicyError("Email send subject must match the recorded draft subject.")
-        if artifact_ids is not None and sorted(artifact_ids) != sorted(snapshot.attachment_ids):
+        if artifact_ids is None:
+            if snapshot.attachment_ids:
+                raise PolicyError(
+                    "Email draft has attachments; use email_send_with_attachments with "
+                    "matching artifact_ids."
+                )
+            return
+        if sorted(artifact_ids) != sorted(snapshot.attachment_ids):
             raise PolicyError("Email send attachments must match the recorded draft attachments.")
 
     def _mark_email_draft_sent(
@@ -9325,6 +9332,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         recipients: list[str],
         artifact_ids: list[str],
         subject: str | None = None,
+        request_id: str | None = None,
         approval_request_id: str | None = None,
     ) -> dict[str, Any]:
         args = {
@@ -9334,6 +9342,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "recipients": recipients,
             "artifact_ids": artifact_ids,
             "subject": subject,
+            "request_id": request_id,
             "approval_request_id": approval_request_id,
         }
         try:
@@ -9357,7 +9366,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 approval_payload["subject"] = subject
             approval = context.policy.require_communication_file_send_approval(
                 session,
-                request_id=approval_request_id,
+                request_id=request_id,
                 payload=approval_payload,
             )
             result = _send_email_draft(
@@ -9377,7 +9386,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     **_communication_target_audit_fields(
                         provider="email",
                         mailbox_id=mailbox_id,
-                        approval_request_id=approval_request_id,
+                        approval_request_id=request_id,
                         approval_decision=None if approval is None else approval.status.value,
                     ),
                     "artifacts": _artifact_audit_summaries(artifact_ids),
