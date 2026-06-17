@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Playwright VM Profile Repair
+
+- Fixed `bootstrap_playwright_vm.sh` so rerunning it removes only its managed
+  Playwright shell block instead of stripping unrelated `fi` lines from
+  `.profile`.
+- Added repair handling for profiles already damaged by the old Playwright
+  bootstrap rewrite.
+
 ## 2026-06-17 - Team Add-on First-Class Roles
 
 - Added first-class Team role records with role IDs, display names, project
