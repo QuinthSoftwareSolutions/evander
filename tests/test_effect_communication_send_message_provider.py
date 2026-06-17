@@ -36,6 +36,7 @@ def _execute(
     target_id: str,
     message: str = "Workflow completed.",
     thread_id: str | None = None,
+    subject: str | None = None,
 ) -> dict[str, object]:
     effect = CommunicationSendMessageEffectDefinition.model_validate(
         {
@@ -45,6 +46,7 @@ def _execute(
             "communication_target_id": target_id,
             "message": message,
             "thread_id": thread_id,
+            "subject": subject,
         }
     )
     provider = CommunicationSendMessageEffectProvider()
@@ -155,7 +157,7 @@ def test_communication_send_message_requires_write_capability(tmp_path: Path) ->
         _execute(project_dir=tmp_path, runtime=_runtime(tmp_path), target_id="teams-primary")
 
 
-def test_communication_send_message_rejects_email_targets(tmp_path: Path) -> None:
+def test_communication_send_message_sends_email_when_enabled(tmp_path: Path) -> None:
     _write_targets(
         tmp_path,
         [
@@ -169,5 +171,35 @@ def test_communication_send_message_rejects_email_targets(tmp_path: Path) -> Non
         ],
     )
 
-    with pytest.raises(ValueError, match="does not support communication target provider 'email'"):
+    runtime = _runtime(tmp_path, email_send_enabled=True)
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=runtime,
+        target_id="email-ops",
+        subject="Workflow update",
+    )
+
+    assert output["success"] is True
+    assert output["provider"] == "email"
+    assert output["status"] == "local_sent"
+    assert output["mailbox_id"] == "default"
+    assert output["recipients"] == ["operator@example.com"]
+    assert output["subject"] == "Workflow update"
+
+
+def test_communication_send_message_blocks_email_when_send_disabled(tmp_path: Path) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "email-ops",
+                "provider": "email",
+                "kind": "email",
+                "address": "operator@example.com",
+                "policy": {"capabilities": ["write"], "auth_profile_ref": "email.default"},
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="email send is disabled"):
         _execute(project_dir=tmp_path, runtime=_runtime(tmp_path), target_id="email-ops")

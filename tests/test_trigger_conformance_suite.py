@@ -10,8 +10,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.email.providers import EmailMessageSummary
+from agent_sandbox.config import GatewayConfig, MailboxConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.pr_feedback import AzureDevOpsFeedbackAdapter
 from agent_sandbox.models import (
     DiscordMessageEnvelope,
@@ -798,11 +797,51 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     )
 
 
-def test_conformance_email_new_message_acknowledges_after_publish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_conformance_email_new_message_acknowledges_after_publish(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True)
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="json_store",
+                account_identifier="ops@example.com",
+            )
+        ],
+    )
+    received_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    config.email_store_path.write_text(
+        json.dumps(
+            {
+                "msg-1": EmailMessage(
+                    message_id="msg-1",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="First",
+                    body_text="first",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json"),
+                "msg-2": EmailMessage(
+                    message_id="msg-2",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Second",
+                    body_text="second",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json"),
+            }
+        ),
+        encoding="utf-8",
+    )
     provider = EmailNewMessageTriggerProvider()
     provider.initialize(
         _trigger_adapter().validate_python(
@@ -816,56 +855,12 @@ def test_conformance_email_new_message_acknowledges_after_publish(
                 "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
             }
         ),
-        _build_runtime_context(runtime_dir, env={"GMAIL_ACCESS_TOKEN": "secret"}),
-    )
-
-    captured: dict[str, object] = {}
-
-    class _FakeGmailProvider:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def list_unread(
-            self, *, mailbox_id: str, folder: str, limit: int
-        ) -> list[EmailMessageSummary]:
-            _ = folder, limit
-            received_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
-            return [
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="msg-1",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=received_at,
-                    unread=True,
-                    body_snippet="first",
-                    metadata={},
-                ),
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="msg-2",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=received_at,
-                    unread=True,
-                    body_snippet="second",
-                    metadata={},
-                ),
-            ]
-
-    monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.email_new_message.GmailEmailProvider",
-        _FakeGmailProvider,
+        TriggerRuntimeContext(resolved_config=config, env={"GMAIL_ACCESS_TOKEN": "secret"}),
     )
 
     first_events = provider.poll()
     cursor_path = runtime_dir / "trigger-cursors-email.json"
 
-    assert captured["cursor_store"] is None
     assert [event.payload["message"]["message_id"] for event in first_events] == [
         "msg-1",
         "msg-2",
@@ -886,11 +881,75 @@ def test_conformance_email_new_message_acknowledges_after_publish(
     assert final_payload["email-gmail"]["recent_message_ids"] == ["msg-1", "msg-2"]
 
 
-def test_email_new_message_skips_messages_older_than_cursor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_email_new_message_skips_messages_older_than_cursor(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True)
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="json_store",
+                account_identifier="ops@example.com",
+            )
+        ],
+    )
+    cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    config.email_store_path.write_text(
+        json.dumps(
+            {
+                "old-unseen": EmailMessage(
+                    message_id="old-unseen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Old",
+                    body_text="old",
+                    unread=True,
+                    received_at=cursor_at - timedelta(minutes=1),
+                ).model_dump(mode="json"),
+                "equal-seen": EmailMessage(
+                    message_id="equal-seen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Seen",
+                    body_text="seen",
+                    unread=True,
+                    received_at=cursor_at,
+                ).model_dump(mode="json"),
+                "equal-unseen": EmailMessage(
+                    message_id="equal-unseen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Same timestamp",
+                    body_text="same timestamp",
+                    unread=True,
+                    received_at=cursor_at,
+                ).model_dump(mode="json"),
+                "newer": EmailMessage(
+                    message_id="newer",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="New",
+                    body_text="new",
+                    unread=True,
+                    received_at=cursor_at + timedelta(minutes=1),
+                ).model_dump(mode="json"),
+            }
+        ),
+        encoding="utf-8",
+    )
     provider = EmailNewMessageTriggerProvider()
     provider.initialize(
         _trigger_adapter().validate_python(
@@ -904,7 +963,7 @@ def test_email_new_message_skips_messages_older_than_cursor(
                 "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
             }
         ),
-        _build_runtime_context(runtime_dir, env={"GMAIL_ACCESS_TOKEN": "secret"}),
+        TriggerRuntimeContext(resolved_config=config, env={"GMAIL_ACCESS_TOKEN": "secret"}),
     )
     (runtime_dir / "trigger-cursors-email.json").write_text(
         json.dumps(
@@ -916,71 +975,6 @@ def test_email_new_message_skips_messages_older_than_cursor(
             }
         ),
         encoding="utf-8",
-    )
-
-    class _FakeGmailProvider:
-        def __init__(self, **_kwargs):
-            pass
-
-        def list_unread(
-            self, *, mailbox_id: str, folder: str, limit: int
-        ) -> list[EmailMessageSummary]:
-            _ = folder, limit
-            cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
-            return [
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="old-unseen",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=cursor_at - timedelta(minutes=1),
-                    unread=True,
-                    body_snippet="old",
-                    metadata={},
-                ),
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="equal-seen",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=cursor_at,
-                    unread=True,
-                    body_snippet="seen",
-                    metadata={},
-                ),
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="equal-unseen",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=cursor_at,
-                    unread=True,
-                    body_snippet="same timestamp",
-                    metadata={},
-                ),
-                EmailMessageSummary(
-                    mailbox_id=mailbox_id,
-                    provider="gmail",
-                    folder="inbox",
-                    message_id="newer",
-                    sender="sender@example.com",
-                    recipients=["ops@example.com"],
-                    received_at=cursor_at + timedelta(minutes=1),
-                    unread=True,
-                    body_snippet="new",
-                    metadata={},
-                ),
-            ]
-
-    monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.email_new_message.GmailEmailProvider",
-        _FakeGmailProvider,
     )
 
     events = provider.poll()

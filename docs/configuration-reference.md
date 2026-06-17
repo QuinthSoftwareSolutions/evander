@@ -202,7 +202,7 @@ Type-specific keys:
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
-| `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
+| `trigger:email:new-message` | `mailbox_ids` | `folder` |
 | `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
@@ -360,12 +360,8 @@ Example:
       "id": "mailbox-ops",
       "display_name": "Ops inbox",
       "type": "trigger:email:new-message",
-      "provider": "graph",
-      "account_identifier": "ops@example.com",
       "mailbox_ids": ["primary"],
-      "auth_secret_refs": {
-        "access_token": "GRAPH_ACCESS_TOKEN"
-      }
+      "folder": "inbox"
     },
     {
       "id": "repo-main",
@@ -755,17 +751,17 @@ when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
 
-`query:communication:messages` reads normalized message history from the local
-Teams or Discord inbox stores populated by the ingest workers. It requires a
-declared communication target with the `read` capability, supports Teams and
-Discord only, does not call live provider APIs, and returns normalized
-`messages` plus `next_cursor` so the workflow owns cursor persistence. The
-query does not advance or persist read cursors on the host.
+`query:communication:messages` reads normalized message history for declared
+communication targets with the `read` capability. Teams and Discord read from
+the local inbox stores populated by ingest workers. Email targets read unread
+messages through the configured mailbox provider selected by
+`policy.auth_profile_ref`. The query returns normalized `messages` plus
+`next_cursor` so the workflow owns cursor persistence.
 
 `trigger:communication:new-message` uses the same communication target store for inbound reads.
-Targets selected for this trigger must include `read`, must be Teams channel/chat or Discord
-channel targets, and are resolved for the trigger's `directory_path` before the provider polls the
-host-owned inbox stores.
+Targets selected for this trigger must include `read`, must be Teams channel/chat, Discord
+channel, or mailbox-backed email targets, and are resolved for the trigger's `directory_path`
+before the provider polls host-owned inbox stores or the configured email provider.
 
 `effect:notification:send` delivers through a declared communication target in
 the same directory-scoped SQLite store. The target must include the `notify`
@@ -773,6 +769,11 @@ capability. Teams and Discord targets post a status message; email targets creat
 a draft using `policy.auth_profile_ref` as the mailbox selector. Teams targets
 can address `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user
 as `user:<user-id-or-upn>`.
+
+`effect:communication:send-message` supports Teams, Discord, and email targets.
+Email targets create then send a provider draft through the mailbox selected by
+`policy.auth_profile_ref`; `email_send_enabled` must be true in the effective
+directory configuration.
 
 Effect schema envelope example:
 

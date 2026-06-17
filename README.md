@@ -1275,7 +1275,9 @@ helper fails instead of silently falling back to the branch tip.
   access tokens**.
 - Token values are never injected into guests, cloud-init payloads, or session manifests.
 - Email actions are **read + draft only by default**; sending remains disabled unless
-  `email_send_enabled: true` and the approval flow is used.
+  `email_send_enabled: true`. Use `email_send` for new send flows and gate it with
+  the existing MCP approval policy when human approval is required. The older
+  `email_send_approved` tool remains as a compatibility alias.
 
 Example snippet:
 
@@ -1332,7 +1334,8 @@ adapters perform provider API calls under the active session policy.
 - **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
   paths. Use `communication_stage_workspace_file` to stage an agent-created file from under
   `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,
-  `email_create_draft_with_attachments`, `email_send_approved_with_attachments`,
+  `email_create_draft_with_attachments`, `email_send_with_attachments`
+  (`email_send_approved_with_attachments` remains available for compatibility),
   Azure DevOps PR comment/reply/review tools, and Azure DevOps backlog comment/text tools.
   Teams sends inline image artifacts through Graph hosted content. Non-image Teams artifacts are
   posted as signed control-plane download links when `communication_artifact_public_base_url` and
@@ -1342,7 +1345,7 @@ adapters perform provider API calls under the active session policy.
 - **Approval behavior:** set `communication_file_require_approval_for_send: true` before enabling
   outbound file send. When that flag is true, each outbound file send must provide an approval
   request ID whose approved payload exactly matches the attempted provider, destination, message,
-  and artifact IDs. Email still also requires `email_send_enabled: true` before an approved send
+  and artifact IDs. Email still also requires `email_send_enabled: true` before a send
   can leave the draft state.
 - **Host-only provider credentials:** Discord bot tokens, Teams/Graph tokens, and Gmail OAuth
   tokens belong in host environment variables or systemd env files referenced by config. Do not

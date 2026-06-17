@@ -189,6 +189,12 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS: (
         "Create an email draft with staged communication file artifacts attached."
     ),
+    ToolName.EMAIL_SEND: (
+        "Send a host-recorded email draft through the configured email provider."
+    ),
+    ToolName.EMAIL_SEND_WITH_ATTACHMENTS: (
+        "Send a host-recorded email draft with staged communication file artifacts attached."
+    ),
     ToolName.APPROVAL_SUBMIT: (
         "Submit a human approval request for a guarded action the session wants reviewed."
     ),

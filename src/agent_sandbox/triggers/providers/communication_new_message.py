@@ -6,9 +6,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_sandbox.config import GatewayConfig, MailboxConfig
 from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
+from agent_sandbox.models import DraftMessage
+from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
+from agent_sandbox.repositories.records import JsonEmailRecordsRepository
+from agent_sandbox.runtime import _build_email_provider
+from agent_sandbox.storage import JsonStore
 from agent_sandbox.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
@@ -22,6 +28,7 @@ from agent_sandbox.services import (
     parse_teams_target,
     teams_target_from_message,
 )
+from agent_sandbox.messaging.notifications import _email_mailbox_id_from_auth_profile_ref
 from agent_sandbox.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
@@ -47,6 +54,7 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         self._targets_by_id: dict[str, CommunicationTargetDefinition] | None = None
         self._teams_targets_by_address: dict[str, list[str]] | None = None
         self._discord_targets_by_channel_id: dict[str, list[str]] | None = None
+        self._email_targets_by_mailbox_id: dict[str, list[str]] | None = None
         self._runtime_dir_path: Path | None = None
         self._directories_store_path: Path | None = None
 
@@ -159,6 +167,8 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         targets_by_id = config.by_id()
         teams_targets_by_address: dict[str, list[str]] = defaultdict(list)
         discord_targets_by_channel_id: dict[str, list[str]] = defaultdict(list)
+        email_targets_by_mailbox_id: dict[str, list[str]] = defaultdict(list)
+        configured_email_mailbox_ids = self._configured_email_mailbox_ids()
 
         for target_id in trigger.communication_target_ids:
             target = targets_by_id.get(target_id)
@@ -181,19 +191,31 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                 teams_targets_by_address[normalize_teams_target(target.address)].append(target.id)
             elif target.provider == "discord":
                 discord_targets_by_channel_id[_discord_channel_id(target.address)].append(target.id)
+            elif target.provider == "email":
+                mailbox_id = _email_mailbox_id_from_auth_profile_ref(target.policy.auth_profile_ref)
+                if mailbox_id not in configured_email_mailbox_ids:
+                    raise ValueError(
+                        "trigger:communication:new-message target "
+                        f"{target_id!r} references unknown email mailbox {mailbox_id!r}"
+                    )
+                email_targets_by_mailbox_id[mailbox_id].append(target.id)
             else:
                 raise ValueError(
                     "trigger:communication:new-message target "
-                    f"{target_id!r} uses provider {target.provider!r}; only teams and discord are supported"
+                    f"{target_id!r} uses provider {target.provider!r}; "
+                    "only teams, discord, and email are supported"
                 )
 
         self._targets_by_id = targets_by_id
         self._teams_targets_by_address = dict(teams_targets_by_address)
         self._discord_targets_by_channel_id = dict(discord_targets_by_channel_id)
+        self._email_targets_by_mailbox_id = dict(email_targets_by_mailbox_id)
 
     def _ensure_target_indexes(self) -> None:
         if self._targets_by_id is None or (
-            self._teams_targets_by_address is None and self._discord_targets_by_channel_id is None
+            self._teams_targets_by_address is None
+            and self._discord_targets_by_channel_id is None
+            and self._email_targets_by_mailbox_id is None
         ):
             self._load_target_indexes()
 
@@ -210,6 +232,9 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         )
         candidates.extend(
             self._collect_discord_candidates(trigger, cursor=cursor, recent_keys=recent_keys)
+        )
+        candidates.extend(
+            self._collect_email_candidates(trigger, cursor=cursor, recent_keys=recent_keys)
         )
         return candidates
 
@@ -286,6 +311,98 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                     )
                 )
         return candidates
+
+    def _collect_email_candidates(
+        self,
+        trigger: CommunicationNewMessageTriggerDefinition,
+        *,
+        cursor: datetime | None,
+        recent_keys: set[str],
+    ) -> list[_PendingCommunicationEvent]:
+        if not self._email_targets_by_mailbox_id:
+            return []
+
+        provider = self._email_provider()
+        candidates: list[_PendingCommunicationEvent] = []
+        for mailbox_id, target_ids in self._email_targets_by_mailbox_id.items():
+            for message in provider.list_unread(mailbox_id=mailbox_id, folder="inbox", limit=200):
+                if not _message_matches_filters(
+                    content=message.body_snippet,
+                    author_id=message.sender,
+                    trigger=trigger,
+                ):
+                    continue
+                occurred_at = message.received_at.astimezone(UTC)
+                for target_id in target_ids:
+                    target = self._targets_by_id.get(target_id) if self._targets_by_id else None
+                    target_address = target.address if target is not None else mailbox_id
+                    cursor_key = _cursor_key("email", target_id, message.message_id)
+                    if _message_is_behind_cursor(
+                        cursor,
+                        occurred_at=occurred_at,
+                        cursor_key=cursor_key,
+                        recent_keys=recent_keys,
+                    ):
+                        continue
+                    candidates.append(
+                        _PendingCommunicationEvent(
+                            occurred_at=occurred_at,
+                            sort_key=_candidate_sort_key("email", target_id, message.message_id),
+                            event=_build_event(
+                                trigger=trigger,
+                                provider="email",
+                                communication_target_id=target_id,
+                                message_id=message.message_id,
+                                thread_id=message.thread_id,
+                                content=message.body_snippet,
+                                author_id=message.sender,
+                                author_name=message.sender,
+                                target=target_address,
+                                occurred_at=occurred_at,
+                                metadata=dict(message.metadata),
+                            ),
+                            cursor_key=cursor_key,
+                        )
+                    )
+        return candidates
+
+    def _email_provider(self):
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        if admin_service is None and self.runtime_context is not None:
+            admin_service = self.runtime_context.metadata.get("admin_service")
+        runtime = getattr(admin_service, "runtime", None)
+        config = self._gateway_config()
+        if runtime is not None:
+            return _build_email_provider(config, runtime.emails, runtime.drafts, runtime.email_cursors)
+        return _build_email_provider(
+            config,
+            JsonEmailRecordsRepository(config.email_store_path),
+            JsonStore(config.draft_store_path, DraftMessage),
+            JsonEmailCursorRepository(config.email_cursor_store_path),
+        )
+
+    def _gateway_config(self) -> GatewayConfig:
+        if self.runtime_context is None:
+            raise RuntimeError("CommunicationNewMessageTriggerProvider has no runtime context")
+        provider_config = getattr(self.runtime_context, "provider_config", None)
+        if provider_config:
+            return GatewayConfig.model_validate(dict(provider_config))
+        resolved_config = getattr(self.runtime_context, "resolved_config", None)
+        model_dump = getattr(resolved_config, "model_dump", None)
+        if callable(model_dump):
+            return GatewayConfig.model_validate(model_dump(mode="json"))
+        return GatewayConfig.model_validate(vars(resolved_config))
+
+    def _configured_email_mailbox_ids(self) -> set[str]:
+        config = self._gateway_config()
+        mailbox_configs = config.email_mailboxes or [
+            MailboxConfig(
+                mailbox_id="default",
+                provider="json_store",
+                account_identifier="default",
+            )
+        ]
+        return {mailbox.mailbox_id for mailbox in mailbox_configs}
 
     def _collect_discord_candidates(
         self,

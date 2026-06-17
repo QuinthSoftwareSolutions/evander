@@ -237,8 +237,9 @@ the same dedicated test destinations.
    Teams test channel/chat. Image artifacts should render inline; non-image artifacts should appear
    as signed control-plane download links when the public base URL and link secret are configured.
 6. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
-   `email_send_approved_with_attachments` only if `email_send_enabled: true` is intentionally set
-   and the approval payload matches exactly.
+   `email_send_with_attachments` only if `email_send_enabled: true` is intentionally set
+   and any required MCP approval policy has been satisfied. The older
+   `email_send_approved_with_attachments` compatibility tool can still be used for legacy smokes.
 7. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
 
 ### Attachment audit checks

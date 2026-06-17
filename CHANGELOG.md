@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Email Send And Communication Integration
+
+- Implemented real email draft sending for JSON-store, Gmail, and Microsoft Graph
+  providers, with host-recorded draft snapshots validating mailbox, session,
+  recipients, subject, and attachment IDs before send.
+- Added neutral `email_send` and `email_send_with_attachments` MCP tools while
+  retaining the older approved-tool names as compatibility aliases.
+- Switched email triggers to configured mailbox provider definitions and added
+  email support to generic communication message query, trigger, and send flows.
+
 ## 2026-06-17 - Team Add-on Timeline UTC Sorting
 
 - Kept Team Add-on timeline rows in server order for legacy offset-naive ISO

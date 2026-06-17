@@ -1906,7 +1906,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start from new Discord messages that match the configured filters."
     ),
     "trigger:communication:new-message": (
-        "Start from new Teams or Discord messages on declared communication targets."
+        "Start from new Teams, Discord, or email messages on declared communication targets."
     ),
     "trigger:teams:new-message": (
         "Start from new Microsoft Teams messages that match the configured targets."
@@ -1915,7 +1915,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start from allowlisted one-on-one Microsoft Teams direct messages."
     ),
     "trigger:email:new-message": (
-        "Start from newly ingested email messages for the configured mailbox scope."
+        "Start from new messages in configured email mailboxes."
     ),
     "trigger:pull-request:new-feedback": (
         "Start when new pull-request feedback arrives from the configured provider."
@@ -2385,20 +2385,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:email:new-message",
         label="Email message",
         fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                required=True,
-                options=[
-                    _field_option("json_store", "JSON store"),
-                    _field_option("gmail", "Gmail"),
-                    _field_option("graph", "Microsoft Graph"),
-                ],
-            ),
-            _field("account_identifier", "Account identifier", "string", required=True),
             _field("mailbox_ids", "Mailbox IDs", "string_list", required=True),
-            _field("auth_secret_refs", "Auth secret refs", "json"),
+            _field("folder", "Folder", "string"),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -6700,7 +6688,7 @@ def _build_issue_session_manifest(
             [ToolName.EMAIL_LIST_UNREAD, ToolName.EMAIL_GET_MESSAGE, ToolName.EMAIL_CREATE_DRAFT]
         )
         if policy.email_send_enabled:
-            resolved_allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
+            resolved_allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
 
     metadata = {"issue_number": issue_number} if issue_number is not None else {}
     if _copilot_host_auth_enabled():

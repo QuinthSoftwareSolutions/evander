@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.email.gmail_provider import GmailEmailProvider
-from agent_sandbox.email.graph_provider import GraphEmailProvider
-from agent_sandbox.email.providers import EmailMessageSummary, JsonEmailProvider
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.models import DraftMessage
+from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
 from agent_sandbox.repositories.records import JsonEmailRecordsRepository
+from agent_sandbox.runtime import _build_email_provider
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import EmailNewMessageTriggerDefinition
@@ -36,7 +37,7 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         candidates: list[EmailMessageSummary] = []
         for mailbox_id in trigger.mailbox_ids:
             candidates.extend(
-                provider.list_unread(mailbox_id=mailbox_id, folder="inbox", limit=200)
+                provider.list_unread(mailbox_id=mailbox_id, folder=trigger.folder, limit=200)
             )
 
         candidates.sort(key=lambda item: (item.received_at, item.message_id))
@@ -95,34 +96,33 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         return TriggerCursorStore(self._runtime_dir() / "trigger-cursors-email.json")
 
     def _build_provider(self, trigger: EmailNewMessageTriggerDefinition):
-        if trigger.provider == "json_store":
-            config = self.runtime_context.resolved_config
-            return JsonEmailProvider(
-                JsonEmailRecordsRepository(config.email_store_path),
-                JsonStore(config.draft_store_path, DraftMessage),
-            )
+        if self.runtime_context is None:
+            raise RuntimeError("EmailNewMessageTriggerProvider has no runtime context")
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        if admin_service is None:
+            admin_service = self.runtime_context.metadata.get("admin_service")
+        runtime = getattr(admin_service, "runtime", None)
+        config = self._gateway_config()
+        if runtime is not None:
+            return _build_email_provider(config, runtime.emails, runtime.drafts, runtime.email_cursors)
+        return _build_email_provider(
+            config,
+            JsonEmailRecordsRepository(config.email_store_path),
+            JsonStore(config.draft_store_path, DraftMessage),
+            JsonEmailCursorRepository(config.email_cursor_store_path),
+        )
 
-        auth_secret_refs = {
-            key: self.runtime_context.resolve_secret(value) or value
-            for key, value in trigger.auth_secret_refs.items()
-        }
-        if trigger.provider == "gmail":
-            return GmailEmailProvider(
-                account_identifier=trigger.account_identifier,
-                folder_mapping={},
-                auth_secret_refs=auth_secret_refs,
-                timeout_seconds=self.runtime_context.resolved_config.email_provider_timeout_seconds,
-                cursor_store=None,
-            )
-        if trigger.provider == "graph":
-            return GraphEmailProvider(
-                account_identifier=trigger.account_identifier,
-                folder_mapping={},
-                auth_secret_refs=auth_secret_refs,
-                timeout_seconds=self.runtime_context.resolved_config.email_provider_timeout_seconds,
-                cursor_store=None,
-            )
-        raise RuntimeError(f"Unsupported email provider: {trigger.provider!r}")
+    def _gateway_config(self) -> GatewayConfig:
+        if self.runtime_context is None:
+            raise RuntimeError("EmailNewMessageTriggerProvider has no runtime context")
+        provider_config = getattr(self.runtime_context, "provider_config", None)
+        if provider_config:
+            return GatewayConfig.model_validate(dict(provider_config))
+        resolved_config = getattr(self.runtime_context, "resolved_config", None)
+        model_dump = getattr(resolved_config, "model_dump", None)
+        if callable(model_dump):
+            return GatewayConfig.model_validate(model_dump(mode="json"))
+        return GatewayConfig.model_validate(vars(resolved_config))
 
 
 def _parse_dt(value: object) -> datetime | None:

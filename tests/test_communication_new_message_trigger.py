@@ -14,7 +14,7 @@ from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage
 from agent_sandbox.triggers.providers.communication_new_message import (
     CommunicationNewMessageTriggerProvider,
 )
@@ -188,6 +188,74 @@ def test_communication_trigger_polls_teams_and_discord_and_acknowledges_same_tim
 
     provider.acknowledge_published_event(second[0])
     assert provider.poll() == []
+
+
+def test_communication_trigger_polls_email_target(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    runtime_dir = context.resolved_config.runtime_dir
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "email-ops",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "operator@example.com",
+                    "policy": {
+                        "capabilities": ["read"],
+                        "auth_profile_ref": "email.default",
+                    },
+                }
+            ]
+        },
+    )
+    received_at = datetime(2026, 4, 9, 10, 0, tzinfo=UTC)
+    context.resolved_config.email_store_path.write_text(
+        json.dumps(
+            {
+                "email-msg-1": EmailMessage(
+                    message_id="email-msg-1",
+                    mailbox_id="default",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["operator@example.com"],
+                    subject="Status",
+                    body_text="hello from email",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provider = CommunicationNewMessageTriggerProvider()
+    provider.initialize(_trigger_definition(target_ids=["email-ops"]), context)
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == [
+        "comm-trigger:email:email-ops:email-msg-1:2026-04-09T10:00:00Z"
+    ]
+    event = events[0]
+    assert event.payload["provider"] == "email"
+    assert event.payload["communication_target_id"] == "email-ops"
+    assert event.payload["message_id"] == "email-msg-1"
+    assert event.payload["content"] == "hello from email"
+    assert event.payload["author_id"] == "sender@example.com"
+    assert event.payload["target"] == "operator@example.com"
+
+    provider.acknowledge_published_event(event)
+    cursor_state = _read_cursor_state(runtime_dir)
+    assert cursor_state["comm-trigger"]["recent_message_ids"] == [
+        "email:email-ops:email-msg-1"
+    ]
 
 
 def test_communication_trigger_matches_teams_chat_and_bare_discord_channel_targets(

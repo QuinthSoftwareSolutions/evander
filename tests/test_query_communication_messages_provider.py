@@ -14,7 +14,7 @@ from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 from agent_sandbox.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
@@ -524,6 +524,47 @@ def test_query_communication_messages_rejects_discord_thread_id(tmp_path: Path) 
         )
 
 
+def test_query_communication_messages_reads_email_target(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "email-ops",
+                "provider": "email",
+                "kind": "email",
+                "address": "operator@example.com",
+                "policy": {"capabilities": ["read"], "auth_profile_ref": "email.default"},
+            }
+        ],
+    )
+    runtime.emails.put(
+        "email-msg-1",
+        EmailMessage(
+            message_id="email-msg-1",
+            mailbox_id="default",
+            provider="json_store",
+            folder="inbox",
+            sender="sender@example.com",
+            recipients=["operator@example.com"],
+            subject="Status",
+            body_text="Email body",
+            unread=True,
+            received_at=datetime(2026, 3, 21, 0, 0, 1, tzinfo=UTC),
+        ),
+    )
+
+    result = _query(runtime=runtime, communication_target_id="email-ops")
+
+    assert result["success"] is True
+    assert result["provider"] == "email"
+    assert result["target_type"] == "email"
+    assert result["messages"][0]["message_id"] == "email-msg-1"
+    assert result["messages"][0]["mailbox_id"] == "default"
+    assert result["messages"][0]["author_id"] == "sender@example.com"
+    assert result["messages"][0]["content"] == "Email body"
+
+
 @pytest.mark.parametrize(
     ("targets", "communication_target_id", "message"),
     [
@@ -540,19 +581,6 @@ def test_query_communication_messages_rejects_discord_thread_id(tmp_path: Path) 
             ],
             "teams-primary",
             "communication target 'teams-primary' does not allow read capability",
-        ),
-        (
-            [
-                {
-                    "id": "email-ops",
-                    "provider": "email",
-                    "kind": "email",
-                    "address": "operator@example.com",
-                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.ops"},
-                }
-            ],
-            "email-ops",
-            "does not support communication target provider 'email'",
         ),
     ],
 )

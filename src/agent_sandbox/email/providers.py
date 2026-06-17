@@ -65,6 +65,16 @@ class EmailDraft(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EmailSendResult(BaseModel):
+    status: str
+    draft_id: str
+    mailbox_id: str
+    provider: str
+    message_id: str | None = None
+    sent_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EmailProvider(Protocol):
     def list_unread(
         self, mailbox_id: str, folder: str, limit: int
@@ -89,6 +99,8 @@ class EmailProvider(Protocol):
         recipients: list[str],
         attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft: ...
+
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult: ...
 
 
 class MultiMailboxEmailProvider:
@@ -144,6 +156,10 @@ class MultiMailboxEmailProvider:
             attachments=attachments,
         )
 
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.send_draft(mailbox_id=mailbox_id, draft_id=draft_id)
+
 
 class JsonEmailProvider:
     provider_name = "json_store"
@@ -197,15 +213,18 @@ class JsonEmailProvider:
         attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
         now = datetime.now(UTC)
+        draft_id = f"draft_{int(now.timestamp())}"
         draft = DraftMessage(
-            draft_id=f"draft_{int(now.timestamp())}",
+            draft_id=draft_id,
             mailbox_id=mailbox_id,
             provider=self.provider_name,
+            provider_draft_id=draft_id,
             thread_or_message_id=thread_or_message_id,
             subject=subject,
             body=body,
             recipients=recipients,
             created_at=now,
+            metadata={"attachment_count": len(attachments or [])},
         )
         self.draft_store.put(draft.draft_id, draft)
         return EmailDraft(
@@ -217,7 +236,40 @@ class JsonEmailProvider:
             body=draft.body,
             recipients=draft.recipients,
             created_at=draft.created_at,
-            metadata={"attachment_count": len(attachments or [])},
+            metadata=dict(draft.metadata),
+        )
+
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult:
+        sent_at = datetime.now(UTC)
+        provider_message_id = f"sent_{draft_id}"
+
+        def updater(items: dict[str, DraftMessage]) -> DraftMessage:
+            draft = items.get(draft_id)
+            if draft is None or draft.mailbox_id != mailbox_id:
+                raise KeyError(f"Unknown draft for mailbox {mailbox_id}: {draft_id}")
+            updated = draft.model_copy(
+                update={
+                    "sent_at": sent_at,
+                    "send_status": "local_sent",
+                    "provider_message_id": provider_message_id,
+                    "metadata": {
+                        **draft.metadata,
+                        "local_send": True,
+                    },
+                }
+            )
+            items[draft_id] = updated
+            return updated
+
+        draft = self.draft_store.update_all(updater)
+        return EmailSendResult(
+            status="local_sent",
+            draft_id=draft.draft_id,
+            mailbox_id=draft.mailbox_id,
+            provider=draft.provider,
+            message_id=provider_message_id,
+            sent_at=sent_at,
+            metadata={"local_send": True},
         )
 
     @staticmethod

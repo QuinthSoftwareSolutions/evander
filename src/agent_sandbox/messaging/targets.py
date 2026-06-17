@@ -470,10 +470,11 @@ def validate_communication_new_message_trigger_targets(
                 "trigger:communication:new-message target "
                 f"{target_id!r} is not defined for directory {trigger.directory_path or 'root'!r}"
             )
-        if target.provider not in {"teams", "discord"}:
+        if target.provider not in {"teams", "discord", "email"}:
             raise ValueError(
                 "trigger:communication:new-message target "
-                f"{target_id!r} uses provider {target.provider!r}; only teams and discord are supported"
+                f"{target_id!r} uses provider {target.provider!r}; "
+                "only teams, discord, and email are supported"
             )
         if target.provider == "teams":
             parsed_target = parse_teams_target(target.address)

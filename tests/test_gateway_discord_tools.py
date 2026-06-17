@@ -2265,6 +2265,95 @@ def test_email_send_approved_is_blocked_when_send_disabled(tmp_path: Path) -> No
         )
 
 
+def test_email_send_sends_recorded_draft(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+    result = call_tool(
+        server,
+        "email_send",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "draft_id": draft["draft_id"],
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    assert result["status"] == "local_sent"
+    assert result["draft_id"] == draft["draft_id"]
+    assert result["mailbox_id"] == "primary"
+    snapshot = context.drafts.get(draft["draft_id"])
+    assert snapshot is not None
+    assert snapshot.send_status == "local_sent"
+    assert snapshot.sent_at is not None
+
+
+def test_email_send_rejects_recipient_mismatch(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com", "other@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    with pytest.raises(ToolError, match="recipients must match"):
+        asyncio.run(
+            server.call_tool(
+                "email_send",
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "draft_id": draft["draft_id"],
+                    "subject": "Status",
+                    "recipients": ["other@example.com"],
+                },
+            )
+        )
+
+
 def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

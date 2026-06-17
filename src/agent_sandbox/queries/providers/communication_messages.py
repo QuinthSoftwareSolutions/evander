@@ -6,20 +6,29 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
+from agent_sandbox.config import GatewayConfig, MailboxConfig
 from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
-from agent_sandbox.messaging.notifications import _require_target_capability
+from agent_sandbox.messaging.notifications import (
+    _email_mailbox_id_from_auth_profile_ref,
+    _require_target_capability,
+)
 from agent_sandbox.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.models import DiscordMessageEnvelope, DraftMessage
+from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
+from agent_sandbox.repositories.records import JsonEmailRecordsRepository
+from agent_sandbox.runtime import _build_email_provider
 from agent_sandbox.services import (
     normalize_teams_target,
     parse_teams_target,
     teams_target_from_message,
 )
+from agent_sandbox.storage import JsonStore
 
 from .base import QueryProviderBase
 
@@ -47,7 +56,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
             communication_target_id=communication_target_id,
         )
 
-        if target.provider not in {"teams", "discord"}:
+        if target.provider not in {"teams", "discord", "email"}:
             raise ValueError(
                 f"{self.NODE_TYPE} does not support communication target provider {target.provider!r}"
             )
@@ -75,13 +84,22 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
                 before_cursor=before_cursor,
                 thread_id=thread_id,
             )
-        else:
+        elif target.provider == "discord":
             result = self._discord_messages(
                 runtime_dir=runtime_dir,
                 target=target,
                 limit=limit,
                 cursor=cursor,
                 before_cursor=before_cursor,
+            )
+        else:
+            result = self._email_messages(
+                directory_path=directory_path,
+                target=target,
+                limit=limit,
+                cursor=cursor,
+                before_cursor=before_cursor,
+                thread_id=thread_id,
             )
 
         return {
@@ -453,6 +471,239 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         else:
             created_at = created_at.astimezone(UTC)
         return created_at, message.message_id
+
+    def _email_messages(
+        self,
+        *,
+        directory_path: str,
+        target: CommunicationTargetDefinition,
+        limit: int | None,
+        cursor: str | None,
+        before_cursor: str | None,
+        thread_id: str | None,
+    ) -> dict[str, Any]:
+        mailbox_id = self._email_mailbox_id(target=target, directory_path=directory_path)
+        provider = self._email_provider(directory_path=directory_path)
+        candidates = provider.list_unread(
+            mailbox_id=mailbox_id,
+            folder="inbox",
+            limit=max(limit or self.DEFAULT_LIMIT, self.MAX_LIMIT),
+        )
+        if thread_id is not None:
+            candidates = [
+                message
+                for message in candidates
+                if self._normalize_optional_string(message.thread_id) == thread_id
+            ]
+        paged_messages = self._page_email_messages(
+            messages=candidates,
+            limit=limit,
+            cursor=cursor,
+            before_cursor=before_cursor,
+        )
+        target_address = self._normalize_optional_string(target.address) or mailbox_id
+        return {
+            "target": target_address,
+            "target_type": "email",
+            "messages": [
+                self._email_message_payload(message, target_address=target_address)
+                for message in paged_messages
+            ],
+            "count": len(paged_messages),
+            "next_cursor": self._email_next_cursor(
+                messages=paged_messages,
+                cursor=cursor,
+                before_cursor=before_cursor,
+            ),
+        }
+
+    def _page_email_messages(
+        self,
+        *,
+        messages: Sequence[EmailMessageSummary],
+        limit: int | None,
+        cursor: str | None,
+        before_cursor: str | None,
+    ) -> list[EmailMessageSummary]:
+        ordered = sorted(messages, key=self._email_message_sort_key)
+        if cursor is not None:
+            cursor_key = self._parse_email_cursor(cursor, field_name="cursor")
+            ordered = [
+                message
+                for message in ordered
+                if self._email_message_is_after_cursor(message, cursor_key)
+            ]
+            if limit is not None:
+                ordered = ordered[:limit]
+            return ordered
+
+        if before_cursor is not None:
+            before_key = self._parse_email_cursor(before_cursor, field_name="before_cursor")
+            ordered = [
+                message
+                for message in ordered
+                if self._email_message_is_before_cursor(message, before_key)
+            ]
+            if limit is not None:
+                ordered = ordered[-limit:]
+            return ordered
+
+        if limit is not None:
+            ordered = ordered[:limit]
+        return ordered
+
+    def _email_next_cursor(
+        self,
+        *,
+        messages: Sequence[EmailMessageSummary],
+        cursor: str | None,
+        before_cursor: str | None,
+    ) -> str | None:
+        if messages:
+            return self._email_message_cursor(messages[-1])
+        return before_cursor if before_cursor is not None else cursor
+
+    def _email_message_payload(
+        self,
+        message: EmailMessageSummary,
+        *,
+        target_address: str,
+    ) -> dict[str, Any]:
+        created_at = message.received_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return {
+            "message_id": message.message_id,
+            "cursor": self._email_message_cursor(message),
+            "created_at": created_at,
+            "author_id": message.sender,
+            "author_name": message.sender,
+            "content": message.body_snippet,
+            "thread_id": self._normalize_optional_string(message.thread_id),
+            "metadata": dict(message.metadata),
+            "channel_target": target_address,
+            "target": target_address,
+            "target_type": "email",
+            "team_id": "",
+            "channel_id": message.mailbox_id,
+            "chat_id": None,
+            "mailbox_id": message.mailbox_id,
+            "email_provider": message.provider,
+            "sender": message.sender,
+            "recipients": list(message.recipients),
+        }
+
+    @staticmethod
+    def _email_message_cursor(message: EmailMessageSummary) -> str:
+        received_at = message.received_at
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=UTC)
+        else:
+            received_at = received_at.astimezone(UTC)
+        timestamp = received_at.isoformat().replace("+00:00", "Z")
+        return f"{timestamp}|{quote(message.message_id, safe='')}"
+
+    def _parse_email_cursor(self, value: str, *, field_name: str) -> tuple[datetime, str | None]:
+        text = self._normalize_required_string(value, field_name=field_name)
+        timestamp_text, separator, encoded_message_id = text.partition("|")
+        cursor_dt = self._parse_timestamp_cursor(timestamp_text, field_name=field_name)
+        if not separator:
+            return cursor_dt, None
+        message_id = unquote(encoded_message_id)
+        if not message_id:
+            raise ValueError(
+                f"{self.NODE_TYPE} {field_name} must include a non-empty email message id"
+            )
+        return cursor_dt, message_id
+
+    @classmethod
+    def _email_message_is_after_cursor(
+        cls,
+        message: EmailMessageSummary,
+        cursor_key: tuple[datetime, str | None],
+    ) -> bool:
+        cursor_dt, cursor_message_id = cursor_key
+        message_key = cls._email_message_sort_key(message)
+        if cursor_message_id is None:
+            return message_key[0] > cursor_dt
+        return message_key > (cursor_dt, cursor_message_id)
+
+    @classmethod
+    def _email_message_is_before_cursor(
+        cls,
+        message: EmailMessageSummary,
+        cursor_key: tuple[datetime, str | None],
+    ) -> bool:
+        cursor_dt, cursor_message_id = cursor_key
+        message_key = cls._email_message_sort_key(message)
+        if cursor_message_id is None:
+            return message_key[0] < cursor_dt
+        return message_key < (cursor_dt, cursor_message_id)
+
+    @staticmethod
+    def _email_message_sort_key(message: EmailMessageSummary) -> tuple[datetime, str]:
+        received_at = message.received_at
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=UTC)
+        else:
+            received_at = received_at.astimezone(UTC)
+        return received_at, message.message_id
+
+    def _email_provider(self, *, directory_path: str):
+        admin_service = getattr(self._context(), "admin_service", None)
+        runtime = getattr(admin_service, "runtime", None)
+        config = self._gateway_config(directory_path=directory_path)
+        if runtime is not None:
+            return _build_email_provider(config, runtime.emails, runtime.drafts, runtime.email_cursors)
+        return _build_email_provider(
+            config,
+            JsonEmailRecordsRepository(config.email_store_path),
+            JsonStore(config.draft_store_path, DraftMessage),
+            JsonEmailCursorRepository(config.email_cursor_store_path),
+        )
+
+    def _gateway_config(self, *, directory_path: str) -> GatewayConfig:
+        context = self._context()
+        admin_service = getattr(context, "admin_service", None)
+        runtime = getattr(admin_service, "runtime", None)
+        provider_config = getattr(runtime, "provider_config", None)
+        resolve_for_directory = getattr(provider_config, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            return resolve_for_directory(directory_path)
+
+        resolver = getattr(context, "provider_config_resolver", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            return resolve_for_directory(directory_path)
+
+        raw_provider_config = getattr(context, "provider_config", None)
+        if raw_provider_config:
+            return GatewayConfig.model_validate(dict(raw_provider_config))
+        resolved_config = getattr(context, "resolved_config", None)
+        model_dump = getattr(resolved_config, "model_dump", None)
+        if callable(model_dump):
+            return GatewayConfig.model_validate(model_dump(mode="json"))
+        return GatewayConfig.model_validate(vars(resolved_config))
+
+    def _email_mailbox_id(
+        self,
+        *,
+        target: CommunicationTargetDefinition,
+        directory_path: str,
+    ) -> str:
+        mailbox_id = _email_mailbox_id_from_auth_profile_ref(target.policy.auth_profile_ref)
+        mailbox_configs = self._gateway_config(directory_path=directory_path).email_mailboxes or [
+            MailboxConfig(
+                mailbox_id="default",
+                provider="json_store",
+                account_identifier="default",
+            )
+        ]
+        mailbox_ids = {mailbox.mailbox_id for mailbox in mailbox_configs}
+        if mailbox_id not in mailbox_ids:
+            raise ValueError(
+                f"email communication target {target.id!r} references unknown mailbox "
+                f"{mailbox_id!r}"
+            )
+        return mailbox_id
 
     def _parse_timestamp_cursor(self, value: str, *, field_name: str) -> datetime:
         text = self._normalize_required_string(value, field_name=field_name)
