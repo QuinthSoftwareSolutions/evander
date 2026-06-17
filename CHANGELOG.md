@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Release And Revision Hardening
+
+- Allowed artifact-only Team release packages to be created without project Git
+  configuration, leaving release/canonical branches unset and emitting no Git
+  promotions.
+- Required `expected_revision` on Team Add-on Admin API write routes while
+  keeping workflow effects able to omit it for single-writer runtime steps.
+- Clarified Team cost caps as estimated operational wake guards and surfaced the
+  estimate language in Team UI copy.
+
 ## 2026-06-17 - Team Add-on Focused Tab Follow-Ups
 
 - Added task-status filters to the focused Planning tab, defaulting to current

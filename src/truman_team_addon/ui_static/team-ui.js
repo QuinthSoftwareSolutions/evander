@@ -142,7 +142,7 @@ const fieldTooltips = {
   "setup-template-form:manager_agent_id": "Persistent manager agent ID for this team. Agents in multiple projects can report to this shared manager.",
   "setup-template-form:manager_session_id": "Session ID used when the manager agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
-  "setup-template-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
+  "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
   "setup-template-form:project_id": "Immutable identifier for the new project. It is used as a prefix for template-created records.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
   "setup-template-form:project_lead_existing_agent_id": "Copy defaults from an existing project lead while creating a distinct new project-lead agent.",
@@ -167,7 +167,7 @@ const fieldTooltips = {
   "create-team-form:manager_role_id": "Optional role record ID for the manager role. Leave blank to let the backend derive one.",
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
-  "create-team-form:max_cost_usd": "Optional lifetime USD cap for this team. Team wakes stop when accrued cost reaches the cap.",
+  "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
 
   "create-project-form:id": "Immutable project identifier. The UI suggests one from the name, but you can edit it before creation.",
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
@@ -249,7 +249,7 @@ const fieldTooltips = {
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
-  "edit:team:max_cost_usd": "Set or clear the lifetime USD cap that suspends future Team wakes when reached.",
+  "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
@@ -1097,10 +1097,10 @@ function renderTeamCostCounter(teamId) {
   const cost = teamCostForTeam(teamId);
   if (!cost) {
     return costState.error
-      ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
+      ? renderCostCounter(null, { label: "Estimated team cost", compact: false, error: costState.error })
       : "";
   }
-  return renderCostCounter(cost, { label: "Team cost", compact: false });
+  return renderCostCounter(cost, { label: "Estimated team cost", compact: false });
 }
 
 function teamCostForTeam(teamId) {
@@ -1113,7 +1113,7 @@ function renderTeamCostBlockedPill(teamId) {
     return "";
   }
   return `
-    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the cap is raised or cleared.">
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the estimated cap is raised or cleared.">
       cost blocked
     </span>
   `;
@@ -1126,10 +1126,12 @@ function renderTeamCostBlockedNotice(teamId) {
   }
   const maxCost = numberOrNull(cost.max_cost_usd);
   const capLabel = maxCost === null ? "configured cap" : formatUsd(maxCost);
+  const coverage = text(cost.coverage_status || costState.coverage_status);
+  const coverageNote = coverage && coverage !== "complete" ? " Cost coverage is partial." : "";
   return `
     <div class="team-cost-blocked-notice" role="status">
-      <strong>Blocked: cost cap reached</strong>
-      <span>Team wakes are suspended until the cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} used of ${escapeHtml(capLabel)} lifetime cap.</span>
+      <strong>Blocked: estimated cost cap reached</strong>
+      <span>Team wakes are suspended until the estimated cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} lifetime cap.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -1139,7 +1141,7 @@ function renderProjectCostCounter(projectId) {
   if (!cost) {
     return "";
   }
-  return renderCostCounter(cost, { label: "Project cost", compact: true });
+  return renderCostCounter(cost, { label: "Estimated project cost", compact: true });
 }
 
 function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
@@ -1164,7 +1166,7 @@ function renderCostCounter(cost, { label, compact = false, error = "" } = {}) {
   if (maxCost !== null) {
     parts.push(
       limitReached
-        ? `limit reached ${formatUsd(maxCost)}`
+        ? `estimated limit reached ${formatUsd(maxCost)}`
         : `${formatUsd(cost.remaining_cost_usd)} remaining`,
     );
   }
@@ -5232,7 +5234,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
-      ${numberField("Max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
+      ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }

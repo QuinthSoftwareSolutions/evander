@@ -406,7 +406,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'fetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
-    assert "Blocked: cost cap reached" in script.text
+    assert "Blocked: estimated cost cap reached" in script.text
     assert "renderProjectCostCounter" in script.text
     assert "renderAgentInboxHeaderIndicators" in script.text
     assert "renderAgentInboxIndicatorIcon" in script.text
@@ -803,6 +803,7 @@ def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path:
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -813,9 +814,10 @@ def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path:
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "expected_revision": 1,
         },
     )
-    _post_backend_role(client)
+    _post_backend_role(client, expected_revision=2)
     client.post(
         "/api/addons/team-addon/agents",
         json={
@@ -825,6 +827,7 @@ def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path:
             "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "expected_revision": 3,
         },
     )
 
@@ -837,6 +840,7 @@ def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path:
             "priority": 10,
             "title": "Build backend",
             "description": "Implement the backend task.",
+            "expected_revision": 4,
         },
     )
 
@@ -1299,6 +1303,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "manager_session_id": "session-manager",
             "operator_communication_target_id": "ops-channel",
             "max_cost_usd": 10.5,
+            "expected_revision": 0,
         },
     )
     assert response.status_code == 201
@@ -1310,7 +1315,11 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"operator_communication_target_id": "ops-channel-2", "max_cost_usd": 12.25},
+        json={
+            "operator_communication_target_id": "ops-channel-2",
+            "max_cost_usd": 12.25,
+            "expected_revision": 1,
+        },
     )
     assert response.status_code == 200
     assert (
@@ -1321,7 +1330,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"max_cost_usd": None},
+        json={"max_cost_usd": None, "expected_revision": 2},
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["max_cost_usd"] is None
@@ -1335,6 +1344,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
             "git": {"host_repo_path": "/srv/repo", "bare_repo_name": "repo.git"},
+            "expected_revision": 3,
         },
     )
     assert response.status_code == 201
@@ -1347,7 +1357,8 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "host_repo_path": "/srv/repo",
                 "bare_repo_path": "/srv/bare/repo.git",
                 "base_branch": "develop",
-            }
+            },
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 200
@@ -1369,6 +1380,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "bare_repo_name": "a.git",
                 "bare_repo_path": "/srv/b.git",
             },
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 400
@@ -1384,6 +1396,7 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -1394,6 +1407,7 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "expected_revision": 1,
         },
     )
 
@@ -1406,6 +1420,7 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
             "message": "Ask the lead for a status report.",
             "source": "discord",
             "source_message_id": "discord-msg-1",
+            "expected_revision": 2,
         },
     )
 
@@ -1432,6 +1447,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -1442,6 +1458,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "expected_revision": 1,
         },
     )
     client.post(
@@ -1452,9 +1469,10 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "name": "Other Project",
             "lead_agent_id": "other-lead",
             "lead_session_id": "session-other-lead",
+            "expected_revision": 2,
         },
     )
-    _post_backend_role(client)
+    _post_backend_role(client, expected_revision=3)
     client.post(
         "/api/addons/team-addon/agents",
         json={
@@ -1464,6 +1482,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "expected_revision": 4,
         },
     )
 
@@ -1479,6 +1498,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
                 "title": "Parent task",
                 "description": "Coordinating task.",
                 "created_by_agent_id": "lead",
+                "expected_revision": 5,
             },
         ).status_code
         == 201
@@ -1494,6 +1514,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
                 "title": "Dependency task",
                 "description": "Must finish first.",
                 "created_by_agent_id": "lead",
+                "expected_revision": 6,
             },
         ).status_code
         == 201
@@ -1512,6 +1533,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "created_by_agent_id": "lead",
             "parent_task_id": "parent",
             "dependency_task_ids": ["dependency"],
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 201
@@ -1525,7 +1547,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     # PATCH can update dependency links.
     response = client.patch(
         "/api/addons/team-addon/tasks/child",
-        json={"dependency_task_ids": []},
+        json={"dependency_task_ids": [], "expected_revision": 8},
     )
     assert response.status_code == 200
     child = response.json()["tasks"]["child"]
@@ -1535,7 +1557,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
     # PATCH can clear a parent link with explicit null.
     response = client.patch(
         "/api/addons/team-addon/tasks/child",
-        json={"parent_task_id": None},
+        json={"parent_task_id": None, "expected_revision": 9},
     )
     assert response.status_code == 200
     state = response.json()
@@ -1553,6 +1575,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "title": "Other project task",
             "description": "Belongs to a different project.",
             "created_by_agent_id": "other-lead",
+            "expected_revision": 10,
         },
     )
     response = client.post(
@@ -1566,6 +1589,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "description": "Parent in another project.",
             "created_by_agent_id": "lead",
             "parent_task_id": "other-task",
+            "expected_revision": 11,
         },
     )
     assert response.status_code == 400
@@ -1581,6 +1605,7 @@ def test_team_addon_admin_api_task_graph_fields(tmp_path: Path) -> None:
             "title": "Plain task",
             "description": "No graph fields.",
             "created_by_agent_id": "lead",
+            "expected_revision": 11,
         },
     )
     assert response.status_code == 201
@@ -1599,6 +1624,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -1611,9 +1637,10 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "lead_session_id": "session-lead",
             "goals": [{"id": "goal", "description": "Ship reviewed work"}],
             "git": {"host_repo_path": "/srv/repo", "bare_repo_name": "repo.git"},
+            "expected_revision": 1,
         },
     )
-    _post_backend_role(client)
+    _post_backend_role(client, expected_revision=2)
     client.post(
         "/api/addons/team-addon/agents",
         json={
@@ -1623,6 +1650,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "expected_revision": 3,
         },
     )
     client.post(
@@ -1635,6 +1663,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
+            "expected_revision": 4,
         },
     )
     client.post(
@@ -1645,6 +1674,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
             "artifact_refs": ["artifacts/backend.tar.gz"],
+            "expected_revision": 5,
         },
     )
     client.post(
@@ -1653,12 +1683,13 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
+            "expected_revision": 6,
         },
     )
 
     response = client.post(
         "/api/addons/team-addon/review-requests/review/decision",
-        json={"state": "accepted", "findings": ["looks good"]},
+        json={"state": "accepted", "findings": ["looks good"], "expected_revision": 7},
     )
     assert response.status_code == 200
     state = response.json()
@@ -1684,6 +1715,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "id": "release",
             "project_id": "project",
             "deliverable_ids": ["deliverable"],
+            "expected_revision": 9,
         },
     )
     assert response.status_code == 201
@@ -1727,6 +1759,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -1737,9 +1770,10 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "expected_revision": 1,
         },
     )
-    _post_backend_role(client)
+    _post_backend_role(client, expected_revision=2)
     client.post(
         "/api/addons/team-addon/agents",
         json={
@@ -1749,6 +1783,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "expected_revision": 3,
         },
     )
     client.post(
@@ -1761,6 +1796,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
+            "expected_revision": 4,
         },
     )
     client.post(
@@ -1770,6 +1806,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "task_id": "task",
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
+            "expected_revision": 5,
         },
     )
 
@@ -1787,6 +1824,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
                 {"id": "authz", "label": "Authorization", "required": True},
                 {"id": "logging", "label": "Logging", "description": "No secrets", "required": False},
             ],
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -1810,7 +1848,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     # Patch name and archived flag.
     response = client.patch(
         "/api/addons/team-addon/review-profiles/profile",
-        json={"name": "Security review v2", "archived": True},
+        json={"name": "Security review v2", "archived": True, "expected_revision": 7},
     )
     assert response.status_code == 200
     response = client.get("/api/addons/team-addon/review-profiles/profile")
@@ -1821,7 +1859,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     # Empty strings are meaningful on edit: they clear the optional description.
     response = client.patch(
         "/api/addons/team-addon/review-profiles/profile",
-        json={"description": ""},
+        json={"description": "", "expected_revision": 8},
     )
     assert response.status_code == 200
     response = client.get("/api/addons/team-addon/review-profiles/profile")
@@ -1836,6 +1874,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
             "review_profile_id": "profile",
+            "expected_revision": 9,
         },
     )
     assert response.status_code == 400
@@ -1844,7 +1883,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     # Un-archive so the profile can be attached to a review request.
     client.patch(
         "/api/addons/team-addon/review-profiles/profile",
-        json={"archived": False},
+        json={"archived": False, "expected_revision": 9},
     )
 
     # Create a review request with the profile + instructions.
@@ -1856,6 +1895,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "reviewer_agent_id": "lead",
             "review_profile_id": "profile",
             "instructions": "Pay attention to authz.",
+            "expected_revision": 10,
         },
     )
     assert response.status_code == 201
@@ -1877,6 +1917,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
                 {"criterion_id": "authz", "state": "passed", "finding": "scoped"},
                 {"criterion_id": "logging", "state": "skipped"},
             ],
+            "expected_revision": 11,
         },
     )
     assert response.status_code == 200
@@ -1899,6 +1940,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
     client.post(
@@ -1909,9 +1951,10 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
+            "expected_revision": 1,
         },
     )
-    _post_backend_role(client)
+    _post_backend_role(client, expected_revision=2)
     client.post(
         "/api/addons/team-addon/agents",
         json={
@@ -1921,6 +1964,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "role_id": "project__backend",
             "session_id": "session-backend",
             "reports_to_agent_id": "lead",
+            "expected_revision": 3,
         },
     )
     client.post(
@@ -1933,6 +1977,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "title": "Build backend",
             "description": "Implement the backend task.",
             "created_by_agent_id": "lead",
+            "expected_revision": 4,
         },
     )
     client.post(
@@ -1942,6 +1987,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "task_id": "task",
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
+            "expected_revision": 5,
         },
     )
 
@@ -1952,6 +1998,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -1965,6 +2012,7 @@ def test_team_addon_admin_api_review_request_without_profile_still_works(
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
             "review_profile_id": "missing-profile",
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 400
@@ -1979,6 +2027,7 @@ def test_team_addon_admin_api_patch_team_rejects_stale_revision(tmp_path: Path) 
             "name": "Team",
             "manager_agent_id": "manager",
             "manager_session_id": "session-manager",
+            "expected_revision": 0,
         },
     )
 
@@ -1989,6 +2038,36 @@ def test_team_addon_admin_api_patch_team_rejects_stale_revision(tmp_path: Path) 
 
     assert response.status_code == 409
     assert response.json()["current_revision"] == 1
+
+
+def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "expected_revision is required"
+
+    response = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": None,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "expected_revision is required"
+    assert client.get("/api/addons/team-addon/state").json()["revision"] == 0
 
 
 def test_team_addon_admin_api_rejects_stale_revision(tmp_path: Path) -> None:

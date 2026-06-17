@@ -2686,7 +2686,6 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
 
 def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
-    _set_project_git(repo)
     _seed_accepted_feature_deliverable(
         repo,
         deliverable_id="deliverable",
@@ -2708,9 +2707,72 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     release = state.release_packages["rel-1"]
     assert release.feature_branches == []
     assert release.artifact_refs == ["artifact-space:/teams/team/result"]
+    assert release.release_branch is None
+    assert release.canonical_branch is None
     assert release.git_promotion_record_ids == []
     assert result["git_promotion_event_ids"] == []
     assert state.git_promotions == {}
+
+
+def test_apply_agent_action_git_release_request_mixed_deliverables_requires_git(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="git-deliverable",
+        task_id="git-task",
+        feature="team/team/features/git-task-backend",
+    )
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="artifact-deliverable",
+        task_id="artifact-task",
+        feature=None,
+        artifact_refs=["artifact-space:/teams/team/result"],
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["git-deliverable", "artifact-deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.release_packages == {}
+    assert any("no git configuration" in error for error in result["errors"])
+
+
+def test_apply_agent_action_git_release_request_git_only_requires_git_config(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.release_packages == {}
+    assert any("no git configuration" in error for error in result["errors"])
 
 
 def test_apply_agent_action_git_release_request_requires_feature_promoted_git_deliverable(
