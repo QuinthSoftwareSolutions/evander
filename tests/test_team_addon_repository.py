@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -161,7 +163,60 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
 
     assert state.revision == 0
     assert state.teams == {}
-    assert (tmp_path / "addons" / "team-addon" / "state.json").is_file()
+    assert (tmp_path / "addons" / "team-addon" / "state.db").is_file()
+    assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
+
+
+def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_path.parent.mkdir(parents=True)
+    state = _seed_hierarchy(tmp_path / "seed").read()
+    legacy_path.write_text(
+        json.dumps(state.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    repo = TeamStateRepository(tmp_path)
+
+    imported = repo.read()
+    assert imported.revision == state.revision
+    assert imported.teams.keys() == state.teams.keys()
+    assert imported.projects.keys() == state.projects.keys()
+    assert legacy_path.is_file()
+    with sqlite3.connect(tmp_path / "addons" / "team-addon" / "state.db") as connection:
+        metadata = dict(
+            connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
+        )
+    assert metadata["legacy_json_path"] == str(legacy_path)
+    assert len(metadata["legacy_json_sha256"]) == 64
+
+
+def test_repository_prefers_sqlite_when_legacy_json_also_exists(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    repo.create_team(
+        team_id="db-team",
+        name="DB Team",
+        manager_agent_id="db-manager",
+        manager_session_id="session-db-manager",
+        expected_revision=0,
+    )
+    legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
+    legacy_state = TeamStateRepository(tmp_path / "legacy").create_team(
+        team_id="json-team",
+        name="JSON Team",
+        manager_agent_id="json-manager",
+        manager_session_id="session-json-manager",
+        expected_revision=0,
+    )
+    legacy_path.write_text(
+        json.dumps(legacy_state.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    reread = TeamStateRepository(tmp_path).read()
+
+    assert set(reread.teams) == {"db-team"}
+    assert "json-team" not in reread.teams
 
 
 def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: Path) -> None:
@@ -646,19 +701,17 @@ def test_repository_stale_revision_rejects_without_writing(tmp_path: Path) -> No
 
 def test_repository_rejects_malformed_existing_state(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
-    repo.store.write_object(
-        {
-            "schema_version": 1,
-            "revision": 0,
-            "teams": {
-                "team": {
-                    "id": "team",
-                    "name": "Team",
-                    "manager_agent_id": "missing",
-                }
-            },
-        }
-    )
+    with sqlite3.connect(tmp_path / "addons" / "team-addon" / "state.db") as connection:
+        connection.execute(
+            """
+            INSERT INTO team_teams(
+                id, name, manager_agent_id, operator_communication_target_id,
+                max_cost_usd, created_at, updated_at, archived
+            )
+            VALUES ('team', 'Team', 'missing', NULL, NULL, '2026-01-01T00:00:00+00:00',
+                    '2026-01-01T00:00:00+00:00', 0)
+            """
+        )
 
     with pytest.raises(ValidationError, match="missing manager"):
         repo.read()

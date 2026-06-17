@@ -10,9 +10,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agent_sandbox.addons import addon_json_object_store
 from agent_sandbox.models import utc_now
-from agent_sandbox.storage import JsonObjectStore
 
 from .git_naming import (
     canonical_release_branch,
@@ -55,10 +53,11 @@ from .models import (
     task_payload_with_derived,
     _ensure_unique,
 )
+from .sqlite_store import LEGACY_STATE_FILE, STATE_DB_FILE, TeamStateSqliteStore
 from .templates import TeamTemplate, get_template
 
 ADDON_ID = "team-addon"
-STATE_FILE = "state.json"
+STATE_FILE = STATE_DB_FILE
 EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
@@ -100,12 +99,7 @@ class TeamStateConflictError(RuntimeError):
 class TeamStateRepository:
     def __init__(self, runtime_dir: str | Path) -> None:
         self.runtime_dir = Path(runtime_dir)
-        self.store: JsonObjectStore[Any] = addon_json_object_store(
-            self.runtime_dir,
-            ADDON_ID,
-            STATE_FILE,
-            initial_object=TeamState.empty().model_dump(mode="json"),
-        )
+        self.store = TeamStateSqliteStore(self.runtime_dir)
 
     def read(self) -> TeamState:
         return TeamState.model_validate(self.store.read_object())
@@ -4872,7 +4866,9 @@ __all__ = [
     "EPHEMERAL_COMPLETED_EVENT_TYPE",
     "EPHEMERAL_REQUESTED_EVENT_TYPE",
     "GIT_PROMOTION_EVENT_TYPE",
+    "LEGACY_STATE_FILE",
     "OPERATOR_ESCALATION_EVENT_TYPE",
+    "STATE_DB_FILE",
     "STATE_FILE",
     "TeamStateConflictError",
     "TeamStateRepository",

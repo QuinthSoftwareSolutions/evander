@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on SQLite State Store
+
+- Migrated canonical Team Add-on state from `runtime/addons/team-addon/state.json`
+  to relational SQLite at `runtime/addons/team-addon/state.db`.
+- Added one-time legacy JSON import on first database initialization while
+  keeping the existing `TeamStateRepository` and `TeamState` domain API.
+
 ## 2026-06-17 - Playwright VM Profile Repair
 
 - Fixed `bootstrap_playwright_vm.sh` so rerunning it removes only its managed

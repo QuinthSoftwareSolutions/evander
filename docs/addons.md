@@ -73,7 +73,7 @@ scoped and removable:
 ```python
 from agent_sandbox.addons import addon_json_object_store
 
-store = addon_json_object_store(runtime_dir, "team-addon", "state.json")
+store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 ```
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
@@ -91,9 +91,11 @@ for this pattern. It is still disabled by default; enable it with
 `addon_loader.modules: ["truman_team_addon"]` or by enabling the
 `agent_sandbox.addons` entry-point group. For the bundled add-on, explicit
 module loading is the recommended operator path because entry-point loading is
-disabled by default. Its canonical state lives under
-`runtime/addons/team-addon/state.json`, while Truman session metadata remains
-a non-canonical integration index.
+disabled by default. Its canonical state lives in relational SQLite under
+`runtime/addons/team-addon/state.db`; a legacy
+`runtime/addons/team-addon/state.json` file is imported once when the database
+is first initialized. Truman session metadata remains a non-canonical
+integration index.
 
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
