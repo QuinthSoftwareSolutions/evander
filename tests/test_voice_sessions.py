@@ -49,6 +49,30 @@ class FakeVoiceBridge(VoiceMediaBridgeClient):
             "summary": "Jonathan approved item 123.",
             "decisions": ["Approve item 123"],
             "action_items": ["Tag item 123 as approved"],
+            "audio_quality": {
+                "voice_session_id": voice_session_id,
+                "call_id": "bridge-call-1",
+                "direction": "outbound",
+                "started_at": "2026-06-16T12:00:00Z",
+                "updated_at": "2026-06-16T12:00:05Z",
+                "media_format": "alaw",
+                "rtp_payload_type": 8,
+                "sample_rate_hz": 8000,
+                "frame_duration_ms": 20,
+                "rtp_port": 49100,
+                "route_id": "route-1",
+                "asterisk_pjsip_endpoint": "didww",
+                "carrier": "carrier-one",
+                "region": "us-east-1",
+                "inbound_packets": 12,
+                "outbound_packets": 8,
+                "lost_packets": 1,
+                "queue_depth_max": 3,
+                "metadata": {
+                    "api_key": "bridge-secret",
+                    "phone_number": "+15551234567",
+                },
+            },
         }
 
 
@@ -421,6 +445,10 @@ def test_openai_realtime_phone_backend_starts_bridge_without_auto_reconciliation
     assert result["status"] == "ended"
     assert result["transcript"] == "Jonathan: approve item 123"
     assert result["reconciliation_status"] == "not_requested"
+    assert result["audio_quality"]["call_id"] == "bridge-call-1"
+    assert result["audio_quality"]["metadata"]["api_key"] == "<redacted>"
+    assert result["audio_quality"]["metadata"]["phone_number"] == "<redacted>"
+    assert result["metadata"]["bridge"]["audio_quality"] == result["audio_quality"]
     assert wake_store.list_requests(session_id="session-1") == []
     assert bridge.start_calls[0]["projection"]["tool_summary"] == _projected_tool_summary(
         "session-1"

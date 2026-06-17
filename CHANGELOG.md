@@ -171,6 +171,40 @@ material. Newer entries are added incrementally as changes land.
 - Routed completed persistent Team sessions only when the completed dispatch id
   matches the active Team runtime lease, preventing ordinary Discord wake
   replies from being recorded as missing `team-action.json` failures.
+=======
+## 2026-06-16 - DIDWW Barge-In Fade
+
+- Added a configurable `DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS` setting to the DIDWW SIP bridge
+  with a 120 ms default and a 0 to 500 ms validation window.
+- Routed confirmed barge-in cancels through a short faded queued-RTP tail instead of dropping
+  pending assistant audio immediately, while keeping prompt Realtime response cancellation and
+  assistant audio truncation.
+- Removed the fade helper's deprecated `audioop` dependency so the DIDWW bridge imports cleanly on
+  Python 3.13 while preserving G.711 A-law and u-law fade behavior.
+- Documented the fade window in the DIDWW bridge operations guide, configuration reference, and
+  sample env file so operators can distinguish a taper from a hard cut.
+
+## 2026-06-16 - DIDWW Audio Quality Diagnostics
+
+- Refreshed call-id audio-quality diagnostics after active tracker flushes and
+  attached RTP trackers before call startup media begins so early packets and
+  malformed RTP are included in persisted quality metrics.
+
+## 2026-06-16 - DIDWW Backchannel Fuzzy Matching
+
+- Added conservative fuzzy matching for short DIDWW backchannel transcripts so
+  minor ASR corruption like `yea`, `yeh`, `okey`, or `thank yiu` still classifies
+  as a backchannel when the full phrase stays within the configured word limit.
+- Extended the default backchannel phrase list with common short affirmations
+  such as `right`, `yep`, `yup`, `sure`, and `mm-hmm`.
+- Added a service-configurable `DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD`
+  knob so operators can tighten or loosen the fuzzy match cutoff without code
+  changes.
+- Queued an interruption recovery response when a classified backchannel arrives
+  after assistant audio has already been canceled, avoiding dead air while the
+  caller keeps the floor.
+- Deferred interruption recovery while a caller transcript is still pending so
+  slow substantive ASR results answer the caller instead of resuming over them.
 
 ## 2026-06-16 - DIDWW Origin Query Patience
 

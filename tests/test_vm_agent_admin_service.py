@@ -731,6 +731,7 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
 
 def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
     admin = object.__new__(AdminService)
+    admin.runtime = SimpleNamespace()
     admin.vm_agent_admin = FakeVmAgentService()
 
     assert (
@@ -941,15 +942,16 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         CallRecord(
             "create_issue_vm",
             (),
-            {
-                "issue": "1",
-                "session_id": "session-1",
-                "model": "gpt-5",
-                "vm_user": "service",
-                "ttl_hours": 24,
-                "discord_channels": ["chan"],
-                "email_mailboxes": ["mailbox"],
-                "email_folders": ["folder"],
+                {
+                    "issue": "1",
+                    "session_id": "session-1",
+                    "model": "gpt-5",
+                    "vm_user": "service",
+                    "ttl_hours": 24,
+                    "allowed_contact_ids": None,
+                    "discord_channels": ["chan"],
+                    "email_mailboxes": ["mailbox"],
+                    "email_folders": ["folder"],
                 "dotnet": True,
                 "nuget": "cache",
                 "mssql": True,
@@ -983,11 +985,12 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "model": "gpt-5",
                 "vm_user": "service",
                 "ttl_hours": 48,
-                "allowed_tools": ["tool-a"],
-                "tool_argument_policies": None,
-                "allowed_script_names": ["script-a"],
-                "discord_channels": ["chan"],
-                "email_mailboxes": ["mailbox"],
+                    "allowed_tools": ["tool-a"],
+                    "tool_argument_policies": None,
+                    "allowed_script_names": ["script-a"],
+                    "allowed_contact_ids": None,
+                    "discord_channels": ["chan"],
+                    "email_mailboxes": ["mailbox"],
                 "email_folders": ["folder"],
                 "dotnet": True,
                 "nuget": True,

@@ -1903,6 +1903,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
         "email_list_unread",
         "email_get_message",
         "email_create_draft",
+        "stage_artifact",
     }
     assert manifest["metadata"] == {"issue_number": "14084"}
 
@@ -2145,7 +2146,11 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(
     assert result.exit_code == 0
     sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
     manifest = sessions["issue-200-minimal"]
-    assert manifest["allowed_tools"] == ["approval_submit", "approval_check"]
+    assert manifest["allowed_tools"] == [
+        "approval_submit",
+        "approval_check",
+        "stage_artifact",
+    ]
     assert manifest["email_mailbox_allowlist"] == []
     assert manifest["email_folder_allowlist"] == []
     assert manifest["metadata"] == {"issue_number": "200"}

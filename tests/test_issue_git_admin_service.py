@@ -80,6 +80,7 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
         session_repository=FakeStore(),
         approvals=FakeStore(),
         audit=SimpleNamespace(log_decision=lambda **kwargs: None),
+        policy=SimpleNamespace(allowed_tool_summary_for_session=lambda session: []),
     )
 
     def resolve_local_issue(issue_identifier: str) -> LocalIssueRecord:

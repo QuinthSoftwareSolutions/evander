@@ -4,6 +4,9 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,17 +21,23 @@ import agent_sandbox.didww_sip_bridge as didww_sip_bridge
 from agent_sandbox.didww_sip_bridge import (
     AsteriskAriClient,
     AsteriskCallHandles,
+    DidwwAudioQualityEvent,
+    DidwwAudioQualityMetrics,
+    DidwwAudioQualityWindow,
     DidwwBridgeCallRecord,
     DidwwBridgeStore,
     DidwwSipBridgeConfig,
     DidwwSipBridgeService,
+    DidwwAudioQualityTracker,
     InboundPhoneCallStartRequest,
     OpenAIRealtimeSession,
+    OutboundAudioFrame,
     PhoneCallStartRequest,
     RealtimeFunctionCall,
     RtpPacket,
     RtpUdpEndpoint,
     VoiceMediaControllerClient,
+    _build_barge_in_fade_payload,
     _realtime_audio_delta,
     _realtime_function_call,
     create_app,
@@ -37,6 +46,35 @@ from agent_sandbox.didww_sip_bridge import (
     load_config,
     projection_to_instructions,
 )
+
+
+def test_didww_sip_bridge_imports_with_deprecation_warnings_as_errors() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    src_path = str(repo_root / "src")
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        src_path
+        if not existing_pythonpath
+        else os.pathsep.join([src_path, existing_pythonpath])
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::DeprecationWarning",
+            "-c",
+            "import agent_sandbox.didww_sip_bridge",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _config(tmp_path: Path) -> DidwwSipBridgeConfig:
@@ -141,7 +179,68 @@ def test_bridge_api_starts_and_returns_projected_call_without_leaking_numbers(
     payload = result.json()
     assert payload["metadata"]["to_number"] == "***4567"
     assert payload["metadata"]["from_number"] == "***0001"
+    assert payload["audio_quality"] is None
     assert "+15551234567" not in json.dumps(payload)
+
+
+def test_bridge_api_returns_audio_quality_for_voice_session_and_call_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    metrics = DidwwAudioQualityMetrics(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        direction=record.direction,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        rtp_port=49100,
+        route_id="route-1",
+        asterisk_pjsip_endpoint="didww",
+        carrier="carrier-one",
+        region="us-east-1",
+        inbound_packets=1,
+        inbound_bytes=160,
+        inbound_samples=160,
+        outbound_packets=2,
+        outbound_bytes=320,
+        outbound_samples=320,
+        lost_packets=1,
+        late_packets=0,
+        out_of_order_packets=0,
+        duplicate_packets=0,
+        malformed_packets=0,
+        decode_errors=0,
+        jitter_ms=0.5,
+        queue_depth_max=2,
+    )
+    updated = store.update_audio_quality(record.voice_session_id, metrics)
+    expected_audio_quality = updated.audio_quality.model_dump(mode="json")
+    app = create_app(_config(tmp_path), store=store, start_background_tasks=False)
+    client = TestClient(app)
+
+    voice_session_response = client.get(
+        "/voice-sessions/voice-1/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+    call_id_response = client.get(
+        f"/phone-calls/{record.call_id}/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+
+    assert voice_session_response.status_code == 200
+    assert call_id_response.status_code == 200
+    voice_payload = voice_session_response.json()
+    call_payload = call_id_response.json()
+    assert voice_payload["audio_quality"] == expected_audio_quality
+    assert call_payload["audio_quality"] == expected_audio_quality
+    assert voice_payload == call_payload
+    assert voice_payload["metadata"]["to_number"] == "***4567"
+    assert "+15551234567" not in json.dumps(voice_payload)
 
 
 def test_bridge_api_is_idempotent_by_request_id(tmp_path: Path, monkeypatch) -> None:
@@ -289,6 +388,104 @@ def test_inbound_bridge_store_creates_idempotent_redacted_records(tmp_path: Path
     assert "+15550000200" not in payload_json
 
 
+def test_bridge_store_persists_audio_quality_and_indexes_by_call_id(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = PhoneCallStartRequest.model_validate(_phone_payload())
+
+    record, created = store.create_call(payload)
+
+    assert created is True
+    metrics = DidwwAudioQualityMetrics(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        direction=record.direction,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        rtp_port=49100,
+        route_id="route-1",
+        asterisk_pjsip_endpoint="didww",
+        carrier="+15551234567 Carrier",
+        region="us-east-1",
+        inbound_packets=2,
+        inbound_bytes=160,
+        inbound_samples=160,
+        outbound_packets=3,
+        outbound_bytes=240,
+        outbound_samples=240,
+        lost_packets=1,
+        late_packets=1,
+        out_of_order_packets=1,
+        duplicate_packets=1,
+        malformed_packets=1,
+        decode_errors=1,
+        jitter_ms=12.5,
+        queue_depth_max=4,
+        windows=[
+            DidwwAudioQualityWindow(
+                inbound_packets=index,
+                outbound_packets=index + 1,
+                queue_depth_max=index,
+            )
+            for index in range(20)
+        ],
+        anomaly_events=[
+            DidwwAudioQualityEvent(
+                event_type=f"audio.{index}",
+                message=f"carrier +15551234567 {index}",
+                metadata={"ordinal": index},
+            )
+            for index in range(70)
+        ],
+    )
+
+    updated = store.update_audio_quality(record.voice_session_id, metrics)
+    assert updated.audio_quality is not None
+    assert updated.audio_quality.voice_session_id == record.voice_session_id
+    assert len(updated.audio_quality.windows) <= 16
+    assert len(updated.audio_quality.anomaly_events) <= 64
+
+    reloaded_store = DidwwBridgeStore(tmp_path / "bridge.json")
+    reloaded = reloaded_store.get_by_call_id(record.call_id)
+
+    assert reloaded is not None
+    assert reloaded.call_id == record.call_id
+    assert reloaded.audio_quality is not None
+    assert reloaded.audio_quality.model_dump(mode="json") == updated.audio_quality.model_dump(
+        mode="json"
+    )
+    assert reloaded.response_payload()["audio_quality"] == updated.audio_quality.model_dump(
+        mode="json"
+    )
+    response_json = json.dumps(reloaded.response_payload(), sort_keys=True)
+    assert "+15551234567" not in response_json
+
+
+def test_bridge_store_reads_legacy_call_records_without_audio_quality(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+
+    raw = json.loads((tmp_path / "bridge.json").read_text(encoding="utf-8"))
+    raw["calls"][record.voice_session_id].pop("audio_quality", None)
+    (tmp_path / "bridge.json").write_text(
+        json.dumps(raw, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    legacy_store = DidwwBridgeStore(tmp_path / "bridge.json")
+    loaded = legacy_store.get(record.voice_session_id)
+
+    assert loaded is not None
+    assert loaded.audio_quality is None
+    assert loaded.response_payload()["audio_quality"] is None
+    assert legacy_store.get_by_call_id(record.call_id) is not None
+
+
 def test_debug_events_are_exposed_without_changing_transcript_events(
     tmp_path: Path,
     monkeypatch,
@@ -353,6 +550,342 @@ def test_bridge_api_requires_bearer_token(tmp_path: Path, monkeypatch) -> None:
     response = client.post("/phone-calls", json=_phone_payload())
 
     assert response.status_code == 401
+
+
+def test_bridge_api_requires_bearer_token_for_audio_quality_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    app = create_app(_config(tmp_path), start_background_tasks=False)
+    client = TestClient(app)
+
+    response = client.get("/voice-sessions/voice-1/audio-quality")
+    call_response = client.get("/phone-calls/bridge-call-1/audio-quality")
+
+    assert response.status_code == 401
+    assert call_response.status_code == 401
+
+
+def test_bridge_api_returns_404_for_unknown_audio_quality_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    app = create_app(_config(tmp_path), start_background_tasks=False)
+    client = TestClient(app)
+
+    missing_voice_session = client.get(
+        "/voice-sessions/missing/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+    missing_call_id = client.get(
+        "/phone-calls/missing/audio-quality",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+
+    assert missing_voice_session.status_code == 404
+    assert missing_call_id.status_code == 404
+
+
+def test_bridge_api_flushes_active_audio_quality_tracker_before_return(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        carrier="+15551234567 Carrier",
+        region="us-east-1",
+    )
+    tracker.record_outbound_packet(
+        samples_sent=160,
+        payload_bytes=160,
+        rtp_timestamp=160,
+        send_gap_seconds=0.04,
+        sent_at_monotonic=1.0,
+    )
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+    flushed: list[str] = []
+
+    def flush() -> None:
+        flushed.append(record.voice_session_id)
+        store.update_audio_quality(record.voice_session_id, tracker.snapshot())
+
+    tracker.flush = flush  # type: ignore[attr-defined]
+    service._audio_quality_trackers[record.voice_session_id] = tracker
+    client = TestClient(service.create_app())
+
+    response = client.get(
+        f"/voice-sessions/{record.voice_session_id}",
+        headers={"Authorization": "Bearer bridge-token"},
+    )
+
+    assert response.status_code == 200
+    assert flushed == [record.voice_session_id]
+    payload = response.json()
+    assert payload["audio_quality"]["voice_session_id"] == record.voice_session_id
+    assert payload["audio_quality"]["call_id"] == record.call_id
+    assert payload["audio_quality"]["outbound_packets"] == 1
+    serialized_payload = json.dumps(payload, sort_keys=True)
+    serialized_store = (tmp_path / "bridge.json").read_text(encoding="utf-8")
+    raw_audio_bytes = base64.b64encode(b"\x01" * 160).decode("ascii")
+    assert "+15551234567" not in serialized_payload
+    assert "+15551234567" not in serialized_store
+    assert "bridge-token" not in serialized_payload
+    assert "bridge-token" not in serialized_store
+    assert raw_audio_bytes not in serialized_payload
+    assert raw_audio_bytes not in serialized_store
+
+
+def test_bridge_api_flushes_active_audio_quality_tracker_before_call_id_return(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_TOKEN", "bridge-token")
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    tracker.record_outbound_packet(
+        samples_sent=160,
+        payload_bytes=160,
+        rtp_timestamp=160,
+        sent_at_monotonic=1.0,
+    )
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+    flushed: list[str] = []
+
+    def flush() -> None:
+        flushed.append(record.voice_session_id)
+        store.update_audio_quality(record.voice_session_id, tracker.snapshot())
+
+    tracker.flush = flush  # type: ignore[attr-defined]
+    service._audio_quality_trackers[record.voice_session_id] = tracker
+
+    async def request_audio_quality() -> httpx.Response:
+        transport = httpx.ASGITransport(app=service.create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get(
+                f"/phone-calls/{record.call_id}/audio-quality",
+                headers={"Authorization": "Bearer bridge-token"},
+            )
+
+    response = asyncio.run(request_audio_quality())
+
+    assert response.status_code == 200
+    assert flushed == [record.voice_session_id]
+    payload = response.json()
+    assert payload["call_id"] == record.call_id
+    assert payload["audio_quality"]["voice_session_id"] == record.voice_session_id
+    assert payload["audio_quality"]["outbound_packets"] == 1
+
+
+def test_realtime_audio_delta_decode_failure_is_recorded_and_raised(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id=record.voice_session_id,
+        call_id=record.call_id,
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+    service._audio_quality_trackers[record.voice_session_id] = tracker
+    tracker.flush = lambda: store.update_audio_quality(  # type: ignore[attr-defined]
+        record.voice_session_id,
+        tracker.snapshot(),
+    )
+    stop_event = asyncio.Event()
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "delta": "not-base64",
+                },
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            return None
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            raise AssertionError("decode failure should prevent RTP send")
+
+    class FakeController:
+        configured = False
+
+    def failing_b64decode(_value: str) -> bytes:
+        raise ValueError("decode failed")
+
+    monkeypatch.setattr(didww_sip_bridge.base64, "b64decode", failing_b64decode)
+
+    async def run() -> None:
+        await service._realtime_to_rtp(
+            record.voice_session_id,
+            FakeRtp(),  # type: ignore[arg-type]
+            FakeRealtime(),  # type: ignore[arg-type]
+            FakeController(),  # type: ignore[arg-type]
+            stop_event,
+        )
+
+    with pytest.raises(ValueError, match="decode failed"):
+        asyncio.run(run())
+
+    asyncio.run(service._flush_audio_quality_tracker(record.voice_session_id))
+    persisted = store.get(record.voice_session_id)
+    assert persisted is not None
+    assert persisted.audio_quality is not None
+    assert persisted.audio_quality.decode_errors == 1
+    assert "realtime.audio_delta.decode_error" in {
+        event.event_type for event in persisted.audio_quality.anomaly_events
+    }
+    payload_json = json.dumps(persisted.response_payload(), sort_keys=True)
+    store_json = (tmp_path / "bridge.json").read_text(encoding="utf-8")
+    assert "not-base64" not in payload_json
+    assert "not-base64" not in store_json
+    assert "+15551234567" not in payload_json
+    assert "+15551234567" not in store_json
+
+
+def test_bridge_media_lifecycle_creates_and_persists_audio_quality_tracker(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    service = DidwwSipBridgeService(_config(tmp_path), store=store, start_background_tasks=False)
+    audio_delta = base64.b64encode(b"\x01" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {
+                    "type": "response.output_audio.done",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                },
+                {"type": "response.done", "response": {"id": "resp-1", "status": "completed"}},
+            ]
+
+        async def recv_json(self) -> dict[str, Any]:
+            if self.events:
+                return self.events.pop(0)
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            return None
+
+    class FakeRtp:
+        port = 49000
+        remote_addr = ("127.0.0.1", 49001)
+
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def recv_payload(self) -> bytes:
+            await asyncio.sleep(1)
+            return b""
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            tracker = getattr(self, "tracker", None)
+            assert tracker is not None
+            tracker.record_outbound_packet(
+                samples_sent=len(payload),
+                payload_bytes=len(payload),
+                rtp_timestamp=0,
+                sent_at_monotonic=1.0,
+            )
+            self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    rtp = FakeRtp()
+
+    async def wait_for_asterisk_end(
+        voice_session_id: str,
+        _handles: AsteriskCallHandles,
+        stop_event: asyncio.Event,
+        **_: Any,
+    ) -> None:
+        for _index in range(50):
+            if rtp.sent:
+                break
+            await asyncio.sleep(0.01)
+        store.complete(voice_session_id, status="ended")
+        stop_event.set()
+
+    service._wait_for_asterisk_end = wait_for_asterisk_end  # type: ignore[method-assign]
+
+    async def run() -> None:
+        await service._bridge_media_until_done(
+            record.voice_session_id,
+            AsteriskCallHandles(
+                call_channel_id="call-didww-test",
+                bridge_id="bridge-didww-test",
+                external_media_channel_id="media-didww-test",
+            ),
+            rtp,  # type: ignore[arg-type]
+            FakeRealtime(),  # type: ignore[arg-type]
+            FakeController(),  # type: ignore[arg-type]
+        )
+
+    asyncio.run(run())
+
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.audio_quality is not None
+    assert latest.audio_quality.voice_session_id == record.voice_session_id
+    assert latest.audio_quality.call_id == record.call_id
+    assert latest.audio_quality.rtp_port == 49000
+    assert latest.audio_quality.outbound_packets == 1
+    assert latest.audio_quality.outbound_samples == 160
+    assert rtp.sent == [b"\x01" * 160]
+    assert not hasattr(rtp, "tracker")
 
 
 def test_asterisk_ari_client_origination_contract(tmp_path: Path, monkeypatch) -> None:
@@ -617,9 +1150,222 @@ def test_rtp_packet_roundtrip() -> None:
     assert parsed.payload == b"\x01\x02\x03\x04"
 
 
-def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -> None:
+def test_audio_quality_tracker_handles_sequence_wrap_loss_late_and_duplicates() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-1",
+        call_id="call-1",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    payload = b"\x55" * 160
+
+    tracker.record_inbound_packet(RtpPacket(65534, 1000, 1, 8, payload), received_at_monotonic=0.0)
+    tracker.record_inbound_packet(RtpPacket(65535, 1160, 1, 8, payload), received_at_monotonic=0.02)
+    tracker.record_inbound_packet(RtpPacket(0, 1320, 1, 8, payload), received_at_monotonic=0.04)
+    tracker.record_inbound_packet(RtpPacket(2, 1480, 1, 8, payload), received_at_monotonic=0.06)
+    tracker.record_inbound_packet(RtpPacket(1, 1640, 1, 8, payload), received_at_monotonic=0.08)
+    tracker.record_inbound_packet(RtpPacket(2, 1800, 1, 8, payload), received_at_monotonic=0.10)
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.inbound_packets == 6
+    assert snapshot.lost_packets == 1
+    assert snapshot.late_packets == 1
+    assert snapshot.duplicate_packets == 1
+    assert snapshot.out_of_order_packets == 0
+    assert snapshot.queue_depth_max == 0
+    assert snapshot.windows[0].inbound_packets == 6
+    assert snapshot.anomaly_events
+
+
+def test_audio_quality_tracker_marks_out_of_order_frame_gaps_and_malformed_packets() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-2",
+        call_id="call-2",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+    )
+    payload = b"\x55" * 160
+
+    tracker.record_inbound_packet(RtpPacket(5, 1000, 1, 8, payload), received_at_monotonic=0.0)
+    tracker.record_inbound_packet(RtpPacket(3, 1160, 1, 8, payload), received_at_monotonic=0.01)
+    tracker.record_malformed_packet(reason="RTP packet is too short", payload_length=8)
+    tracker.record_inbound_packet(RtpPacket(6, 1320, 1, 8, payload), received_at_monotonic=0.08)
+    tracker.record_queue_depth(9)
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.out_of_order_packets == 1
+    assert snapshot.malformed_packets == 1
+    assert snapshot.queue_depth_max == 9
+    assert snapshot.jitter_ms > 0
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    assert "rtp.packet.out_of_order" in event_types
+    assert "rtp.packet.malformed" in event_types
+    assert "rtp.frame_gap" in event_types
+
+
+def test_audio_quality_tracker_records_outbound_gaps_decode_errors_and_bounds_snapshot() -> None:
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-2b",
+        call_id="call-2b",
+        media_format="alaw",
+        rtp_payload_type=8,
+        sample_rate_hz=8000,
+        frame_duration_ms=20,
+        carrier="carrier-one",
+        region="us-east-1",
+    )
+
+    for index in range(70):
+        tracker.record_decode_error(reason=f"decode failure {index}")
+    tracker.record_queue_depth(41)
+    tracker.record_outbound_packet(
+        samples_sent=160,
+        payload_bytes=160,
+        rtp_timestamp=160,
+        send_gap_seconds=0.1,
+        sent_at_monotonic=1.0,
+    )
+
+    snapshot = tracker.snapshot()
+    dumped = snapshot.model_dump(mode="json")
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+
+    assert snapshot.voice_session_id == "voice-2b"
+    assert snapshot.call_id == "call-2b"
+    assert dumped["started_at"]
+    assert dumped["updated_at"]
+    assert snapshot.outbound_packets == 1
+    assert snapshot.outbound_bytes == 160
+    assert snapshot.outbound_samples == 160
+    assert snapshot.queue_depth_max == 41
+    assert snapshot.decode_errors == 70
+    assert snapshot.carrier == "carrier-one"
+    assert snapshot.region == "us-east-1"
+    assert len(snapshot.anomaly_events) <= 64
+    assert "rtp.queue_overrun" in event_types
+    assert "rtp.frame_gap" in event_types
+    assert event_types[-1] == "rtp.frame_gap"
+    assert "realtime.audio_delta.decode_error" in event_types
+    assert "decode failure" in json.dumps(dumped, sort_keys=True)
+
+
+def test_rtp_endpoint_send_payload_tracks_outbound_packets_and_frame_gaps(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-4b",
+        call_id="call-4b",
+        media_format=config.media_format,
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
+    endpoint.remote_addr = ("127.0.0.1", 49999)
+    endpoint._last_send_monotonic = 0.0
+    sent: list[tuple[bytes, tuple[str, int]]] = []
+
+    class FakeTransport:
+        def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+            sent.append((data, addr))
+
+    endpoint.transport = FakeTransport()  # type: ignore[assignment]
+    samples_per_frame = int(config.sample_rate_hz * config.frame_duration_ms / 1000)
+    payload = b"\x55" * (samples_per_frame * 2)
+
+    reported_samples: list[int] = []
+    sent_samples = asyncio.run(
+        endpoint.send_payload(payload, on_samples_sent=reported_samples.append)
+    )
+
+    snapshot = tracker.snapshot()
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    packets = [RtpPacket.parse(data) for data, _addr in sent]
+
+    assert sent_samples == len(payload)
+    assert reported_samples == [samples_per_frame, samples_per_frame]
+    assert [len(packet.payload) for packet in packets] == [samples_per_frame, samples_per_frame]
+    assert tracker.outbound_packets == 2
+    assert tracker.outbound_samples == len(payload)
+    assert snapshot.outbound_packets == 2
+    assert snapshot.outbound_samples == len(payload)
+    assert "rtp.frame_gap" in event_types
+
+
+def test_rtp_datagram_protocol_tracks_malformed_and_payload_type_mismatch_without_dropping_payload(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-3",
+        call_id="call-3",
+        media_format="alaw",
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
+    protocol = didww_sip_bridge.RtpDatagramProtocol(endpoint)
+    received: list[bytes] = []
+
+    class FakeTransport:
+        def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+            received.append(data)
+
+    endpoint.transport = FakeTransport()  # type: ignore[assignment]
+    endpoint.remote_addr = ("127.0.0.1", 49999)
+
+    malformed = b"\x80\x08\x00"
+    protocol.datagram_received(malformed, ("127.0.0.1", 60000))
+
+    packet = RtpPacket(sequence=1, timestamp=0, ssrc=1, payload_type=0, payload=b"\x55" * 160)
+    protocol.datagram_received(packet.serialize(), ("127.0.0.1", 60000))
+
+    assert len(received) == 0
+    assert asyncio.run(endpoint.recv_payload()) == b"\x55" * 160
+    snapshot = tracker.snapshot()
+    assert snapshot.malformed_packets == 1
+    assert snapshot.inbound_packets == 1
+    event_types = [event.event_type for event in snapshot.anomaly_events]
+    assert "rtp.packet.malformed" in event_types
+    assert "rtp.packet.payload_type_mismatch" in event_types
+
+
+def test_rtp_datagram_protocol_delivers_payload_when_tracker_fails(tmp_path: Path) -> None:
     config = _config(tmp_path)
     endpoint = RtpUdpEndpoint(config)
+    protocol = didww_sip_bridge.RtpDatagramProtocol(endpoint)
+
+    class FailingTracker:
+        def record_inbound_packet(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("metrics failed")
+
+    endpoint.tracker = FailingTracker()  # type: ignore[assignment]
+    packet = RtpPacket(sequence=1, timestamp=0, ssrc=1, payload_type=8, payload=b"\x55" * 160)
+
+    protocol.datagram_received(packet.serialize(), ("127.0.0.1", 60000))
+
+    assert asyncio.run(endpoint.recv_payload()) == b"\x55" * 160
+
+
+def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    tracker = DidwwAudioQualityTracker(
+        voice_session_id="voice-4",
+        call_id="call-4",
+        media_format=config.media_format,
+        rtp_payload_type=config.rtp_payload_type,
+        sample_rate_hz=config.sample_rate_hz,
+        frame_duration_ms=config.frame_duration_ms,
+    )
+    endpoint = RtpUdpEndpoint(config, tracker=tracker)
     endpoint.remote_addr = ("127.0.0.1", 49999)
     sent: list[tuple[bytes, tuple[str, int]]] = []
 
@@ -651,6 +1397,8 @@ def test_rtp_endpoint_chunks_output_payloads_by_frame_duration(tmp_path: Path) -
         samples_per_frame * 2,
     ]
     assert endpoint._timestamp == (samples_per_frame * 2) + 80
+    assert tracker.outbound_packets == 3
+    assert tracker.outbound_samples == (samples_per_frame * 2) + 80
 
 
 def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path) -> None:
@@ -672,6 +1420,84 @@ def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path
     assert sent_samples == 0
     assert reported_samples == []
     assert sent == []
+
+
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    frames = [
+        OutboundAudioFrame(payload=source_byte * 160),
+        OutboundAudioFrame(payload=(b"\x22" if media_format == "alaw" else b"\x66") * 160),
+    ]
+
+    fade_payload = _build_barge_in_fade_payload(
+        frames=frames,
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
+    assert fade_payload[0] != silence_byte[0]
+    assert fade_payload[-1] == silence_byte[0]
+    assert fade_payload != b"".join(frame.payload for frame in frames)
+    assert any(sample != silence_byte[0] for sample in fade_payload[:16])
+
+
+@pytest.mark.parametrize(
+    ("media_format", "source_byte", "silence_byte"),
+    [
+        ("alaw", b"\x11", b"\xD5"),
+        ("ulaw", b"\x55", b"\xFF"),
+    ],
+)
+def test_barge_in_fade_payload_pads_short_audio_with_codec_silence(
+    media_format: str,
+    source_byte: bytes,
+    silence_byte: bytes,
+) -> None:
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=source_byte * 160)],
+        media_format=media_format,
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    assert len(fade_payload) == 320
+    assert fade_payload[:1] == source_byte
+    assert fade_payload[:160] != silence_byte * 160
+    assert fade_payload[160:] == silence_byte * 160
+
+
+def test_barge_in_fade_payload_returns_empty_when_disabled_or_no_audio() -> None:
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[OutboundAudioFrame(payload=b"\x11" * 160)],
+            media_format="alaw",
+            sample_rate_hz=8000,
+            fade_ms=0,
+        )
+        == b""
+    )
+    assert (
+        _build_barge_in_fade_payload(
+            frames=[],
+            media_format="ulaw",
+            sample_rate_hz=8000,
+            fade_ms=40,
+        )
+        == b""
+    )
 
 
 def test_realtime_audio_delta_accepts_current_and_legacy_event_names() -> None:
@@ -823,13 +1649,20 @@ def test_barge_in_config_defaults_and_env_overrides(
     config = DidwwSipBridgeConfig(runtime_dir=tmp_path)
 
     assert config.barge_in_delay_ms == 700
+    assert config.barge_in_fade_ms == 120
     assert config.goodbye_idle_hangup_seconds == 0.0
     assert config.backchannel_max_words == 3
+    assert config.backchannel_fuzzy_threshold == 0.84
     assert config.backchannel_phrases == [
         "ok",
         "okay",
+        "yep",
+        "yup",
+        "right",
+        "sure",
         "uh-huh",
         "mhm",
+        "mm-hmm",
         "yeah",
         "yes",
         "good",
@@ -839,16 +1672,63 @@ def test_barge_in_config_defaults_and_env_overrides(
     ]
 
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", "250")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", "90")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", "0.25")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", "2")
+    monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD", "0.91")
     monkeypatch.setenv("DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES", "yep, right")
 
     loaded = load_config(tmp_path)
 
     assert loaded.barge_in_delay_ms == 250
+    assert loaded.barge_in_fade_ms == 90
     assert loaded.goodbye_idle_hangup_seconds == 0.25
     assert loaded.backchannel_max_words == 2
+    assert loaded.backchannel_fuzzy_threshold == 0.91
     assert loaded.backchannel_phrases == ["yep", "right"]
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected"),
+    [
+        ("yea", True),
+        ("yeh", True),
+        ("okey", True),
+        ("mm hmm", True),
+        ("thank yiu", True),
+        ("yeah can you stop", False),
+        ("right now check the outage", False),
+        ("yeah okay please now", False),
+    ],
+)
+def test_backchannel_classifier_accepts_fuzzy_asr_corruption_and_rejects_substantive_phrases(
+    transcript: str,
+    expected: bool,
+) -> None:
+    assert didww_sip_bridge._is_backchannel_transcript(
+        transcript,
+        phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
+        max_words=3,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("fuzzy_threshold", "expected"),
+    [
+        (0.84, True),
+        (0.9, False),
+    ],
+)
+def test_backchannel_classifier_threshold_controls_fuzzy_matching(
+    fuzzy_threshold: float,
+    expected: bool,
+) -> None:
+    assert didww_sip_bridge._is_backchannel_transcript(
+        "okey",
+        phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
+        max_words=3,
+        fuzzy_threshold=fuzzy_threshold,
+    ) is expected
 
 
 def test_realtime_config_defaults_and_env_overrides(
@@ -1517,6 +2397,140 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
         {"route_prompt": "Answer inbound calls for ops.", "startup_text": "Thanks for calling ops."},
         {"prompt": "Answer inbound calls for ops.", "caller_metadata": {"direction": "inbound"}},
     ).lower()
+
+
+def test_inbound_call_tracks_startup_rtp_before_initial_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    payload = InboundPhoneCallStartRequest.model_validate(_inbound_start_payload())
+    record, _ = store.create_inbound_call(payload)
+    events: list[str] = []
+    synced_payloads: list[dict[str, Any]] = []
+
+    class FakeRealtime:
+        async def __aenter__(self) -> "FakeRealtime":
+            events.append("realtime_open")
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            events.append("realtime_close")
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            tracker = getattr(rtp, "tracker", None)
+            assert tracker is not None
+            assert tracker.snapshot().malformed_packets == 1
+            events.append("initial_response")
+
+        async def recv_json(self) -> dict[str, Any]:
+            await asyncio.sleep(1)
+            return {}
+
+    class FakeRtpEndpoint:
+        port: int | None = None
+        remote_addr: tuple[str, int] | None = None
+
+        async def start(self) -> None:
+            events.append("rtp_start")
+            self.port = 49000
+
+        async def recv_payload(self) -> bytes:
+            await asyncio.sleep(1)
+            return b""
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            return 0
+
+        def close(self) -> None:
+            events.append("rtp_close")
+
+    rtp = FakeRtpEndpoint()
+
+    class FakeAriClient:
+        @asynccontextmanager
+        async def event_stream(self) -> Any:
+            events.append("event_stream_open")
+            try:
+                yield object()
+            finally:
+                events.append("event_stream_close")
+
+        async def start_external_media_for_inbound(
+            self,
+            *,
+            call_id: str,
+            inbound_channel_id: str,
+            external_host: str,
+            event_websocket: Any | None = None,
+        ) -> AsteriskCallHandles:
+            tracker = getattr(rtp, "tracker", None)
+            assert tracker is not None
+            tracker.record_malformed_packet(reason="startup packet", payload_length=3)
+            events.append("startup_packet_counted")
+            return AsteriskCallHandles(
+                call_channel_id=inbound_channel_id,
+                bridge_id="bridge-inbound-1",
+                external_media_channel_id="media-inbound-1",
+                external_media_local_address="127.0.0.1",
+                external_media_local_port=27086,
+            )
+
+        async def hangup_channel(self, channel_id: str | None) -> None:
+            return None
+
+        async def destroy_bridge(self, bridge_id: str | None) -> None:
+            return None
+
+    service = DidwwSipBridgeService(
+        _config(tmp_path),
+        store=store,
+        ari_client=FakeAriClient(),  # type: ignore[arg-type]
+        realtime_factory=lambda _projection, _realtime: FakeRealtime(),  # type: ignore[arg-type]
+        rtp_endpoint_factory=lambda: rtp,  # type: ignore[arg-type]
+        start_background_tasks=False,
+    )
+
+    async def wait_for_asterisk_end(
+        voice_session_id: str,
+        _handles: AsteriskCallHandles,
+        stop_event: asyncio.Event,
+        **_: Any,
+    ) -> None:
+        events.append("wait_for_asterisk_end")
+        store.complete(voice_session_id, status="ended")
+        stop_event.set()
+
+    async def sync_inbound_voice_session_to_gateway(
+        latest: DidwwBridgeCallRecord,
+        _realtime: dict[str, Any],
+    ) -> None:
+        synced_payloads.append(latest.response_payload())
+
+    async def cleanup_asterisk(_latest: DidwwBridgeCallRecord) -> None:
+        return None
+
+    service._wait_for_asterisk_end = wait_for_asterisk_end  # type: ignore[method-assign]
+    service._sync_inbound_voice_session_to_gateway = sync_inbound_voice_session_to_gateway  # type: ignore[method-assign]
+    service._cleanup_asterisk = cleanup_asterisk  # type: ignore[method-assign]
+
+    asyncio.run(service.run_inbound_call(record, payload))
+
+    latest = store.get(record.voice_session_id)
+    assert latest is not None
+    assert latest.audio_quality is not None
+    assert latest.audio_quality.malformed_packets == 1
+    assert "rtp.packet.malformed" in {
+        event.event_type for event in latest.audio_quality.anomaly_events
+    }
+    assert synced_payloads[0]["audio_quality"]["malformed_packets"] == 1
+    assert events.index("startup_packet_counted") < events.index("initial_response")
+    assert service._audio_quality_trackers == {}
+    assert not hasattr(rtp, "tracker")
 
 
 def test_inbound_phone_call_provisioning_failure_hangs_up_inbound_channel(
@@ -3028,6 +4042,607 @@ def test_standalone_backchannel_does_not_request_response(tmp_path: Path) -> Non
     assert backchannel_events[0].metadata["reason"] == "standalone_backchannel"
 
 
+def test_backchannel_during_assistant_audio_requests_resume_after_cancel(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x11" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Yea.",
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeRtp:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def send_payload(self, payload: bytes) -> None:
+            self.sent.append(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> tuple[FakeRealtime, FakeRtp]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        rtp = FakeRtp()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                rtp,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=1,
+        )
+        return realtime, rtp
+
+    realtime, rtp = asyncio.run(run())
+
+    assert rtp.sent == [b"\x11" * 160]
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.responses and realtime.responses[0]
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "barge_in_delay_started" in event_types
+    assert "barge_in_transcript_classified" in event_types
+    assert "backchannel_ignored" in event_types
+    classification_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "backchannel_resume"
+        or event.metadata.get("request_reason") == "backchannel_resume"
+        for event in classification_events
+    )
+    backchannel_events = [
+        event for event in latest.debug_events if event.event_type == "backchannel_ignored"
+    ]
+    assert any(event.metadata["reason"] == "classified_backchannel" for event in backchannel_events)
+
+
+def test_cancelled_interruption_without_transcript_requests_recovery_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x13" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            await asyncio.sleep(0.05)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            await asyncio.sleep(0)
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.responses and realtime.responses[0]
+    latest = store.get("voice-1")
+    assert latest is not None
+    event_types = [event.event_type for event in latest.debug_events]
+    assert "barge_in_cancel_sent" in event_types
+    recovery_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in recovery_events
+    )
+
+
+def test_slow_substantive_transcript_after_cancel_suppresses_recovery_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x15" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "__sleep__", "seconds": 0.35},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Stop, I need to ask about the outage.",
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.responses == [None]
+    latest = store.get("voice-1")
+    assert latest is not None
+    response_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "caller_turn_completed"
+        or event.metadata.get("request_reason") == "caller_turn_completed"
+        for event in response_events
+    )
+    assert not any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in response_events
+    )
+
+
+def test_late_substantive_transcript_after_recovery_preempts_resume_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x16" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "__sleep__", "seconds": 1.6},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Stop, I need to ask about the outage.",
+                },
+            ]
+            self.actions: list[str] = []
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+            self.sleep_until: float | None = None
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events[0]
+                if event["type"] == "__sleep__":
+                    loop = asyncio.get_running_loop()
+                    if self.sleep_until is None:
+                        self.sleep_until = loop.time() + float(event["seconds"])
+                    remaining = self.sleep_until - loop.time()
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                        continue
+                    self.events.pop(0)
+                    self.sleep_until = None
+                    continue
+                self.events.pop(0)
+                return event
+            await asyncio.sleep(0.05)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.actions.append(f"cancel:{response_id}")
+            self.cancels.append(response_id)
+            if response_id == "resp-recovery":
+                self.events.insert(
+                    0,
+                    {
+                        "type": "response.cancelled",
+                        "response": {"id": "resp-recovery", "status": "cancelled"},
+                    },
+                )
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+            if instructions == didww_sip_bridge._INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS:
+                self.actions.append("request:recovery")
+                self.events.insert(
+                    0,
+                    {"type": "response.created", "response": {"id": "resp-recovery"}},
+                )
+                return
+            self.actions.append("request:caller")
+            stop_event.set()
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=4,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    latest = store.get("voice-1")
+    assert latest is not None
+    assert realtime.responses == [
+        didww_sip_bridge._INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
+        None,
+    ]
+    assert realtime.cancels == ["resp-1", "resp-recovery"]
+    assert realtime.actions == [
+        "cancel:resp-1",
+        "request:recovery",
+        "cancel:resp-recovery",
+        "request:caller",
+    ]
+    response_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in response_events
+    )
+    assert any(
+        event.metadata.get("reason") == "caller_turn_completed"
+        or event.metadata.get("request_reason") == "caller_turn_completed"
+        for event in response_events
+    )
+    assert any(
+        event.event_type == "bridge.interruption_recovery.cancel_requested"
+        and event.metadata.get("reason") == "substantive_transcript"
+        for event in latest.debug_events
+    )
+
+
+def test_cancelled_interruption_recovery_is_retired_by_new_response_creation(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    audio_delta = base64.b64encode(b"\x14" * 160).decode("ascii")
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": audio_delta,
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 240},
+                {"type": "response.created", "response": {"id": "resp-2"}},
+                {"type": "__sleep__", "seconds": 0.35},
+            ]
+            self.cancels: list[str | None] = []
+            self.responses: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            stop_event.set()
+            await asyncio.sleep(0)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            self.responses.append(instructions)
+
+    class FakeRtp:
+        async def send_payload(self, payload: bytes) -> None:
+            return None
+
+    class FakeController:
+        configured = False
+
+    async def run() -> FakeRealtime:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                FakeRtp(),  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime
+
+    realtime = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.responses == []
+    latest = store.get("voice-1")
+    assert latest is not None
+    recovery_events = [
+        event
+        for event in latest.debug_events
+        if event.event_type in {"bridge.response.requested", "bridge.response.queued"}
+    ]
+    assert not any(
+        event.metadata.get("reason") == "interruption_recovery"
+        or event.metadata.get("request_reason") == "interruption_recovery"
+        for event in recovery_events
+    )
+
+
 def test_substantive_speech_during_pre_audio_response_cancels_generation(
     tmp_path: Path,
 ) -> None:
@@ -3711,6 +5326,155 @@ def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
     assert cancel_events[0].metadata["truncate_audio_end_ms"] == 0
 
 
+def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
+    tmp_path: Path,
+) -> None:
+    store = DidwwBridgeStore(tmp_path / "bridge.json")
+    record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
+    stop_event = asyncio.Event()
+    first = b"\x31" * 160
+    pending = b"\x32" * 160
+    later = b"\x33" * 160
+    fade_payload = _build_barge_in_fade_payload(
+        frames=[OutboundAudioFrame(payload=pending)],
+        media_format="alaw",
+        sample_rate_hz=8000,
+        fade_ms=40,
+    )
+
+    class FakeRealtime:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = [
+                {"type": "response.created", "response": {"id": "resp-1"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(first).decode("ascii"),
+                },
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "item_id": "assistant-item-1",
+                    "delta": base64.b64encode(pending).decode("ascii"),
+                },
+                {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
+                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "response.cancelled", "response": {"id": "resp-1", "status": "cancelled"}},
+                {"type": "response.created", "response": {"id": "resp-2"}},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-2",
+                    "item_id": "assistant-item-2",
+                    "delta": base64.b64encode(later).decode("ascii"),
+                },
+            ]
+            self.cancels: list[str | None] = []
+            self.truncates: list[dict[str, Any]] = []
+
+        async def recv_json(self) -> dict[str, Any]:
+            while self.events:
+                event = self.events.pop(0)
+                if event["type"] == "__sleep__":
+                    await asyncio.sleep(float(event["seconds"]))
+                    continue
+                return event
+            await asyncio.sleep(0.01)
+            return {}
+
+        async def cancel_response(self, response_id: str | None = None) -> None:
+            self.cancels.append(response_id)
+
+        async def truncate_assistant_audio(
+            self,
+            *,
+            item_id: str,
+            audio_end_ms: int,
+            content_index: int = 0,
+        ) -> None:
+            self.truncates.append(
+                {
+                    "item_id": item_id,
+                    "audio_end_ms": audio_end_ms,
+                    "content_index": content_index,
+                }
+            )
+
+        async def request_response(self, instructions: str | None = None) -> None:
+            raise AssertionError("no bridge response should be requested")
+
+    class FakeRtp:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        async def send_payload(
+            self,
+            payload: bytes,
+            *,
+            on_samples_sent: Callable[[int], None] | None = None,
+        ) -> int:
+            self.sent.append(payload)
+            if on_samples_sent is not None:
+                on_samples_sent(len(payload))
+            if payload == first:
+                await asyncio.sleep(0.05)
+            if payload == fade_payload:
+                await asyncio.sleep(0.05)
+            if payload == later:
+                stop_event.set()
+            return len(payload)
+
+    class FakeController:
+        configured = False
+
+    async def run() -> tuple[FakeRealtime, FakeRtp]:
+        service = DidwwSipBridgeService(
+            _config(tmp_path).model_copy(
+                update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 40}
+            ),
+            store=store,
+            start_background_tasks=False,
+        )
+        realtime = FakeRealtime()
+        rtp = FakeRtp()
+        await asyncio.wait_for(
+            service._realtime_to_rtp(  # type: ignore[arg-type]
+                record.voice_session_id,
+                rtp,  # type: ignore[arg-type]
+                realtime,  # type: ignore[arg-type]
+                FakeController(),  # type: ignore[arg-type]
+                stop_event,
+            ),
+            timeout=2,
+        )
+        return realtime, rtp
+
+    realtime, rtp = asyncio.run(run())
+
+    assert realtime.cancels == ["resp-1"]
+    assert realtime.truncates == [
+        {"item_id": "assistant-item-1", "audio_end_ms": 20, "content_index": 0}
+    ]
+    assert rtp.sent == [first, fade_payload, later]
+    latest = store.get("voice-1")
+    assert latest is not None
+    cancel_events = [
+        event for event in latest.debug_events if event.event_type == "barge_in_cancel_sent"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].metadata["cancel_response_id"] == "resp-1"
+    assert cancel_events[0].metadata["dropped_audio_frames"] == 1
+    assert cancel_events[0].metadata["dropped_audio_bytes"] == len(pending)
+    assert cancel_events[0].metadata["fade_ms"] == 40
+    assert cancel_events[0].metadata["fade_audio_samples"] == len(fade_payload)
+    assert cancel_events[0].metadata["fade_audio_bytes"] == len(fade_payload)
+    assert cancel_events[0].metadata["truncate_item_id"] == "assistant-item-1"
+    assert cancel_events[0].metadata["truncate_audio_end_ms"] == 20
+    assert fade_payload
+    assert fade_payload != pending
+    assert fade_payload[-1] == 0xD5
+
+
 def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     tmp_path: Path,
 ) -> None:
@@ -3806,7 +5570,9 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
 
     async def run() -> tuple[FakeRealtime, FakeRtp]:
         service = DidwwSipBridgeService(
-            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10}),
+            _config(
+                tmp_path
+            ).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 0}),
             store=store,
             start_background_tasks=False,
         )
