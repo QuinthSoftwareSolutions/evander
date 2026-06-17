@@ -405,7 +405,18 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-dismiss-action-id" in script.text
     assert 'fetch(`${API_BASE}/costs`' in script.text
     assert "renderTeamCostCounter" in script.text
+    assert "renderTeamCostBlockedNotice" in script.text
+    assert "Blocked: cost cap reached" in script.text
     assert "renderProjectCostCounter" in script.text
+    assert "renderAgentInboxHeaderIndicators" in script.text
+    assert "renderAgentInboxIndicatorIcon" in script.text
+    assert "agent-inbox-indicator" in script.text
+    assert 'direction: "down"' in script.text
+    assert 'direction: "up"' in script.text
+    assert "agent-inbox-icon--${escapeAttr(direction)}" in script.text
+    assert "agent-inbox-bubble" in script.text
+    assert "Status requests" in script.text
+    assert "Progress reports" in script.text
     assert "max_cost_usd" in script.text
     assert "cost_limit_reached" in script.text
 
@@ -423,6 +434,11 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text
+    assert ".team-cost-blocked-notice" in stylesheet.text
+    assert ".agent-inbox-indicator" in stylesheet.text
+    assert ".agent-inbox-icon" in stylesheet.text
+    assert ".agent-inbox-popover" in stylesheet.text
+    assert ".agent-inbox-bubble" in stylesheet.text
 
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200

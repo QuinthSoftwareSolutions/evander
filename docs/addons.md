@@ -273,6 +273,11 @@ set:
   lease. Persistent actions may include `ephemeral_requests` to request bounded
   disposable workers and `ephemeral_acceptances` to promote or reject completed
   ephemeral results.
+- If the most recent recorded action for an agent failed validation, the next
+  successful `effect:team:wake-due-agents` dispatch includes one-shot
+  `recent_action_feedback` for that failed dispatch only. The runtime marks that
+  feedback delivered after the resume succeeds, so older failures are not
+  replayed and the same feedback does not repeat on later wakes.
 - `effect:team:create-operator-directive` turns an operator request from
   Discord, Teams, Admin Web, or another workflow into a durable
   `operator_directive` inbox item. The item defaults to the team manager,

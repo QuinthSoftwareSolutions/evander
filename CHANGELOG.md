@@ -5,6 +5,22 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Header Indicators
+
+- Added persistent-agent card header indicators for pending status requests and
+  progress reports, using down/up speech-bubble icons with per-item hover
+  bubbles for each matching inbox item.
+- Made teams blocked by the lifetime cost cap explicit in Team UI headers with
+  a `Blocked: cost cap reached` notice and cost-blocked status pill.
+
+## 2026-06-17 - Team Add-on Action Feedback
+
+- Added one-shot Team action feedback to persistent-agent wake prompts when an
+  agent's most recent dispatch produced validation errors.
+- Persisted feedback-delivery markers on action records so the same correction
+  is not repeated and older failed dispatches are not replayed after newer
+  action attempts.
+
 ## 2026-06-17 - Team Add-on Artifact Handoffs
 
 - Added scoped artifact publishing for Team deliverables: agents can list

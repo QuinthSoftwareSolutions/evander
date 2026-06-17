@@ -155,6 +155,39 @@ class TeamStateRepository:
 
         return self.update(_mutate, expected_revision=expected_revision)
 
+    def mark_action_feedback_delivered(
+        self,
+        *,
+        agent_id: str,
+        source_dispatch_id: str,
+        delivery_dispatch_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_source_dispatch_id = _required_text(
+            source_dispatch_id,
+            "source_dispatch_id",
+        )
+        normalized_delivery_dispatch_id = _required_text(
+            delivery_dispatch_id,
+            "delivery_dispatch_id",
+        )
+
+        def _mutate(state: TeamState) -> TeamState:
+            delivered_at = utc_now()
+            for record in state.action_records.values():
+                if record.agent_id != normalized_agent_id:
+                    continue
+                if record.dispatch_id != normalized_source_dispatch_id:
+                    continue
+                if record.success or record.feedback_delivered_at is not None:
+                    continue
+                record.feedback_delivered_at = delivered_at
+                record.feedback_delivered_by_dispatch_id = normalized_delivery_dispatch_id
+            return state
+
+        return self.update(_mutate, expected_revision=expected_revision)
+
     def create_team(
         self,
         *,
@@ -1695,10 +1728,12 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
                 wake_eligible = (
                     rotation_pending
                     or bool(pending_inbox)
+                    or bool(action_feedback)
                     or any(
                         state_model.dependency_status(task.id) == "satisfied"
                         for task in active_tasks
@@ -1714,18 +1749,30 @@ class TeamStateRepository:
                     runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
-                if not pending_inbox and not rotation_pending and not due_by_time:
+                if (
+                    not pending_inbox
+                    and not rotation_pending
+                    and not action_feedback
+                    and not due_by_time
+                ):
                     continue
                 if (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
                     and not pending_inbox
                     and not rotation_pending
+                    and not action_feedback
                 ):
                     continue
 
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
-                reason = "inbox" if pending_inbox else "scheduled"
+                reason = (
+                    "inbox"
+                    if pending_inbox
+                    else "action_feedback"
+                    if action_feedback
+                    else "scheduled"
+                )
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
@@ -1743,6 +1790,7 @@ class TeamStateRepository:
                             for task in active_tasks
                         ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
+                        "recent_action_feedback": action_feedback,
                         "superior_agent_id": agent.reports_to_agent_id,
                         "subordinate_agent_ids": list(agent.subordinate_agent_ids),
                     }
@@ -3007,6 +3055,92 @@ def _agent_for_session(state: TeamState, *, session_id: str) -> PersistentAgent:
         if agent.session_id == session_id:
             return agent
     raise ValueError(f"no team agent found for session_id {session_id}")
+
+
+def _latest_action_feedback_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> list[dict[str, Any]]:
+    records = [
+        record
+        for record in state.action_records.values()
+        if record.agent_id == agent_id
+    ]
+    if not records:
+        return []
+    latest_record = max(records, key=lambda record: (record.created_at, record.id))
+    if latest_record.success:
+        return []
+    if latest_record.dismissed_at is not None:
+        return []
+    if latest_record.feedback_delivered_at is not None:
+        return []
+    latest_dispatch_id = latest_record.dispatch_id
+    failed_records = [
+        record
+        for record in records
+        if record.dispatch_id == latest_dispatch_id
+        and not record.success
+        and record.dismissed_at is None
+    ]
+    return [
+        _action_feedback_payload(record)
+        for record in sorted(
+            failed_records,
+            key=lambda record: (record.created_at, record.id),
+        )
+    ]
+
+
+def _action_feedback_payload(record: AgentActionRecord) -> dict[str, Any]:
+    error = record.error or "action failed validation"
+    return {
+        "action_record_id": record.id,
+        "dispatch_id": record.dispatch_id,
+        "created_at": record.created_at.isoformat(),
+        "error": error,
+        "action_fields": _non_empty_action_fields(record.action),
+        "correction_hints": _correction_hints(error),
+    }
+
+
+def _non_empty_action_fields(action: Mapping[str, Any]) -> list[str]:
+    ignored_fields = {"agent_id", "dispatch_id", "schema_version", "notes"}
+    return sorted(
+        key
+        for key, value in action.items()
+        if key not in ignored_fields and value not in (None, "", [], {})
+    )
+
+
+def _correction_hints(error: str) -> list[str]:
+    normalized = error.casefold()
+    hints: list[str] = []
+    if "must not start with 'refs/'" in normalized:
+        hints.append(
+            "Use bare branch names like agents/... or team/..., not refs/heads/...."
+        )
+    if "cannot deliver task" in normalized:
+        hints.append("Only the task owner can create deliverables for that task.")
+    if "artifact_paths must contain at least one path" in normalized:
+        hints.append(
+            "For Git-only deliverables, omit artifact_paths; otherwise list staged "
+            "paths under /artifacts."
+        )
+    if "assignment_id must be a non-empty string" in normalized:
+        hints.append(
+            "Use the assignment_id shape for ephemeral promotions, or the "
+            "deliverable_id shape for persistent deliverables."
+        )
+    if "already exists" in normalized:
+        hints.append(
+            "Do not recreate existing ids; reference existing records or choose a new id."
+        )
+    if not hints:
+        hints.append(
+            "Review the current Team context and retry only the missing corrected action items."
+        )
+    return hints
 
 
 def _mark_action_failure(

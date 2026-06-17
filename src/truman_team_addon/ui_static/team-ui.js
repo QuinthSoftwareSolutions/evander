@@ -967,13 +967,44 @@ function renderSummary() {
 }
 
 function renderTeamCostCounter(teamId) {
-  const cost = costState.team_costs?.[teamId];
+  const cost = teamCostForTeam(teamId);
   if (!cost) {
     return costState.error
       ? renderCostCounter(null, { label: "Team cost", compact: false, error: costState.error })
       : "";
   }
   return renderCostCounter(cost, { label: "Team cost", compact: false });
+}
+
+function teamCostForTeam(teamId) {
+  return costState.team_costs?.[teamId] || null;
+}
+
+function renderTeamCostBlockedPill(teamId) {
+  const cost = teamCostForTeam(teamId);
+  if (!cost?.cost_limit_reached) {
+    return "";
+  }
+  return `
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the cap is raised or cleared.">
+      cost blocked
+    </span>
+  `;
+}
+
+function renderTeamCostBlockedNotice(teamId) {
+  const cost = teamCostForTeam(teamId);
+  if (!cost?.cost_limit_reached) {
+    return "";
+  }
+  const maxCost = numberOrNull(cost.max_cost_usd);
+  const capLabel = maxCost === null ? "configured cap" : formatUsd(maxCost);
+  return `
+    <div class="team-cost-blocked-notice" role="status">
+      <strong>Blocked: cost cap reached</strong>
+      <span>Team wakes are suspended until the cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} used of ${escapeHtml(capLabel)} lifetime cap.</span>
+    </div>
+  `;
 }
 
 function renderProjectCostCounter(projectId) {
@@ -1499,9 +1530,11 @@ function renderFocusedOrgChart() {
               <p class="section-label">${escapeHtml(team.id)}</p>
               <h3>${escapeHtml(team.name)}</h3>
               ${renderTeamCostCounter(team.id)}
+              ${renderTeamCostBlockedNotice(team.id)}
             </div>
             <div class="org-focus-team-status">
               ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+              ${renderTeamCostBlockedPill(team.id)}
               <span class="state-pill info">${teamAwakeCount} awake</span>
               <span class="state-pill ${teamAttentionCount ? "warning" : "accepted"}">${teamAttentionCount} attention</span>
             </div>
@@ -1547,9 +1580,11 @@ function renderHierarchy() {
                 <p class="section-label">${escapeHtml(team.id)}</p>
                 <h3>${escapeHtml(team.name)}</h3>
                 ${renderTeamCostCounter(team.id)}
+                ${renderTeamCostBlockedNotice(team.id)}
               </div>
               <div class="record-actions">
                 ${team.archived ? `<span class="state-pill archived">archived</span>` : ""}
+                ${renderTeamCostBlockedPill(team.id)}
                 ${editButton("team", team.id)}
               </div>
             </div>
@@ -1619,6 +1654,7 @@ function renderHierarchyNode(node, options = {}) {
               <span class="hierarchy-node-role">${escapeHtml(node.agentData.role)}</span>
               <span class="state-pill ${escapeHtml(node.agentData.status)}">${escapeHtml(node.agentData.status)}</span>
               ${focused ? renderAgentAwakePill(node.agentData) : ""}
+              ${renderAgentInboxHeaderIndicators(node.agentData)}
             </div>
           </div>
           ${focused ? renderOrgNodeWorkSummary(node.agentData) : ""}
@@ -1763,10 +1799,6 @@ function pendingInboxForAgent(agentId) {
     .sort(byId);
 }
 
-function pendingInboxCount(agentId) {
-  return pendingInboxForAgent(agentId).length;
-}
-
 function agentTaskStats(agentId) {
   const tasks = orderedTasksForAgent(agentId);
   const openTasks = tasks.filter((task) => !terminalTaskStates.has(task.state));
@@ -1807,6 +1839,11 @@ function agentCardData(agent) {
   const projectName = projectLabel(projectId);
   const reportsToId = text(agent?.reports_to_agent_id);
   const ephemeralCurrentCount = activeEphemeralAssignmentsForAgent(agent.id).length;
+  const inboxItems = pendingInboxForAgent(agent.id);
+  const inboxIndicatorItems = {
+    status_request: inboxItems.filter((item) => text(item.item_type) === "status_request"),
+    progress_report: inboxItems.filter((item) => text(item.item_type) === "progress_report"),
+  };
 
   return {
     id: text(agent?.id),
@@ -1820,7 +1857,8 @@ function agentCardData(agent) {
     reportsToLabel: reportsToId || "operator",
     directSubordinateCount: directSubordinateIds.length,
     taskStats,
-    inboxCount: pendingInboxCount(agent.id),
+    inboxCount: inboxItems.length,
+    inboxIndicatorItems,
     runtime,
     ephemeralCapacity: ephemeralCapacity(agent),
     ephemeralCurrentCount,
@@ -1950,6 +1988,87 @@ function renderAgentAwakePill(agentData) {
     <span class="awake-indicator awake-indicator--${escapeAttr(awake.kind)}" title="${escapeAttr(awake.detail)}">
       <span class="awake-dot" aria-hidden="true"></span>
       ${escapeHtml(awake.label)}
+    </span>
+  `;
+}
+
+function renderAgentInboxHeaderIndicators(agentData) {
+  const indicatorItems = agentData.inboxIndicatorItems || {};
+  return `
+    <span class="agent-inbox-indicators" aria-label="Pending inbox summary">
+      ${renderAgentInboxHeaderIndicator({
+        itemType: "status_request",
+        direction: "down",
+        label: "Status requests",
+        items: indicatorItems.status_request || [],
+      })}
+      ${renderAgentInboxHeaderIndicator({
+        itemType: "progress_report",
+        direction: "up",
+        label: "Progress reports",
+        items: indicatorItems.progress_report || [],
+      })}
+    </span>
+  `;
+}
+
+function renderAgentInboxHeaderIndicator({ itemType, direction, label, items }) {
+  const rows = Array.isArray(items) ? items : [];
+  const count = rows.length;
+  const stateClass = count ? "agent-inbox-indicator--active" : "agent-inbox-indicator--empty";
+  return `
+    <span
+      class="agent-inbox-indicator agent-inbox-indicator--${escapeAttr(itemType)} ${stateClass}"
+      tabindex="0"
+      aria-label="${escapeAttr(`${label}: ${count}`)}"
+    >
+      ${renderAgentInboxIndicatorIcon(direction)}
+      <strong>${count}</strong>
+      ${count ? renderAgentInboxIndicatorPopover(label, rows) : ""}
+    </span>
+  `;
+}
+
+function renderAgentInboxIndicatorIcon(direction) {
+  const arrow =
+    direction === "up"
+      ? `
+        <path d="M10 8V3"></path>
+        <path d="M7.3 5.7 10 3l2.7 2.7"></path>
+      `
+      : `
+        <path d="M10 3v5"></path>
+        <path d="M7.3 5.3 10 8l2.7-2.7"></path>
+      `;
+  return `
+    <svg class="agent-inbox-icon agent-inbox-icon--${escapeAttr(direction)}" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      ${arrow}
+      <path d="M5.5 8.2h9a2.2 2.2 0 0 1 2.2 2.2v2.6a2.2 2.2 0 0 1-2.2 2.2H9.3L5 18v-2.8a2.2 2.2 0 0 1-1.7-2.1v-2.7a2.2 2.2 0 0 1 2.2-2.2Z"></path>
+    </svg>
+  `;
+}
+
+function renderAgentInboxIndicatorPopover(label, items) {
+  return `
+    <span class="agent-inbox-popover" role="tooltip" aria-label="${escapeAttr(label)}">
+      ${items.map((item) => renderAgentInboxBubble(item)).join("")}
+    </span>
+  `;
+}
+
+function renderAgentInboxBubble(item) {
+  const detail = inboxItemDetail(item) || item.id;
+  const metaParts = [];
+  if (item.task_id) {
+    metaParts.push(`task ${item.task_id}`);
+  }
+  if (item.sender_agent_id) {
+    metaParts.push(`from ${item.sender_agent_id}`);
+  }
+  return `
+    <span class="agent-inbox-bubble">
+      <strong>${escapeHtml(detail)}</strong>
+      ${metaParts.length ? `<small>${escapeHtml(metaParts.join(" - "))}</small>` : ""}
     </span>
   `;
 }
@@ -3130,6 +3249,7 @@ function renderDeliveryTeamGroup(teamGroup, bucketStatuses) {
           <p class="section-label">Team</p>
           <h3>${teamLabel}</h3>
           ${teamGroup.team ? renderTeamCostCounter(teamGroup.team.id) : ""}
+          ${teamGroup.team ? renderTeamCostBlockedNotice(teamGroup.team.id) : ""}
         </div>
         <span class="delivery-bucket-count">${visibleRowCount} deliverable${visibleRowCount === 1 ? "" : "s"}</span>
       </div>

@@ -163,6 +163,13 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                feedback_source_dispatch_id = _action_feedback_source_dispatch_id(lease)
+                if feedback_source_dispatch_id is not None:
+                    state = repo.mark_action_feedback_delivered(
+                        agent_id=agent["id"],
+                        source_dispatch_id=feedback_source_dispatch_id,
+                        delivery_dispatch_id=lease["dispatch_id"],
+                    )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
@@ -1219,6 +1226,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "subordinate_agent_ids": lease["subordinate_agent_ids"],
         "tasks": lease["tasks"],
         "inbox": lease["inbox"],
+        "recent_action_feedback": lease.get("recent_action_feedback") or [],
         "action_artifact_path": f"/artifacts/{action_artifact_path}",
     }
     project_repo = lease.get("project_repo")
@@ -1234,6 +1242,17 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "Prior handoff summary from Team state:\n"
         f"{handoff_summary}\n\n"
         if handoff_summary
+        else ""
+    )
+    action_feedback = lease.get("recent_action_feedback")
+    action_feedback_section = (
+        "Most recent Team action feedback (one-shot):\n"
+        "Your previous Team dispatch had validation errors. Do not repeat these "
+        "mistakes. Some valid parts of that action may already have applied, so "
+        "inspect the current Team context and retry only missing corrected action "
+        "items.\n"
+        f"{json.dumps(action_feedback, sort_keys=True, indent=2)}\n\n"
+        if isinstance(action_feedback, list) and action_feedback
         else ""
     )
     schema = {
@@ -1298,6 +1317,7 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "actions to team-action.json, then include their ids in "
         "handled_inbox_item_ids.\n\n"
         f"{handoff_section}"
+        f"{action_feedback_section}"
         f"Team context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n\n"
         f"Team action contract files have been seeded at {schema_path} and "
         f"{example_path}. Read {schema_path} for the JSON Schema contract and "
@@ -1307,6 +1327,16 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         f"/artifacts/{action_artifact_path}. Use this shape:\n"
         f"{json.dumps(schema, sort_keys=True, indent=2)}\n"
     )
+
+
+def _action_feedback_source_dispatch_id(lease: Mapping[str, Any]) -> str | None:
+    feedback = lease.get("recent_action_feedback")
+    if not isinstance(feedback, list) or not feedback:
+        return None
+    first = feedback[0]
+    if not isinstance(first, Mapping):
+        return None
+    return _optional_text(first.get("dispatch_id"))
 
 
 def _project_repo_prompt_guidance(project_repo: object) -> str:

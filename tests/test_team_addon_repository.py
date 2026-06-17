@@ -167,6 +167,49 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
 
 
+def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE team_state_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO team_state_metadata(key, value)
+            VALUES ('sqlite_schema_version', '1');
+            CREATE TABLE team_action_records (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                dispatch_id TEXT NOT NULL,
+                action_json TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                dismissed_at TEXT,
+                dismissed_by TEXT,
+                dismissed_reason TEXT
+            );
+            """
+        )
+
+    repo = TeamStateRepository(tmp_path)
+
+    assert repo.read().action_records == {}
+    with sqlite3.connect(db_path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_action_records)")
+        }
+        metadata = dict(
+            connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
+        )
+    assert "feedback_delivered_at" in columns
+    assert "feedback_delivered_by_dispatch_id" in columns
+    assert metadata["sqlite_schema_version"] == "2"
+
+
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
     legacy_path = tmp_path / "addons" / "team-addon" / "state.json"
     legacy_path.parent.mkdir(parents=True)

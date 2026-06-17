@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import tarfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -440,6 +440,33 @@ def _add_pending_inbox(
     repo.update(_mutate)
 
 
+def _add_action_record(
+    repo: TeamStateRepository,
+    *,
+    action_id: str,
+    dispatch_id: str,
+    created_at: datetime,
+    success: bool,
+    error: str | None = None,
+    action: dict[str, object] | None = None,
+    feedback_delivered_at: datetime | None = None,
+) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        state.action_records[action_id] = AgentActionRecord(
+            id=action_id,
+            agent_id="backend",
+            dispatch_id=dispatch_id,
+            action=action or {},
+            success=success,
+            error=error,
+            created_at=created_at,
+            feedback_delivered_at=feedback_delivered_at,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
 def _leased_agent_ids(leases: list[dict[str, object]]) -> list[str]:
     return [str(lease["agent"]["id"]) for lease in leases]
 
@@ -535,6 +562,75 @@ def test_lease_payload_tasks_include_derived_graph_fields(tmp_path: Path) -> Non
     assert task_payload["child_task_ids"] == []
     assert task_payload["blocked_by_task_ids"] == []
     assert task_payload["subtask_counts"]["total"] == 0
+
+
+def test_latest_failed_action_feedback_is_leased_once(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _add_action_record(
+        repo,
+        action_id="action-old",
+        dispatch_id="dispatch-old",
+        created_at=base_time,
+        success=False,
+        error="agent backend cannot deliver task old-task",
+        action={"deliverables": [{"task_id": "old-task"}]},
+    )
+    _add_action_record(
+        repo,
+        action_id="action-new",
+        dispatch_id="dispatch-new",
+        created_at=base_time + timedelta(minutes=1),
+        success=False,
+        error="release_branch must not start with 'refs/'",
+        action={
+            "git_release_requests": [
+                {"project_id": "project", "release_branch": "refs/heads/release"}
+            ]
+        },
+    )
+
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=2))
+
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    assert backend_lease["reason"] == "action_feedback"
+    assert backend_lease["recent_action_feedback"] == [
+        {
+            "action_record_id": "action-new",
+            "dispatch_id": "dispatch-new",
+            "created_at": (base_time + timedelta(minutes=1)).isoformat(),
+            "error": "release_branch must not start with 'refs/'",
+            "action_fields": ["git_release_requests"],
+            "correction_hints": [
+                "Use bare branch names like agents/... or team/..., not refs/heads/...."
+            ],
+        }
+    ]
+
+    repo.mark_action_feedback_delivered(
+        agent_id="backend",
+        source_dispatch_id="dispatch-new",
+        delivery_dispatch_id=str(backend_lease["dispatch_id"]),
+    )
+    state, result = repo.apply_agent_action(
+        session_id="session-backend",
+        dispatch_id=str(backend_lease["dispatch_id"]),
+        action={
+            "agent_id": "backend",
+            "dispatch_id": str(backend_lease["dispatch_id"]),
+            "notes": "Feedback received.",
+        },
+    )
+
+    assert result["success"] is True
+    assert state.action_records["action-new"].feedback_delivered_at is not None
+    assert (
+        state.action_records["action-new"].feedback_delivered_by_dispatch_id
+        == backend_lease["dispatch_id"]
+    )
+    _state, leases = repo.lease_due_agents(now=base_time + timedelta(minutes=20))
+    backend_lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    assert backend_lease["recent_action_feedback"] == []
 
 
 def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
@@ -641,6 +737,53 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         ],
     }
     assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+
+
+def test_wake_due_agents_provider_prompts_with_latest_action_feedback_once(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    failed_dispatch_id = "failed-dispatch"
+    _add_action_record(
+        repo,
+        action_id="action-feedback",
+        dispatch_id=failed_dispatch_id,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="agent backend cannot deliver task other-task",
+        action={"deliverables": [{"task_id": "other-task"}]},
+    )
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    prompt = str(resumer.calls[0]["prompt"])
+    assert "Most recent Team action feedback (one-shot)" in prompt
+    assert "action-feedback" in prompt
+    assert "Only the task owner can create deliverables for that task." in prompt
+    reread = TeamStateRepository(tmp_path).read()
+    record = reread.action_records["action-feedback"]
+    assert record.feedback_delivered_at is not None
+    assert record.feedback_delivered_by_dispatch_id == result["dispatches"][0][
+        "dispatch_id"
+    ]
 
 
 def test_wake_due_agents_provider_rotates_context_when_pending(

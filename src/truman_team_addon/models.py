@@ -549,13 +549,21 @@ class AgentActionRecord(TeamModel):
     dismissed_at: datetime | None = None
     dismissed_by: str | None = None
     dismissed_reason: str | None = None
+    feedback_delivered_at: datetime | None = None
+    feedback_delivered_by_dispatch_id: str | None = None
 
     @field_validator("id", "agent_id", "dispatch_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("error", "dismissed_by", "dismissed_reason", mode="before")
+    @field_validator(
+        "error",
+        "dismissed_by",
+        "dismissed_reason",
+        "feedback_delivered_by_dispatch_id",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)

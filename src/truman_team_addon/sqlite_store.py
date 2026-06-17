@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 1
+SQLITE_SCHEMA_VERSION = 2
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -63,10 +63,23 @@ class TeamStateSqliteStore:
         with self._lock:
             with self._connect() as connection:
                 connection.executescript(_SCHEMA_SQL)
+                _ensure_column(
+                    connection,
+                    table_name="team_action_records",
+                    column_name="feedback_delivered_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_action_records",
+                    column_name="feedback_delivered_by_dispatch_id",
+                    definition="TEXT",
+                )
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO team_state_metadata(key, value)
+                    INSERT INTO team_state_metadata(key, value)
                     VALUES ('sqlite_schema_version', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """,
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
@@ -870,6 +883,10 @@ class TeamStateSqliteStore:
                 "dismissed_at": row["dismissed_at"],
                 "dismissed_by": row["dismissed_by"],
                 "dismissed_reason": row["dismissed_reason"],
+                "feedback_delivered_at": row["feedback_delivered_at"],
+                "feedback_delivered_by_dispatch_id": row[
+                    "feedback_delivered_by_dispatch_id"
+                ],
             }
 
     @staticmethod
@@ -881,9 +898,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_action_records(
                     id, agent_id, dispatch_id, action_json, success, error, created_at,
-                    dismissed_at, dismissed_by, dismissed_reason
+                    dismissed_at, dismissed_by, dismissed_reason,
+                    feedback_delivered_at, feedback_delivered_by_dispatch_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["id"],
@@ -896,6 +914,8 @@ class TeamStateSqliteStore:
                     record.get("dismissed_at"),
                     record.get("dismissed_by"),
                     record.get("dismissed_reason"),
+                    record.get("feedback_delivered_at"),
+                    record.get("feedback_delivered_by_dispatch_id"),
                 ),
             )
 
@@ -1170,6 +1190,24 @@ def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    existing_columns = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+    if column_name in existing_columns:
+        return
+    connection.execute(
+        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+    )
 
 
 def _insert_position_values(
@@ -1515,7 +1553,9 @@ CREATE TABLE IF NOT EXISTS team_action_records (
     created_at TEXT NOT NULL,
     dismissed_at TEXT,
     dismissed_by TEXT,
-    dismissed_reason TEXT
+    dismissed_reason TEXT,
+    feedback_delivered_at TEXT,
+    feedback_delivered_by_dispatch_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_team_action_records_agent_dispatch
     ON team_action_records(agent_id, dispatch_id, created_at, id);
