@@ -677,6 +677,15 @@ button.runtime-filter-button.active {
   overflow-wrap: anywhere;
 }
 
+.org-node-work-line--now {
+  display: none;
+}
+
+.org-focus-node-card:is(:hover, :focus, :focus-visible, :focus-within)
+  .org-node-work-line--now {
+  display: grid;
+}
+
 .org-node-work-line--waiting strong {
   color: var(--amber);
 }

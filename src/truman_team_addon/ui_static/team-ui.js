@@ -2012,7 +2012,7 @@ function renderOrgNodeWorkSummary(agentData) {
       : "Clear";
   return `
     <div class="org-node-work">
-      <div class="org-node-work-line">
+      <div class="org-node-work-line org-node-work-line--now">
         <span>Now</span>
         <strong>${escapeHtml(snapshot.primary)}</strong>
       </div>

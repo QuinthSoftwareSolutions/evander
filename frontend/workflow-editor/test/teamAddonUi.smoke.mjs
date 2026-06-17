@@ -1798,14 +1798,17 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await focusedBackendCard.locator(".awake-indicator", { hasText: "Awake" }).waitFor({
     state: "visible",
   });
-  await focusedBackendCard.locator(".org-node-work").getByText("Build API").waitFor({
-    state: "visible",
+  await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
+    state: "hidden",
   });
   await focusedBackendCard.locator(".org-node-work").getByText("Resolve dependency").waitFor({
     state: "visible",
   });
 
   await focusedBackendCard.hover();
+  await focusedBackendCard.locator(".org-node-work-line--now").getByText("Build API").waitFor({
+    state: "visible",
+  });
   const focusedBackendDetails = focusedBackendCard.locator(".org-node-hover-panel");
   await focusedBackendDetails.getByText("Awake status Awake - dispatch dispatch-42").waitFor({
     state: "visible",
