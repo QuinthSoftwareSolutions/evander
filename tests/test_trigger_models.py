@@ -22,6 +22,7 @@ from agent_sandbox.events.provider_models import (
     CiRunCompletedTriggerDefinition,
     CommunicationNewMessageTriggerDefinition,
     CommunicationSendMessageEffectDefinition,
+    EmailNewMessageTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushBranchEffectDefinition,
     GitPushTriggerDefinition,
@@ -669,20 +670,19 @@ def test_git_push_trigger_rejects_both_repo_path_and_glob() -> None:
         )
 
 
-def test_email_trigger_requires_account_and_mailboxes() -> None:
+def test_email_trigger_requires_mailboxes_only() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
-    with pytest.raises(ValueError, match="account_identifier"):
-        adapter.validate_python(
-            {
-                "id": "t-2b",
-                "display_name": "Email",
-                "type": "trigger:email:new-message",
-                "provider": "gmail",
-                "mailbox_ids": ["inbox"],
-                "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
-            }
-        )
+    trigger = EmailNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "t-2b",
+            "display_name": "Email",
+            "type": "trigger:email:new-message",
+            "mailbox_ids": ["primary"],
+        }
+    )
+    assert trigger.mailbox_ids == ["primary"]
+    assert trigger.folder == "inbox"
 
     with pytest.raises(ValueError, match="mailbox_ids"):
         adapter.validate_python(
@@ -690,9 +690,6 @@ def test_email_trigger_requires_account_and_mailboxes() -> None:
                 "id": "t-2c",
                 "display_name": "Email",
                 "type": "trigger:email:new-message",
-                "provider": "gmail",
-                "account_identifier": "ops@example.com",
-                "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
             }
         )
 

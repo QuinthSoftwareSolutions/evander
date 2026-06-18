@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from agent_sandbox.models import SessionManifest
+from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.storage import JsonObjectStore, JsonStore, _no_write
 
 
@@ -188,9 +188,15 @@ class JsonSessionManifestRepository:
             try:
                 manifest = SessionManifest.model_validate(value)
             except ValidationError:
-                if ignore_invalid:
+                if not ignore_invalid:
+                    raise
+                sanitized = _session_manifest_with_known_tool_names(value)
+                if sanitized is None:
                     continue
-                raise
+                try:
+                    manifest = SessionManifest.model_validate(sanitized)
+                except ValidationError:
+                    continue
             manifest_session_id = str(getattr(manifest, "session_id", "") or "").strip()
             manifests[manifest_session_id or str(session_id)] = manifest
         return manifests
@@ -332,3 +338,72 @@ def _extract_issue_number(value: str) -> str | None:
             if candidate.isdigit():
                 return candidate
     return None
+
+
+def _session_manifest_with_known_tool_names(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    sanitized = dict(value)
+    changed = False
+    for field_name in ("allowed_tools", "approval_required_tools"):
+        filtered, field_changed = _known_tool_name_list(sanitized.get(field_name))
+        if field_changed:
+            sanitized[field_name] = filtered
+            changed = True
+    for field_name in ("approval_tool_settings", "tool_argument_policies"):
+        filtered, field_changed = _known_tool_name_mapping(sanitized.get(field_name))
+        if field_changed:
+            sanitized[field_name] = filtered
+            changed = True
+    return sanitized if changed else None
+
+
+def _known_tool_name_list(value: object) -> tuple[list[str], bool]:
+    if value is None:
+        return [], False
+    if isinstance(value, (str, ToolName)):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return [], False
+    filtered: list[str] = []
+    seen: set[str] = set()
+    changed = False
+    for item in raw_items:
+        candidate = item.value if isinstance(item, ToolName) else str(item).strip()
+        if not candidate:
+            continue
+        tool = ToolName._value2member_map_.get(candidate)
+        if tool is None:
+            changed = True
+            continue
+        if tool.value in seen:
+            continue
+        seen.add(tool.value)
+        filtered.append(tool.value)
+    return filtered, changed
+
+
+def _known_tool_name_mapping(value: object) -> tuple[dict[str, object], bool]:
+    if value is None:
+        return {}, False
+    if not isinstance(value, dict):
+        return {}, False
+    filtered: dict[str, object] = {}
+    changed = False
+    for raw_tool_name, raw_settings in value.items():
+        candidate = (
+            raw_tool_name.value
+            if isinstance(raw_tool_name, ToolName)
+            else str(raw_tool_name).strip()
+        )
+        if not candidate:
+            changed = True
+            continue
+        tool = ToolName._value2member_map_.get(candidate)
+        if tool is None:
+            changed = True
+            continue
+        filtered[tool.value] = raw_settings
+    return filtered, changed

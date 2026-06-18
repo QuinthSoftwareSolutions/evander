@@ -84,7 +84,6 @@ class ToolName(str, Enum):
     COMPLETE_ISSUE = "complete_issue"
     GET_AGENT_STATUS = "get_agent_status"
     GET_AGENT_LOGS = "get_agent_logs"
-    TEAM_CREATE_OPERATOR_DIRECTIVE = "team_create_operator_directive"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
     COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"
@@ -110,6 +109,8 @@ class ToolName(str, Enum):
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
     EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS = "email_create_draft_with_attachments"
+    EMAIL_SEND = "email_send"
+    EMAIL_SEND_WITH_ATTACHMENTS = "email_send_with_attachments"
     APPROVAL_SUBMIT = "approval_submit"
     APPROVAL_CHECK = "approval_check"
     EMAIL_SEND_APPROVED = "email_send_approved"
@@ -1107,11 +1108,18 @@ class DraftMessage(BaseModel):
     draft_id: str
     mailbox_id: str = "default"
     provider: str = "json_store"
+    provider_draft_id: str | None = None
     thread_or_message_id: str | None = None
     subject: str | None = None
     body: str
+    body_digest: str | None = None
     recipients: list[str] = Field(default_factory=list)
+    attachment_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+    sent_at: datetime | None = None
+    send_status: str | None = None
+    provider_message_id: str | None = None
 
 
 class TeamsDelegatedAuthBinding(BaseModel):

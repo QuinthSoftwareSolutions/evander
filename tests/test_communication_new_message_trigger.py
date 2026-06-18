@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import GatewayConfig, MailboxConfig
+from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
@@ -14,7 +15,9 @@ from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage
+from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
 from agent_sandbox.triggers.providers.communication_new_message import (
     CommunicationNewMessageTriggerProvider,
 )
@@ -188,6 +191,171 @@ def test_communication_trigger_polls_teams_and_discord_and_acknowledges_same_tim
 
     provider.acknowledge_published_event(second[0])
     assert provider.poll() == []
+
+
+def test_communication_trigger_polls_email_target(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    runtime_dir = context.resolved_config.runtime_dir
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "email-ops",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "operator@example.com",
+                    "policy": {
+                        "capabilities": ["read"],
+                        "auth_profile_ref": "email.default",
+                    },
+                }
+            ]
+        },
+    )
+    received_at = datetime(2026, 4, 9, 10, 0, tzinfo=UTC)
+    context.resolved_config.email_store_path.write_text(
+        json.dumps(
+            {
+                "email-msg-1": EmailMessage(
+                    message_id="email-msg-1",
+                    mailbox_id="default",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["operator@example.com"],
+                    subject="Status",
+                    body_text="hello from email",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provider = CommunicationNewMessageTriggerProvider()
+    provider.initialize(_trigger_definition(target_ids=["email-ops"]), context)
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == [
+        "comm-trigger:email:email-ops:email-msg-1:2026-04-09T10:00:00Z"
+    ]
+    event = events[0]
+    assert event.payload["provider"] == "email"
+    assert event.payload["communication_target_id"] == "email-ops"
+    assert event.payload["message_id"] == "email-msg-1"
+    assert event.payload["content"] == "hello from email"
+    assert event.payload["author_id"] == "sender@example.com"
+    assert event.payload["target"] == "operator@example.com"
+
+    provider.acknowledge_published_event(event)
+    cursor_state = _read_cursor_state(runtime_dir)
+    assert cursor_state["comm-trigger"]["recent_message_ids"] == [
+        "email:email-ops:email-msg-1"
+    ]
+
+
+def test_communication_trigger_resolves_full_email_config_without_provider_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="gmail",
+                account_identifier="me",
+                auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+            )
+        ],
+    )
+    resolver = ProviderConfigResolver(config)
+    SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir)).write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "email-ops",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "operator@example.com",
+                    "policy": {
+                        "capabilities": ["read"],
+                        "auth_profile_ref": "email.mailbox-1",
+                    },
+                }
+            ]
+        },
+    )
+    captured: dict[str, object] = {}
+
+    class FakeEmailProvider:
+        def list_unread(
+            self, mailbox_id: str, folder: str, limit: int
+        ) -> list[EmailMessageSummary]:
+            captured["list_unread"] = {
+                "mailbox_id": mailbox_id,
+                "folder": folder,
+                "limit": limit,
+            }
+            return [
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder=folder,
+                    message_id="gmail-msg-1",
+                    thread_id="thread-1",
+                    sender="sender@example.com",
+                    recipients=["operator@example.com"],
+                    received_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+                    unread=True,
+                    body_snippet="hello from gmail",
+                )
+            ]
+
+    def fake_build_email_provider(config_arg, emails, drafts, email_cursors):
+        captured["mailbox_ids"] = [mailbox.mailbox_id for mailbox in config_arg.email_mailboxes]
+        captured["mailbox_providers"] = [mailbox.provider for mailbox in config_arg.email_mailboxes]
+        captured["email_cursors"] = email_cursors
+        return FakeEmailProvider()
+
+    monkeypatch.setattr(
+        "agent_sandbox.triggers.providers.communication_new_message._build_email_provider",
+        fake_build_email_provider,
+    )
+    provider = CommunicationNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_definition(target_ids=["email-ops"]),
+        TriggerRuntimeContext(
+            provider_config=trigger_provider_config_blob(
+                resolver.resolve_trigger_provider_config("root")
+            ),
+            provider_config_resolver=resolver,
+            env={"GMAIL_ACCESS_TOKEN": "secret"},
+            metadata={"directory_path": "root"},
+        ),
+    )
+
+    events = provider.poll()
+
+    assert captured["mailbox_ids"] == ["mailbox-1"]
+    assert captured["mailbox_providers"] == ["gmail"]
+    assert captured["email_cursors"] is None
+    assert captured["list_unread"] == {
+        "mailbox_id": "mailbox-1",
+        "folder": "inbox",
+        "limit": 200,
+    }
+    assert events[0].payload["communication_target_id"] == "email-ops"
+    assert events[0].payload["message_id"] == "gmail-msg-1"
 
 
 def test_communication_trigger_matches_teams_chat_and_bare_discord_channel_targets(

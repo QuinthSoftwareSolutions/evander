@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from email import message_from_bytes, policy
 
 import httpx
@@ -272,6 +273,73 @@ def test_gmail_create_draft_post_does_not_retry_transient_503(
             recipients=["person@example.com"],
         )
     assert attempts["count"] == 1
+
+
+def test_gmail_send_draft_posts_to_provider_send_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/users/me/drafts/send")
+        assert request.headers["Authorization"] == "Bearer token"
+        assert json.loads(request.content.decode("utf-8")) == {"id": "draft-123"}
+        return httpx.Response(
+            200,
+            json={"id": "gmail-message-1", "threadId": "thread-1"},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://gmail.test/gmail/v1",
+    )
+
+    result = provider.send_draft(mailbox_id="ops-gmail", draft_id="draft-123")
+
+    assert result.status == "sent"
+    assert result.message_id == "gmail-message-1"
+    assert result.metadata["gmail_thread_id"] == "thread-1"
+
+
+def test_graph_send_draft_posts_to_provider_send_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/users/leader@example.com/messages/draft-456/send")
+        assert request.headers["Authorization"] == "Bearer token"
+        return httpx.Response(202, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    result = provider.send_draft(mailbox_id="exec-graph", draft_id="draft-456")
+
+    assert result.status == "sent"
+    assert result.message_id == "draft-456"
+    assert result.metadata["graph_message_id"] == "draft-456"
 
 
 def _gmail_full_message_with_attachment() -> dict:

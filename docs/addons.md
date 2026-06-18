@@ -369,10 +369,10 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   actions. Operator stand-downs are a separate source and cannot be revoked by
   these agent-authored action items.
 - `operator_directive` inbox items — operator-to-manager instructions created
-  by the Admin API, `effect:team:create-operator-directive`, or the
-  `team_create_operator_directive` MCP tool. These are not agent-authored action
-  items. The manager handles them during its normal Team dispatch by taking the
-  requested Team actions and listing the inbox id in `handled_inbox_item_ids`.
+  by the add-on Admin API or `effect:team:create-operator-directive`. These are
+  not agent-authored action items. The manager handles them during its normal
+  Team dispatch by taking the requested Team actions and listing the inbox id in
+  `handled_inbox_item_ids`.
 - `deliverables[]` — record finished work for an owned task. Shape:
   `{"id"?, "task_id", "summary", "artifact_paths"?, "artifact_refs"?,
   "artifact_space_ref"?, "git_refs"?}`. `artifact_paths` are relative paths
@@ -436,20 +436,16 @@ Team communication is directional and enforced by the repository, not by prose:
   that event to an `effect:communication:send-message` node bound to the team's
   `operator_communication_target_id`. The repository and effect providers never
   call the communication sender directly — routing is the workflow pack's job.
-- **Operator to manager** — use `POST /operator-directives`,
-  `effect:team:create-operator-directive`, or the manager-session
-  `team_create_operator_directive` MCP tool. These surfaces create a pending
-  `operator_directive` inbox item for the manager and mark the manager due, so a
-  Discord instruction like “ask the lead for status on next dispatch” becomes
-  normal Team work instead of an out-of-band `team-action.json` write.
+- **Operator to manager** — use the add-on `POST /operator-directives` Admin API
+  or `effect:team:create-operator-directive`. These surfaces create a pending
+  `operator_directive` inbox item for the manager and mark the manager due, so
+  an operator instruction like "ask the lead for status on next dispatch"
+  becomes normal Team work instead of an out-of-band `team-action.json` write.
 - `Team.operator_communication_target_id` is outbound-only. It does not grant the
   manager's real session inbound Discord or Teams access and does not wake that
   session by itself. If the operator should message or wake the manager through
   Discord, create the manager agent/session with a read-capable Discord
   communication target in its session allowlist and grant `discord_get_commands`.
-  A manager session with mirrored root-manager `metadata.team_addon` can see
-  `team_create_operator_directive`; the gateway still verifies the session is
-  the canonical manager for the requested team before creating the inbox item.
 - **Operator stand-down** — use `POST /agents/{agent_id}/stand-down` with a
   required `reason` to disable that agent and its subordinate subtree. Held
   agents are skipped by future Team wake leasing, and any already-running

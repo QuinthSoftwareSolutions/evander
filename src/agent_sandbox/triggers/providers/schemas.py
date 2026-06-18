@@ -404,20 +404,36 @@ class TeamsMeetingNewTranscriptTriggerDefinition(TriggerDefinition):
 
 class EmailNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:email:new-message"]
-    provider: EmailProvider
-    account_identifier: str = Field(min_length=1)
-    mailbox_ids: list[str]
+    mailbox_ids: list[str] = Field(min_length=1)
+    folder: str = "inbox"
+    provider: EmailProvider | None = None
+    account_identifier: str | None = None
     auth_secret_refs: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("provider", mode="before")
     @classmethod
-    def validate_provider(cls, value: object) -> str:
+    def validate_provider(cls, value: object) -> str | None:
+        if value is None:
+            return None
         return validate_email_provider(value)
+
+    @field_validator("account_identifier", "folder", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object, info) -> object:
+        if value is None:
+            return "inbox" if info.field_name == "folder" else None
+        text = str(value).strip()
+        if info.field_name == "folder":
+            return text or "inbox"
+        return text or None
 
     @field_validator("mailbox_ids", mode="before")
     @classmethod
     def normalize_mailbox_ids(cls, value: object) -> object:
-        return normalize_string_list(value)
+        normalized = normalize_string_list(value)
+        if isinstance(normalized, list) and not normalized:
+            raise ValueError("mailbox_ids must contain at least one mailbox")
+        return normalized
 
 
 class _PullRequestTriggerDefinition(TriggerDefinition):

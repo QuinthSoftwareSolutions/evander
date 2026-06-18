@@ -11,6 +11,7 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
@@ -23,6 +24,7 @@ from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
 )
 from agent_sandbox.models import (
+    ApprovalStatus,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
     LocalIssueRecord,
@@ -33,7 +35,6 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.runtime import build_runtime
-from truman_team_addon.repository import TeamStateRepository
 
 
 class FakeDiscordService:
@@ -927,97 +928,6 @@ def test_discord_post_status_resolves_communication_target_id(tmp_path: Path) ->
     assert fake_discord.post_calls == [
         ("Host relay is healthy.", "123456789012345678", "session-1"),
     ]
-
-
-def test_team_create_operator_directive_allows_metadata_manager_session(
-    tmp_path: Path,
-) -> None:
-    context = make_context(tmp_path)
-    repo = TeamStateRepository(tmp_path)
-    repo.create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-    )
-    repo.create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-    )
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-manager",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"team_addon": {"agent_id": "manager", "role": "manager"}},
-        ),
-    )
-    server = create_server(context)
-
-    result = call_tool(
-        server,
-        "team_create_operator_directive",
-        {
-            "session_id": "session-manager",
-            "team_id": "team",
-            "project_id": "project",
-            "message": "Ask the lead for a status report.",
-            "title": "Status report",
-            "source": "discord",
-            "source_message_id": "discord-msg-1",
-        },
-    )
-
-    assert result["status"] == "created"
-    assert result["recipient_agent_id"] == "manager"
-    reread = TeamStateRepository(tmp_path).read()
-    item = reread.inbox[result["inbox_item_id"]]
-    assert item.item_type.value == "operator_directive"
-    assert item.payload["message"] == "Ask the lead for a status report."
-    assert item.payload["requesting_session_id"] == "session-manager"
-    assert reread.agent_runtimes["manager"].next_wake_at is None
-
-
-def test_team_create_operator_directive_rejects_non_manager_session(
-    tmp_path: Path,
-) -> None:
-    context = make_context(tmp_path)
-    repo = TeamStateRepository(tmp_path)
-    repo.create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-    )
-    repo.create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-    )
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-lead",
-            allowed_tools=[ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="team manager session"):
-        call_tool(
-            server,
-            "team_create_operator_directive",
-            {
-                "session_id": "session-lead",
-                "team_id": "team",
-                "message": "Ask for status.",
-            },
-        )
 
 
 def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
@@ -2263,6 +2173,347 @@ def test_email_send_approved_is_blocked_when_send_disabled(tmp_path: Path) -> No
                 },
             )
         )
+
+
+def test_email_send_sends_recorded_draft(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+    result = call_tool(
+        server,
+        "email_send",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "draft_id": draft["draft_id"],
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    assert result["status"] == "local_sent"
+    assert result["draft_id"] == draft["draft_id"]
+    assert result["mailbox_id"] == "primary"
+    snapshot = context.drafts.get(draft["draft_id"])
+    assert snapshot is not None
+    assert snapshot.send_status == "local_sent"
+    assert snapshot.sent_at is not None
+
+
+def test_email_send_rejects_recipient_mismatch(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com", "other@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    with pytest.raises(ToolError, match="recipients must match"):
+        asyncio.run(
+            server.call_tool(
+                "email_send",
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "draft_id": draft["draft_id"],
+                    "subject": "Status",
+                    "recipients": ["other@example.com"],
+                },
+            )
+        )
+
+
+def test_email_send_rejects_attached_draft_without_attachment_send_tool(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                ToolName.EMAIL_SEND,
+            ],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            communication_file_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(context.config.runtime_dir).stage(
+        provider="email",
+        session_id="session-1",
+        content=b"report contents",
+        original_filename="report.txt",
+        mime_type="text/plain",
+        source_mailbox="primary",
+    )
+    server = create_server(context)
+    draft = call_tool(
+        server,
+        "email_create_draft_with_attachments",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+
+    with pytest.raises(ToolError, match="use email_send_with_attachments"):
+        asyncio.run(
+            server.call_tool(
+                "email_send",
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "draft_id": draft["draft_id"],
+                    "subject": "Status",
+                    "recipients": ["approved@example.com"],
+                },
+            )
+        )
+
+
+def test_email_send_with_attachments_requires_exact_file_send_approval(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+            ],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            communication_file_send_enabled=True,
+            communication_file_require_approval_for_send=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(context.config.runtime_dir).stage(
+        provider="email",
+        session_id="session-1",
+        content=b"report contents",
+        original_filename="report.txt",
+        mime_type="text/plain",
+        source_mailbox="primary",
+    )
+    server = create_server(context)
+    draft = call_tool(
+        server,
+        "email_create_draft_with_attachments",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+    send_arguments = {
+        "session_id": "session-1",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "subject": "Status",
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+    }
+
+    with pytest.raises(ToolError, match="requires approval"):
+        asyncio.run(server.call_tool("email_send_with_attachments", send_arguments))
+
+    approval_payload = {
+        "session_id": "session-1",
+        "provider": "email",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+        "subject": "Status",
+    }
+    approval = context.policy.create_approval(
+        "session-1",
+        ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value,
+        approval_payload,
+        "Send Status with report.txt",
+    )
+    approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(approval.request_id, approval)
+
+    result = call_tool(
+        server,
+        "email_send_with_attachments",
+        {**send_arguments, "request_id": approval.request_id},
+    )
+
+    assert result["status"] == "local_sent"
+    assert result["artifact_ids"] == [artifact.artifact_id]
+    events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] == ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value
+    ]
+    assert [event["decision"] for event in events] == ["denied", "allowed"]
+    assert events[-1]["approval_request_id"] == approval.request_id
+    assert events[-1]["result"]["approval_decision"] == ApprovalStatus.APPROVED.value
+
+
+def test_email_send_with_attachments_separates_mcp_and_file_approval_ids(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+            ],
+            approval_required_tools=[ToolName.EMAIL_SEND_WITH_ATTACHMENTS],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["drafts"]},
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            communication_file_send_enabled=True,
+            communication_file_require_approval_for_send=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(context.config.runtime_dir).stage(
+        provider="email",
+        session_id="session-1",
+        content=b"report contents",
+        original_filename="report.txt",
+        mime_type="text/plain",
+        source_mailbox="primary",
+    )
+    server = create_server(context)
+    draft = call_tool(
+        server,
+        "email_create_draft_with_attachments",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+    send_arguments = {
+        "session_id": "session-1",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "subject": "Status",
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+    }
+    file_approval_payload = {
+        "session_id": "session-1",
+        "provider": "email",
+        "mailbox_id": "primary",
+        "draft_id": draft["draft_id"],
+        "recipients": ["approved@example.com"],
+        "artifact_ids": [artifact.artifact_id],
+        "subject": "Status",
+    }
+    file_approval = context.policy.create_approval(
+        "session-1",
+        ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value,
+        file_approval_payload,
+        "Send Status with report.txt",
+    )
+    file_approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(file_approval.request_id, file_approval)
+    mcp_arguments = {**send_arguments, "request_id": file_approval.request_id}
+    mcp_approval_payload = {
+        "tool_name": ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value,
+        "session_id": "session-1",
+        "arguments": mcp_arguments,
+    }
+    mcp_approval = context.policy.create_approval(
+        "session-1",
+        "mcp_tool_invocation",
+        mcp_approval_payload,
+        "Allow email_send_with_attachments for session-1",
+        tool_name=ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value,
+    )
+    mcp_approval.status = ApprovalStatus.APPROVED
+    context.approvals.put(mcp_approval.request_id, mcp_approval)
+
+    result = call_tool(
+        server,
+        "email_send_with_attachments",
+        {**mcp_arguments, "approval_request_id": mcp_approval.request_id},
+    )
+
+    assert result["status"] == "local_sent"
+    assert result["artifact_ids"] == [artifact.artifact_id]
+    events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] == ToolName.EMAIL_SEND_WITH_ATTACHMENTS.value
+    ]
+    assert [event["decision"] for event in events] == ["allowed"]
+    assert events[0]["approval_request_id"] == mcp_approval.request_id
+    assert events[0]["args"]["request_id"] == file_approval.request_id
+    assert events[0]["result"]["approval_request_id"] == file_approval.request_id
+    assert events[0]["result"]["approval_decision"] == ApprovalStatus.APPROVED.value
+    consumed_mcp_approval = context.approvals.get(mcp_approval.request_id)
+    assert consumed_mcp_approval is not None
+    assert consumed_mcp_approval.status == ApprovalStatus.EXHAUSTED
+    accepted_file_approval = context.approvals.get(file_approval.request_id)
+    assert accepted_file_approval is not None
+    assert accepted_file_approval.status == ApprovalStatus.APPROVED
 
 
 def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None:

@@ -1421,7 +1421,7 @@ def _build_issue_session_manifest(
             ]
         )
         if policy.email_send_enabled:
-            allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
+            allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
 
     metadata: dict[str, object] = {}
     if str(os.environ.get("AGENT_PROVIDER", "")).strip().lower() == "copilot":
@@ -2332,7 +2332,7 @@ def create_session(
         except ValueError:
             manifest.model = None
     if manifest.email_send_enabled:
-        manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
+        manifest.allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
     _runtime_session_repository(runtime).upsert_session(manifest)
     typer.echo(f"Created session manifest {session_id}")
 

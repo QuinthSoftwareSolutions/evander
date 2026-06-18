@@ -118,17 +118,6 @@ def mandatory_approval_required_for_tool(tool_name: ToolName) -> bool:
     return tool_name in ALWAYS_APPROVAL_REQUIRED_TOOLS
 
 
-def _session_metadata_allows_team_operator_directive(session: SessionManifest) -> bool:
-    metadata = session.metadata if isinstance(session.metadata, dict) else {}
-    team_addon = metadata.get("team_addon")
-    if not isinstance(team_addon, dict):
-        return False
-    role = str(team_addon.get("role") or "").strip().lower()
-    agent_id = str(team_addon.get("agent_id") or "").strip()
-    superior_id = str(team_addon.get("reports_to_agent_id") or "").strip()
-    return bool(agent_id and (role == "manager" or not superior_id))
-
-
 def set_tool_approval_context(
     *,
     session_id: str | None,
@@ -515,10 +504,6 @@ class PolicyEngine:
             has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
             if has_tool_permission:
                 source = "session.allowed_tools.respond_to_agent"
-        if tool_name == ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE and not has_tool_permission:
-            has_tool_permission = _session_metadata_allows_team_operator_directive(session)
-            if has_tool_permission:
-                source = "session.metadata.team_addon"
         if not has_tool_permission:
             has_tool_permission = self._lease_allows_tool(
                 session_id=session.session_id,

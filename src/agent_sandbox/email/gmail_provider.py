@@ -21,6 +21,7 @@ from .providers import (
     EmailDraftAttachment,
     EmailMessageDetail,
     EmailMessageSummary,
+    EmailSendResult,
 )
 
 
@@ -122,6 +123,35 @@ class GmailEmailProvider:
             recipients=recipients,
             created_at=now,
             metadata=metadata,
+        )
+
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="send_draft",
+                method="POST",
+                url=self._url("drafts/send"),
+                headers=self._headers(),
+                json={"id": draft_id},
+            )
+            data = response.json()
+
+        sent_at = datetime.now(UTC)
+        message_id = str(data.get("id") or data.get("message", {}).get("id") or "") or None
+        thread_id = str(data.get("threadId") or data.get("message", {}).get("threadId") or "") or None
+        return EmailSendResult(
+            status="sent",
+            draft_id=draft_id,
+            mailbox_id=mailbox_id,
+            provider=self.provider_name,
+            message_id=message_id,
+            sent_at=sent_at,
+            metadata={
+                "gmail_thread_id": thread_id,
+                "gmail_message_id": message_id,
+            },
         )
 
     def list_attachments(

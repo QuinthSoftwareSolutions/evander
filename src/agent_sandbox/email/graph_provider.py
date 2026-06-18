@@ -19,6 +19,7 @@ from .providers import (
     EmailDraftAttachment,
     EmailMessageDetail,
     EmailMessageSummary,
+    EmailSendResult,
 )
 
 
@@ -156,6 +157,29 @@ class GraphEmailProvider:
                 "attachment_count": len(attachment_items),
                 "large_attachment_count": len(large_attachments),
             },
+        )
+
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="send_draft",
+                method="POST",
+                url=self._url(f"messages/{draft_id}/send"),
+                headers=self._headers(),
+                json={},
+            )
+
+        sent_at = datetime.now(UTC)
+        return EmailSendResult(
+            status="sent",
+            draft_id=draft_id,
+            mailbox_id=mailbox_id,
+            provider=self.provider_name,
+            message_id=draft_id,
+            sent_at=sent_at,
+            metadata={"graph_message_id": draft_id},
         )
 
     def list_attachments(

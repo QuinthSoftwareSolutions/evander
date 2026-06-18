@@ -434,10 +434,7 @@ class GatewayConfig(BaseModel):
     discord_resume_prompt: str = Field(
         default=(
             "You have unread Discord messages. Please fetch them with "
-            "list_unread_discord_messages and respond with discord_post_status if needed. "
-            "If an operator asks for Team Add-on coordination, use "
-            "team_create_operator_directive to enqueue the request for the normal Team "
-            "runtime instead of writing Team action artifacts from this Discord wake."
+            "list_unread_discord_messages and respond with discord_post_status if needed."
         ),
     )
     wake_vm_user: str = "agent"

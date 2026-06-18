@@ -2037,8 +2037,8 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert "top-level send" in send_thread_description
     assert "reply hint" in notify_thread_description
 
-    assert set(send_root) == {"root-chat"}
-    assert set(send_ops) == {"ops-chat", "ops-discord"}
+    assert set(send_root) == {"root-chat", "mail-write", "mail-read-write"}
+    assert set(send_ops) == {"ops-chat", "ops-discord", "mail-write", "mail-read-write"}
     assert set(notify_root) == {"root-notify", "root-email-notify"}
     assert set(notify_ops) == {"root-notify", "root-email-notify", "ops-email-notify"}
     assert set(tool_approval_root) == {"root-notify", "root-email-notify"}
@@ -2052,11 +2052,15 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
+        "mail-read",
+        "mail-read-write",
     }
     assert set(message_read_ops) == {
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
+        "mail-read",
+        "mail-read-write",
         "ops-chat",
         "ops-discord",
         "ops-read-chat",

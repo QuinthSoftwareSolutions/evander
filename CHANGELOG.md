@@ -5,6 +5,30 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-17 - Team Add-on Boundary Cleanup
+
+- Removed the Team-specific manager directive MCP tool, Team metadata policy
+  special-case, and Team guidance from the core Discord wake prompt so
+  operator-directive behavior stays on add-on-owned Admin API and workflow
+  effect surfaces.
+
+## 2026-06-17 - Email Send And Communication Integration
+
+- Implemented real email draft sending for JSON-store, Gmail, and Microsoft Graph
+  providers, with host-recorded draft snapshots validating mailbox, session,
+  recipients, subject, and attachment IDs before send.
+- Added neutral `email_send` and `email_send_with_attachments` MCP tools while
+  retaining the older approved-tool names as compatibility aliases.
+- Switched email triggers to configured mailbox provider definitions and added
+  email support to generic communication message query, trigger, and send flows.
+- Fixed review follow-ups so email attachment sends enforce exact file-send
+  approval, Gmail draft sends use the provider `drafts/send` endpoint, and
+  trigger/query email reads do not advance durable Gmail/Graph cursors before
+  workflow acknowledgement.
+- Blocked plain email sends for drafts with attachments, split email attachment
+  file-send approval IDs from generic MCP approval IDs, and exposed email targets
+  in generic communication workflow pickers.
+
 ## 2026-06-17 - Team Add-on Timeline UTC Sorting
 
 - Kept Team Add-on timeline rows in server order for legacy offset-naive ISO
@@ -208,7 +232,8 @@ material. Newer entries are added incrementally as changes land.
   normal Team runtime instead of requiring ad hoc `team-action.json` writes.
 - Exposed the directive path through the Team Admin API,
   `effect:team:create-operator-directive`, and the manager-facing
-  `team_create_operator_directive` MCP tool.
+  MCP tool. The MCP tool was later removed to keep Team-specific behavior out
+  of the core gateway.
 
 ## 2026-06-16 - Team Add-on Project Repo Wake Prep
 

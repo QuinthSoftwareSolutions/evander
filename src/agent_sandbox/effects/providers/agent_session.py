@@ -479,8 +479,10 @@ def build_container_session_manifest(
         ):
             if tool not in resolved_tools:
                 resolved_tools.append(tool)
-        if config.email_send_enabled and ToolName.EMAIL_SEND_APPROVED not in resolved_tools:
-            resolved_tools.append(ToolName.EMAIL_SEND_APPROVED)
+        if config.email_send_enabled:
+            for tool in (ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED):
+                if tool not in resolved_tools:
+                    resolved_tools.append(tool)
 
     resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(
         teams_channel_allowlist

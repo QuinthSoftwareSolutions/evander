@@ -55,6 +55,7 @@ from agent_sandbox.email.providers import (
     EmailMessageDetail,
     EmailMessageSummary,
     EmailProvider,
+    EmailSendResult,
 )
 from agent_sandbox.repositories.records import DiscordRecordsRepository, TeamsRecordsRepository
 from agent_sandbox.text_formatting import render_markdownish_text_to_html
@@ -408,12 +409,20 @@ class EmailService:
             attachments=attachments,
         )
 
+    def send_draft(self, mailbox_id: str, draft_id: str) -> EmailSendResult:
+        return self.provider.send_draft(mailbox_id=mailbox_id, draft_id=draft_id)
+
     def send_from_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "status": "stubbed",
-            "request_id": request_id,
-            "sent_payload": payload,
-        }
+        mailbox_id = str(payload.get("mailbox_id") or "").strip()
+        draft_id = str(payload.get("draft_id") or payload.get("provider_draft_id") or "").strip()
+        if not mailbox_id:
+            raise ValueError("email send payload must include mailbox_id")
+        if not draft_id:
+            raise ValueError("email send payload must include draft_id")
+        result = self.send_draft(mailbox_id=mailbox_id, draft_id=draft_id)
+        output = result.model_dump(mode="json")
+        output["request_id"] = request_id
+        return output
 
 
 class DiscordService(Protocol):

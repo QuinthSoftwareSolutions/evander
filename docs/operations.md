@@ -1301,7 +1301,7 @@ Audit/result behavior:
   `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`) and never
   place those token values in guest images, cloud-init, or session manifests.
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
-  to enforce explicit approval checks for send.
+  to allow `email_send` and enforce approval through MCP approval policy where required.
 
 ## Operator Approval Notifications
 
@@ -1553,8 +1553,10 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
    regular file path under `/home/agent`; use the returned opaque `artifact.artifact_id` for the
    send.
 3. If sending an email attachment, keep draft creation separate from actual send: use
-   `email_create_draft_with_attachments` first, then `email_send_approved_with_attachments` only
-   after both `email_send_enabled: true` and a matching approval are present.
+   `email_create_draft_with_attachments` first, then `email_send_with_attachments` only after
+   `email_send_enabled: true`. Pass the exact file-send approval as `request_id`; if the tool
+   invocation itself also requires MCP approval, pass that separate request as `approval_request_id`.
+   The older `email_send_approved_with_attachments` tool remains available for compatibility.
 4. For Discord and Teams, submit/approve the exact payload expected by `discord_post_file` or
    `teams_post_file`, including destination, message, and `artifact_ids`; then pass the approval
    `request_id` to the send tool.
@@ -1624,7 +1626,7 @@ Use dedicated test channels/mailboxes only and keep files small:
   optionally send it back with `teams_post_file` only after approval.
 - **Gmail:** send the fixture to the Gmail test mailbox; list/download/copy it; optionally create a
   draft with `email_create_draft_with_attachments`; avoid actual send unless `email_send_enabled`
-  and matching approval are both intentionally enabled.
+  and the intended MCP approval policy are both intentionally enabled.
 - **Graph:** repeat the Gmail checks against the Microsoft Graph test mailbox.
 
 Pass criteria: all inbound receives are policy-allowed and audited, blocked file types/sizes are

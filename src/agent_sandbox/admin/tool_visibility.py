@@ -209,6 +209,7 @@ _FILES_TOOLS = {
     ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE,
     ToolName.TEAMS_POST_FILE,
     ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+    ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
     ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
 }
 
@@ -224,6 +225,7 @@ _EMAIL_TOOLS = {
     ToolName.EMAIL_LIST_UNREAD,
     ToolName.EMAIL_GET_MESSAGE,
     ToolName.EMAIL_CREATE_DRAFT,
+    ToolName.EMAIL_SEND,
     ToolName.EMAIL_SEND_APPROVED,
 }
 
@@ -233,17 +235,12 @@ _FEEDBACK_TOOLS = {
     ToolName.LIST_ALL_FEEDBACK,
 }
 
-_TEAM_TOOLS = {
-    ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
-}
-
 _HIDDEN_BY_POLICY_SOURCES = {
     "directory.mcp_tool_policies",
     "session.allowed_tools",
     "session.allowed_tools.respond_to_agent",
     "session.metadata.capability_profile",
     "session.metadata.assistant_mutation_policy",
-    "session.metadata.team_addon",
 }
 
 _UNAVAILABLE_TO_SESSION_SOURCES = {
@@ -279,8 +276,6 @@ def _tool_category(tool_name: ToolName) -> str:
         return "Email"
     if tool_name in _FEEDBACK_TOOLS:
         return "Feedback"
-    if tool_name in _TEAM_TOOLS:
-        return "Team"
     return "Other"
 
 
@@ -309,8 +304,6 @@ def _tool_provider(tool_name: ToolName, category: str) -> str | None:
         return "email"
     if tool_name in _FEEDBACK_TOOLS:
         return "feedback"
-    if tool_name in _TEAM_TOOLS:
-        return "team"
     if tool_name in _ISSUE_TOOLS:
         return "issue"
     return category.lower().replace(" ", "_") if category != "Other" else None

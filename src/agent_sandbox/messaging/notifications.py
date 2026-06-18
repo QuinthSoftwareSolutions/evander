@@ -206,6 +206,7 @@ class CommunicationMessageSender(NotificationSender):
         communication_target_id: str,
         message: str,
         thread_id: str | None = None,
+        subject: str | None = None,
         sender_session_id: str = "workflow",
     ) -> dict[str, Any]:
         target = self._resolve_target(communication_target_id)
@@ -227,6 +228,13 @@ class CommunicationMessageSender(NotificationSender):
                 message=message,
                 sender_session_id=sender_session_id,
             )
+        elif target.provider == "email":
+            result = self._send_email(
+                target=target,
+                message=message,
+                subject=subject,
+                thread_id=thread_id,
+            )
         else:
             raise ValueError(
                 "effect:communication:send-message does not support "
@@ -242,6 +250,31 @@ class CommunicationMessageSender(NotificationSender):
             }
         )
         return output
+
+    def _send_email(
+        self,
+        *,
+        target: CommunicationTargetDefinition,
+        message: str,
+        subject: str | None,
+        thread_id: str | None,
+    ) -> dict[str, Any]:
+        if not bool(getattr(self._resolved_config(), "email_send_enabled", False)):
+            raise ValueError("email send is disabled for this directory")
+        mailbox_id = self._email_mailbox_id(target)
+        service = self._email_service()
+        draft = service.create_draft(
+            mailbox_id,
+            thread_id,
+            subject,
+            message,
+            [target.address],
+        )
+        send_result = service.send_draft(mailbox_id, draft.draft_id)
+        return {
+            **_email_draft_output(draft),
+            **send_result.model_dump(mode="json"),
+        }
 
 
 def _require_target_capability(target: CommunicationTargetDefinition, capability: str) -> None:

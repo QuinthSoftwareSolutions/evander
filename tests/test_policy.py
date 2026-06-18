@@ -748,31 +748,6 @@ def test_tool_visibility_reports_session_disallowed_tools_with_reason(
     )
 
 
-def test_team_operator_directive_visible_for_team_manager_metadata(tmp_path: Path) -> None:
-    engine = make_engine(tmp_path)
-    session = SessionManifest(
-        session_id="s1",
-        allowed_tools=[],
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-        metadata={
-            "team_addon": {
-                "agent_id": "manager",
-                "role": "manager",
-            }
-        },
-    )
-    engine.session_store.upsert_session(session)
-
-    visibility = engine.tool_visibility_for_session(
-        session,
-        ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
-    )
-
-    assert visibility.available is True
-    assert visibility.visible is True
-    assert visibility.source == "session.metadata.team_addon"
-
-
 def test_tool_visibility_keeps_pending_prompts_visible_when_respond_to_agent_is_allowed(
     tmp_path: Path,
 ) -> None:

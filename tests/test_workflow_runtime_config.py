@@ -1348,14 +1348,14 @@ def test_load_config_accepts_read_capable_communication_targets(
         (
             [
                 {
-                    "id": "email-primary",
-                    "provider": "email",
-                    "kind": "email",
-                    "address": "ops@example.com",
+                    "id": "github-pr",
+                    "provider": "github",
+                    "kind": "pull-request",
+                    "address": "org/repo#1",
                     "policy": {"capabilities": ["read"]},
                 }
             ],
-            "only teams and discord are supported",
+            "only teams, discord, and email are supported",
         ),
         (
             [

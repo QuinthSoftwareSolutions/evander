@@ -82,7 +82,7 @@ from agent_sandbox.inline_media import (
     require_provider_media_url,
     sanitize_inline_media_metadata,
 )
-from agent_sandbox.email.providers import EmailDraftAttachment
+from agent_sandbox.email.providers import EmailDraft, EmailDraftAttachment
 from agent_sandbox.issues.service import AzureDevOpsIssueInlineMediaProvider, IssueService
 from agent_sandbox.pr_feedback.providers import (
     AzureDevOpsFeedbackAdapter,
@@ -116,6 +116,7 @@ from agent_sandbox.models import (
     CommunicationFileArtifact,
     DownloadInlineMediaRequest,
     DownloadInlineMediaResponse,
+    DraftMessage,
     InlineMediaRef,
     ListInlineMediaRequest,
     ListInlineMediaResponse,
@@ -1271,6 +1272,142 @@ def create_server(context: RuntimeContext) -> FastMCP:
             elif isinstance(value, list):
                 recipients.extend([item for item in value if isinstance(item, str)])
         return recipients
+
+    def _normalized_email_recipients(recipients: list[str]) -> list[str]:
+        return sorted(address.strip().casefold() for address in recipients if address.strip())
+
+    def _record_email_draft_snapshot(
+        *,
+        session_id: str,
+        draft: EmailDraft,
+        body: str,
+        artifact_ids: list[str] | None = None,
+    ) -> None:
+        snapshot = DraftMessage(
+            draft_id=draft.draft_id,
+            mailbox_id=draft.mailbox_id,
+            provider=draft.provider,
+            provider_draft_id=draft.draft_id,
+            thread_or_message_id=draft.thread_or_message_id,
+            subject=draft.subject,
+            body=body,
+            body_digest=sha256(body.encode("utf-8")).hexdigest(),
+            recipients=list(draft.recipients),
+            attachment_ids=list(artifact_ids or []),
+            metadata={**draft.metadata, "session_id": session_id},
+            created_at=draft.created_at,
+        )
+        context.drafts.put(snapshot.draft_id, snapshot)
+
+    def _load_email_draft_snapshot(
+        *, session_id: str, mailbox_id: str, draft_id: str
+    ) -> DraftMessage:
+        normalized_draft_id = str(draft_id or "").strip()
+        if not normalized_draft_id:
+            raise PolicyError("email send requires draft_id")
+        snapshot = context.drafts.get(normalized_draft_id)
+        if snapshot is None:
+            raise PolicyError(
+                "Email send requires a host-recorded draft snapshot; create the draft first."
+            )
+        if snapshot.mailbox_id != mailbox_id:
+            raise PolicyError(
+                f"Email draft {normalized_draft_id!r} belongs to mailbox "
+                f"{snapshot.mailbox_id!r}, not {mailbox_id!r}"
+            )
+        owner_session_id = str(snapshot.metadata.get("session_id") or "").strip()
+        if not owner_session_id:
+            raise PolicyError(
+                "Email draft snapshot does not include session ownership; recreate the draft before sending."
+            )
+        if owner_session_id != session_id:
+            raise PolicyError(
+                f"Email draft {normalized_draft_id!r} belongs to session {owner_session_id!r}"
+            )
+        return snapshot
+
+    def _validate_email_send_snapshot(
+        *,
+        snapshot: DraftMessage,
+        recipients: list[str],
+        subject: str | None,
+        artifact_ids: list[str] | None,
+    ) -> None:
+        if _normalized_email_recipients(recipients) != _normalized_email_recipients(
+            snapshot.recipients
+        ):
+            raise PolicyError("Email send recipients must match the recorded draft recipients.")
+        if subject is not None and subject != snapshot.subject:
+            raise PolicyError("Email send subject must match the recorded draft subject.")
+        if artifact_ids is None:
+            if snapshot.attachment_ids:
+                raise PolicyError(
+                    "Email draft has attachments; use email_send_with_attachments with "
+                    "matching artifact_ids."
+                )
+            return
+        if sorted(artifact_ids) != sorted(snapshot.attachment_ids):
+            raise PolicyError("Email send attachments must match the recorded draft attachments.")
+
+    def _mark_email_draft_sent(
+        *, draft_id: str, sent_at: datetime, status: str, provider_message_id: str | None
+    ) -> None:
+        def updater(items: dict[str, DraftMessage]) -> None:
+            snapshot = items.get(draft_id)
+            if snapshot is None:
+                return
+            items[draft_id] = snapshot.model_copy(
+                update={
+                    "sent_at": sent_at,
+                    "send_status": status,
+                    "provider_message_id": provider_message_id,
+                    "metadata": {
+                        **snapshot.metadata,
+                        "send_status": status,
+                        "provider_message_id": provider_message_id,
+                    },
+                }
+            )
+
+        context.drafts.update_all(updater)
+
+    def _send_email_draft(
+        *,
+        session_id: str,
+        session: Any,
+        mailbox_id: str,
+        draft_id: str,
+        recipients: list[str],
+        subject: str | None = None,
+        artifact_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        context.policy.require_email_send_enabled(session)
+        context.policy.require_email_mailbox(session, mailbox_id)
+        context.policy.require_draft_recipients(session, recipients)
+        snapshot = _load_email_draft_snapshot(
+            session_id=session_id, mailbox_id=mailbox_id, draft_id=draft_id
+        )
+        _validate_email_send_snapshot(
+            snapshot=snapshot,
+            recipients=recipients,
+            subject=subject,
+            artifact_ids=artifact_ids,
+        )
+        result = context.email_service_for_session(session_id).send_draft(
+            mailbox_id=mailbox_id,
+            draft_id=draft_id,
+        )
+        _mark_email_draft_sent(
+            draft_id=draft_id,
+            sent_at=result.sent_at,
+            status=result.status,
+            provider_message_id=result.message_id,
+        )
+        output = result.model_dump(mode="json")
+        output["recipients"] = list(snapshot.recipients)
+        if artifact_ids is not None:
+            output["artifact_ids"] = list(artifact_ids)
+        return output
 
     def redacted_keys_for_session_id(session_id: str | None) -> set[str]:
         token_redacted_keys = {"response_token", "issued_token", "token_hash"}
@@ -6926,84 +7063,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def team_create_operator_directive(
-        session_id: str,
-        team_id: str,
-        message: str,
-        title: str | None = None,
-        project_id: str | None = None,
-        task_id: str | None = None,
-        source: str | None = None,
-        source_message_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Create a durable Team Add-on operator directive for the calling manager session.
-
-        Use this when an out-of-band operator chat message should become normal Team work
-        on the next Team runtime wake. The calling session must be the team's manager.
-        """
-
-        args = {
-            "session_id": session_id,
-            "team_id": team_id,
-            "message": message,
-            "title": title,
-            "project_id": project_id,
-            "task_id": task_id,
-            "source": source,
-            "source_message_id": source_message_id,
-        }
-        try:
-            context.policy.require_tool(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE)
-            from truman_team_addon.repository import TeamStateRepository
-
-            state, item = TeamStateRepository(context.config.runtime_dir).create_operator_directive(
-                team_id=team_id,
-                message=message,
-                title=title,
-                project_id=project_id,
-                task_id=task_id,
-                source=source or "operator_chat",
-                source_message_id=source_message_id,
-                created_by=f"agent-session:{session_id}",
-                requesting_session_id=session_id,
-            )
-            project_id_value = item.payload.get("project_id")
-            result = {
-                "status": "created",
-                "revision": state.revision,
-                "inbox_item_id": item.id,
-                "recipient_agent_id": item.recipient_agent_id,
-                "team_id": item.payload.get("team_id"),
-                "project_id": project_id_value if isinstance(project_id_value, str) else None,
-                "task_id": item.task_id,
-            }
-            audit_success(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE, args, result)
-            return result
-        except PolicyError as exc:
-            audit_failure(session_id, ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE, args, str(exc))
-            raise
-        except (TypeError, ValueError) as exc:
-            audit_failure(
-                session_id,
-                ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
-                args,
-                str(exc),
-                decision="error",
-                error_class="team_directive_error",
-            )
-            raise
-        except Exception as exc:
-            audit_failure(
-                session_id,
-                ToolName.TEAM_CREATE_OPERATOR_DIRECTIVE,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
-
-    @server.tool()
     def discord_get_commands(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
         args = {"session_id": session_id, "since_cursor": since_cursor}
         try:
@@ -8195,6 +8254,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             draft = context.email_service_for_session(session_id).create_draft(
                 mailbox_id, thread_or_message_id, subject, body, normalized_recipients
             )
+            _record_email_draft_snapshot(
+                session_id=session_id,
+                draft=draft,
+                body=body,
+            )
             result = draft.model_dump(mode="json")
             audit_success(
                 session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id}
@@ -9143,6 +9207,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     normalized_recipients,
                     attachments=draft_attachments,
                 )
+            _record_email_draft_snapshot(
+                session_id=session_id,
+                draft=draft,
+                body=body,
+                artifact_ids=artifact_ids,
+            )
             result = (
                 draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
@@ -9190,6 +9260,165 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def email_send(
+        session_id: str,
+        mailbox_id: str,
+        draft_id: str,
+        recipients: list[str],
+        subject: str | None = None,
+        approval_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "mailbox_id": mailbox_id,
+            "draft_id": draft_id,
+            "recipients": recipients,
+            "subject": subject,
+            "approval_request_id": approval_request_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND)
+            result = _send_email_draft(
+                session_id=session_id,
+                session=session,
+                mailbox_id=mailbox_id,
+                draft_id=draft_id,
+                recipients=recipients,
+                subject=subject,
+            )
+            audit_success(
+                session_id,
+                ToolName.EMAIL_SEND,
+                args,
+                {
+                    **_communication_target_audit_fields(
+                        provider="email",
+                        mailbox_id=mailbox_id,
+                        approval_request_id=approval_request_id,
+                    ),
+                    **result,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.EMAIL_SEND, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def email_send_with_attachments(
+        session_id: str,
+        mailbox_id: str,
+        draft_id: str,
+        recipients: list[str],
+        artifact_ids: list[str],
+        subject: str | None = None,
+        request_id: str | None = None,
+        approval_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "mailbox_id": mailbox_id,
+            "draft_id": draft_id,
+            "recipients": recipients,
+            "artifact_ids": artifact_ids,
+            "subject": subject,
+            "request_id": request_id,
+            "approval_request_id": approval_request_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND_WITH_ATTACHMENTS)
+            context.policy.require_email_send_enabled(session)
+            context.policy.require_email_mailbox(session, mailbox_id)
+            artifacts = _artifact_payloads(artifact_ids)
+            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            context.policy.require_communication_file_artifacts(
+                session, artifacts, provider="email", mailbox_id=mailbox_id
+            )
+            approval_payload: dict[str, Any] = {
+                "session_id": session_id,
+                "provider": "email",
+                "mailbox_id": mailbox_id,
+                "draft_id": draft_id,
+                "recipients": recipients,
+                "artifact_ids": artifact_ids,
+            }
+            if subject is not None:
+                approval_payload["subject"] = subject
+            approval = context.policy.require_communication_file_send_approval(
+                session,
+                request_id=request_id,
+                payload=approval_payload,
+            )
+            result = _send_email_draft(
+                session_id=session_id,
+                session=session,
+                mailbox_id=mailbox_id,
+                draft_id=draft_id,
+                recipients=recipients,
+                subject=subject,
+                artifact_ids=artifact_ids,
+            )
+            audit_success(
+                session_id,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+                args,
+                {
+                    **_communication_target_audit_fields(
+                        provider="email",
+                        mailbox_id=mailbox_id,
+                        approval_request_id=request_id,
+                        approval_decision=None if approval is None else approval.status.value,
+                    ),
+                    "artifacts": _artifact_audit_summaries(artifact_ids),
+                    **result,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.EMAIL_SEND_WITH_ATTACHMENTS, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def email_send_approved_with_attachments(
         session_id: str,
         request_id: str,
@@ -9224,9 +9453,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 raise PolicyError(
                     f"Approval request {request_id} does not belong to session {session_id}"
                 )
-            send_payload = {**payload, "artifact_ids": artifact_ids, "attachments": artifacts}
-            result = context.email_service.send_from_draft(
-                request_id=request_id, payload=send_payload
+            mailbox_id = str(payload.get("mailbox_id", ""))
+            draft_id = str(payload.get("draft_id") or payload.get("provider_draft_id") or "")
+            if not recipients:
+                snapshot = context.drafts.get(draft_id)
+                if snapshot is not None and snapshot.mailbox_id == mailbox_id:
+                    recipients = list(snapshot.recipients)
+            subject = payload.get("subject") if isinstance(payload.get("subject"), str) else None
+            result = _send_email_draft(
+                session_id=session_id,
+                session=session,
+                mailbox_id=mailbox_id,
+                draft_id=draft_id,
+                recipients=recipients,
+                subject=subject,
+                artifact_ids=artifact_ids,
             )
             audit_success(
                 session_id,
@@ -9249,6 +9490,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
         except PolicyError as exc:
             audit_failure(
                 session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
             )
             raise
 
@@ -9314,11 +9575,45 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 raise PolicyError(
                     f"Approval request {request_id} does not belong to session {session_id}"
                 )
-            result = context.email_service.send_from_draft(request_id=request_id, payload=payload)
+            mailbox_id = str(payload.get("mailbox_id", ""))
+            draft_id = str(payload.get("draft_id") or payload.get("provider_draft_id") or "")
+            if not recipients:
+                snapshot = context.drafts.get(draft_id)
+                if snapshot is not None and snapshot.mailbox_id == mailbox_id:
+                    recipients = list(snapshot.recipients)
+            subject = payload.get("subject") if isinstance(payload.get("subject"), str) else None
+            result = _send_email_draft(
+                session_id=session_id,
+                session=session,
+                mailbox_id=mailbox_id,
+                draft_id=draft_id,
+                recipients=recipients,
+                subject=subject,
+            )
             audit_success(session_id, ToolName.EMAIL_SEND_APPROVED, args, result)
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_SEND_APPROVED, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_APPROVED,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_SEND_APPROVED,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     def _deprecate_session_id_parameter_schema() -> None:
@@ -9664,13 +9959,25 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 arguments=sanitized_arguments,
                 call_context=call_context,
             )
+            dispatch_arguments = dict(sanitized_arguments)
+            tool = server._tool_manager._tools.get(raw_tool_name)
+            arg_model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+            model_fields = getattr(arg_model, "model_fields", {})
+            if (
+                isinstance(model_fields, dict)
+                and "approval_request_id" in model_fields
+                and "approval_request_id" in raw_arguments
+            ):
+                dispatch_arguments["approval_request_id"] = raw_arguments.get(
+                    "approval_request_id"
+                )
             dispatch_call_args = list(call_args)
             dispatch_call_kwargs = dict(call_kwargs)
             if len(dispatch_call_args) > 1:
-                dispatch_call_args[1] = sanitized_arguments
+                dispatch_call_args[1] = dispatch_arguments
                 dispatch_call_kwargs.pop("arguments", None)
             else:
-                dispatch_call_kwargs["arguments"] = sanitized_arguments
+                dispatch_call_kwargs["arguments"] = dispatch_arguments
             approval_context_token = set_tool_approval_context(
                 session_id=call_context.session_id,
                 workflow_run_id=call_context.workflow_run_id,
