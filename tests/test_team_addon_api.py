@@ -415,6 +415,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'direction: "up"' in script.text
     assert "agent-inbox-icon--${escapeAttr(direction)}" in script.text
     assert "agent-inbox-bubble" in script.text
+    assert "inboxReplyIntentLabel" in script.text
+    assert "no reply needed" in script.text
     assert "Status requests" in script.text
     assert "Progress reports" in script.text
     assert "max_cost_usd" in script.text
@@ -435,6 +437,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text
     assert ".team-cost-blocked-notice" in stylesheet.text
+    assert ".state-pill.neutral" in stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text

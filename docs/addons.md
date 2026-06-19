@@ -342,16 +342,19 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   `review_decisions[]` so the deliverable/task cascade is applied. Updated ids
   are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
-  Shape: `{"recipient_agent_id", "task_id"?, "question"?}`. The recipient must be
-  a direct subordinate; otherwise the item is rejected. A `STATUS_REQUEST` inbox
-  item is created for the subordinate and surfaced through the normal pending-inbox
-  wake. Returned in `created_status_request_ids`.
+  Shape: `{"recipient_agent_id", "task_id"?, "question"?,
+  "response_requested"?}`. The recipient must be a direct subordinate;
+  otherwise the item is rejected. `response_requested` defaults to `true`. A
+  `STATUS_REQUEST` inbox item is created for the subordinate and surfaced
+  through the normal pending-inbox wake. Returned in
+  `created_status_request_ids`.
 - `questions[]` and `status_reports[]` — talk upward only. Shape:
-  `{"recipient_agent_id"?, "task_id"?, ...}`; the recipient defaults to the
-  actor's `reports_to_agent_id` and must equal it. A top-level manager
-  (`reports_to_agent_id` is `None`) receives a clear per-item error directing it
-  to `operator_escalations` instead. These create `QUESTION` and
-  `PROGRESS_REPORT` inbox items.
+  `{"recipient_agent_id"?, "task_id"?, "response_requested"?, ...}`; the
+  recipient defaults to the actor's `reports_to_agent_id` and must equal it. A
+  top-level manager (`reports_to_agent_id` is `None`) receives a clear per-item
+  error directing it to `operator_escalations` instead. `questions` default
+  `response_requested` to `true`; `status_reports` default it to `false`. These
+  create `QUESTION` and `PROGRESS_REPORT` inbox items.
 - `operator_escalations[]` — manager-to-operator escalation. Shape:
   `{"title", "message", "urgency"?, "project_id"?, "task_id"?}` (`urgency`
   defaults to `"normal"`). Only the team's top-level manager may escalate. If the
@@ -430,6 +433,11 @@ Team communication is directional and enforced by the repository, not by prose:
 - **Upward** — `questions` and `status_reports` may only target the actor's
   direct superior. There is no skip-level messaging.
 - **Downward** — `status_requests` may only target a direct subordinate.
+- **Reply intent** — inbox items carry `response_requested`. When it is `false`,
+  the recipient should mark the item handled after reading or acting on it, but
+  should not send thank-you, acknowledgement, or other no-op replies. This
+  metadata does not delay delivery; priority and batching are separate runtime
+  features.
 - **Manager to operator** — only the top-level manager escalates, and only when
   `Team.operator_communication_target_id` is set. The repository emits
   `team.operator.escalation_requested`; the packaged `TEAM_RUNTIME_V1` pack routes

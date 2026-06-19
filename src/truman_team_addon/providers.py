@@ -51,7 +51,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 7
+ACTION_CONTRACT_SCHEMA_VERSION = 8
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1348,6 +1348,11 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "through this Team dispatch by writing the appropriate task/status/review "
         "actions to team-action.json, then include their ids in "
         "handled_inbox_item_ids.\n\n"
+        "- Inbox items include response_requested. When response_requested is false, "
+        "do not send thank-you, acknowledgement, or other no-op replies; either "
+        "take the needed Team action or mark the item handled with "
+        "handled_inbox_item_ids. When response_requested is true, respond through "
+        "the normal allowed directional action surface if a response is needed.\n\n"
         "- Use stand_downs when you need a direct subordinate and that subordinate's "
         "subtree to stop future Team work. Use stand_down_revocations to clear a "
         "stand-down you set. Do not encode stand-downs as prose-only status_requests.\n\n"
@@ -1768,6 +1773,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "recipient_agent_id": {"type": "string", "minLength": 1},
                         "task_id": text_or_null,
                         "question": {"type": "string"},
+                        "response_requested": {"type": "boolean"},
                     },
                 },
             },
@@ -1992,6 +1998,7 @@ def _message_item_schema() -> dict[str, Any]:
             "message": {"type": "string"},
             "summary": {"type": "string"},
             "question": {"type": "string"},
+            "response_requested": {"type": "boolean"},
         },
     }
 
@@ -2015,9 +2022,27 @@ def _persistent_action_example() -> dict[str, Any]:
                 "dependency_task_ids": [],
             }
         ],
-        "status_requests": [],
-        "questions": [],
-        "status_reports": [],
+        "status_requests": [
+            {
+                "recipient_agent_id": "direct-subordinate-agent-id",
+                "question": "Short status question.",
+                "response_requested": True,
+            }
+        ],
+        "questions": [
+            {
+                "recipient_agent_id": "direct-superior-agent-id",
+                "question": "Question that needs a response.",
+                "response_requested": True,
+            }
+        ],
+        "status_reports": [
+            {
+                "summary": "FYI progress update.",
+                "message": "No reply needed unless this changes your plan.",
+                "response_requested": False,
+            }
+        ],
         "operator_escalations": [],
         "stand_downs": [],
         "stand_down_revocations": [],

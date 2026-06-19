@@ -170,7 +170,9 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
 
 
-def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
+def test_repository_migrates_action_feedback_and_inbox_reply_intent_columns(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "addons" / "team-addon" / "state.db"
     db_path.parent.mkdir(parents=True)
     with sqlite3.connect(db_path) as connection:
@@ -201,16 +203,21 @@ def test_repository_migrates_action_feedback_columns(tmp_path: Path) -> None:
 
     assert repo.read().action_records == {}
     with sqlite3.connect(db_path) as connection:
-        columns = {
+        action_columns = {
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_action_records)")
+        }
+        inbox_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(team_inbox)")
         }
         metadata = dict(
             connection.execute("SELECT key, value FROM team_state_metadata").fetchall()
         )
-    assert "feedback_delivered_at" in columns
-    assert "feedback_delivered_by_dispatch_id" in columns
-    assert metadata["sqlite_schema_version"] == "3"
+    assert "feedback_delivered_at" in action_columns
+    assert "feedback_delivered_by_dispatch_id" in action_columns
+    assert "response_requested" in inbox_columns
+    assert metadata["sqlite_schema_version"] == "4"
 
 
 def test_repository_imports_legacy_json_state_once(tmp_path: Path) -> None:
@@ -1257,7 +1264,104 @@ def test_apply_agent_action_creates_status_request_for_subordinate(tmp_path: Pat
     assert item.recipient_agent_id == "backend"
     assert item.sender_agent_id == "lead"
     assert item.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert item.response_requested is True
     assert item.payload["question"] == "Status on the backend slice?"
+    assert "response_requested" not in item.payload
+
+
+def test_apply_agent_action_sets_reply_intent_defaults_and_overrides(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "This is just confirming direction.",
+                    "response_requested": False,
+                }
+            ],
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "Done with the FYI check.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    items = [state.inbox[item_id] for item_id in result["created_inbox_item_ids"]]
+    question = next(item for item in items if item.item_type == TeamInboxItemType.QUESTION)
+    report = next(
+        item for item in items if item.item_type == TeamInboxItemType.PROGRESS_REPORT
+    )
+    assert question.response_requested is False
+    assert report.response_requested is False
+    assert "response_requested" not in question.payload
+    assert "response_requested" not in report.payload
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "Please confirm this plan.",
+                    "response_requested": True,
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    report = state.inbox[result["created_inbox_item_ids"][0]]
+    assert report.response_requested is True
+
+
+def test_apply_agent_action_rejects_non_boolean_reply_intent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "questions": [
+                {
+                    "recipient_agent_id": "lead",
+                    "question": "Can I use a string here?",
+                    "response_requested": "false",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert state.inbox == {}
+    assert any("response_requested must be a boolean" in error for error in result["errors"])
+
+
+def test_repository_round_trips_inbox_reply_intent(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = repo.apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "status_reports": [
+                {
+                    "recipient_agent_id": "lead",
+                    "summary": "No reply needed.",
+                }
+            ],
+        },
+    )
+
+    item_id = result["created_inbox_item_ids"][0]
+    assert state.inbox[item_id].response_requested is False
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert reloaded.inbox[item_id].response_requested is False
 
 
 def test_apply_agent_action_rejects_status_request_to_non_subordinate(tmp_path: Path) -> None:

@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Team Add-on Reply Intent
+
+- Added durable `response_requested` metadata to Team Add-on inbox items so
+  agents can suppress unnecessary acknowledgements for FYI-style messages while
+  still requesting replies for questions, status requests, and action-oriented
+  notices.
+
 ## 2026-06-17 - Team Add-on Boundary Cleanup
 
 - Removed the Team-specific manager directive MCP tool, Team metadata policy

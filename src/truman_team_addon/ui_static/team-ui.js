@@ -2467,6 +2467,7 @@ function renderAgentInboxBubble(item) {
   if (item.sender_agent_id) {
     metaParts.push(`from ${item.sender_agent_id}`);
   }
+  metaParts.push(inboxReplyIntentLabel(item));
   return `
     <span class="agent-inbox-bubble">
       <strong>${escapeHtml(detail)}</strong>
@@ -2560,7 +2561,7 @@ function renderHierarchyDetails(agentData, { focused = false } = {}) {
       lines.push(
         `Inbox ${snapshot.inboxItems
           .slice(0, 2)
-          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxItemDetail(item) || item.id}`)
+          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxReplyIntentLabel(item)}: ${inboxItemDetail(item) || item.id}`)
           .join("; ")}`,
       );
     }
@@ -2760,9 +2761,11 @@ function renderAgentInbox(agentId) {
           const label = inboxItemLabels[item.item_type] || item.item_type;
           const detail = inboxItemDetail(item);
           const sender = item.sender_agent_id ? ` from ${escapeHtml(item.sender_agent_id)}` : "";
+          const replyIntent = inboxReplyIntentLabel(item);
           return `
             <li>
               <span class="state-pill ${escapeHtml(item.item_type)}">${escapeHtml(label)}</span>
+              <span class="state-pill ${item.response_requested === false ? "neutral" : "info"}">${escapeHtml(replyIntent)}</span>
               ${detail ? `<span> ${escapeHtml(detail)}</span>` : ""}${sender}
             </li>
           `;
@@ -2775,6 +2778,10 @@ function renderAgentInbox(agentId) {
 function inboxItemDetail(item) {
   const payload = item.payload || {};
   return text(payload.question || payload.message || payload.title || payload.summary || "");
+}
+
+function inboxReplyIntentLabel(item) {
+  return item.response_requested === false ? "no reply needed" : "reply requested";
 }
 
 function renderProjects() {

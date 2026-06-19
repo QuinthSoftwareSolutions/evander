@@ -528,6 +528,7 @@ class AgentInboxItem(TeamModel):
     item_type: TeamInboxItemType
     sender_agent_id: str | None = None
     task_id: str | None = None
+    response_requested: bool = True
     payload: dict[str, Any] = Field(default_factory=dict)
     state: TeamInboxItemState = TeamInboxItemState.PENDING
     created_at: datetime = Field(default_factory=utc_now)
@@ -1606,6 +1607,7 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
                 inbox_item_id=item.id,
                 sender_agent_id=item.sender_agent_id,
                 item_type=item.item_type.value,
+                response_requested=item.response_requested,
             )
         )
     return rows

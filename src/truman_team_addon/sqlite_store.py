@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 3
+SQLITE_SCHEMA_VERSION = 4
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -74,6 +74,12 @@ class TeamStateSqliteStore:
                     table_name="team_action_records",
                     column_name="feedback_delivered_by_dispatch_id",
                     definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_inbox",
+                    column_name="response_requested",
+                    definition="INTEGER NOT NULL DEFAULT 1",
                 )
                 connection.execute(
                     """
@@ -885,6 +891,9 @@ class TeamStateSqliteStore:
                 "item_type": row["item_type"],
                 "sender_agent_id": row["sender_agent_id"],
                 "task_id": row["task_id"],
+                "response_requested": bool(row["response_requested"])
+                if row["response_requested"] is not None
+                else True,
                 "payload": _json_loads(row["payload_json"]),
                 "state": row["state"],
                 "created_at": row["created_at"],
@@ -898,9 +907,9 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_inbox(
                     id, recipient_agent_id, item_type, sender_agent_id, task_id,
-                    payload_json, state, created_at, updated_at
+                    response_requested, payload_json, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["id"],
@@ -908,6 +917,7 @@ class TeamStateSqliteStore:
                     item["item_type"],
                     item.get("sender_agent_id"),
                     item.get("task_id"),
+                    1 if item.get("response_requested", True) else 0,
                     _json_dumps(item.get("payload", {})),
                     item.get("state", "pending"),
                     item["created_at"],
@@ -1597,6 +1607,7 @@ CREATE TABLE IF NOT EXISTS team_inbox (
     item_type TEXT NOT NULL,
     sender_agent_id TEXT,
     task_id TEXT,
+    response_requested INTEGER NOT NULL DEFAULT 1,
     payload_json TEXT NOT NULL,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,

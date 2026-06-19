@@ -945,6 +945,7 @@ class TeamStateRepository:
                 sender_agent_id=None,
                 task_id=normalized_task_id,
                 item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+                response_requested=True,
                 payload=payload,
                 created_at=now,
                 updated_at=now,
@@ -1652,6 +1653,7 @@ class TeamStateRepository:
                     sender_agent_id=None,
                     task_id=assignment.task_id,
                     item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+                    response_requested=True,
                     payload={
                         "ephemeral_assignment_id": assignment.id,
                         "summary": assignment.summary,
@@ -2184,14 +2186,24 @@ class TeamStateRepository:
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
                 _mark_progress()
 
-            for question in _list_of_mappings(normalized_action.get("questions"), "questions"):
-                recipient_id = (
-                    _optional_text(question.get("recipient_agent_id"))
-                    or agent.reports_to_agent_id
-                )
-                upward_error = _upward_recipient_error(agent, recipient_id, "questions")
-                if upward_error is not None:
-                    result["errors"].append(upward_error)
+            for index, question in enumerate(
+                _list_of_mappings(normalized_action.get("questions"), "questions")
+            ):
+                try:
+                    recipient_id = (
+                        _optional_text(question.get("recipient_agent_id"))
+                        or agent.reports_to_agent_id
+                    )
+                    upward_error = _upward_recipient_error(agent, recipient_id, "questions")
+                    if upward_error is not None:
+                        result["errors"].append(upward_error)
+                        continue
+                    response_requested = _response_requested_from_item(
+                        question,
+                        default=True,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "questions", index, exc)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -2200,26 +2212,38 @@ class TeamStateRepository:
                     sender_agent_id=agent.id,
                     task_id=_optional_text(question.get("task_id")),
                     item_type=TeamInboxItemType.QUESTION,
+                    response_requested=response_requested,
                     payload={
                         key: value
                         for key, value in question.items()
-                        if key not in {"recipient_agent_id", "task_id"}
+                        if key not in {"recipient_agent_id", "task_id", "response_requested"}
                     },
                 )
                 state_model.inbox[item.id] = item
                 result["created_inbox_item_ids"].append(item.id)
                 _mark_progress()
 
-            for report in _list_of_mappings(
-                normalized_action.get("status_reports"), "status_reports"
-            ):
-                recipient_id = (
-                    _optional_text(report.get("recipient_agent_id"))
-                    or agent.reports_to_agent_id
+            for index, report in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("status_reports"),
+                    "status_reports",
                 )
-                upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
-                if upward_error is not None:
-                    result["errors"].append(upward_error)
+            ):
+                try:
+                    recipient_id = (
+                        _optional_text(report.get("recipient_agent_id"))
+                        or agent.reports_to_agent_id
+                    )
+                    upward_error = _upward_recipient_error(agent, recipient_id, "status_reports")
+                    if upward_error is not None:
+                        result["errors"].append(upward_error)
+                        continue
+                    response_requested = _response_requested_from_item(
+                        report,
+                        default=False,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "status_reports", index, exc)
                     continue
                 inbox_id = f"inbox-{uuid4().hex}"
                 item = AgentInboxItem(
@@ -2228,10 +2252,11 @@ class TeamStateRepository:
                     sender_agent_id=agent.id,
                     task_id=_optional_text(report.get("task_id")),
                     item_type=TeamInboxItemType.PROGRESS_REPORT,
+                    response_requested=response_requested,
                     payload={
                         key: value
                         for key, value in report.items()
-                        if key not in {"recipient_agent_id", "task_id"}
+                        if key not in {"recipient_agent_id", "task_id", "response_requested"}
                     },
                 )
                 state_model.inbox[item.id] = item
@@ -2257,10 +2282,14 @@ class TeamStateRepository:
                         sender_agent_id=agent.id,
                         task_id=_optional_text(status_request.get("task_id")),
                         item_type=TeamInboxItemType.STATUS_REQUEST,
+                        response_requested=_response_requested_from_item(
+                            status_request,
+                            default=True,
+                        ),
                         payload={
                             key: value
                             for key, value in status_request.items()
-                            if key not in {"recipient_agent_id", "task_id"}
+                            if key not in {"recipient_agent_id", "task_id", "response_requested"}
                         },
                     )
                     state_model.inbox[item.id] = item
@@ -2320,6 +2349,7 @@ class TeamStateRepository:
                             sender_agent_id=agent.id,
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+                            response_requested=True,
                             payload={
                                 "deliverable_id": deliverable.id,
                                 "summary": deliverable.summary,
@@ -2664,6 +2694,7 @@ class TeamStateRepository:
                         recipient_agent_id=recipient_id,
                         sender_agent_id=None,
                         item_type=TeamInboxItemType.PROGRESS_REPORT,
+                        response_requested=True,
                         payload={
                             "kind": "release_publish_failed",
                             "release_package_id": release.id,
@@ -3245,6 +3276,19 @@ def _append_action_item_error(
     result["errors"].append(f"{field_name}[{index}]: {error}")
 
 
+def _response_requested_from_item(
+    item: Mapping[str, Any],
+    *,
+    default: bool,
+) -> bool:
+    if "response_requested" not in item:
+        return default
+    value = item.get("response_requested")
+    if isinstance(value, bool):
+        return value
+    raise ValueError("response_requested must be a boolean")
+
+
 def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
     items = [
         item
@@ -3822,6 +3866,7 @@ def _apply_operator_escalation(
         sender_agent_id=actor.id,
         task_id=task_id,
         item_type=TeamInboxItemType.ESCALATION,
+        response_requested=False,
         payload={"escalation_id": escalation_id, **payload},
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -4136,6 +4181,7 @@ def _apply_review_request(
         sender_agent_id=actor.id,
         task_id=deliverable.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
+        response_requested=True,
         payload=payload,
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -5022,6 +5068,7 @@ def _attach_promotion_failure(
                 else None
             ),
             item_type=TeamInboxItemType.PROGRESS_REPORT,
+            response_requested=True,
             payload={
                 "kind": "git_promotion_failed",
                 "promotion_id": promotion.id,
