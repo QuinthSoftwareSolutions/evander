@@ -17,7 +17,7 @@ from .models import SCHEMA_VERSION, TeamState
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 4
+SQLITE_SCHEMA_VERSION = 5
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -80,6 +80,30 @@ class TeamStateSqliteStore:
                     table_name="team_inbox",
                     column_name="response_requested",
                     definition="INTEGER NOT NULL DEFAULT 1",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_inbox",
+                    column_name="priority",
+                    definition="TEXT NOT NULL DEFAULT 'normal'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="low_priority_batch_started_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="low_priority_batch_cycle_count",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="low_priority_batch_due_after_cycles",
+                    definition="INTEGER",
                 )
                 connection.execute(
                     """
@@ -504,6 +528,11 @@ class TeamStateSqliteStore:
                 "next_wake_at": row["next_wake_at"],
                 "no_progress_count": row["no_progress_count"],
                 "last_progress_at": row["last_progress_at"],
+                "low_priority_batch_started_at": row["low_priority_batch_started_at"],
+                "low_priority_batch_cycle_count": row["low_priority_batch_cycle_count"],
+                "low_priority_batch_due_after_cycles": row[
+                    "low_priority_batch_due_after_cycles"
+                ],
                 "auto_context_clearing_enabled": _bool(row["auto_context_clearing_enabled"]),
                 "context_rotation_pending": _bool(row["context_rotation_pending"]),
                 "context_rotation_requested_by": row["context_rotation_requested_by"],
@@ -526,12 +555,14 @@ class TeamStateSqliteStore:
                 INSERT INTO team_agent_runtimes(
                     agent_id, wake_leased_until, active_dispatch_id, wake_reason,
                     last_wake_at, next_wake_at, no_progress_count, last_progress_at,
+                    low_priority_batch_started_at, low_priority_batch_cycle_count,
+                    low_priority_batch_due_after_cycles,
                     auto_context_clearing_enabled, context_rotation_pending,
                     context_rotation_requested_by, context_rotation_requested_at,
                     context_rotation_reason, context_rotation_request_note,
                     last_handoff_summary, last_context_rotated_at, last_thread_id, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -542,6 +573,9 @@ class TeamStateSqliteStore:
                     runtime.get("next_wake_at"),
                     int(runtime.get("no_progress_count", 0)),
                     runtime.get("last_progress_at"),
+                    runtime.get("low_priority_batch_started_at"),
+                    int(runtime.get("low_priority_batch_cycle_count", 0)),
+                    runtime.get("low_priority_batch_due_after_cycles"),
                     _int_bool(runtime.get("auto_context_clearing_enabled")),
                     _int_bool(runtime.get("context_rotation_pending")),
                     runtime.get("context_rotation_requested_by"),
@@ -894,6 +928,7 @@ class TeamStateSqliteStore:
                 "response_requested": bool(row["response_requested"])
                 if row["response_requested"] is not None
                 else True,
+                "priority": row["priority"] or "normal",
                 "payload": _json_loads(row["payload_json"]),
                 "state": row["state"],
                 "created_at": row["created_at"],
@@ -907,9 +942,9 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_inbox(
                     id, recipient_agent_id, item_type, sender_agent_id, task_id,
-                    response_requested, payload_json, state, created_at, updated_at
+                    response_requested, priority, payload_json, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["id"],
@@ -918,6 +953,7 @@ class TeamStateSqliteStore:
                     item.get("sender_agent_id"),
                     item.get("task_id"),
                     1 if item.get("response_requested", True) else 0,
+                    item.get("priority", "normal"),
                     _json_dumps(item.get("payload", {})),
                     item.get("state", "pending"),
                     item["created_at"],
@@ -1453,6 +1489,9 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     next_wake_at TEXT,
     no_progress_count INTEGER NOT NULL,
     last_progress_at TEXT,
+    low_priority_batch_started_at TEXT,
+    low_priority_batch_cycle_count INTEGER NOT NULL DEFAULT 0,
+    low_priority_batch_due_after_cycles INTEGER,
     auto_context_clearing_enabled INTEGER NOT NULL,
     context_rotation_pending INTEGER NOT NULL,
     context_rotation_requested_by TEXT,
@@ -1608,6 +1647,7 @@ CREATE TABLE IF NOT EXISTS team_inbox (
     sender_agent_id TEXT,
     task_id TEXT,
     response_requested INTEGER NOT NULL DEFAULT 1,
+    priority TEXT NOT NULL DEFAULT 'normal',
     payload_json TEXT NOT NULL,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,

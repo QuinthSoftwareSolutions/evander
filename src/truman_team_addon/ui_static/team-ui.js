@@ -2279,6 +2279,9 @@ function runtimeSummary(agentId) {
       nextWakeAt: null,
       wakeLeasedUntil: null,
       lastWakeAt: null,
+      lowPriorityBatchStartedAt: null,
+      lowPriorityBatchCycleCount: 0,
+      lowPriorityBatchDueAfterCycles: null,
       autoContextClearingEnabled: false,
       contextRotationPending: false,
       lastContextRotatedAt: null,
@@ -2290,6 +2293,9 @@ function runtimeSummary(agentId) {
   const nextWakeAt = text(runtime.next_wake_at);
   const wakeLeasedUntil = text(runtime.wake_leased_until);
   const lastWakeAt = text(runtime.last_wake_at);
+  const lowPriorityBatchStartedAt = text(runtime.low_priority_batch_started_at);
+  const lowPriorityBatchCycleCount = numberOrZero(runtime.low_priority_batch_cycle_count);
+  const lowPriorityBatchDueAfterCycles = numberOrNull(runtime.low_priority_batch_due_after_cycles);
   const contextRotationPending = Boolean(runtime.context_rotation_pending);
   const autoContextClearingEnabled = Boolean(runtime.auto_context_clearing_enabled);
   const lastContextRotatedAt = text(runtime.last_context_rotated_at);
@@ -2309,6 +2315,9 @@ function runtimeSummary(agentId) {
   if (lastWakeAt) {
     parts.push(`last wake ${lastWakeAt}`);
   }
+  if (lowPriorityBatchStartedAt && lowPriorityBatchDueAfterCycles !== null) {
+    parts.push(`low-priority batch ${lowPriorityBatchCycleCount}/${lowPriorityBatchDueAfterCycles}`);
+  }
   if (contextRotationPending) {
     parts.push("context clearing pending");
   }
@@ -2324,6 +2333,9 @@ function runtimeSummary(agentId) {
     nextWakeAt: nextWakeAt || null,
     wakeLeasedUntil: wakeLeasedUntil || null,
     lastWakeAt: lastWakeAt || null,
+    lowPriorityBatchStartedAt: lowPriorityBatchStartedAt || null,
+    lowPriorityBatchCycleCount,
+    lowPriorityBatchDueAfterCycles,
     autoContextClearingEnabled,
     contextRotationPending,
     lastContextRotatedAt: lastContextRotatedAt || null,
@@ -2467,6 +2479,7 @@ function renderAgentInboxBubble(item) {
   if (item.sender_agent_id) {
     metaParts.push(`from ${item.sender_agent_id}`);
   }
+  metaParts.push(inboxPriorityLabel(item));
   metaParts.push(inboxReplyIntentLabel(item));
   return `
     <span class="agent-inbox-bubble">
@@ -2561,7 +2574,7 @@ function renderHierarchyDetails(agentData, { focused = false } = {}) {
       lines.push(
         `Inbox ${snapshot.inboxItems
           .slice(0, 2)
-          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxReplyIntentLabel(item)}: ${inboxItemDetail(item) || item.id}`)
+          .map((item) => `${inboxItemLabels[item.item_type] || item.item_type}: ${inboxPriorityLabel(item)}: ${inboxReplyIntentLabel(item)}: ${inboxItemDetail(item) || item.id}`)
           .join("; ")}`,
       );
     }
@@ -2765,6 +2778,7 @@ function renderAgentInbox(agentId) {
           return `
             <li>
               <span class="state-pill ${escapeHtml(item.item_type)}">${escapeHtml(label)}</span>
+              <span class="state-pill neutral">${escapeHtml(inboxPriorityLabel(item))}</span>
               <span class="state-pill ${item.response_requested === false ? "neutral" : "info"}">${escapeHtml(replyIntent)}</span>
               ${detail ? `<span> ${escapeHtml(detail)}</span>` : ""}${sender}
             </li>
@@ -2782,6 +2796,11 @@ function inboxItemDetail(item) {
 
 function inboxReplyIntentLabel(item) {
   return item.response_requested === false ? "no reply needed" : "reply requested";
+}
+
+function inboxPriorityLabel(item) {
+  const priority = text(item.priority) || "normal";
+  return `${humanizeToken(priority)} priority`;
 }
 
 function renderProjects() {

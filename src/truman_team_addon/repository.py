@@ -47,6 +47,7 @@ from .models import (
     RolePermission,
     Team,
     TeamInboxItemState,
+    TeamInboxPriority,
     TeamInboxItemType,
     TeamRecordState,
     TeamRole,
@@ -946,6 +947,7 @@ class TeamStateRepository:
                 task_id=normalized_task_id,
                 item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
                 response_requested=True,
+                priority=TeamInboxPriority.NORMAL,
                 payload=payload,
                 created_at=now,
                 updated_at=now,
@@ -1654,6 +1656,7 @@ class TeamStateRepository:
                     task_id=assignment.task_id,
                     item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
                     response_requested=True,
+                    priority=TeamInboxPriority.LOW,
                     payload={
                         "ephemeral_assignment_id": assignment.id,
                         "summary": assignment.summary,
@@ -1776,6 +1779,7 @@ class TeamStateRepository:
         lease_seconds: int = 900,
         wake_interval_seconds: int = 900,
         max_no_progress_count: int = 3,
+        low_priority_wake_after_cycles: int = 4,
         team_id: str | None = None,
         project_id: str | None = None,
         agent_id: str | None = None,
@@ -1786,6 +1790,7 @@ class TeamStateRepository:
         normalized_project_id = _optional_text(project_id)
         normalized_agent_id = _optional_text(agent_id)
         normalized_limit = max(0, int(limit))
+        low_priority_threshold = max(0, int(low_priority_wake_after_cycles))
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
 
@@ -1816,33 +1821,62 @@ class TeamStateRepository:
                     continue
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
+                immediate_inbox = [
+                    item
+                    for item in pending_inbox
+                    if item.priority != TeamInboxPriority.LOW
+                ]
+                low_priority_inbox = [
+                    item for item in pending_inbox if item.priority == TeamInboxPriority.LOW
+                ]
                 action_feedback = _latest_action_feedback_for_agent(state_model, agent.id)
                 rotation_pending = runtime.context_rotation_pending
+                task_work_ready = any(
+                    state_model.dependency_status(task.id) == "satisfied"
+                    for task in active_tasks
+                ) or any(
+                    state_model.subtask_counts(task.id)["open"] > 0
+                    for task in active_tasks
+                )
                 wake_eligible = (
                     rotation_pending
                     or bool(pending_inbox)
                     or bool(action_feedback)
-                    or any(
-                        state_model.dependency_status(task.id) == "satisfied"
-                        for task in active_tasks
-                    )
-                    or any(
-                        state_model.subtask_counts(task.id)["open"] > 0
-                        for task in active_tasks
-                    )
+                    or task_work_ready
                 )
                 if not wake_eligible:
+                    _clear_low_priority_batch(runtime)
                     continue
                 due_by_time = (
                     runtime.next_wake_at is None
                     or _ensure_utc(runtime.next_wake_at) <= effective_now
                 )
+                immediate_wake_ready = (
+                    rotation_pending
+                    or bool(immediate_inbox)
+                    or bool(action_feedback)
+                    or (task_work_ready and due_by_time)
+                )
+                low_priority_wake_ready = False
+                if low_priority_inbox and not immediate_wake_ready:
+                    low_priority_wake_ready = _advance_low_priority_batch(
+                        runtime,
+                        now=effective_now,
+                        due_after_cycles=low_priority_threshold,
+                    )
+                    if not low_priority_wake_ready:
+                        runtime.updated_at = effective_now
+                        continue
+                elif not low_priority_inbox:
+                    _clear_low_priority_batch(runtime)
                 if (
                     not pending_inbox
                     and not rotation_pending
                     and not action_feedback
                     and not due_by_time
                 ):
+                    continue
+                if pending_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
                     max_no_progress_count >= 0
@@ -1856,11 +1890,14 @@ class TeamStateRepository:
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
                 reason = (
                     "inbox"
-                    if pending_inbox
+                    if immediate_inbox
+                    else "low_priority_inbox"
+                    if low_priority_wake_ready
                     else "action_feedback"
                     if action_feedback
                     else "scheduled"
                 )
+                _clear_low_priority_batch(runtime)
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
@@ -2202,6 +2239,10 @@ class TeamStateRepository:
                         question,
                         default=True,
                     )
+                    priority = _priority_from_item(
+                        question,
+                        default=TeamInboxPriority.NORMAL,
+                    )
                 except ValueError as exc:
                     _append_action_item_error(result, "questions", index, exc)
                     continue
@@ -2213,10 +2254,17 @@ class TeamStateRepository:
                     task_id=_optional_text(question.get("task_id")),
                     item_type=TeamInboxItemType.QUESTION,
                     response_requested=response_requested,
+                    priority=priority,
                     payload={
                         key: value
                         for key, value in question.items()
-                        if key not in {"recipient_agent_id", "task_id", "response_requested"}
+                        if key
+                        not in {
+                            "recipient_agent_id",
+                            "task_id",
+                            "response_requested",
+                            "priority",
+                        }
                     },
                 )
                 state_model.inbox[item.id] = item
@@ -2242,6 +2290,10 @@ class TeamStateRepository:
                         report,
                         default=False,
                     )
+                    priority = _priority_from_item(
+                        report,
+                        default=TeamInboxPriority.LOW,
+                    )
                 except ValueError as exc:
                     _append_action_item_error(result, "status_reports", index, exc)
                     continue
@@ -2253,10 +2305,17 @@ class TeamStateRepository:
                     task_id=_optional_text(report.get("task_id")),
                     item_type=TeamInboxItemType.PROGRESS_REPORT,
                     response_requested=response_requested,
+                    priority=priority,
                     payload={
                         key: value
                         for key, value in report.items()
-                        if key not in {"recipient_agent_id", "task_id", "response_requested"}
+                        if key
+                        not in {
+                            "recipient_agent_id",
+                            "task_id",
+                            "response_requested",
+                            "priority",
+                        }
                     },
                 )
                 state_model.inbox[item.id] = item
@@ -2286,10 +2345,20 @@ class TeamStateRepository:
                             status_request,
                             default=True,
                         ),
+                        priority=_priority_from_item(
+                            status_request,
+                            default=TeamInboxPriority.NORMAL,
+                        ),
                         payload={
                             key: value
                             for key, value in status_request.items()
-                            if key not in {"recipient_agent_id", "task_id", "response_requested"}
+                            if key
+                            not in {
+                                "recipient_agent_id",
+                                "task_id",
+                                "response_requested",
+                                "priority",
+                            }
                         },
                     )
                     state_model.inbox[item.id] = item
@@ -2350,6 +2419,7 @@ class TeamStateRepository:
                             task_id=task_id,
                             item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
                             response_requested=True,
+                            priority=TeamInboxPriority.LOW,
                             payload={
                                 "deliverable_id": deliverable.id,
                                 "summary": deliverable.summary,
@@ -2695,6 +2765,7 @@ class TeamStateRepository:
                         sender_agent_id=None,
                         item_type=TeamInboxItemType.PROGRESS_REPORT,
                         response_requested=True,
+                        priority=TeamInboxPriority.NORMAL,
                         payload={
                             "kind": "release_publish_failed",
                             "release_package_id": release.id,
@@ -3264,6 +3335,7 @@ def _mark_agent_work_due(
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
     runtime.no_progress_count = 0
     runtime.next_wake_at = None
+    _clear_low_priority_batch(runtime)
     runtime.updated_at = now
 
 
@@ -3287,6 +3359,40 @@ def _response_requested_from_item(
     if isinstance(value, bool):
         return value
     raise ValueError("response_requested must be a boolean")
+
+
+def _priority_from_item(
+    item: Mapping[str, Any],
+    *,
+    default: TeamInboxPriority,
+) -> TeamInboxPriority:
+    if "priority" not in item:
+        return default
+    try:
+        return TeamInboxPriority(str(item.get("priority") or "").strip())
+    except ValueError:
+        allowed = ", ".join(priority.value for priority in TeamInboxPriority)
+        raise ValueError(f"priority must be one of: {allowed}") from None
+
+
+def _clear_low_priority_batch(runtime: AgentRuntime) -> None:
+    runtime.low_priority_batch_started_at = None
+    runtime.low_priority_batch_cycle_count = 0
+    runtime.low_priority_batch_due_after_cycles = None
+
+
+def _advance_low_priority_batch(
+    runtime: AgentRuntime,
+    *,
+    now: datetime,
+    due_after_cycles: int,
+) -> bool:
+    if runtime.low_priority_batch_started_at is None:
+        runtime.low_priority_batch_started_at = now
+        runtime.low_priority_batch_cycle_count = 0
+    runtime.low_priority_batch_cycle_count += 1
+    runtime.low_priority_batch_due_after_cycles = due_after_cycles
+    return runtime.low_priority_batch_cycle_count >= due_after_cycles
 
 
 def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
@@ -3867,6 +3973,7 @@ def _apply_operator_escalation(
         task_id=task_id,
         item_type=TeamInboxItemType.ESCALATION,
         response_requested=False,
+        priority=TeamInboxPriority.NORMAL,
         payload={"escalation_id": escalation_id, **payload},
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -4182,6 +4289,7 @@ def _apply_review_request(
         task_id=deliverable.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
         response_requested=True,
+        priority=TeamInboxPriority.NORMAL,
         payload=payload,
     )
     result["created_inbox_item_ids"].append(inbox_id)
@@ -5069,6 +5177,7 @@ def _attach_promotion_failure(
             ),
             item_type=TeamInboxItemType.PROGRESS_REPORT,
             response_requested=True,
+            priority=TeamInboxPriority.NORMAL,
             payload={
                 "kind": "git_promotion_failed",
                 "promotion_id": promotion.id,

@@ -34,6 +34,7 @@ from truman_team_addon.models import (
     ReviewRequest,
     Team,
     TeamInboxItemState,
+    TeamInboxPriority,
     TeamInboxItemType,
     TeamRecordState,
     TeamRole,
@@ -313,6 +314,33 @@ def test_persistent_agent_display_name_is_optional_and_trimmed() -> None:
     )
 
     assert legacy_agent.display_name is None
+
+
+def test_agent_inbox_item_defaults_and_validates_priority() -> None:
+    item = AgentInboxItem(
+        id="inbox-1",
+        recipient_agent_id="agent-1",
+        item_type=TeamInboxItemType.PROGRESS_REPORT,
+    )
+
+    assert item.priority == TeamInboxPriority.NORMAL
+
+    high = AgentInboxItem(
+        id="inbox-2",
+        recipient_agent_id="agent-1",
+        item_type=TeamInboxItemType.STATUS_REQUEST,
+        priority="high",
+    )
+
+    assert high.priority == TeamInboxPriority.HIGH
+
+    with pytest.raises(ValidationError):
+        AgentInboxItem(
+            id="inbox-3",
+            recipient_agent_id="agent-1",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            priority="urgent",
+        )
 
 
 def test_team_state_accepts_legacy_agents_without_display_name() -> None:

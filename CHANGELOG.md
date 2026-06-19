@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Team Add-on Priority Batching
+
+- Added Team inbox priorities and low-priority wake-cycle batching so FYI-style
+  messages can wait for a configurable number of Team wake evaluations unless
+  another wake reason delivers them earlier.
+
 ## 2026-06-19 - Team Add-on Reply Intent
 
 - Added durable `response_requested` metadata to Team Add-on inbox items so

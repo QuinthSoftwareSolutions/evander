@@ -51,7 +51,7 @@ from .provider_schemas import (
 from .repository import TeamStateConflictError, TeamStateRepository
 
 DEFAULT_ACTION_ARTIFACT_PATH = "team-action.json"
-ACTION_CONTRACT_SCHEMA_VERSION = 8
+ACTION_CONTRACT_SCHEMA_VERSION = 9
 ACTION_CONTRACT_SCHEMA_PATH = "team-action.schema.json"
 ACTION_CONTRACT_EXAMPLE_PATH = "team-action.example.json"
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -75,6 +75,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "lease_seconds",
             "wake_interval_seconds",
             "max_no_progress_count",
+            "low_priority_wake_after_cycles",
             "action_artifact_path",
             "resume_mode",
         )
@@ -108,6 +109,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             max_no_progress_count=_optional_int(
                 payload.get("max_no_progress_count"),
                 default=3,
+            ),
+            low_priority_wake_after_cycles=_optional_int(
+                payload.get("low_priority_wake_after_cycles"),
+                default=4,
             ),
             blocked_team_ids=blocked_team_ids,
         )
@@ -1353,6 +1358,10 @@ def _build_prompt(lease: Mapping[str, Any], *, action_artifact_path: str) -> str
         "take the needed Team action or mark the item handled with "
         "handled_inbox_item_ids. When response_requested is true, respond through "
         "the normal allowed directional action surface if a response is needed.\n\n"
+        "- Inbox messages may include priority low, normal, or high. Use low for "
+        "FYI updates that can be batched, normal for ordinary coordination, and "
+        "high only for urgent blockers. Low-priority inbox may be delivered with "
+        "other work instead of waking the recipient immediately.\n\n"
         "- Use stand_downs when you need a direct subordinate and that subordinate's "
         "subtree to stop future Team work. Use stand_down_revocations to clear a "
         "stand-down you set. Do not encode stand-downs as prose-only status_requests.\n\n"
@@ -1774,6 +1783,7 @@ def _persistent_action_schema() -> dict[str, Any]:
                         "task_id": text_or_null,
                         "question": {"type": "string"},
                         "response_requested": {"type": "boolean"},
+                        "priority": {"enum": ["low", "normal", "high"]},
                     },
                 },
             },
@@ -1999,6 +2009,7 @@ def _message_item_schema() -> dict[str, Any]:
             "summary": {"type": "string"},
             "question": {"type": "string"},
             "response_requested": {"type": "boolean"},
+            "priority": {"enum": ["low", "normal", "high"]},
         },
     }
 
@@ -2027,6 +2038,7 @@ def _persistent_action_example() -> dict[str, Any]:
                 "recipient_agent_id": "direct-subordinate-agent-id",
                 "question": "Short status question.",
                 "response_requested": True,
+                "priority": "normal",
             }
         ],
         "questions": [
@@ -2034,6 +2046,7 @@ def _persistent_action_example() -> dict[str, Any]:
                 "recipient_agent_id": "direct-superior-agent-id",
                 "question": "Question that needs a response.",
                 "response_requested": True,
+                "priority": "normal",
             }
         ],
         "status_reports": [
@@ -2041,6 +2054,7 @@ def _persistent_action_example() -> dict[str, Any]:
                 "summary": "FYI progress update.",
                 "message": "No reply needed unless this changes your plan.",
                 "response_requested": False,
+                "priority": "low",
             }
         ],
         "operator_escalations": [],

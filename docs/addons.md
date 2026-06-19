@@ -272,6 +272,9 @@ set:
   context. Repo preparation is reported in the wake node outputs as
   `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
   separate workflow node because one wake tick can lease multiple agents.
+  `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
+  count Team wake evaluations and are batched until the threshold is reached
+  unless another wake reason delivers them earlier.
 - `query:team:agent-action-artifact` reads the structured JSON action artifact
   that a prompted persistent agent must write to `/artifacts/team-action.json`.
 - `effect:team:apply-agent-action` validates the action, updates add-on state,
@@ -343,18 +346,20 @@ applied item counts as progress and resets the agent's `no_progress_count`.
   are returned in `updated_task_ids`.
 - `status_requests[]` — ask a direct subordinate for an update (downward).
   Shape: `{"recipient_agent_id", "task_id"?, "question"?,
-  "response_requested"?}`. The recipient must be a direct subordinate;
-  otherwise the item is rejected. `response_requested` defaults to `true`. A
-  `STATUS_REQUEST` inbox item is created for the subordinate and surfaced
-  through the normal pending-inbox wake. Returned in
+  "response_requested"?, "priority"?}`. The recipient must be a direct
+  subordinate; otherwise the item is rejected. `response_requested` defaults to
+  `true` and `priority` defaults to `"normal"`. A `STATUS_REQUEST` inbox item is
+  created for the subordinate and surfaced through the normal pending-inbox wake.
+  Returned in
   `created_status_request_ids`.
 - `questions[]` and `status_reports[]` — talk upward only. Shape:
-  `{"recipient_agent_id"?, "task_id"?, "response_requested"?, ...}`; the
+  `{"recipient_agent_id"?, "task_id"?, "response_requested"?, "priority"?, ...}`; the
   recipient defaults to the actor's `reports_to_agent_id` and must equal it. A
   top-level manager (`reports_to_agent_id` is `None`) receives a clear per-item
   error directing it to `operator_escalations` instead. `questions` default
-  `response_requested` to `true`; `status_reports` default it to `false`. These
-  create `QUESTION` and `PROGRESS_REPORT` inbox items.
+  `response_requested` to `true` and `priority` to `"normal"`; `status_reports`
+  default `response_requested` to `false` and `priority` to `"low"`. These create
+  `QUESTION` and `PROGRESS_REPORT` inbox items.
 - `operator_escalations[]` — manager-to-operator escalation. Shape:
   `{"title", "message", "urgency"?, "project_id"?, "task_id"?}` (`urgency`
   defaults to `"normal"`). Only the team's top-level manager may escalate. If the
@@ -461,6 +466,14 @@ Team communication is directional and enforced by the repository, not by prose:
   action instead of being applied. Operator holds are durable state and can only
   be cleared through `POST /agents/{agent_id}/stand-down/revoke`; agent actions
   cannot revoke or override them.
+
+Inbox priority controls wake timing, not visibility or permission. `high` and
+`normal` pending inbox items wake recipients immediately on the next Team wake
+evaluation. `low` items are visible in Team state immediately but do not wake an
+otherwise idle recipient until `low_priority_wake_after_cycles` evaluations have
+seen that low-priority work. Additional low-priority items do not reset an active
+countdown. Any other wake reason cancels the countdown and includes all pending
+low-priority inbox in that dispatch.
 
 ### Action-Driven Reviews And Decision Cascade
 
