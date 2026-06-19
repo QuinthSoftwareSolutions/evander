@@ -767,6 +767,20 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
   `total_matches`, `has_more`, `next_skip`).
 
+## Host-Side Azure DevOps Work Item Activity Tool
+
+- Gateway tool name: `query_ado_work_item_activity`.
+- The tool is policy-gated: each session manifest must include
+  `query_ado_work_item_activity` in `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - required `since` timestamp
+  - optional `until`, `project`, `actor`, `activity_types`, `states`, `types`, `tags_any`
+  - paging inputs: `top` (default `100`, max `200`) and `skip` (default `0`)
+- `activity_types` defaults to `["created", "changed", "commented"]`.
+- Response payload includes matching work items and per-item `activities` records with the matched
+  actor, timestamp, provenance (`created_field`, `changed_field`, `update`, or `comment`), and raw
+  provider payload snippets.
+
 ## Host-Side Azure DevOps Current Iteration Backlog Tool
 
 - Gateway tool name: `list_ado_current_iteration_backlog_items`.
@@ -1650,12 +1664,19 @@ without exposing provider credentials in the VM.
 2. Unread fetch when pending is true:
    - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
    - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
-   - `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
-     to enumerate PRs directly from the provider; `status` is forwarded to provider status criteria
-     (Azure DevOps uses `searchCriteria.status`), and pagination resumes with `next_cursor`.
+   - `list_pull_requests(provider, repo, status?, statuses?, creator_id?, reviewer_id?, project?,
+     min_time?, max_time?, query_time_range_type?, source_ref_name?, target_ref_name?, tags?, top?,
+     skip?, cursor?)` to enumerate PRs directly from the provider. Azure DevOps status values are
+     forwarded to `searchCriteria.status`; `closed` expands to ADO `completed` and `abandoned`.
    - `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
+   - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
+     before using personal activity filters.
+   - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+     to find ADO PR comments matching an author and date range.
+   - `list_ado_pr_commit_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+     to find ADO PR commits matching an author and date range.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:

@@ -511,6 +511,19 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "resolve_ado_identity" for tool in server._tool_manager.list_tools())
+    assert any(
+        tool.name == "list_ado_pr_comment_activity"
+        for tool in server._tool_manager.list_tools()
+    )
+    assert any(
+        tool.name == "list_ado_pr_commit_activity"
+        for tool in server._tool_manager.list_tools()
+    )
+    assert any(
+        tool.name == "query_ado_work_item_activity"
+        for tool in server._tool_manager.list_tools()
+    )
     assert any(tool.name == "get_workflow_snapshot" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_contacts" for tool in server._tool_manager.list_tools())

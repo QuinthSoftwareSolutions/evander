@@ -92,6 +92,10 @@ from agent_sandbox.models import (
     ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
+    AdoPrCommentActivityRequest,
+    AdoPrCommentActivityResponse,
+    AdoPrCommitActivityRequest,
+    AdoPrCommitActivityResponse,
     AdoBacklogCommentRequest,
     AdoBacklogDeleteRequest,
     AdoBacklogDeleteResponse,
@@ -105,6 +109,8 @@ from agent_sandbox.models import (
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
     AdoBacklogTitleUpdateRequest,
+    AdoWorkItemActivityRequest,
+    AdoWorkItemActivityResponse,
     ApprovalRequest,
     ApprovalStatus,
     AuditEvent,
@@ -148,6 +154,8 @@ from agent_sandbox.models import (
     PostPrInlineCommentRequest,
     PromptAgentRequest,
     PromptAgentResponse,
+    ResolveAdoIdentityRequest,
+    ResolveAdoIdentityResponse,
     RunScriptRequest,
     RunScriptResponse,
     RequestPrReviewRequest,
@@ -4881,6 +4889,85 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def query_ado_work_item_activity(
+        since: str,
+        project: str | None = None,
+        actor: str | None = None,
+        until: str | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request = AdoWorkItemActivityRequest(
+            session_id=session_id,
+            project=project,
+            actor=actor,
+            since=since,
+            until=until,
+            activity_types=activity_types or ["created", "changed", "commented"],
+            states=states or [],
+            types=types or [],
+            tags_any=tags_any or [],
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(
+                request.session_id, ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY
+            )
+            issue_service = IssueService(context.provider_config)
+            remote_payload = issue_service.query_remote_work_item_activity(
+                provider="azure_devops",
+                directory_path=session.directory_path,
+                project=request.project,
+                actor=request.actor,
+                since=request.since,
+                until=request.until,
+                activity_types=request.activity_types,
+                states=request.states,
+                types=[item_type.value for item_type in request.types],
+                tags_any=request.tags_any,
+                top=request.top,
+                skip=request.skip,
+            )
+            response_model = AdoWorkItemActivityResponse.model_validate(remote_payload)
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY,
+                args,
+                {
+                    "project": request.project,
+                    "count": payload.get("count", 0),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def list_ado_current_iteration_backlog_items(
         project: str | None = None,
         team: str | None = None,
@@ -6053,20 +6140,50 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str,
         provider: str,
         repo: str,
+        project: str | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags: str | None = None,
         top: int | None = None,
+        skip: int | None = None,
         cursor: str | None = None,
     ) -> dict[str, Any]:
         request = ListPullRequestsRequest(
             session_id=session_id.strip(),
             provider=normalize_pr_feedback_provider(provider),
             repo=repo.strip(),
+            project=project.strip() if isinstance(project, str) else None,
             status=status.strip() if isinstance(status, str) else None,
+            statuses=statuses or [],
             creator_id=creator_id.strip() if isinstance(creator_id, str) else None,
             reviewer_id=reviewer_id.strip() if isinstance(reviewer_id, str) else None,
+            source_ref_name=source_ref_name.strip() if isinstance(source_ref_name, str) else None,
+            target_ref_name=target_ref_name.strip() if isinstance(target_ref_name, str) else None,
+            source_repository_id=source_repository_id.strip()
+            if isinstance(source_repository_id, str)
+            else None,
+            repository_id=repository_id.strip() if isinstance(repository_id, str) else None,
+            min_time=min_time.strip() if isinstance(min_time, str) else None,
+            max_time=max_time.strip() if isinstance(max_time, str) else None,
+            query_time_range_type=query_time_range_type.strip()
+            if isinstance(query_time_range_type, str)
+            else None,
+            include_links=include_links,
+            max_comment_length=max_comment_length,
+            tags=tags.strip() if isinstance(tags, str) else None,
             top=top,
+            skip=skip,
             cursor=cursor.strip() if isinstance(cursor, str) else None,
         )
         args = request.model_dump(mode="json")
@@ -6075,10 +6192,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
             response = context.pr_query_service_for_session(request.session_id).list_pull_requests(
                 provider=request.provider,
                 repo=request.repo,
+                project=request.project,
                 status=request.status,
+                statuses=request.statuses,
                 creator_id=request.creator_id,
                 reviewer_id=request.reviewer_id,
+                source_ref_name=request.source_ref_name,
+                target_ref_name=request.target_ref_name,
+                source_repository_id=request.source_repository_id,
+                repository_id=request.repository_id,
+                min_time=request.min_time,
+                max_time=request.max_time,
+                query_time_range_type=request.query_time_range_type,
+                include_links=request.include_links,
+                max_comment_length=request.max_comment_length,
+                tags=request.tags,
                 top=request.top,
+                skip=request.skip,
                 cursor=request.cursor,
             )
             result = response.model_dump(mode="json")
@@ -6165,6 +6295,212 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 request.session_id,
                 ToolName.GET_PULL_REQUEST,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def resolve_ado_identity(
+        session_id: str,
+        query: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        request = ResolveAdoIdentityRequest(
+            session_id=session_id.strip(),
+            query=query,
+            project=project,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(request.session_id, ToolName.RESOLVE_ADO_IDENTITY)
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).resolve_ado_identity(
+                query=request.query,
+                project=request.project,
+            )
+            result = ResolveAdoIdentityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                {
+                    "confidence": result.get("confidence"),
+                    "match_count": len(result.get("matches") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.RESOLVE_ADO_IDENTITY, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.RESOLVE_ADO_IDENTITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_pr_comment_activity(
+        session_id: str,
+        repo: str,
+        since: str,
+        author: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        include_system_comments: bool = False,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        request = AdoPrCommentActivityRequest(
+            session_id=session_id.strip(),
+            repo=repo,
+            author=author,
+            since=since,
+            until=until,
+            project=project,
+            statuses=statuses or [],
+            include_system_comments=include_system_comments,
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(
+                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY
+            )
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).list_ado_pr_comment_activity(
+                repo=request.repo,
+                author=request.author,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
+                include_system_comments=request.include_system_comments,
+                top=request.top,
+                skip=request.skip,
+            )
+            result = AdoPrCommentActivityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                {"repo": request.repo, "count": result.get("count", 0)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMENT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_pr_commit_activity(
+        session_id: str,
+        repo: str,
+        since: str,
+        author: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        statuses: list[str] | None = None,
+        top: int = 100,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        request = AdoPrCommitActivityRequest(
+            session_id=session_id.strip(),
+            repo=repo,
+            author=author,
+            since=since,
+            until=until,
+            project=project,
+            statuses=statuses or [],
+            top=top,
+            skip=skip,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(
+                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY
+            )
+            response = context.pr_query_service_for_session(
+                request.session_id
+            ).list_ado_pr_commit_activity(
+                repo=request.repo,
+                author=request.author,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
+                top=request.top,
+                skip=request.skip,
+            )
+            result = AdoPrCommitActivityResponse.model_validate(response).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
+                args,
+                {"repo": request.repo, "count": result.get("count", 0)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_ADO_PR_COMMIT_ACTIVITY,
                 args,
                 str(exc),
                 decision="error",

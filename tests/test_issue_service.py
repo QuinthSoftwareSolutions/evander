@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -1235,6 +1236,171 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
     assert item["comments"][0]["created_by_identity"]["displayName"] == "Ada"
     assert item["comments"][0]["inline_media"][0]["filename"] == "comment.gif"
     assert comment_media["comment_id"] == "7"
+
+
+def test_query_work_item_activity_filters_created_comments_and_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 101,
+                        "fields": {
+                            "System.Title": "Activity item",
+                            "System.State": "Active",
+                            "System.WorkItemType": "Task",
+                            "System.CreatedDate": "2026-06-01T09:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                            "System.ChangedDate": "2026-06-03T11:00:00Z",
+                            "System.ChangedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                        },
+                        "_links": {
+                            "web": {
+                                "href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"
+                            }
+                        },
+                    }
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "url": "https://dev.azure.com/example/_apis/wit/workItems/101",
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Activity item",
+                    "System.State": "Active",
+                    "System.WorkItemType": "Task",
+                    "System.CreatedDate": "2026-06-01T09:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                    "System.ChangedDate": "2026-06-03T11:00:00Z",
+                    "System.ChangedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                },
+                "_links": {
+                    "web": {
+                        "href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"
+                    }
+                },
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "comments": [
+                    {
+                        "id": 7,
+                        "text": "Documented reporting impact.",
+                        "createdBy": {
+                            "displayName": "Alex Example",
+                            "uniqueName": "alex@example.com",
+                        },
+                        "createdDate": "2026-06-04T12:00:00Z",
+                    },
+                    {
+                        "id": 8,
+                        "text": "Other user's comment.",
+                        "createdBy": {
+                            "displayName": "Other User",
+                            "uniqueName": "other@example.com",
+                        },
+                        "createdDate": "2026-06-04T13:00:00Z",
+                    },
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 5,
+                        "rev": 5,
+                        "revisedDate": "2026-06-02T10:00:00Z",
+                        "revisedBy": {
+                            "displayName": "Alex Example",
+                            "uniqueName": "alex@example.com",
+                        },
+                        "fields": {
+                            "System.Title": {
+                                "oldValue": "Old title",
+                                "newValue": "Activity item",
+                            }
+                        },
+                    },
+                    {
+                        "id": 6,
+                        "rev": 6,
+                        "revisedDate": "2026-06-04T14:00:00Z",
+                        "revisedBy": {
+                            "displayName": "Other User",
+                            "uniqueName": "other@example.com",
+                        },
+                        "fields": {"System.State": {"newValue": "Closed"}},
+                    },
+                ]
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses),
+    )
+
+    result = adapter.query_work_item_activity(
+        directory_path="root",
+        actor="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        until=datetime(2026, 6, 5, tzinfo=UTC),
+        states=["Active"],
+        types=["Task"],
+        tags_any=["reporting"],
+    )
+
+    wiql_payload = calls[0]["json"]
+    assert isinstance(wiql_payload, dict)
+    query = wiql_payload["query"]
+    assert "[System.State] IN ('Active')" in query
+    assert "[System.WorkItemType] IN ('Task')" in query
+    assert "[System.Tags] CONTAINS 'reporting'" in query
+    assert result["count"] == 1
+    item = result["items"][0]
+    assert item["id"] == "101"
+    assert [activity["provenance"] for activity in item["activities"]] == [
+        "comment",
+        "changed_field",
+        "update",
+        "created_field",
+    ]
+    assert item["activities"][0]["comment_id"] == "7"
+    assert item["activities"][0]["actor_identity"]["uniqueName"] == "alex@example.com"
+    assert item["activities"][2]["fields"] == {
+        "System.Title": {"oldValue": "Old title", "newValue": "Activity item"}
+    }
 
 
 def test_delete_issue_soft_delete_uses_destroy_false_and_returns_payload_project(

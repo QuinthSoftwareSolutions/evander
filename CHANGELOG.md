@@ -20,6 +20,12 @@ material. Newer entries are added incrementally as changes land.
   messages can wait for a configurable number of Team wake evaluations unless
   another wake reason delivers them earlier.
 
+## 2026-06-19 - ADO Personal Activity Reporting
+
+- Added host-side Azure DevOps personal activity reporting tools for resolving ADO identities,
+  listing PR comment and commit activity by author/date, querying work-item created/changed/commented
+  activity, and listing closed PRs through a `closed` status alias.
+
 ## 2026-06-19 - Team Add-on Reply Intent
 
 - Added durable `response_requested` metadata to Team Add-on inbox items so

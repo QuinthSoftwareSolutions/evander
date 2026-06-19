@@ -216,6 +216,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   query_ado_backlog_items: "Search Azure DevOps backlog items with the host-side query filters and return matching work items.",
   list_ado_current_iteration_backlog_items: "List backlog items assigned to the current Azure DevOps iteration for the configured project.",
   get_ado_backlog_item: "Fetch a single Azure DevOps backlog item with its latest host-side details.",
+  resolve_ado_identity: "Resolve an Azure DevOps user identity for reporting filters.",
+  query_ado_work_item_activity: "Find Azure DevOps work items with matching created, changed, or commented activity.",
   create_local_issue: "Create a local issue record in the selected directory so the session can track work inside agent-sandbox.",
   list_issues: "List local issues that the session is allowed to inspect in the current directory scope.",
   get_issue: "Read the details of a specific local issue, including status, metadata, and body content.",
@@ -272,6 +274,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   post_pr_feedback_reply: "Post a reply to pull request feedback using the host integration.",
   list_pull_requests: "List pull requests available to the session through the configured host provider.",
   get_pull_request: "Fetch the latest details for a specific pull request.",
+  list_ado_pr_comment_activity: "Find Azure DevOps pull request comments matching an author and date range.",
+  list_ado_pr_commit_activity: "Find Azure DevOps pull request commits matching an author and date range.",
   request_pr_review: "Request reviewers on a pull request from the host side.",
   post_pr_comment: "Post a pull request comment using the host integration.",
   post_pr_inline_comment: "Post an inline pull request comment at a specific diff position through the host integration.",
@@ -464,12 +468,16 @@ function groupToolOption(tool: ToolOption): string {
     "query_ado_backlog_items",
     "list_ado_current_iteration_backlog_items",
     "get_ado_backlog_item",
+    "resolve_ado_identity",
+    "query_ado_work_item_activity",
   ].includes(value)) {
     return "Azure DevOps";
   }
   if ([
     "list_pull_requests",
     "get_pull_request",
+    "list_ado_pr_comment_activity",
+    "list_ado_pr_commit_activity",
     "request_pr_review",
     "post_pr_comment",
     "post_pr_inline_comment",

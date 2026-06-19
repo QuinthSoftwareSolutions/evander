@@ -121,6 +121,10 @@ class ToolName(str, Enum):
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
+    RESOLVE_ADO_IDENTITY = "resolve_ado_identity"
+    LIST_ADO_PR_COMMENT_ACTIVITY = "list_ado_pr_comment_activity"
+    LIST_ADO_PR_COMMIT_ACTIVITY = "list_ado_pr_commit_activity"
+    QUERY_ADO_WORK_ITEM_ACTIVITY = "query_ado_work_item_activity"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
     POST_PR_INLINE_COMMENT = "post_pr_inline_comment"
@@ -1692,6 +1696,7 @@ class ListPullRequestsRequest(BaseModel):
     organization_url: str | None = None
     project: str | None = None
     status: str | None = None
+    statuses: list[str] = Field(default_factory=list)
     creator_id: str | None = None
     reviewer_id: str | None = None
     source_ref_name: str | None = None
@@ -1707,6 +1712,28 @@ class ListPullRequestsRequest(BaseModel):
     top: int | None = Field(default=None, ge=1)
     skip: int | None = Field(default=None, ge=0)
     cursor: str | None = None
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("statuses must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -1783,6 +1810,156 @@ class GetPullRequestResponse(BaseModel):
     reviewers: list[PullRequestReviewer] = Field(default_factory=list)
     commits: list[PullRequestCommit] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoIdentitySummary(BaseModel):
+    id: str | None = None
+    descriptor: str | None = None
+    display_name: str | None = None
+    unique_name: str | None = None
+    email: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResolveAdoIdentityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    project: str | None = None
+
+    @field_validator("query", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        if value is None:
+            if info.field_name == "query":
+                raise ValueError("query is required")
+            return None
+        normalized = str(value).strip()
+        if not normalized and info.field_name == "query":
+            raise ValueError("query is required")
+        return normalized or None
+
+
+class ResolveAdoIdentityResponse(BaseModel):
+    provider: str = "azure_devops"
+    query: str
+    confidence: str
+    id: str | None = None
+    descriptor: str | None = None
+    display_name: str | None = None
+    unique_name: str | None = None
+    email: str | None = None
+    matches: list[AdoIdentitySummary] = Field(default_factory=list)
+
+
+class AdoPrCommentActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    author: str | None = None
+    since: datetime
+    until: datetime | None = None
+    project: str | None = None
+    statuses: list[str] = Field(default_factory=list)
+    include_system_comments: bool = False
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("repo", "author", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        if value is None:
+            if info.field_name == "repo":
+                raise ValueError("repo is required")
+            return None
+        normalized = str(value).strip()
+        if not normalized and info.field_name == "repo":
+            raise ValueError("repo is required")
+        return normalized or None
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        return ListPullRequestsRequest.normalize_statuses(value)
+
+
+class AdoPrCommentActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    pr_id: str
+    pr_title: str | None = None
+    pr_status: str | None = None
+    pr_url: str | None = None
+    thread_id: str | None = None
+    comment_id: str | None = None
+    author: str | None = None
+    author_identity: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    body: str | None = None
+    body_snippet: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    resolved: bool | None = None
+    url: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommentActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    comments: list[AdoPrCommentActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommitActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    author: str | None = None
+    since: datetime
+    until: datetime | None = None
+    project: str | None = None
+    statuses: list[str] = Field(default_factory=list)
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("repo", "author", "project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object, info: Any) -> str | None:
+        return AdoPrCommentActivityRequest.trim_optional_strings(value, info)
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> list[str]:
+        return ListPullRequestsRequest.normalize_statuses(value)
+
+
+class AdoPrCommitActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    pr_id: str
+    pr_title: str | None = None
+    pr_status: str | None = None
+    pr_url: str | None = None
+    commit_id: str
+    comment: str | None = None
+    url: str | None = None
+    author: dict[str, Any] = Field(default_factory=dict)
+    committer: dict[str, Any] = Field(default_factory=dict)
+    authored_at: datetime | None = None
+    committed_at: datetime | None = None
+    unverified_date: bool = False
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoPrCommitActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    repo: str
+    project: str | None = None
+    commits: list[AdoPrCommitActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
 
 
 class AdoBacklogCreateRequest(BaseModel):
@@ -2432,6 +2609,95 @@ class AdoBacklogGetResponse(BaseModel):
     updates: list[dict[str, Any]] = Field(default_factory=list)
     inline_media: list[InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    project: str | None = None
+    actor: str | None = None
+    since: datetime
+    until: datetime | None = None
+    activity_types: list[str] = Field(default_factory=lambda: ["created", "changed", "commented"])
+    states: list[str] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    top: int = Field(default=100, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("project", "actor", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("activity_types", mode="before")
+    @classmethod
+    def normalize_activity_types(cls, value: object) -> list[str]:
+        if value is None:
+            return ["created", "changed", "commented"]
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("activity_types must be a list of strings")
+        allowed = {"created", "changed", "commented"}
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip().casefold()
+            if not text:
+                continue
+            if text not in allowed:
+                raise ValueError("activity_types values must be one of: created, changed, commented")
+            if text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized or ["created", "changed", "commented"]
+
+    @field_validator("states", "tags_any", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> list[str]:
+        return AdoBacklogQueryRequest.normalize_string_filters(value)
+
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+        return AdoBacklogQueryRequest.normalize_types(value)
+
+
+class AdoWorkItemActivityRecord(BaseModel):
+    activity_type: str
+    provenance: str
+    occurred_at: datetime
+    actor: str | None = None
+    actor_identity: dict[str, Any] = Field(default_factory=dict)
+    summary: str | None = None
+    comment_id: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityItem(BaseModel):
+    provider: str = "azure_devops"
+    id: str
+    project: str | None = None
+    title: str | None = None
+    state: str | None = None
+    type: str | None = None
+    url: str | None = None
+    web_url: str | None = None
+    activities: list[AdoWorkItemActivityRecord] = Field(default_factory=list)
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoWorkItemActivityResponse(BaseModel):
+    provider: str = "azure_devops"
+    project: str | None = None
+    items: list[AdoWorkItemActivityItem] = Field(default_factory=list)
+    count: int = 0
+    paging: dict[str, Any] = Field(default_factory=dict)
 
 
 class AdoBacklogDeleteRequest(BaseModel):

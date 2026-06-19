@@ -1241,12 +1241,16 @@ function groupToolOption(option: WorkflowFieldOption): string {
     "list_ado_current_iteration_backlog_items",
     "get_ado_backlog_item",
     "get_ado_daily_status_report_data",
+    "resolve_ado_identity",
+    "query_ado_work_item_activity",
   ].includes(value)) {
     return "Azure DevOps";
   }
   if ([
     "list_pull_requests",
     "get_pull_request",
+    "list_ado_pr_comment_activity",
+    "list_ado_pr_commit_activity",
     "request_pr_review",
     "post_pr_comment",
     "post_pr_inline_comment",

@@ -83,6 +83,10 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.UPDATE_ADO_BACKLOG_TITLE: "Update the title of an Azure DevOps backlog item.",
     ToolName.UPDATE_ADO_BACKLOG_TAGS: "Add or remove Azure DevOps backlog item tags.",
+    ToolName.RESOLVE_ADO_IDENTITY: "Resolve an Azure DevOps user identity for reporting filters.",
+    ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY: (
+        "Find Azure DevOps work items with matching created, changed, or commented activity."
+    ),
     ToolName.CREATE_LOCAL_ISSUE: (
         "Create a local issue record in the session's directory scope."
     ),
@@ -223,6 +227,12 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "List pull requests available to the session through the configured provider."
     ),
     ToolName.GET_PULL_REQUEST: "Fetch the latest details for a specific pull request.",
+    ToolName.LIST_ADO_PR_COMMENT_ACTIVITY: (
+        "Find Azure DevOps pull request comments matching an author and date range."
+    ),
+    ToolName.LIST_ADO_PR_COMMIT_ACTIVITY: (
+        "Find Azure DevOps pull request commits matching an author and date range."
+    ),
     ToolName.REQUEST_PR_REVIEW: (
         "Request reviewers on a pull request from the host side."
     ),
