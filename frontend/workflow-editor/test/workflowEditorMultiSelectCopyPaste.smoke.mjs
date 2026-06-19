@@ -285,6 +285,11 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
       return;
     }
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/admin/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(adminStateResponse));

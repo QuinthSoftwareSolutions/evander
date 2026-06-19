@@ -2218,19 +2218,37 @@ function slugifyNodeType(type: string): string {
   return type.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "node";
 }
 
-function generateNodeId(config: WorkflowConfig, kind: WorkflowNodeKind, type: string): string {
+function selectedWorkflowPackSlug(config: WorkflowConfig): string | null {
+  const workflowPacks = config.workflow_packs;
+  if (!Array.isArray(workflowPacks) || workflowPacks.length !== 1) return null;
+  const packReference = String(workflowPacks[0] ?? "").trim();
+  if (!packReference) return null;
+  const packFileName = packReference.split(/[\\/]/).pop() ?? packReference;
+  const withoutJson = packFileName.replace(/\.json$/i, "");
+  const withoutVersion = withoutJson.replace(/\.v[0-9]+(?:-example)?$/i, "");
+  return slugifyGraphId(withoutVersion || withoutJson);
+}
+
+function generateNodeId(
+  config: WorkflowConfig,
+  kind: WorkflowNodeKind,
+  type: string,
+  label?: string | null,
+): string {
   const collections = nodeCollections(config);
   const existingIds = new Set(
     [...collections.triggers, ...collections.gates, ...collections.effects, ...collections.queries].map(
       (node) => node.id,
     ),
   );
-  const base = `${kind}-${slugifyNodeType(type).replace(`${kind}-`, "")}`;
-  let index = 1;
-  let candidate = `${base}-${index}`;
+  const labelPart = slugifyGraphId(label?.trim() || slugifyNodeType(type).replace(`${kind}-`, ""));
+  const packSlug = selectedWorkflowPackSlug(config);
+  const base = [packSlug, kind, labelPart].filter(Boolean).join("-");
+  let index = 2;
+  let candidate = base;
   while (existingIds.has(candidate)) {
-    index += 1;
     candidate = `${base}-${index}`;
+    index += 1;
   }
   return candidate;
 }
@@ -6612,7 +6630,12 @@ export default function App() {
     for (const copiedNode of copiedSelection.nodes) {
       const templateNode = copiedNode.node;
       const templateKind = nodeKindFromType(templateNode.type);
-      const nextId = generateNodeId(nextConfig, templateKind, templateNode.type);
+      const nextId = generateNodeId(
+        nextConfig,
+        templateKind,
+        templateNode.type,
+        templateNode.display_name,
+      );
       const duplicatedNode = cloneNodeConfig(templateNode);
       duplicatedNode.id = nextId;
       duplicatedNode.display_name = `${templateNode.display_name} Copy`;
@@ -6752,7 +6775,10 @@ export default function App() {
     nextConfig.gates ??= [];
     nextConfig.effects ??= [];
     nextConfig.queries ??= [];
-    const nodeId = tutorialAddNodeAction ? tutorialAddNodeAction.nodeId : generateNodeId(nextConfig, kind, type);
+    const catalogEntry = getCatalogEntry(activeWorkflowCatalog, type);
+    const nodeId = tutorialAddNodeAction
+      ? tutorialAddNodeAction.nodeId
+      : generateNodeId(nextConfig, kind, type, catalogEntry?.label);
     const node = createDefaultNode(kind, type, nodeId);
     nextConfig[kindCollectionKey(kind)].push(node);
     const nextLayout = cloneLayout(workflowDocument.layout);
@@ -6847,13 +6873,9 @@ export default function App() {
 
   function materializeInspectorNodeFromDraft(draft: InspectorDraftSnapshot): WorkflowNodeConfig {
     if (!selectedNode) throw new Error("No node is selected.");
-    const rawId = draft.nodeId.trim();
+    const rawId = selectedNode.id;
     const rawName = draft.displayName.trim();
-    if (!rawId) throw new Error("Node id is required.");
     if (!rawName) throw new Error("Display name is required.");
-    if (rawId !== selectedNode.id && nodeById(document?.config ?? emptyConfig(), rawId)) {
-      throw new Error(`Node ${rawId} already exists.`);
-    }
 
     let nextKnownValues = { ...draft.knownValues };
     if (selectedNode.type.startsWith("trigger:") && nextKnownValues.enabled !== false) {
@@ -10387,18 +10409,10 @@ export default function App() {
           Select downstream branch
         </button>
         {renderSelectedTriggerToggle()}
-        <label className="inspector-label">
-          <span>Node id</span>
-          <input
-            value={inspectorNodeId}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              setInspectorNodeId(nextValue);
-              stageInspectorDraft({ nodeId: nextValue });
-            }}
-            disabled={workflowEditLocked}
-          />
-        </label>
+        <div className="inspector-metadata-field">
+          <span>Node ID</span>
+          <code>{selectedNode.id}</code>
+        </div>
         <label className="inspector-label">
           <span>Display name</span>
           <input
@@ -10583,17 +10597,10 @@ export default function App() {
                   ) : null}
                   <button onClick={selectDownstreamBranch}>Select downstream branch</button>
                   {renderSelectedTriggerToggle()}
-                  <label className="inspector-label">
-                    <span>Node id</span>
-                    <input
-                      value={inspectorNodeId}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setInspectorNodeId(nextValue);
-                        stageInspectorDraft({ nodeId: nextValue });
-                      }}
-                    />
-                  </label>
+                  <div className="inspector-metadata-field">
+                    <span>Node ID</span>
+                    <code>{selectedNode.id}</code>
+                  </div>
                   <label className="inspector-label">
                     <span>Display name</span>
                     <input
@@ -11053,18 +11060,10 @@ export default function App() {
                   Select downstream branch
                 </button>
                 {renderSelectedTriggerToggle()}
-                <label className="inspector-label">
-                  <span>Node id</span>
-                  <input
-                    value={inspectorNodeId}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      setInspectorNodeId(nextValue);
-                      stageInspectorDraft({ nodeId: nextValue });
-                    }}
-                    disabled={workflowEditLocked}
-                  />
-                </label>
+                <div className="inspector-metadata-field">
+                  <span>Node ID</span>
+                  <code>{selectedNode.id}</code>
+                </div>
                 <label className="inspector-label">
                   <span>Display name</span>
                   <input

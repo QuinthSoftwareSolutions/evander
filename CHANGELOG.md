@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - Generated Operator IDs
+
+- Generated stable Team Add-on IDs from names when operator create/template/API
+  payloads omit IDs, while preserving explicit API IDs for compatibility.
+- Removed editable Team Add-on and workflow-editor node ID fields from normal UI
+  flows, leaving generated IDs visible as read-only metadata.
+- Rejected workflow-pack node, graph, webhook slug, and cross-pack edge
+  collisions during workflow IR composition.
+
 ## 2026-06-19 - Team Add-on Priority Batching
 
 - Added Team inbox priorities and low-priority wake-cycle batching so FYI-style

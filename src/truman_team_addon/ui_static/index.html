@@ -328,7 +328,6 @@
                 <form id="setup-template-form" data-template-endpoint="/templates/{template_id}/materialize" data-method="POST">
                   <label>Template <select id="template-select" name="template_id" required></select></label>
                   <p class="subheading">Team</p>
-                  <label>Team ID <input name="team_id" required /></label>
                   <label>Team name <input name="team_name" required /></label>
                   <label>
                     Manager existing agent
@@ -337,17 +336,14 @@
                       data-options="agents"
                       data-placeholder="Select existing agent"
                       data-agent-source-picker
-                      data-id-field="manager_agent_id"
                       data-session-field="manager_session_id"
                       data-suggested-role="manager"
                     ></select>
                   </label>
-                  <label>Manager agent ID <input name="manager_agent_id" required /></label>
                   <label>Manager session ID <input name="manager_session_id" required /></label>
                   <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                   <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
                   <p class="subheading">Project</p>
-                  <label>Project ID <input name="project_id" required /></label>
                   <label>Project name <input name="project_name" required /></label>
                   <label>
                     Project lead existing agent
@@ -356,12 +352,10 @@
                       data-options="agents"
                       data-placeholder="Select existing agent"
                       data-agent-source-picker
-                      data-id-field="project_lead_agent_id"
                       data-session-field="project_lead_session_id"
                       data-suggested-role="project-lead"
                     ></select>
                   </label>
-                  <label>Project lead agent ID <input name="project_lead_agent_id" required /></label>
                   <label>Project lead session ID <input name="project_lead_session_id" required /></label>
                   <p class="subheading">Git config (optional)</p>
                   <label>Host repo path <input name="host_repo_path" /></label>
@@ -378,12 +372,10 @@
                       data-options="agents"
                       data-placeholder="Select existing agent"
                       data-agent-source-picker
-                      data-id-field="implementer_agent_id"
                       data-session-field="implementer_session_id"
                       data-suggested-role="implementer"
                     ></select>
                   </label>
-                  <label>Implementer agent ID <input name="implementer_agent_id" required /></label>
                   <label>Implementer session ID <input name="implementer_session_id" required /></label>
                   <label>
                     Reviewer existing agent
@@ -392,12 +384,10 @@
                       data-options="agents"
                       data-placeholder="Select existing agent"
                       data-agent-source-picker
-                      data-id-field="reviewer_agent_id"
                       data-session-field="reviewer_session_id"
                       data-suggested-role="reviewer"
                     ></select>
                   </label>
-                  <label>Reviewer agent ID <input name="reviewer_agent_id" required /></label>
                   <label>Reviewer session ID <input name="reviewer_session_id" required /></label>
                   <label>
                     Release operator existing agent
@@ -406,12 +396,10 @@
                       data-options="agents"
                       data-placeholder="Select existing agent"
                       data-agent-source-picker
-                      data-id-field="release_operator_agent_id"
                       data-session-field="release_operator_session_id"
                       data-suggested-role="release-operator"
                     ></select>
                   </label>
-                  <label>Release operator agent ID <input name="release_operator_agent_id" required /></label>
                   <label>Release operator session ID <input name="release_operator_session_id" required /></label>
                   <button type="submit">Materialize template</button>
                 </form>
@@ -421,7 +409,6 @@
             <details open>
               <summary>Create team</summary>
               <form id="create-team-form" data-endpoint="/teams" data-method="POST">
-                <label>Team ID <input name="id" required /></label>
                 <label>Name <input name="name" required /></label>
                 <label>
                   Manager existing agent
@@ -430,16 +417,13 @@
                     data-options="agents"
                     data-placeholder="Select existing agent"
                     data-agent-source-picker
-                    data-id-field="manager_agent_id"
                     data-session-field="manager_session_id"
                     data-display-field="manager_display_name"
                     data-suggested-role="manager"
                   ></select>
                 </label>
-                <label>Manager agent ID <input name="manager_agent_id" required /></label>
                 <label>Manager session ID <input name="manager_session_id" required /></label>
                 <label>Manager display name <input name="manager_display_name" /></label>
-                <label>Manager role ID <input name="manager_role_id" /></label>
                 <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
                 <label>Operator communication target id <input name="operator_communication_target_id" /></label>
                 <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
@@ -450,7 +434,6 @@
             <details>
               <summary>Create project</summary>
               <form id="create-project-form" data-endpoint="/projects" data-method="POST">
-                <label>Project ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Name <input name="name" required /></label>
                 <label>
@@ -460,18 +443,14 @@
                     data-options="agents"
                     data-placeholder="Select existing agent"
                     data-agent-source-picker
-                    data-id-field="lead_agent_id"
                     data-session-field="lead_session_id"
                     data-display-field="lead_display_name"
                     data-suggested-role="project-lead"
                   ></select>
                 </label>
-                <label>Lead agent ID <input name="lead_agent_id" required /></label>
                 <label>Lead session ID <input name="lead_session_id" required /></label>
                 <label>Lead display name <input name="lead_display_name" /></label>
-                <label>Lead role ID <input name="lead_role_id" /></label>
                 <label>Lead role name <input name="lead_role_name" value="Project Lead" /></label>
-                <label>Goal ID <input name="goal_id" /></label>
                 <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
                 <p class="subheading">Git config (optional)</p>
                 <label>Host repo path <input name="host_repo_path" /></label>
@@ -487,7 +466,6 @@
             <details>
               <summary>Create role</summary>
               <form id="create-role-form" data-endpoint="/roles" data-method="POST">
-                <label>Role ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Project <select name="project_id" data-options="projects"></select></label>
                 <label>Name <input name="name" required /></label>
@@ -508,7 +486,6 @@
                     data-options="agents"
                     data-placeholder="Select existing agent"
                     data-agent-source-picker
-                    data-id-field="id"
                     data-session-field="session_id"
                     data-display-field="display_name"
                     data-role-field="role_id"
@@ -517,7 +494,6 @@
                     data-max-concurrent-field="max_concurrent"
                   ></select>
                 </label>
-                <label>Agent ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
                 <label>Role <select name="role_id" required data-options="roles"></select></label>
@@ -532,7 +508,6 @@
             <details>
               <summary>Create task</summary>
               <form id="create-task-form" data-endpoint="/tasks" data-method="POST">
-                <label>Task ID <input name="id" required /></label>
                 <label>Owner <select name="owner_agent_id" required data-options="agents"></select></label>
                 <label>Project <select name="project_id" required data-options="projects"></select></label>
                 <label>Priority <input name="priority" type="number" min="0" value="10" required /></label>
@@ -563,7 +538,6 @@
             <details>
               <summary>Create review profile</summary>
               <form id="create-review-profile-form" data-endpoint="/review-profiles" data-method="POST">
-                <label>Profile ID <input name="id" required /></label>
                 <label>Team <select name="team_id" required data-options="teams"></select></label>
                 <label>Project <select name="project_id" data-options="projects"></select></label>
                 <label>Name <input name="name" required /></label>
@@ -577,7 +551,6 @@
             <details>
               <summary>Record deliverable</summary>
               <form id="record-deliverable-form" data-endpoint="/deliverables" data-method="POST">
-                <label>Deliverable ID <input name="id" required /></label>
                 <label>Task <select name="task_id" required data-options="tasks"></select></label>
                 <label>Producer <select name="producer_agent_id" required data-options="agents"></select></label>
                 <label>Summary <textarea name="summary" rows="3" required></textarea></label>
@@ -590,7 +563,6 @@
             <details>
               <summary>Request review</summary>
               <form id="record-review-form" data-endpoint="/review-requests" data-method="POST">
-                <label>Review ID <input name="id" required /></label>
                 <label>Deliverable <select name="deliverable_id" required data-options="deliverables"></select></label>
                 <label>Reviewer <select name="reviewer_agent_id" required data-options="agents"></select></label>
                 <label>Review profile <select name="review_profile_id" data-options="review-profiles"></select></label>

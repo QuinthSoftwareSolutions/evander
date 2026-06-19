@@ -339,6 +339,131 @@ def test_repository_writes_increment_revision_and_preserve_hierarchy(tmp_path: P
     assert state.agents["backend"].display_name == "Backend Agent"
 
 
+def test_repository_generates_missing_operator_ids_with_collision_suffixes(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state = repo.create_team(
+        team_id=None,
+        name="Platform Team",
+        manager_agent_id=None,
+        manager_session_id="session-manager",
+        manager_display_name="Platform Manager",
+    )
+    assert "team-platform-team" in state.teams
+    assert "team-platform-team__manager" in state.roles
+    assert "agent-team-platform-team-platform-manager" in state.agents
+
+    state = repo.create_project(
+        project_id=None,
+        team_id="team-platform-team",
+        name="Runtime Upgrade",
+        lead_agent_id=None,
+        lead_session_id="session-lead",
+        lead_display_name="Project Lead",
+        goals=[{"description": "Ship runtime upgrade"}],
+        expected_revision=state.revision,
+    )
+    project_id = "project-team-platform-team-runtime-upgrade"
+    assert project_id in state.projects
+    assert state.projects[project_id].lead_agent_id == (
+        "agent-project-team-platform-team-runtime-upgrade-project-lead"
+    )
+    assert state.projects[project_id].goals[0].id == (
+        "goal-project-team-platform-team-runtime-upgrade-ship-runtime-upgrade"
+    )
+
+    state = repo.create_role(
+        role_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Backend",
+        expected_revision=state.revision,
+    )
+    state = repo.create_role(
+        role_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Backend",
+        expected_revision=state.revision,
+    )
+    assert "role-project-team-platform-team-runtime-upgrade-backend" in state.roles
+    assert "role-project-team-platform-team-runtime-upgrade-backend-2" in state.roles
+
+    state = repo.register_agent(
+        agent_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        role_id="role-project-team-platform-team-runtime-upgrade-backend",
+        session_id="session-backend",
+        reports_to_agent_id="agent-project-team-platform-team-runtime-upgrade-project-lead",
+        display_name="Backend Engineer",
+        expected_revision=state.revision,
+    )
+    agent_id = "agent-project-team-platform-team-runtime-upgrade-backend-engineer"
+    assert agent_id in state.agents
+
+    state = repo.create_or_reprioritize_task(
+        task_id=None,
+        owner_agent_id=agent_id,
+        project_id=project_id,
+        priority=10,
+        title="Implement API",
+        description="Implement the runtime API.",
+        created_by_agent_id=state.projects[project_id].lead_agent_id,
+        expected_revision=state.revision,
+    )
+    task_id = "task-project-team-platform-team-runtime-upgrade-implement-api"
+    assert task_id in state.tasks
+
+    state = repo.record_deliverable(
+        deliverable_id=None,
+        task_id=task_id,
+        producer_agent_id=agent_id,
+        summary="API patch",
+        expected_revision=state.revision,
+    )
+    deliverable_id = f"deliverable-{task_id}-api-patch"
+    assert deliverable_id in state.deliverables
+
+    state = repo.create_review_profile(
+        profile_id=None,
+        team_id="team-platform-team",
+        project_id=project_id,
+        name="Standard review",
+        expected_revision=state.revision,
+    )
+    profile_id = "profile-project-team-platform-team-runtime-upgrade-standard-review"
+    assert profile_id in state.review_profiles
+
+    state = repo.record_review_request(
+        review_request_id=None,
+        deliverable_id=deliverable_id,
+        reviewer_agent_id=state.projects[project_id].lead_agent_id,
+        review_profile_id=profile_id,
+        expected_revision=state.revision,
+    )
+    assert any(review_id.startswith(f"review-{deliverable_id}") for review_id in state.review_requests)
+
+
+def test_repository_preserves_explicit_operator_ids(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+
+    state = repo.create_team(
+        team_id="explicit-team",
+        name="Display Name",
+        manager_agent_id="explicit-manager",
+        manager_session_id="session-manager",
+        manager_role_id="explicit-manager-role",
+    )
+
+    assert "explicit-team" in state.teams
+    assert "explicit-manager" in state.agents
+    assert "explicit-manager-role" in state.roles
+    assert "team-display-name" not in state.teams
+
+
 def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

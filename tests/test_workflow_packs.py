@@ -4,6 +4,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import OrchestrationCoreConfig
 from agent_sandbox.workflow import packs as workflow_packs
 from agent_sandbox.workflow.packs import (
@@ -11,6 +13,12 @@ from agent_sandbox.workflow.packs import (
     compose_workflow_ir,
     load_workflow_pack,
 )
+
+
+def _write_workflow_pack(tmp_path: Path, name: str, payload: dict) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / name).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
@@ -72,7 +80,7 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
                             "payload": {"message": "echo"},
                         }
                     ],
-                    "edges": [{"source_id": "trigger-a", "target_id": "effect-b"}],
+                    "edges": [],
                 },
             }
         ),
@@ -87,14 +95,147 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
     assert [graph.directory_path for graph in composed.graphs] == ["root", "root/team-a"]
     assert [graph.user_ids for graph in composed.graphs] == [["alice"], ["bob"]]
     assert [graph.node_ids for graph in composed.graphs] == [["trigger-a"], ["effect-b"]]
-    assert composed.edges == [
+    assert composed.edges == []
+
+
+def test_compose_workflow_ir_rejects_cross_pack_edges(tmp_path: Path) -> None:
+    _write_workflow_pack(
+        tmp_path,
+        "pack-a.v1.json",
         {
-            "source_id": "trigger-a",
-            "target_id": "effect-b",
-            "source_port": None,
-            "allow_cycle": False,
+            "pack_id": "pack-a",
+            "pack_version": "v1",
+            "graphs": [],
+            "ir": {
+                "version": "v1",
+                "nodes": [
+                    {
+                        "id": "trigger-a",
+                        "display_name": "tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "edges": [],
+            },
+        },
+    )
+    _write_workflow_pack(
+        tmp_path,
+        "pack-b.v1.json",
+        {
+            "pack_id": "pack-b",
+            "pack_version": "v1",
+            "graphs": [],
+            "ir": {
+                "version": "v1",
+                "nodes": [
+                    {
+                        "id": "effect-b",
+                        "display_name": "echo",
+                        "type": "effect:event:emit",
+                        "event_type": "workflow.synthetic",
+                        "payload": {"message": "echo"},
+                    }
+                ],
+                "edges": [{"source_id": "trigger-a", "target_id": "effect-b"}],
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="must reference nodes from the same pack"):
+        compose_workflow_ir(project_dir=tmp_path, workflow_packs=["pack-a.v1", "pack-b.v1"])
+
+
+def test_compose_workflow_ir_rejects_duplicate_pack_node_ids(tmp_path: Path) -> None:
+    for name, node_type in (("pack-a.v1.json", "trigger:cron"), ("pack-b.v1.json", "effect:event:emit")):
+        node = {
+            "id": "shared-node",
+            "display_name": "Shared",
+            "type": node_type,
         }
-    ]
+        if node_type == "trigger:cron":
+            node["expression"] = "* * * * *"
+        else:
+            node["event_type"] = "workflow.synthetic"
+            node["payload"] = {"message": "echo"}
+        _write_workflow_pack(
+            tmp_path,
+            name,
+            {
+                "pack_id": name,
+                "pack_version": "v1",
+                "graphs": [],
+                "ir": {"version": "v1", "nodes": [node], "edges": []},
+            },
+        )
+
+    with pytest.raises(ValueError, match="Duplicate workflow node id 'shared-node'"):
+        compose_workflow_ir(project_dir=tmp_path, workflow_packs=["pack-a.v1", "pack-b.v1"])
+
+
+def test_compose_workflow_ir_rejects_duplicate_pack_graph_ids(tmp_path: Path) -> None:
+    for name, node_id in (("pack-a.v1.json", "trigger-a"), ("pack-b.v1.json", "trigger-b")):
+        _write_workflow_pack(
+            tmp_path,
+            name,
+            {
+                "pack_id": name,
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "shared-graph",
+                        "name": "Shared",
+                        "directory_path": "root",
+                        "node_ids": [node_id],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": node_id,
+                            "display_name": "tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            },
+        )
+
+    with pytest.raises(ValueError, match="Duplicate workflow graph id 'shared-graph'"):
+        compose_workflow_ir(project_dir=tmp_path, workflow_packs=["pack-a.v1", "pack-b.v1"])
+
+
+def test_compose_workflow_ir_rejects_duplicate_pack_webhook_slugs(tmp_path: Path) -> None:
+    for name, node_id in (("pack-a.v1.json", "webhook-a"), ("pack-b.v1.json", "webhook-b")):
+        _write_workflow_pack(
+            tmp_path,
+            name,
+            {
+                "pack_id": name,
+                "pack_version": "v1",
+                "graphs": [],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": node_id,
+                            "display_name": "Webhook",
+                            "type": "trigger:http:webhook",
+                            "slug": "build-notify",
+                            "secret_env": "WEBHOOK_SECRET",
+                        }
+                    ],
+                    "edges": [],
+                },
+            },
+        )
+
+    with pytest.raises(ValueError, match="Duplicate webhook slug id 'build-notify'"):
+        compose_workflow_ir(project_dir=tmp_path, workflow_packs=["pack-a.v1", "pack-b.v1"])
 
 
 def test_compose_workflow_ir_accepts_inline_overlay_with_ir_metadata(tmp_path: Path) -> None:
@@ -151,7 +292,6 @@ def test_compose_workflow_ir_preserves_disabled_trigger_flag(tmp_path: Path) -> 
                 "expression": "* * * * *",
                 "enabled": False,
             },
-            "outputs": None,
         }
     ]
 
