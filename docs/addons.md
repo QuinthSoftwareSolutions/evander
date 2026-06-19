@@ -14,6 +14,7 @@ Add-ons may register generic integration points:
 - Admin Web navigation metadata and optional UI routes under `/addons/<addon_id>/...`
 - Workflow providers using the same trigger/gate/effect/query provider shape as
   `agent_sandbox.providers`
+- Workflow editor catalog metadata through those workflow provider registrations
 - Private runtime state under `runtime/addons/<addon_id>/`
 
 Add-ons must not add domain-specific fields to core models such as
@@ -61,6 +62,15 @@ def register_addon():
             "effect_providers": {
                 "effect:team:example": ExampleEffectProvider,
             },
+            "workflow_editor_catalog_entries": [
+                {
+                    "kind": "effect",
+                    "type": "effect:team:example",
+                    "label": "Team example",
+                    "description": "Run the add-on owned Team example effect.",
+                    "fields": [],
+                },
+            ],
         },
     }
 ```
@@ -306,7 +316,8 @@ set:
 - `query:team:state` returns filtered add-on state for workflows or UI.
 
 These node types are add-on-owned. They are not present unless the add-on is
-loaded, and they must not be moved into Truman core. The packaged
+loaded, and their workflow-editor catalog entries are registered by the add-on's
+provider registration rather than hard-coded into Truman core. The packaged
 `truman_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
 workflow pack for the intended cron plus agent-completion loop. Operators can
 write that definition into an operator-owned pack file when they want this
@@ -638,5 +649,5 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
 5. Restart Admin Web and the trigger/effect orchestrator services.
 6. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
    returns the built-in catalog, `/addons/team-addon/` serves the add-on UI,
-   and workflow validation recognizes the `effect:team:*` and `query:team:*`
-   node types only after the add-on is enabled.
+   and `/api/workflow-editor/catalog` plus workflow validation recognize the
+   `effect:team:*` and `query:team:*` node types only after the add-on is enabled.

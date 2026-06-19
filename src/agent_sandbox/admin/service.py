@@ -196,6 +196,13 @@ from agent_sandbox.workflow.runtime_config import (
     _compose_configured_workflow_ir,
     compile_worker_global_config_with_diagnostics,
 )
+from agent_sandbox.workflow.catalog import (
+    WorkflowEditorCatalogPayload,
+    WorkflowEditorFieldDefinition,
+    WorkflowEditorFieldOption,
+    WorkflowEditorNodeCatalogEntry,
+    WorkflowEditorNodePortDefinition,
+)
 from agent_sandbox.workflow.packs import (
     compose_workflow_ir,
     load_workflow_pack,
@@ -1372,51 +1379,6 @@ class WorkflowRunResumePayload(BaseModel):
     resume_event_id: str
     source_node_id: str
     target_node_id: str
-
-
-class WorkflowEditorFieldOption(BaseModel):
-    value: str
-    label: str
-    description: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
-
-
-class WorkflowEditorFieldDefinition(BaseModel):
-    key: str
-    label: str
-    kind: str
-    required: bool = False
-    bindable: bool = False
-    read_only: bool = False
-    multiline: bool = False
-    description: str | None = None
-    placeholder: str | None = None
-    json_value_type: str | None = None
-    default_value: Any = None
-    options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
-    item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
-
-
-class WorkflowEditorNodePortDefinition(BaseModel):
-    key: str
-    label: str
-    description: str | None = None
-
-
-class WorkflowEditorNodeCatalogEntry(BaseModel):
-    kind: str
-    type: str
-    label: str
-    description: str | None = None
-    fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
-    input_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
-    output_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
-
-
-class WorkflowEditorCatalogPayload(BaseModel):
-    worker_id: str = "trigger-orchestrator"
-    nodes: list[WorkflowEditorNodeCatalogEntry]
 
 
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
@@ -15077,17 +15039,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
-    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
+    def _load_workflow_provider_catalog(self, payload: dict[str, object]):
         from agent_sandbox.provider_profiles import resolve_provider_module_names
         from agent_sandbox.workflow.plugins import load_provider_plugins
 
-        loader_payload = {
-            key: payload[key]
-            for key in ("provider_loader", "addon_loader")
-            if key in payload
-        }
-        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(loader_payload)
-        load_provider_plugins(
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
+        return load_provider_plugins(
             module_names=resolve_provider_module_names(
                 profile_name=worker_config.provider_profile,
                 extra_modules=worker_config.provider_loader.provider_modules,
@@ -15096,6 +15053,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             include_builtin=worker_config.provider_include_builtin,
             addon_loader=worker_config.addon_loader,
         )
+
+    def _load_workflow_provider_output_schemas(self, payload: dict[str, object]) -> None:
+        self._load_workflow_provider_catalog(payload)
 
     def assistant_settings_path(self) -> Path:
         return self.config.runtime_dir / "assistant-settings.json"
@@ -16701,6 +16661,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path
         )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
+        seen_node_types: set[str] = set()
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
                 deep=True,
@@ -16757,6 +16718,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     else field
                     for field in node.fields
                 ]
+            if node.type in seen_node_types:
+                raise ValueError(f"Duplicate workflow editor catalog entry: {node.type}")
+            seen_node_types.add(node.type)
+            nodes.append(node)
+        provider_catalog = self._load_workflow_provider_catalog(
+            self._read_worker_global_config("trigger-orchestrator").config
+        )
+        for entry in provider_catalog.workflow_editor_catalog_entries:
+            node = entry.model_copy(deep=True)
+            if node.type in seen_node_types:
+                raise ValueError(
+                    f"Provider workflow editor catalog entry duplicates core node type: {node.type}"
+                )
+            seen_node_types.add(node.type)
             nodes.append(node)
         return WorkflowEditorCatalogPayload(nodes=nodes)
 

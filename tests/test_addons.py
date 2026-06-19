@@ -223,6 +223,10 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "effect:team:consolidate-git-branches" not in disabled.effect_providers
     assert "query:team:state" not in disabled.query_providers
     assert "effect:team:wake-due-agents" not in disabled.node_definition_resolvers
+    assert not any(
+        entry.type.startswith(("effect:team:", "query:team:"))
+        for entry in disabled.workflow_editor_catalog_entries
+    )
 
     enabled = load_provider_plugins(
         module_names=[],
@@ -245,3 +249,14 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert "query:team:agent-action-artifact" in enabled.query_providers
     assert "query:team:session-routing" in enabled.query_providers
     assert "effect:team:wake-due-agents" in enabled.node_definition_resolvers
+    catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
+    assert "effect:team:wake-due-agents" in catalog_entries
+    assert "effect:team:apply-agent-action" in catalog_entries
+    assert "query:team:state" in catalog_entries
+    assert catalog_entries["effect:team:wake-due-agents"].label == "Wake Team agents"
+    assert catalog_entries["effect:team:wake-due-agents"].description
+    assert all(
+        field.description
+        for entry in catalog_entries.values()
+        for field in entry.fields
+    )
