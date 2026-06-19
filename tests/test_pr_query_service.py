@@ -829,6 +829,86 @@ def test_pr_query_service_expands_closed_status_to_completed_and_abandoned(
     assert limited.paging["has_more"] is True
 
 
+def test_pr_query_service_applies_pagination_after_merging_closed_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, int | None, int | None]] = []
+    by_status = {
+        "completed": [
+            {
+                "pullRequestId": 1,
+                "title": "Completed newest",
+                "status": "completed",
+                "closedDate": "2026-06-04T10:00:00Z",
+            },
+            {
+                "pullRequestId": 3,
+                "title": "Completed older",
+                "status": "completed",
+                "closedDate": "2026-06-02T10:00:00Z",
+            },
+        ],
+        "abandoned": [
+            {
+                "pullRequestId": 2,
+                "title": "Abandoned middle",
+                "status": "abandoned",
+                "closedDate": "2026-06-03T10:00:00Z",
+            },
+            {
+                "pullRequestId": 4,
+                "title": "Abandoned oldest",
+                "status": "abandoned",
+                "closedDate": "2026-06-01T10:00:00Z",
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = request.url.params["searchCriteria.status"]
+        top_value = request.url.params.get("$top")
+        skip_value = request.url.params.get("$skip")
+        top = int(top_value) if top_value is not None else None
+        skip = int(skip_value) if skip_value is not None else 0
+        requests.append((status, top, skip))
+        values = by_status[status]
+        if top is not None:
+            values = values[skip : skip + top]
+        else:
+            values = values[skip:]
+        return httpx.Response(200, json={"value": values})
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = PrQueryService(
+        providers={
+            "azure_devops": AzureDevOpsPrQueryProvider(
+                organization_url="https://dev.azure.com/org",
+                project="proj",
+                pat="secret",
+            )
+        }
+    )
+
+    first_page = service.list_pull_requests(provider="ado", repo="repo-1", status="closed", top=2)
+    second_page = service.list_pull_requests(
+        provider="ado",
+        repo="repo-1",
+        status="closed",
+        top=2,
+        skip=2,
+    )
+
+    assert [item.pr_id for item in first_page.pull_requests] == ["1", "2"]
+    assert first_page.paging["next_skip"] == 2
+    assert [item.pr_id for item in second_page.pull_requests] == ["3", "4"]
+    assert requests == [
+        ("completed", 2, 0),
+        ("abandoned", 2, 0),
+        ("completed", 4, 0),
+        ("abandoned", 4, 0),
+    ]
+
+
 def test_azure_query_provider_resolves_identity_with_ambiguous_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -948,6 +1028,112 @@ def test_azure_query_provider_lists_pr_comment_activity_by_author_and_date(
     assert "Please check" in (result.comments[0].body_snippet or "")
 
 
+def test_azure_query_provider_pages_comment_activity_after_scanning_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "No matching activity",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Has matching activity",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"value": values})
+        if request.url.path.endswith("/pullRequests/17/threads"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 501,
+                            "comments": [
+                                {
+                                    "id": 1,
+                                    "publishedDate": "2026-06-04T10:00:00Z",
+                                    "author": {"uniqueName": "other@example.com"},
+                                    "content": "Not the requested author.",
+                                    "commentType": "text",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/threads"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 502,
+                            "comments": [
+                                {
+                                    "id": 2,
+                                    "publishedDate": "2026-06-04T12:00:00Z",
+                                    "author": {
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Newest matching comment.",
+                                    "commentType": "text",
+                                },
+                                {
+                                    "id": 3,
+                                    "publishedDate": "2026-06-04T11:00:00Z",
+                                    "author": {
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Second matching comment.",
+                                    "commentType": "text",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_comment_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        top=1,
+        skip=1,
+    )
+
+    assert pull_request_queries == [(200, 0)]
+    assert result.count == 1
+    assert result.comments[0].comment_id == "3"
+    assert result.paging["total_activity_count"] == 2
+    assert result.paging["has_more"] is False
+
+
 def test_azure_query_provider_lists_pr_commit_activity_by_author_and_date(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1019,3 +1205,96 @@ def test_azure_query_provider_lists_pr_commit_activity_by_author_and_date(
     assert result.commits[0].commit_id == "abc123"
     assert result.commits[0].pr_status == "completed"
     assert result.commits[0].unverified_date is False
+
+
+def test_azure_query_provider_pages_commit_activity_after_scanning_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "No matching commits",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Has matching commits",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"value": values})
+        if request.url.path.endswith("/pullRequests/17/commits"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "other",
+                            "author": {
+                                "name": "Other User",
+                                "email": "other@example.com",
+                                "date": "2026-06-04T12:30:00Z",
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/commits"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "newer",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-04T12:00:00Z",
+                            },
+                        },
+                        {
+                            "commitId": "older",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-04T11:00:00Z",
+                            },
+                        },
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_commit_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        top=1,
+        skip=1,
+    )
+
+    assert pull_request_queries == [(200, 0)]
+    assert result.count == 1
+    assert result.commits[0].commit_id == "older"
+    assert result.paging["total_activity_count"] == 2
+    assert result.paging["has_more"] is False

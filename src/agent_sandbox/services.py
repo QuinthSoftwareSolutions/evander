@@ -3826,8 +3826,6 @@ class AzureDevOpsPrQueryProvider:
             repo=repo,
             project=project_name,
             statuses=status_values,
-            top=top,
-            skip=skip,
         )
         comments: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -3913,16 +3911,26 @@ class AzureDevOpsPrQueryProvider:
                             }
                         )
         comments.sort(key=lambda item: item["created_at"], reverse=True)
+        total_activity_count = len(comments)
+        paged_comments = comments[skip : skip + top]
+        next_skip = (
+            skip + len(paged_comments)
+            if skip + len(paged_comments) < total_activity_count
+            else None
+        )
         return AdoPrCommentActivityResponse(
             repo=repo,
             project=project_name,
-            comments=comments[:top],
-            count=len(comments[:top]),
+            comments=paged_comments,
+            count=len(paged_comments),
             paging={
                 "skip": skip,
                 "top": top,
                 "candidate_count": len(pull_requests),
-                "returned_count": len(comments[:top]),
+                "total_activity_count": total_activity_count,
+                "returned_count": len(paged_comments),
+                "has_more": next_skip is not None,
+                "next_skip": next_skip,
                 "statuses": status_values,
             },
         )
@@ -3946,8 +3954,6 @@ class AzureDevOpsPrQueryProvider:
             repo=repo,
             project=project_name,
             statuses=status_values,
-            top=top,
-            skip=skip,
         )
         commits: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -4014,16 +4020,26 @@ class AzureDevOpsPrQueryProvider:
             or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
+        total_activity_count = len(commits)
+        paged_commits = commits[skip : skip + top]
+        next_skip = (
+            skip + len(paged_commits)
+            if skip + len(paged_commits) < total_activity_count
+            else None
+        )
         return AdoPrCommitActivityResponse(
             repo=repo,
             project=project_name,
-            commits=commits[:top],
-            count=len(commits[:top]),
+            commits=paged_commits,
+            count=len(paged_commits),
             paging={
                 "skip": skip,
                 "top": top,
                 "candidate_count": len(pull_requests),
-                "returned_count": len(commits[:top]),
+                "total_activity_count": total_activity_count,
+                "returned_count": len(paged_commits),
+                "has_more": next_skip is not None,
+                "next_skip": next_skip,
                 "statuses": status_values,
             },
         )
@@ -4034,21 +4050,46 @@ class AzureDevOpsPrQueryProvider:
         repo: str,
         project: str,
         statuses: list[str],
-        top: int,
-        skip: int,
     ) -> list[PullRequestItem]:
+        page_size = 200
         candidates: dict[tuple[str, str, str], PullRequestItem] = {}
         for status in statuses:
-            response = self.list_pull_requests(
-                repo=repo,
-                project=project,
-                status=status,
-                top=top,
-                skip=skip,
-                include_links=True,
-            )
-            for item in response.pull_requests:
-                candidates[(item.provider, item.repo, item.pr_id)] = item
+            page_skip = 0
+            page_cursor: str | None = None
+            seen_pages: set[tuple[int, str | None]] = set()
+            while True:
+                page_key = (page_skip, page_cursor)
+                if page_key in seen_pages:
+                    break
+                seen_pages.add(page_key)
+                response = self.list_pull_requests(
+                    repo=repo,
+                    project=project,
+                    status=status,
+                    top=page_size,
+                    skip=page_skip,
+                    cursor=page_cursor,
+                    include_links=True,
+                )
+                for item in response.pull_requests:
+                    candidates[(item.provider, item.repo, item.pr_id)] = item
+                paging = response.paging or {}
+                next_cursor = str(response.next_cursor or paging.get("next_cursor") or "").strip()
+                if next_cursor and next_cursor != page_cursor:
+                    page_cursor = next_cursor
+                    continue
+                raw_next_skip = paging.get("next_skip")
+                next_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
+                if next_skip is not None and next_skip > page_skip:
+                    page_skip = next_skip
+                    page_cursor = None
+                    continue
+                if not paging.get("has_more"):
+                    break
+                if not response.pull_requests:
+                    break
+                page_skip += len(response.pull_requests)
+                page_cursor = None
         return list(candidates.values())
 
     def list_pull_requests(
@@ -5071,6 +5112,11 @@ class PrQueryService:
                 f"PR query provider {provider_name!r} is not configured for this gateway instance"
             )
         status_values = _expand_pull_request_statuses(status=status, statuses=statuses)
+        merged_page = len(status_values) > 1
+        merged_skip = max(0, int(skip or 0)) if merged_page else skip
+        merged_fetch_top = (
+            (merged_skip or 0) + top if merged_page and top is not None else top
+        )
         responses = [
             self.providers[provider_name].list_pull_requests(
                 repo=repo,
@@ -5088,9 +5134,9 @@ class PrQueryService:
                 include_links=include_links,
                 max_comment_length=max_comment_length,
                 tags=tags,
-                top=top,
-                skip=skip,
-                cursor=cursor,
+                top=merged_fetch_top,
+                skip=0 if merged_page else skip,
+                cursor=None if merged_page else cursor,
             )
             for status_value in status_values
         ]
@@ -5112,7 +5158,18 @@ class PrQueryService:
             reverse=True,
         )
         total_merged_count = len(items)
-        limited_items = items[:top] if top is not None else items
+        page_start = int(merged_skip or 0)
+        page_end = page_start + top if top is not None else None
+        limited_items = items[page_start:page_end]
+        has_more = (
+            (page_end is not None and total_merged_count > page_end)
+            or any(bool(response.paging.get("has_more")) for response in responses)
+        )
+        next_skip = (
+            page_start + len(limited_items)
+            if has_more and top is not None and limited_items
+            else None
+        )
         return ListPullRequestsResponse(
             provider=responses[0].provider,
             repo=responses[0].repo,
@@ -5124,8 +5181,8 @@ class PrQueryService:
                 "by_status": paging_by_status,
                 "returned_count": len(limited_items),
                 "total_merged_count": total_merged_count,
-                "has_more": total_merged_count > len(limited_items)
-                or any(bool(response.paging.get("has_more")) for response in responses),
+                "has_more": has_more,
+                "next_skip": next_skip,
             },
             next_cursor=None,
         )

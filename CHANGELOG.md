@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-06-19 - ADO Activity Pagination
+
+- Fixed ADO PR activity reporting pagination so closed/multi-status PR lists page after status
+  merging, and PR comment/commit activity tools page after scanning candidate pull requests.
+
 ## 2026-06-19 - Generated Operator IDs
 
 - Generated stable Team Add-on IDs from names when operator create/template/API
