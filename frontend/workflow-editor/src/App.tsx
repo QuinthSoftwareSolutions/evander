@@ -3244,6 +3244,9 @@ function normalizeDerivedNodeFields(
     } else if (gate.type === "gate:aggregate") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:buffer") {
+      if (typeof gate.timeout === "string" && gate.timeout.trim() === "") {
+        delete gate.timeout;
+      }
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:deserialize") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);

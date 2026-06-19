@@ -900,6 +900,19 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
         "count": {"type": "integer"},
         "release_reason": {"type": "string"},
     }
+    empty_timeout_gate = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "g-buffer-count-only",
+                "display_name": "Buffer count only",
+                "type": "gate:buffer",
+                "key": "buffer:${{system.execution.trace_id}}",
+                "count": 10,
+                "timeout": "",
+            }
+        )
+    )
+    assert empty_timeout_gate.timeout is None
 
     with pytest.raises(ValueError, match="gate:buffer count must be a positive integer"):
         materialize_node_definition(

@@ -156,6 +156,18 @@ class BufferGateProvider(GateProviderBase):
             )
             return True
 
+        if _state_is_due_for_timeout_release(state=state, now=now):
+            self._release_buffer_state(
+                worker=worker,
+                gate=gate,
+                state_key=state_key,
+                state=state,
+                adapter=adapter,
+                reason="timeout",
+                started_at=started_at,
+            )
+            state = None
+
         item = BufferGateItem(
             event_id=queue_record.event_id,
             occurred_at=now,
@@ -261,47 +273,68 @@ class BufferGateProvider(GateProviderBase):
             gate = graph.gates_by_id.get(state.gate_id)
             if gate is None or getattr(gate, "type", "") != "gate:buffer":
                 continue
-            if state.scheduled_release_at is None:
+            if not _state_is_due_for_timeout_release(state=state, now=now):
                 continue
-            if now < _coerce_utc(state.scheduled_release_at):
-                continue
-            queue_record = TriggerQueueRecord(
-                event_id=state.latest_event_id,
-                trigger_id=state.source_node_id,
-                trigger_type=state.source_trigger_type,
-                trace_id=state.trace_id,
-                occurred_at=state.last_seen_at,
-                payload=dict(state.latest_event_payload),
-                delivery_state="delivered",
-            )
-            outputs = _release_outputs(state=state, reason="timeout")
-            logger.info(
-                "Releasing buffer by timeout gate_id=%s key=%s item_count=%d "
-                "first_seen_at=%s scheduled_release_at=%s latest_event_id=%s",
-                state.gate_id,
-                state.buffer_key,
-                len(state.items),
-                state.first_seen_at.isoformat(),
-                state.scheduled_release_at.isoformat(),
-                state.latest_event_id,
-            )
-            worker._write_gate_record(
-                queue_record=queue_record,
+            self._release_buffer_state(
+                worker=worker,
                 gate=gate,
-                status="succeeded",
+                state_key=state_key,
+                state=state,
+                adapter=adapter,
+                reason="timeout",
                 started_at=now,
-                resolved_config=_release_resolved_config(state=state, reason="timeout"),
-                outputs=outputs,
-                inputs_by_source=state.inputs_by_source,
-                input_event_ids_by_source=state.input_event_ids_by_source,
-                input_occurred_at_by_source=state.input_occurred_at_by_source,
-                config_revision=state.config_revision,
-                binding_trace=state.binding_trace,
-                publish_completion_event=True,
             )
-            adapter.delete(state_key)
             released += 1
         return released
+
+    def _release_buffer_state(
+        self,
+        *,
+        worker: Any,
+        gate: Any,
+        state_key: str,
+        state: BufferGateStateRecord,
+        adapter: _BufferGateStateStoreAdapter,
+        reason: Literal["timeout"],
+        started_at: datetime,
+    ) -> None:
+        queue_record = TriggerQueueRecord(
+            event_id=state.latest_event_id,
+            trigger_id=state.source_node_id,
+            trigger_type=state.source_trigger_type,
+            trace_id=state.trace_id,
+            occurred_at=state.last_seen_at,
+            payload=dict(state.latest_event_payload),
+            delivery_state="delivered",
+        )
+        outputs = _release_outputs(state=state, reason=reason)
+        scheduled_release_at = state.scheduled_release_at
+        logger.info(
+            "Releasing buffer by %s gate_id=%s key=%s item_count=%d "
+            "first_seen_at=%s scheduled_release_at=%s latest_event_id=%s",
+            reason,
+            state.gate_id,
+            state.buffer_key,
+            len(state.items),
+            state.first_seen_at.isoformat(),
+            scheduled_release_at.isoformat() if scheduled_release_at is not None else None,
+            state.latest_event_id,
+        )
+        worker._write_gate_record(
+            queue_record=queue_record,
+            gate=gate,
+            status="succeeded",
+            started_at=started_at,
+            resolved_config=_release_resolved_config(state=state, reason=reason),
+            outputs=outputs,
+            inputs_by_source=state.inputs_by_source,
+            input_event_ids_by_source=state.input_event_ids_by_source,
+            input_occurred_at_by_source=state.input_occurred_at_by_source,
+            config_revision=state.config_revision,
+            binding_trace=state.binding_trace,
+            publish_completion_event=True,
+        )
+        adapter.delete(state_key)
 
 
 def _release_outputs(
@@ -348,6 +381,14 @@ def _forwardable_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _state_is_due_for_timeout_release(
+    *, state: BufferGateStateRecord | None, now: datetime
+) -> bool:
+    if state is None or state.scheduled_release_at is None:
+        return False
+    return _coerce_utc(now) >= _coerce_utc(state.scheduled_release_at)
+
+
 def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:
     text = "" if value is None else str(value).strip()
     if not text:
@@ -372,7 +413,7 @@ def _coerce_positive_int(value: Any) -> int:
 
 
 def _coerce_timeout_seconds(value: Any) -> float | None:
-    if value is None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
     timeout = parse_iso8601_duration(value, field_name="timeout", gate_type="gate:buffer")
     return timeout.total_seconds()

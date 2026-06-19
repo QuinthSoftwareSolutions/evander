@@ -337,7 +337,9 @@ class GateBufferDefinition(GateDefinition):
     def validate_timeout(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
-        if not isinstance(value, str) or not value.strip():
+        if isinstance(value, str) and not value.strip():
+            return None
+        if not isinstance(value, str):
             raise ValueError("gate:buffer timeout must be an ISO-8601 duration string or binding")
         if "${{" in value:
             return value

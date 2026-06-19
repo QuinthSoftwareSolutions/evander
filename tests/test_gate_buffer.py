@@ -83,6 +83,7 @@ def _publish(
     value: int,
     *,
     desired_count: str = "3",
+    occurred_at: datetime | None = None,
 ) -> None:
     index = int(event_id.rsplit("-", 1)[-1]) if event_id.rsplit("-", 1)[-1].isdigit() else 0
     worker.event_queue.publish(
@@ -91,7 +92,7 @@ def _publish(
             trigger_id="trigger-1",
             trigger_type="trigger:cron",
             trace_id=f"trace-{group}",
-            occurred_at=datetime(2026, 6, 19, 12, index, tzinfo=UTC),
+            occurred_at=occurred_at or datetime(2026, 6, 19, 12, index, tzinfo=UTC),
             payload={
                 "group": group,
                 "value": value,
@@ -215,6 +216,38 @@ def test_buffer_timeout_reconciliation_releases_partial_batch(tmp_path: Path) ->
     assert [item["value"] for item in records[0]["outputs"]["items"]] == [1, 2]
 
 
+def test_buffer_releases_overdue_timeout_batch_before_appending_late_activation(
+    tmp_path: Path,
+) -> None:
+    worker = _worker(tmp_path, count=5, timeout="PT10M")
+    now = datetime.now(UTC).replace(microsecond=0)
+    _publish(worker, "event-1", "a", 1, occurred_at=now)
+    worker.run_once()
+
+    provider = _buffer_provider(worker)
+    adapter = provider.load_state()
+    state_key, state = next(iter(adapter.read_all().items()))
+    state.scheduled_release_at = now + timedelta(minutes=1)
+    adapter.put(state_key, state)
+
+    _publish(worker, "event-2", "a", 2, occurred_at=now + timedelta(minutes=2))
+    worker.run_once()
+
+    records = _succeeded_buffer_records(worker)
+    assert len(records) == 1
+    assert records[0]["event_id"] == "event-1"
+    assert records[0]["outputs"] == {
+        "items": [{"group": "a", "value": 1, "desired_count": "3"}],
+        "count": 1,
+        "release_reason": "timeout",
+    }
+
+    remaining_states = list(provider.load_state().read_all().values())
+    assert len(remaining_states) == 1
+    assert [item.payload["value"] for item in remaining_states[0].items] == [2]
+    assert remaining_states[0].first_event_id == "event-2"
+
+
 def test_buffer_duplicate_event_id_does_not_double_count(tmp_path: Path) -> None:
     worker = _worker(tmp_path, count=2)
     _publish(worker, "event-1", "a", 1)
@@ -269,6 +302,23 @@ def test_buffer_invalid_config_is_rejected_clearly(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError, match="gate:buffer timeout must be an ISO-8601 duration"):
         _worker(tmp_path, timeout="not-a-duration")
+
+
+def test_buffer_empty_timeout_is_count_only(tmp_path: Path) -> None:
+    worker = _worker(tmp_path, count=2, timeout="")
+    _publish(worker, "event-1", "a", 1)
+    worker.run_once()
+
+    state = next(iter(_buffer_provider(worker).load_state().read_all().values()))
+    assert state.timeout_seconds is None
+    assert state.scheduled_release_at is None
+
+    _publish(worker, "event-2", "a", 2)
+    _run_cycles(worker)
+
+    records = _succeeded_buffer_records(worker)
+    assert len(records) == 1
+    assert records[0]["outputs"]["release_reason"] == "count"
 
 
 def test_buffer_runtime_rejects_count_binding_that_resolves_non_integer(tmp_path: Path) -> None:
