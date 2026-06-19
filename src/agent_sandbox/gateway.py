@@ -3478,21 +3478,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def assistant_create_workflow(
         config: dict[str, Any],
         layout: dict[str, Any] | None = None,
+        workflow_pack: str | None = None,
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
         )
-        args = {"session_id": resolved_session_id, "after": config}
+        args = {
+            "session_id": resolved_session_id,
+            "workflow_pack": workflow_pack,
+            "after": config,
+        }
         try:
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW
             )
             _assistant_require_writable_scope(session, "config/workflow")
             service = _admin_service()
-            before = service.read_workflow_editor_document().config
-            saved = service.save_workflow_editor_document(config=config, layout=layout)
+            before = service.read_workflow_editor_document(
+                workflow_pack=workflow_pack
+            ).config
+            saved = service.save_workflow_editor_document(
+                config=config,
+                layout=layout,
+                workflow_pack=workflow_pack,
+            )
             result = {
                 "status": "success",
                 "config_path": saved.config_path,

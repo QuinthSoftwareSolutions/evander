@@ -1185,6 +1185,123 @@ def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path
     assert "config" not in tool_events[0]["result"]
 
 
+def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.ASSISTANT_CREATE_WORKFLOW],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    context.session_repository.upsert_session(
+        manifest.model_copy(
+            update={
+                "metadata": {
+                    "capability_profile": "operator-limited",
+                    "assistant_mutation_policy": {
+                        "writable_scopes": ["config/workflow"],
+                    }
+                }
+            }
+        )
+    )
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_a_path = packs_dir / "pack-a.v1.json"
+    pack_b_path = packs_dir / "pack-b.v1.json"
+    pack_a_payload = {
+        "pack_id": "pack-a",
+        "pack_version": "v1",
+        "ir": {
+            "version": "v1",
+            "nodes": [
+                {
+                    "id": "trigger-a",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    pack_a_path.write_text(json.dumps(pack_a_payload), encoding="utf-8")
+    pack_b_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-b",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_path": "root",
+                        "node_ids": ["effect-b"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "effect-b",
+                            "display_name": "Emit event",
+                            "type": "effect:event:emit",
+                            "event_type": "workflow.synthetic",
+                            "payload": {"message": "pack-b"},
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrapper_payload = {
+        "runtime_dir": str(context.config.runtime_dir),
+        "workflow_packs": ["pack-a.v1.json", "pack-b.v1.json"],
+    }
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    document = AdminService(context.config.runtime_dir).read_workflow_editor_document(
+        workflow_pack="pack-b.v1.json"
+    )
+    edited_config = dict(document.config)
+    edited_effects = [dict(effect) for effect in edited_config["effects"]]
+    edited_effects[0]["display_name"] = "Emit updated event"
+    edited_config["effects"] = edited_effects
+    server = create_server(context)
+    create_workflow_tool = next(
+        tool
+        for tool in server._tool_manager.list_tools()
+        if tool.name == "assistant_create_workflow"
+    )
+
+    result = _call_tool(
+        server,
+        "assistant_create_workflow",
+        {
+            "session_id": "session-1",
+            "workflow_pack": "pack-b.v1.json",
+            "config": edited_config,
+            "layout": {"nodes": {"effect-b": {"x": 320, "y": 180}}},
+        },
+    )
+
+    assert "workflow_pack" in create_workflow_tool.parameters["properties"]
+    assert result["status"] == "success"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
+    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == pack_a_payload
+    pack_b_payload = json.loads(pack_b_path.read_text(encoding="utf-8"))
+    assert pack_b_payload["ir"]["nodes"][0]["display_name"] == "Emit updated event"
+    audit_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.ASSISTANT_CREATE_WORKFLOW.value
+    ]
+    assert audit_events[-1]["args"]["workflow_pack"] == "pack-b.v1.json"
+
+
 def test_get_workflow_snapshot_requires_allowed_tool(tmp_path: Path) -> None:
     context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
     server = create_server(context)

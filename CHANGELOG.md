@@ -45,6 +45,8 @@ material. Newer entries are added incrementally as changes land.
 - Preserved composed workflow reads for omitted-pack service callers, required
   explicit pack saves for multi-pack configs, and validated selected-pack edits
   against sibling packs.
+- Exposed workflow-pack selection on the `assistant_create_workflow` MCP tool so
+  public workflow saves can target a pack in multi-pack deployments.
 
 ## 2026-06-19 - ADO Activity Pagination
 
